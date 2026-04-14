@@ -376,7 +376,7 @@ class WP_Markdown_Loader {
 		$pdo->exec( 'BEGIN TRANSACTION' );
 		try {
 			$stmt = $pdo->prepare(
-				"INSERT INTO `{$table}` (`option_id`, `option_name`, `option_value`, `autoload`) VALUES (?, ?, ?, ?)"
+				"INSERT OR IGNORE INTO `{$table}` (`option_id`, `option_name`, `option_value`, `autoload`) VALUES (?, ?, ?, ?)"
 			);
 
 			foreach ( $options as $opt ) {
@@ -433,7 +433,7 @@ class WP_Markdown_Loader {
 			$col_names = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
 
 			$stmt = $pdo->prepare(
-				"INSERT INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
+				"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
 			);
 
 			foreach ( $rows as $row ) {
@@ -496,13 +496,31 @@ class WP_Markdown_Loader {
 			$placeholders = implode( ', ', array_fill( 0, count( $columns ), '?' ) );
 			$col_names = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
 
+			// Use INSERT OR IGNORE to skip duplicate IDs instead of failing
+			// the entire transaction. See GitHub issue #9.
 			$stmt = $pdo->prepare(
-				"INSERT INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
+				"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
 			);
 
+			$skipped = array();
+
 			foreach ( $posts as $post ) {
+				$id = (int) $post->ID;
+
+				// Detect duplicate IDs from markdown files before INSERT.
+				if ( isset( $loaded_ids[ $id ] ) ) {
+					$skipped[] = sprintf(
+						'ID %d (%s "%s") — conflicts with already-loaded %s',
+						$id,
+						$post->post_type ?? 'post',
+						$post->post_title ?? '(untitled)',
+						$loaded_ids[ $id ]
+					);
+					continue;
+				}
+
 				$stmt->execute( array(
-					(int) $post->ID,
+					$id,
 					(int) $post->post_author,
 					$post->post_date,
 					$post->post_date_gmt,
@@ -526,7 +544,7 @@ class WP_Markdown_Loader {
 					$post->post_mime_type ?? '',
 					(int) ( $post->comment_count ?? 0 ),
 				) );
-				$loaded_ids[ (int) $post->ID ] = true;
+				$loaded_ids[ $id ] = sprintf( '%s "%s"', $post->post_type ?? 'post', $post->post_title ?? '(untitled)' );
 			}
 
 			// Load non-markdown posts from JSON (revisions, nav items, etc.).
@@ -540,9 +558,18 @@ class WP_Markdown_Loader {
 					$values[] = $row[ $col ] ?? '';
 				}
 				$stmt->execute( $values );
+				$loaded_ids[ $id ] = sprintf( '%s "%s" (json)', $row['post_type'] ?? 'post', $row['post_title'] ?? '(untitled)' );
 			}
 
 			$pdo->exec( 'COMMIT' );
+
+			// Log any skipped duplicates so they can be diagnosed.
+			if ( ! empty( $skipped ) ) {
+				error_log( 'Markdown DB: Skipped ' . count( $skipped ) . ' duplicate post(s) during boot:' );
+				foreach ( $skipped as $msg ) {
+					error_log( '  - ' . $msg );
+				}
+			}
 		} catch ( \Throwable $e ) {
 			$pdo->exec( 'ROLLBACK' );
 			error_log( 'Markdown DB: Failed to load posts: ' . $e->getMessage() );

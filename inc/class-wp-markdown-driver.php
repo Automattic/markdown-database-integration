@@ -6,8 +6,15 @@
  * In Phase 2 ('primary' mode), the in-memory SQLite is the query engine
  * and markdown files on disk are the source of truth.
  *
+ * ALL table writes (core and plugin) are persisted to disk. Tables that
+ * are ephemeral (session tokens, object caches) can be excluded via
+ * the MARKDOWN_DB_EPHEMERAL_TABLES constant or the
+ * 'markdown_db_ephemeral_tables' filter.
+ *
+ * Ref: GitHub issue #17
+ *
  * @package Markdown_Database_Integration
- * @since 0.1.0
+ * @since 0.3.0
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -52,11 +59,26 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	private $syncing = false;
 
 	/**
-	 * Tables known to the write engine (core WordPress tables).
+	 * Core WordPress table suffixes.
+	 *
+	 * Used to distinguish core tables (whose schemas are hardcoded in the
+	 * loader) from plugin tables (whose schemas are persisted to _schema/).
 	 *
 	 * @var string[]
 	 */
-	private $managed_tables = array();
+	private const CORE_TABLE_SUFFIXES = array(
+		'options', 'users', 'usermeta', 'posts', 'postmeta',
+		'terms', 'term_taxonomy', 'term_relationships', 'termmeta',
+		'comments', 'commentmeta', 'links',
+	);
+
+	/**
+	 * Tables that should NOT be persisted to disk.
+	 * Built once in the constructor from config + filter.
+	 *
+	 * @var array<string, bool>
+	 */
+	private $ephemeral_tables = array();
 
 	/**
 	 * Constructor.
@@ -80,15 +102,38 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 		global $table_prefix;
 		$this->table_prefix = $table_prefix ?? 'wp_';
 
-		// Build list of tables we manage.
-		$suffixes = array(
-			'options', 'users', 'usermeta', 'posts', 'postmeta',
-			'terms', 'term_taxonomy', 'term_relationships', 'termmeta',
-			'comments', 'commentmeta', 'links',
-		);
-		foreach ( $suffixes as $s ) {
-			$this->managed_tables[] = $this->table_prefix . $s;
+		// Build the ephemeral tables list from config.
+		$this->build_ephemeral_tables();
+	}
+
+	/**
+	 * Build the set of tables that should NOT be persisted.
+	 *
+	 * Sources:
+	 *   1. MARKDOWN_DB_EPHEMERAL_TABLES constant (comma-separated suffixes)
+	 *   2. 'markdown_db_ephemeral_tables' filter (array of full table names)
+	 */
+	private function build_ephemeral_tables(): void {
+		$ephemeral = array();
+
+		// From constant: comma-separated table suffixes.
+		if ( defined( 'MARKDOWN_DB_EPHEMERAL_TABLES' ) ) {
+			$suffixes = array_filter( array_map( 'trim', explode( ',', MARKDOWN_DB_EPHEMERAL_TABLES ) ) );
+			foreach ( $suffixes as $suffix ) {
+				$ephemeral[ $this->table_prefix . $suffix ] = true;
+			}
 		}
+
+		// From filter (if WordPress hooks are available at this point).
+		if ( function_exists( 'apply_filters' ) ) {
+			$filtered = apply_filters( 'markdown_db_ephemeral_tables', array_keys( $ephemeral ) );
+			$ephemeral = array();
+			foreach ( $filtered as $table ) {
+				$ephemeral[ $table ] = true;
+			}
+		}
+
+		$this->ephemeral_tables = $ephemeral;
 	}
 
 	/**
@@ -154,6 +199,10 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	/**
 	 * Detect the type of SQL operation and affected table.
 	 *
+	 * All DML is persisted unless the table is ephemeral.
+	 * DDL for plugin tables (non-core) is persisted to _schema/.
+	 * DDL for core tables is skipped (schemas are hardcoded in the loader).
+	 *
 	 * @param string $query The MySQL query.
 	 * @return array|null { type: 'DML'|'DDL', op: string, table: string } or null.
 	 */
@@ -161,28 +210,29 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 		$trimmed = ltrim( $query );
 
 		// DML operations: INSERT, UPDATE, DELETE, REPLACE.
+		// All tables are persisted unless explicitly ephemeral.
 		if ( preg_match( '/^\s*(INSERT(?:\s+IGNORE)?|REPLACE)\s+INTO\s+`?(\w+)`?/i', $trimmed, $m ) ) {
 			$table = $m[2];
 			$op = strtoupper( str_contains( strtoupper( $m[1] ), 'REPLACE' ) ? 'REPLACE' : 'INSERT' );
-			if ( $this->is_managed_table( $table ) ) {
+			if ( ! $this->is_ephemeral_table( $table ) ) {
 				return array( 'type' => 'DML', 'op' => $op, 'table' => $table );
 			}
 		} elseif ( preg_match( '/^\s*UPDATE\s+`?(\w+)`?/i', $trimmed, $m ) ) {
 			$table = $m[1];
-			if ( $this->is_managed_table( $table ) ) {
+			if ( ! $this->is_ephemeral_table( $table ) ) {
 				return array( 'type' => 'DML', 'op' => 'UPDATE', 'table' => $table );
 			}
 		} elseif ( preg_match( '/^\s*DELETE\s+FROM\s+`?(\w+)`?/i', $trimmed, $m ) ) {
 			$table = $m[1];
-			if ( $this->is_managed_table( $table ) ) {
+			if ( ! $this->is_ephemeral_table( $table ) ) {
 				return array( 'type' => 'DML', 'op' => 'DELETE', 'table' => $table );
 			}
 		}
 		// DDL operations: CREATE TABLE, ALTER TABLE, DROP TABLE.
+		// Only persist schema for non-core tables (core schemas are in the loader).
 		elseif ( preg_match( '/^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/i', $trimmed, $m ) ) {
 			$table = $m[1];
-			// Only persist schema for non-core tables (core tables are hardcoded in loader).
-			if ( ! in_array( $table, $this->managed_tables, true ) ) {
+			if ( ! $this->is_core_table( $table ) ) {
 				return array( 'type' => 'DDL', 'op' => 'CREATE', 'table' => $table );
 			}
 		} elseif ( preg_match( '/^\s*ALTER\s+TABLE\s+`?(\w+)`?/i', $trimmed, $m ) ) {
@@ -195,12 +245,30 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	}
 
 	/**
-	 * Check if a table is managed by the write engine.
+	 * Check if a table is ephemeral (should NOT be persisted).
 	 *
-	 * @param string $table The table name.
+	 * @param string $table The full table name.
 	 * @return bool
 	 */
-	private function is_managed_table( string $table ): bool {
-		return in_array( $table, $this->managed_tables, true );
+	private function is_ephemeral_table( string $table ): bool {
+		return isset( $this->ephemeral_tables[ $table ] );
+	}
+
+	/**
+	 * Check if a table is a core WordPress table.
+	 *
+	 * Core table schemas are hardcoded in the loader, so we don't
+	 * need to persist their CREATE TABLE statements to _schema/.
+	 *
+	 * @param string $table The full table name.
+	 * @return bool
+	 */
+	private function is_core_table( string $table ): bool {
+		foreach ( self::CORE_TABLE_SUFFIXES as $suffix ) {
+			if ( $table === $this->table_prefix . $suffix ) {
+				return true;
+			}
+		}
+		return false;
 	}
 }

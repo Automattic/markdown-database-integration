@@ -100,27 +100,27 @@ class WP_Markdown_Loader {
 			$this->load_options();
 
 			// 3. Load users and usermeta.
-			$this->load_table_from_yaml( 'users' );
-			$this->load_table_from_yaml( 'usermeta' );
+			$this->load_table_from_json( 'users' );
+			$this->load_table_from_json( 'usermeta' );
 
 			// 4. Load taxonomy tables.
-			$this->load_table_from_yaml( 'terms' );
-			$this->load_table_from_yaml( 'term_taxonomy' );
-			$this->load_table_from_yaml( 'termmeta' );
+			$this->load_table_from_json( 'terms' );
+			$this->load_table_from_json( 'term_taxonomy' );
+			$this->load_table_from_json( 'termmeta' );
 
 			// 5. Load posts from markdown files.
 			$this->load_posts();
 
 			// 6. Load post relationships.
-			$this->load_table_from_yaml( 'postmeta' );
-			$this->load_table_from_yaml( 'term_relationships' );
+			$this->load_table_from_json( 'postmeta' );
+			$this->load_table_from_json( 'term_relationships' );
 
 			// 7. Load comments.
-			$this->load_table_from_yaml( 'comments' );
-			$this->load_table_from_yaml( 'commentmeta' );
+			$this->load_table_from_json( 'comments' );
+			$this->load_table_from_json( 'commentmeta' );
 
 			// 8. Load links.
-			$this->load_table_from_yaml( 'links' );
+			$this->load_table_from_json( 'links' );
 
 			// 9. Load any plugin tables.
 			$this->load_plugin_tables();
@@ -398,14 +398,14 @@ class WP_Markdown_Loader {
 	}
 
 	/**
-	 * Load a table from a YAML-like JSON file.
+	 * Load a table from a JSON file.
 	 *
 	 * Generic loader for tables like users, usermeta, terms, etc.
 	 * File is at {content_dir}/_tables/{table_name}.json
 	 *
 	 * @param string $table_suffix Table name without prefix (e.g. 'users').
 	 */
-	private function load_table_from_yaml( string $table_suffix ): void {
+	private function load_table_from_json( string $table_suffix ): void {
 		$start = microtime( true );
 		$table = $this->prefix . $table_suffix;
 		$file  = $this->content_dir . '/_tables/' . $table_suffix . '.json';
@@ -492,10 +492,11 @@ class WP_Markdown_Loader {
 		$pdo->exec( 'BEGIN TRANSACTION' );
 
 		try {
-			// Track which IDs we've loaded from markdown.
+			// Track IDs loaded from markdown so JSON fallback doesn't overwrite them.
+			// Note: get_all_posts() already deduplicates markdown files (issue #9).
+			// INSERT OR IGNORE is the safety net for any remaining edge cases.
 			$loaded_ids = array();
 
-			// Load markdown posts.
 			$columns = array(
 				'ID', 'post_author', 'post_date', 'post_date_gmt',
 				'post_content', 'post_title', 'post_excerpt', 'post_status',
@@ -507,28 +508,13 @@ class WP_Markdown_Loader {
 			$placeholders = implode( ', ', array_fill( 0, count( $columns ), '?' ) );
 			$col_names = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
 
-			// Use INSERT OR IGNORE to skip duplicate IDs instead of failing
-			// the entire transaction. See GitHub issue #9.
+			// INSERT OR IGNORE: safety net for duplicate IDs. See issue #9.
 			$stmt = $pdo->prepare(
 				"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
 			);
 
-			$skipped = array();
-
 			foreach ( $posts as $post ) {
 				$id = (int) $post->ID;
-
-				// Detect duplicate IDs from markdown files before INSERT.
-				if ( isset( $loaded_ids[ $id ] ) ) {
-					$skipped[] = sprintf(
-						'ID %d (%s "%s") — conflicts with already-loaded %s',
-						$id,
-						$post->post_type ?? 'post',
-						$post->post_title ?? '(untitled)',
-						$loaded_ids[ $id ]
-					);
-					continue;
-				}
 
 				$stmt->execute( array(
 					$id,
@@ -555,32 +541,24 @@ class WP_Markdown_Loader {
 					$post->post_mime_type ?? '',
 					(int) ( $post->comment_count ?? 0 ),
 				) );
-				$loaded_ids[ $id ] = sprintf( '%s "%s"', $post->post_type ?? 'post', $post->post_title ?? '(untitled)' );
+				$loaded_ids[ $id ] = true;
 			}
 
 			// Load non-markdown posts from JSON (revisions, nav items, etc.).
+			// Skip any ID already loaded from markdown — markdown wins.
 			foreach ( $json_posts as $row ) {
 				$id = (int) ( $row['ID'] ?? 0 );
 				if ( isset( $loaded_ids[ $id ] ) ) {
-					continue; // Already loaded from markdown.
+					continue;
 				}
 				$values = array();
 				foreach ( $columns as $col ) {
 					$values[] = $row[ $col ] ?? '';
 				}
 				$stmt->execute( $values );
-				$loaded_ids[ $id ] = sprintf( '%s "%s" (json)', $row['post_type'] ?? 'post', $row['post_title'] ?? '(untitled)' );
 			}
 
 			$pdo->exec( 'COMMIT' );
-
-			// Log any skipped duplicates so they can be diagnosed.
-			if ( ! empty( $skipped ) ) {
-				error_log( 'Markdown DB: Skipped ' . count( $skipped ) . ' duplicate post(s) during boot:' );
-				foreach ( $skipped as $msg ) {
-					error_log( '  - ' . $msg );
-				}
-			}
 		} catch ( \Throwable $e ) {
 			$pdo->exec( 'ROLLBACK' );
 			error_log( 'Markdown DB: Failed to load posts: ' . $e->getMessage() );
@@ -643,7 +621,7 @@ class WP_Markdown_Loader {
 			}
 
 			// Load the data.
-			$this->load_table_from_yaml( $basename );
+			$this->load_table_from_json( $basename );
 		}
 
 		$this->timings['load_plugin_tables'] = microtime( true ) - $start;

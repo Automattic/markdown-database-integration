@@ -55,13 +55,6 @@ class WP_Markdown_Write_Engine {
 	private $prefix;
 
 	/**
-	 * Table name → primary key column mapping.
-	 *
-	 * @var array<string, string>
-	 */
-	private $primary_keys;
-
-	/**
 	 * Options that are ephemeral (not persisted to disk).
 	 * Transients, cron data, session tokens.
 	 *
@@ -92,13 +85,6 @@ class WP_Markdown_Write_Engine {
 	private $writing = false;
 
 	/**
-	 * Dirty flags for deferred writes. Table suffix → true.
-	 *
-	 * @var array<string, bool>
-	 */
-	private $dirty = array();
-
-	/**
 	 * Constructor.
 	 *
 	 * @param string              $content_dir Content directory.
@@ -116,21 +102,6 @@ class WP_Markdown_Write_Engine {
 		$this->storage     = $storage;
 		$this->driver      = $driver;
 		$this->prefix      = $prefix;
-
-		$this->primary_keys = array(
-			$prefix . 'options'            => 'option_id',
-			$prefix . 'users'              => 'ID',
-			$prefix . 'usermeta'           => 'umeta_id',
-			$prefix . 'posts'              => 'ID',
-			$prefix . 'postmeta'           => 'meta_id',
-			$prefix . 'terms'              => 'term_id',
-			$prefix . 'term_taxonomy'      => 'term_taxonomy_id',
-			$prefix . 'term_relationships' => null, // Composite PK
-			$prefix . 'termmeta'           => 'meta_id',
-			$prefix . 'comments'           => 'comment_ID',
-			$prefix . 'commentmeta'        => 'meta_id',
-			$prefix . 'links'              => 'link_id',
-		);
 	}
 
 	/**
@@ -221,26 +192,33 @@ class WP_Markdown_Write_Engine {
 				$this->storage->delete_post( $id );
 			}
 
-			// Also update the non-markdown posts JSON.
+			// Deletions may affect the non-markdown fallback JSON.
 			$this->persist_non_markdown_posts();
 			return;
 		}
 
 		// For INSERT/UPDATE/REPLACE, read back the affected row.
+		$affected_is_non_markdown = false;
+
 		if ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) {
 			$id = $this->driver->get_insert_id();
 			if ( $id ) {
-				$this->persist_single_post( (int) $id );
+				$affected_is_non_markdown = $this->persist_single_post( (int) $id );
 			}
 		} elseif ( 'UPDATE' === $op_type ) {
 			$ids = $this->extract_ids_from_query( $query, 'ID' );
 			foreach ( $ids as $id ) {
-				$this->persist_single_post( $id );
+				if ( $this->persist_single_post( $id ) ) {
+					$affected_is_non_markdown = true;
+				}
 			}
 		}
 
-		// Also persist non-markdown posts.
-		$this->persist_non_markdown_posts();
+		// Only dump the non-markdown JSON if the affected post was non-markdown.
+		// This avoids a full table scan on every regular post write.
+		if ( $affected_is_non_markdown ) {
+			$this->persist_non_markdown_posts();
+		}
 	}
 
 	/**
@@ -250,8 +228,9 @@ class WP_Markdown_Write_Engine {
 	 * before writing to disk. See GitHub issue #11.
 	 *
 	 * @param int $post_id
+	 * @return bool True if the post type is non-markdown (caller should update JSON).
 	 */
-	private function persist_single_post( int $post_id ): void {
+	private function persist_single_post( int $post_id ): bool {
 		$table = $this->prefix . 'posts';
 
 		try {
@@ -259,27 +238,29 @@ class WP_Markdown_Write_Engine {
 				"SELECT * FROM `{$table}` WHERE ID = {$post_id}"
 			);
 		} catch ( \Throwable $e ) {
-			return;
+			return false;
 		}
 
 		if ( ! is_array( $rows ) || empty( $rows ) ) {
-			return;
+			return false;
 		}
 
 		$row = $rows[0];
 		$post_type = $row->post_type ?? 'post';
 
-		// Try to write as markdown.
-		if ( $this->storage->is_markdown_type( $post_type ) ) {
-			// Convert block HTML to clean markdown before writing to disk.
-			$content = $row->post_content ?? '';
-			if ( ! empty( $content ) ) {
-				$converter = WP_Markdown_Converter::get_instance();
-				$row->post_content = $converter->blocks_to_markdown( $content );
-			}
-
-			$this->storage->write_post( $row );
+		if ( ! $this->storage->is_markdown_type( $post_type ) ) {
+			return true; // Non-markdown — caller should update JSON fallback.
 		}
+
+		// Convert block HTML to clean markdown before writing to disk.
+		$content = $row->post_content ?? '';
+		if ( ! empty( $content ) ) {
+			$converter = WP_Markdown_Converter::get_instance();
+			$row->post_content = $converter->blocks_to_markdown( $content );
+		}
+
+		$this->storage->write_post( $row );
+		return false;
 	}
 
 	/**

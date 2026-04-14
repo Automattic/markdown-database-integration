@@ -700,12 +700,6 @@ class WP_Markdown_Storage {
 		$post->comment_count         = (int) ( $frontmatter['comment_count'] ?? 0 );
 		$post->filter                = 'raw';
 
-		// Backwards compat: if a `parent` field exists in frontmatter (old format),
-		// use it as a fallback. It will be overwritten by get_all_posts().
-		if ( isset( $frontmatter['parent'] ) ) {
-			$post->post_parent = (int) $frontmatter['parent'];
-		}
-
 		return $post;
 	}
 

@@ -53,9 +53,9 @@ if ( ! defined( 'MARKDOWN_DB_MODE' ) ) {
 
 /**
  * Post types to exclude from markdown storage. Comma-separated.
- * All types are stored as markdown by default.
- * Override in wp-config.php: define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,nav_menu_item' );
+ * These go to _tables/posts.json instead of .md files.
+ * Override in wp-config.php to customize.
  */
 if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
-	define( 'MARKDOWN_DB_EXCLUDED_TYPES', '' );
+	define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,auto-draft,nav_menu_item,customize_changeset,oembed_cache,wp_navigation,wp_global_styles,wp_template,wp_template_part' );
 }

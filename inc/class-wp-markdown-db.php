@@ -127,6 +127,40 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				return null;
 			} );
 
+			// Meta resolver — fetches all post meta for a given post ID.
+			// Used by build_frontmatter() to embed meta in .md files. See issue #6.
+			$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
+				$table = $prefix_ref . 'postmeta';
+				try {
+					$rows = $driver_ref->query(
+						"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
+					);
+					return is_array( $rows ) ? $rows : array();
+				} catch ( \Throwable $e ) {
+					return array();
+				}
+			} );
+
+			// Terms resolver — fetches all terms for a given post ID.
+			// Used by build_frontmatter() to embed terms in .md files. See issue #6.
+			$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
+				$terms_table    = $prefix_ref . 'terms';
+				$taxonomy_table = $prefix_ref . 'term_taxonomy';
+				$rel_table      = $prefix_ref . 'term_relationships';
+				try {
+					$rows = $driver_ref->query(
+						"SELECT tt.taxonomy, t.slug
+						 FROM `{$rel_table}` tr
+						 JOIN `{$taxonomy_table}` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+						 JOIN `{$terms_table}` t ON tt.term_id = t.term_id
+						 WHERE tr.object_id = {$post_id}"
+					);
+					return is_array( $rows ) ? $rows : array();
+				} catch ( \Throwable $e ) {
+					return array();
+				}
+			} );
+
 			// In primary mode, load all data from files into memory.
 			if ( 'primary' === $mode ) {
 				$this->loader = new WP_Markdown_Loader(

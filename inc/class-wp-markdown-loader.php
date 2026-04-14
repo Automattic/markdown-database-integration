@@ -65,6 +65,14 @@ class WP_Markdown_Loader {
 	private $timings = array();
 
 	/**
+	 * Posts loaded from markdown files (with frontmatter meta/terms).
+	 * Populated by load_posts(), consumed by load_frontmatter_meta/terms().
+	 *
+	 * @var object[]
+	 */
+	private $loaded_posts = array();
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string              $content_dir The markdown content directory.
@@ -111,7 +119,13 @@ class WP_Markdown_Loader {
 			// 5. Load posts from markdown files.
 			$this->load_posts();
 
-			// 6. Load post relationships.
+			// 5b. Load postmeta and term relationships from frontmatter.
+			// Markdown-type posts embed their meta and terms in the .md file.
+			// The JSON files only hold rows for non-markdown posts. See issue #6.
+			$this->load_frontmatter_meta();
+			$this->load_frontmatter_terms();
+
+			// 6. Load remaining post relationships (non-markdown posts only).
 			$this->load_table_from_json( 'postmeta' );
 			$this->load_table_from_json( 'term_relationships' );
 
@@ -477,6 +491,9 @@ class WP_Markdown_Loader {
 			}
 		}
 
+		// Store posts for load_frontmatter_meta() and load_frontmatter_terms().
+		$this->loaded_posts = $posts;
+
 		// Also load any non-markdown posts from the JSON fallback.
 		$json_file = $this->content_dir . '/_tables/posts.json';
 		$json_posts = array();
@@ -565,6 +582,120 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['load_posts'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Load postmeta from frontmatter into wp_postmeta.
+	 *
+	 * Each markdown post's _frontmatter_meta is INSERTed as postmeta rows.
+	 * See GitHub issue #6.
+	 */
+	private function load_frontmatter_meta(): void {
+		$start = microtime( true );
+		$table = $this->prefix . 'postmeta';
+
+		$pdo = $this->driver->get_connection()->get_pdo();
+		$pdo->exec( 'BEGIN TRANSACTION' );
+
+		try {
+			$stmt = $pdo->prepare(
+				"INSERT OR IGNORE INTO `{$table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
+			);
+
+			foreach ( $this->loaded_posts as $post ) {
+				$id   = (int) ( $post->ID ?? 0 );
+				$meta = $post->_frontmatter_meta ?? array();
+
+				if ( $id <= 0 || empty( $meta ) ) {
+					continue;
+				}
+
+				foreach ( $meta as $key => $value ) {
+					$stmt->execute( array( $id, (string) $key, (string) $value ) );
+				}
+			}
+
+			$pdo->exec( 'COMMIT' );
+		} catch ( \Throwable $e ) {
+			$pdo->exec( 'ROLLBACK' );
+			error_log( 'Markdown DB: Failed to load frontmatter meta: ' . $e->getMessage() );
+		}
+
+		$this->timings['load_frontmatter_meta'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Load term relationships from frontmatter into wp_term_relationships.
+	 *
+	 * Each markdown post's _frontmatter_terms maps taxonomy → [slugs].
+	 * We resolve slugs to term_taxonomy_ids and INSERT relationships.
+	 * See GitHub issue #6.
+	 */
+	private function load_frontmatter_terms(): void {
+		$start = microtime( true );
+		$rel_table      = $this->prefix . 'term_relationships';
+		$taxonomy_table = $this->prefix . 'term_taxonomy';
+		$terms_table    = $this->prefix . 'terms';
+
+		$pdo = $this->driver->get_connection()->get_pdo();
+
+		// Build a lookup: (taxonomy, slug) → term_taxonomy_id.
+		$term_map = array();
+		try {
+			$rows = $pdo->query(
+				"SELECT tt.term_taxonomy_id, tt.taxonomy, t.slug
+				 FROM `{$taxonomy_table}` tt
+				 JOIN `{$terms_table}` t ON tt.term_id = t.term_id"
+			)->fetchAll( PDO::FETCH_OBJ );
+
+			foreach ( $rows as $row ) {
+				$key = $row->taxonomy . '::' . $row->slug;
+				$term_map[ $key ] = (int) $row->term_taxonomy_id;
+			}
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB: Failed to build term map: ' . $e->getMessage() );
+			$this->timings['load_frontmatter_terms'] = microtime( true ) - $start;
+			return;
+		}
+
+		$pdo->exec( 'BEGIN TRANSACTION' );
+
+		try {
+			$stmt = $pdo->prepare(
+				"INSERT OR IGNORE INTO `{$rel_table}` (object_id, term_taxonomy_id, term_order) VALUES (?, ?, 0)"
+			);
+
+			foreach ( $this->loaded_posts as $post ) {
+				$id    = (int) ( $post->ID ?? 0 );
+				$terms = $post->_frontmatter_terms ?? array();
+
+				if ( $id <= 0 || empty( $terms ) ) {
+					continue;
+				}
+
+				foreach ( $terms as $taxonomy => $slugs ) {
+					if ( ! is_array( $slugs ) ) {
+						continue;
+					}
+					foreach ( $slugs as $slug ) {
+						$key = $taxonomy . '::' . $slug;
+						if ( isset( $term_map[ $key ] ) ) {
+							$stmt->execute( array( $id, $term_map[ $key ] ) );
+						}
+					}
+				}
+			}
+
+			$pdo->exec( 'COMMIT' );
+		} catch ( \Throwable $e ) {
+			$pdo->exec( 'ROLLBACK' );
+			error_log( 'Markdown DB: Failed to load frontmatter terms: ' . $e->getMessage() );
+		}
+
+		// Free memory — no longer needed after boot.
+		$this->loaded_posts = array();
+
+		$this->timings['load_frontmatter_terms'] = microtime( true ) - $start;
 	}
 
 	/**

@@ -88,7 +88,14 @@ if ( ! $markdown_plugin_dir ) {
 	return;
 }
 
+// Load composer autoloader (for league/commonmark, league/html-to-markdown).
+$composer_autoload = $markdown_plugin_dir . '/vendor/autoload.php';
+if ( file_exists( $composer_autoload ) ) {
+	require_once $composer_autoload;
+}
+
 // Load markdown integration classes.
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-converter.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-driver.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-write-engine.php';

@@ -246,6 +246,9 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Persist a single post — either to markdown or to the JSON fallback.
 	 *
+	 * For markdown-type posts, converts block HTML → clean markdown
+	 * before writing to disk. See GitHub issue #11.
+	 *
 	 * @param int $post_id
 	 */
 	private function persist_single_post( int $post_id ): void {
@@ -268,6 +271,13 @@ class WP_Markdown_Write_Engine {
 
 		// Try to write as markdown.
 		if ( $this->storage->is_markdown_type( $post_type ) ) {
+			// Convert block HTML to clean markdown before writing to disk.
+			$content = $row->post_content ?? '';
+			if ( ! empty( $content ) ) {
+				$converter = WP_Markdown_Converter::get_instance();
+				$row->post_content = $converter->blocks_to_markdown( $content );
+			}
+
 			$this->storage->write_post( $row );
 		}
 	}

@@ -75,13 +75,14 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			? MARKDOWN_DB_CONTENT_DIR
 			: WP_CONTENT_DIR . '/markdown';
 
-		$post_types_raw = defined( 'MARKDOWN_DB_POST_TYPES' )
-			? MARKDOWN_DB_POST_TYPES
-			: 'post,page';
+		// Excluded post types — everything else is stored as markdown.
+		$excluded_types_raw = defined( 'MARKDOWN_DB_EXCLUDED_TYPES' )
+			? MARKDOWN_DB_EXCLUDED_TYPES
+			: '';
 
-		$post_types = array_map( 'trim', explode( ',', $post_types_raw ) );
+		$excluded_types = array_filter( array_map( 'trim', explode( ',', $excluded_types_raw ) ) );
 
-		$storage = new WP_Markdown_Storage( $content_dir, $post_types );
+		$storage = new WP_Markdown_Storage( $content_dir, $excluded_types );
 
 		try {
 			$connection = new WP_SQLite_Connection(

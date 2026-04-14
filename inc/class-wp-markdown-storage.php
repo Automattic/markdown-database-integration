@@ -55,11 +55,11 @@ class WP_Markdown_Storage {
 	private $content_dir;
 
 	/**
-	 * Post types that should be stored as markdown.
+	 * Post types explicitly excluded from markdown storage.
 	 *
 	 * @var string[]
 	 */
-	private $post_types;
+	private $excluded_types = array();
 
 	/**
 	 * In-memory index of post ID → file path.
@@ -72,12 +72,15 @@ class WP_Markdown_Storage {
 	/**
 	 * Constructor.
 	 *
-	 * @param string   $content_dir Base directory for markdown files.
-	 * @param string[] $post_types  Post types to store as markdown.
+	 * All post types are stored as markdown by default.
+	 * Pass $excluded_types to opt specific types out.
+	 *
+	 * @param string   $content_dir    Base directory for markdown files.
+	 * @param string[] $excluded_types Post types to exclude from markdown storage.
 	 */
-	public function __construct( string $content_dir, array $post_types = array( 'post', 'page' ) ) {
-		$this->content_dir = rtrim( $content_dir, '/' );
-		$this->post_types  = $post_types;
+	public function __construct( string $content_dir, array $excluded_types = array() ) {
+		$this->content_dir    = rtrim( $content_dir, '/' );
+		$this->excluded_types = $excluded_types;
 	}
 
 	/**
@@ -92,15 +95,12 @@ class WP_Markdown_Storage {
 	public function write_post( object $post ): string|false {
 		$post_type = $post->post_type ?? 'post';
 
-		// Only write configured post types.
-		if ( ! in_array( $post_type, $this->post_types, true ) ) {
+		// Skip excluded post types.
+		if ( in_array( $post_type, $this->excluded_types, true ) ) {
 			return false;
 		}
 
-		// Skip revisions and auto-drafts.
-		if ( 'revision' === $post_type ) {
-			return false;
-		}
+		// Skip auto-drafts — they're ephemeral.
 		$status = $post->post_status ?? '';
 		if ( 'auto-draft' === $status ) {
 			return false;
@@ -199,9 +199,14 @@ class WP_Markdown_Storage {
 			$dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
 			$this->remove_directory_contents( $dir );
 		} else {
-			foreach ( $this->post_types as $type ) {
-				$dir = $this->content_dir . '/' . $this->sanitize_path( $type );
-				$this->remove_directory_contents( $dir );
+			// Truncate all post type directories.
+			$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
+			if ( $dirs ) {
+				foreach ( $dirs as $dir ) {
+					if ( ! str_starts_with( basename( $dir ), '_' ) ) {
+						$this->remove_directory_contents( $dir );
+					}
+				}
 			}
 		}
 		$this->index = null;
@@ -210,16 +215,35 @@ class WP_Markdown_Storage {
 	/**
 	 * Get all markdown files as post objects.
 	 *
-	 * Used for rebuilding the SQLite index from markdown (Phase 2).
+	 * Scans every subdirectory in the content dir. Each subdirectory
+	 * is a post type. Used for rebuilding the SQLite database from
+	 * markdown files at boot (Phase 2).
 	 *
 	 * @return object[] Array of post-like objects.
 	 */
 	public function get_all_posts(): array {
 		$posts = array();
 
-		foreach ( $this->post_types as $post_type ) {
-			$dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
-			if ( ! is_dir( $dir ) ) {
+		if ( ! is_dir( $this->content_dir ) ) {
+			return $posts;
+		}
+
+		// Scan all subdirectories — each one is a post type.
+		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
+		if ( ! $dirs ) {
+			return $posts;
+		}
+
+		foreach ( $dirs as $dir ) {
+			$dirname = basename( $dir );
+
+			// Skip internal directories (prefixed with underscore).
+			if ( str_starts_with( $dirname, '_' ) ) {
+				continue;
+			}
+
+			// Skip excluded types.
+			if ( in_array( $dirname, $this->excluded_types, true ) ) {
 				continue;
 			}
 
@@ -261,9 +285,20 @@ class WP_Markdown_Storage {
 	private function rebuild_index(): void {
 		$this->index = array();
 
-		foreach ( $this->post_types as $post_type ) {
-			$dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
-			if ( ! is_dir( $dir ) ) {
+		if ( ! is_dir( $this->content_dir ) ) {
+			return;
+		}
+
+		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
+		if ( ! $dirs ) {
+			return;
+		}
+
+		foreach ( $dirs as $dir ) {
+			$dirname = basename( $dir );
+
+			// Skip internal directories.
+			if ( str_starts_with( $dirname, '_' ) ) {
 				continue;
 			}
 
@@ -633,21 +668,23 @@ class WP_Markdown_Storage {
 	}
 
 	/**
-	 * Get the configured post types.
+	 * Get the excluded post types.
 	 *
 	 * @return string[]
 	 */
-	public function get_post_types(): array {
-		return $this->post_types;
+	public function get_excluded_types(): array {
+		return $this->excluded_types;
 	}
 
 	/**
 	 * Check if a post type should be stored as markdown.
 	 *
+	 * All types are stored unless explicitly excluded.
+	 *
 	 * @param string $post_type The post type slug.
 	 * @return bool
 	 */
 	public function is_markdown_type( string $post_type ): bool {
-		return in_array( $post_type, $this->post_types, true );
+		return ! in_array( $post_type, $this->excluded_types, true );
 	}
 }

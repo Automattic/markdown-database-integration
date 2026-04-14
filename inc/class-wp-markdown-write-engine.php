@@ -273,13 +273,10 @@ class WP_Markdown_Write_Engine {
 	}
 
 	/**
-	 * Persist posts that are NOT markdown types to the JSON fallback.
-	 *
-	 * This includes revisions, nav_menu_items, custom_css, etc.
+	 * Persist posts that are excluded from markdown to the JSON fallback.
 	 */
 	private function persist_non_markdown_posts(): void {
 		$table = $this->prefix . 'posts';
-		$markdown_types = $this->storage->get_post_types();
 
 		try {
 			$rows = $this->driver->query(
@@ -296,7 +293,7 @@ class WP_Markdown_Write_Engine {
 		$non_markdown = array();
 		foreach ( $rows as $row ) {
 			$type = $row->post_type ?? 'post';
-			if ( ! in_array( $type, $markdown_types, true ) ) {
+			if ( ! $this->storage->is_markdown_type( $type ) ) {
 				$non_markdown[] = (array) $row;
 			}
 		}

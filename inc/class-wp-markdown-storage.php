@@ -219,20 +219,28 @@ class WP_Markdown_Storage {
 	 * is a post type. Used for rebuilding the SQLite database from
 	 * markdown files at boot (Phase 2).
 	 *
-	 * @return object[] Array of post-like objects.
+	 * Deduplicates by post ID: when two files share the same ID,
+	 * the most recently modified file wins. Conflicts are logged
+	 * so they can be resolved. See GitHub issue #9.
+	 *
+	 * @return object[] Array of post-like objects (unique by ID).
 	 */
 	public function get_all_posts(): array {
-		$posts = array();
-
 		if ( ! is_dir( $this->content_dir ) ) {
-			return $posts;
+			return array();
 		}
 
 		// Scan all subdirectories — each one is a post type.
 		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
 		if ( ! $dirs ) {
-			return $posts;
+			return array();
 		}
+
+		// Collect all posts, keyed by ID for dedup.
+		$posts_by_id = array();
+		// Track file paths for conflict logging.
+		$paths_by_id = array();
+		$conflicts   = array();
 
 		foreach ( $dirs as $dir ) {
 			$dirname = basename( $dir );
@@ -254,13 +262,74 @@ class WP_Markdown_Storage {
 
 			foreach ( $files as $file ) {
 				$post = $this->parse_file( $file );
-				if ( $post ) {
-					$posts[] = $post;
+				if ( ! $post ) {
+					continue;
 				}
+
+				$id = (int) $post->ID;
+
+				// No ID — include it but it won't collide.
+				if ( 0 === $id ) {
+					$posts_by_id[] = $post;
+					continue;
+				}
+
+				if ( ! isset( $posts_by_id[ $id ] ) ) {
+					$posts_by_id[ $id ] = $post;
+					$paths_by_id[ $id ] = $file;
+					continue;
+				}
+
+				// Duplicate ID — resolve by file modification time (newest wins).
+				$existing_mtime = filemtime( $paths_by_id[ $id ] );
+				$new_mtime      = filemtime( $file );
+
+				if ( $new_mtime > $existing_mtime ) {
+					$loser_file  = $paths_by_id[ $id ];
+					$loser_post  = $posts_by_id[ $id ];
+					$winner_file = $file;
+
+					$posts_by_id[ $id ] = $post;
+					$paths_by_id[ $id ] = $file;
+				} else {
+					$loser_file = $file;
+					$loser_post = $post;
+					$winner_file = $paths_by_id[ $id ];
+				}
+
+				$conflicts[] = sprintf(
+					'ID %d: kept %s (newer), skipped %s "%s" at %s',
+					$id,
+					$this->relative_path( $winner_file ),
+					$loser_post->post_type ?? 'post',
+					$loser_post->post_title ?? '(untitled)',
+					$this->relative_path( $loser_file )
+				);
 			}
 		}
 
-		return $posts;
+		// Log conflicts so admins can resolve the root cause.
+		if ( ! empty( $conflicts ) ) {
+			error_log( 'Markdown DB: Resolved ' . count( $conflicts ) . ' duplicate post ID(s) during scan:' );
+			foreach ( $conflicts as $msg ) {
+				error_log( '  - ' . $msg );
+			}
+		}
+
+		return array_values( $posts_by_id );
+	}
+
+	/**
+	 * Get a file path relative to the content directory (for logging).
+	 *
+	 * @param string $path Absolute file path.
+	 * @return string Relative path.
+	 */
+	private function relative_path( string $path ): string {
+		if ( str_starts_with( $path, $this->content_dir . '/' ) ) {
+			return substr( $path, strlen( $this->content_dir ) + 1 );
+		}
+		return $path;
 	}
 
 	/**
@@ -281,6 +350,9 @@ class WP_Markdown_Storage {
 
 	/**
 	 * Rebuild the in-memory index by scanning all markdown files.
+	 *
+	 * Deduplicates by ID: when two files share the same ID,
+	 * the most recently modified file wins. See GitHub issue #9.
 	 */
 	private function rebuild_index(): void {
 		$this->index = array();
@@ -309,7 +381,20 @@ class WP_Markdown_Storage {
 
 			foreach ( $files as $file ) {
 				$id = $this->extract_id_from_file( $file );
-				if ( $id ) {
+				if ( ! $id ) {
+					continue;
+				}
+
+				// Dedup: prefer the most recently modified file.
+				if ( isset( $this->index[ $id ] ) ) {
+					$existing_mtime = filemtime( $this->index[ $id ] );
+					$new_mtime      = filemtime( $file );
+
+					if ( $new_mtime > $existing_mtime ) {
+						$this->index[ $id ] = $file;
+					}
+					// else keep existing (it's newer or same age).
+				} else {
 					$this->index[ $id ] = $file;
 				}
 			}

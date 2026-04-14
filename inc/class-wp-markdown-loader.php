@@ -703,6 +703,12 @@ class WP_Markdown_Loader {
 	 *
 	 * Scans {content_dir}/_tables/ for any .json files that correspond
 	 * to tables NOT in the core set (those are loaded explicitly above).
+	 *
+	 * Schema files may contain either MySQL or SQLite syntax. We try the
+	 * driver first (MySQL path — populates the information schema) and
+	 * fall back to raw PDO (SQLite path) for legacy schema files. After
+	 * the fallback path, we synchronize the information schema so the
+	 * translator can find column metadata for these tables.
 	 */
 	private function load_plugin_tables(): void {
 		$start = microtime( true );
@@ -725,7 +731,8 @@ class WP_Markdown_Loader {
 			return;
 		}
 
-		$pdo = $this->driver->get_connection()->get_pdo();
+		$pdo                     = $this->driver->get_connection()->get_pdo();
+		$needs_schema_rebuild    = false;
 
 		foreach ( $files as $file ) {
 			$basename = basename( $file, '.json' );
@@ -735,19 +742,44 @@ class WP_Markdown_Loader {
 
 			// Check if this table has a corresponding schema file.
 			$schema_file = $this->content_dir . '/_schema/' . $basename . '.sql';
-			if ( file_exists( $schema_file ) ) {
-				$create_sql = trim( file_get_contents( $schema_file ) );
-				// Remove trailing semicolons — PDO doesn't want them.
-				$create_sql = rtrim( $create_sql, ';' );
-				try {
-					// Execute via raw PDO — schema files contain SQLite syntax.
-					$pdo->exec( $create_sql );
-				} catch ( \Throwable $e ) {
-					error_log( "Markdown DB: Failed to create plugin table {$basename}: " . $e->getMessage() );
+			if ( ! file_exists( $schema_file ) ) {
+				// No schema file — skip this table (data without schema is useless).
+				continue;
+			}
+
+			$schema_sql = trim( file_get_contents( $schema_file ) );
+
+			// Schema files may contain multiple statements (CREATE + ALTER).
+			// Split on semicolons and execute each statement individually.
+			$statements = $this->split_sql( $schema_sql );
+			$table_created = false;
+
+			foreach ( $statements as $stmt ) {
+				$stmt = trim( $stmt );
+				if ( empty( $stmt ) ) {
 					continue;
 				}
-			} else {
-				// No schema file — skip this table (data without schema is useless).
+
+				// Try the driver first (MySQL syntax). This creates the table
+				// AND populates the information schema, which is required for
+				// the MySQL→SQLite query translator to work correctly.
+				try {
+					$this->driver->query( $stmt );
+					$table_created = true;
+				} catch ( \Throwable $e ) {
+					// Driver failed — likely SQLite syntax from a legacy schema
+					// file. Fall back to raw PDO exec.
+					try {
+						$pdo->exec( $stmt );
+						$table_created        = true;
+						$needs_schema_rebuild = true;
+					} catch ( \Throwable $e2 ) {
+						error_log( "Markdown DB: Failed to execute schema for {$basename}: " . $e2->getMessage() );
+					}
+				}
+			}
+
+			if ( ! $table_created ) {
 				continue;
 			}
 
@@ -755,7 +787,66 @@ class WP_Markdown_Loader {
 			$this->load_table_from_json( $basename );
 		}
 
+		// When tables were created via raw PDO (SQLite syntax fallback), the
+		// information schema is out of sync — the translator doesn't know about
+		// these tables and will fail on INSERT/UPDATE queries with "table not
+		// found" errors. Trigger a full information schema reconstruction.
+		if ( $needs_schema_rebuild ) {
+			$this->rebuild_information_schema();
+		}
+
 		$this->timings['load_plugin_tables'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Rebuild the information schema for tables created via raw PDO.
+	 *
+	 * The WP_SQLite_Information_Schema_Reconstructor compares actual SQLite
+	 * tables against the information schema and reconstructs any missing
+	 * entries. This is necessary when tables are created outside the driver
+	 * (e.g., via raw PDO with SQLite syntax).
+	 */
+	private function rebuild_information_schema(): void {
+		if ( ! class_exists( 'WP_SQLite_Information_Schema_Reconstructor' )
+			|| ! class_exists( 'WP_SQLite_Information_Schema_Builder' )
+			|| ! class_exists( 'WP_PDO_MySQL_On_SQLite' )
+		) {
+			return;
+		}
+
+		try {
+			// Build a new schema builder on the same connection and prefix.
+			// This operates on the same information schema tables the driver
+			// already created — the table names are deterministic from the
+			// reserved prefix.
+			$connection     = $this->driver->get_connection();
+			$schema_builder = new \WP_SQLite_Information_Schema_Builder(
+				\WP_PDO_MySQL_On_SQLite::RESERVED_PREFIX,
+				$connection
+			);
+
+			// The reconstructor needs the WP_PDO_MySQL_On_SQLite instance
+			// (for execute_sqlite_query and create_parser). Access it via
+			// the Closure binding pattern used by WP_SQLite_Driver itself.
+			// We bind to WP_SQLite_Driver scope explicitly because the
+			// property is private on the parent class.
+			$get_driver   = \Closure::bind(
+				function () {
+					return $this->mysql_on_sqlite_driver;
+				},
+				$this->driver,
+				\WP_SQLite_Driver::class
+			);
+			$mysql_driver = $get_driver();
+
+			$reconstructor = new \WP_SQLite_Information_Schema_Reconstructor(
+				$mysql_driver,
+				$schema_builder
+			);
+			$reconstructor->ensure_correct_information_schema();
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB: Failed to rebuild information schema: ' . $e->getMessage() );
+		}
 	}
 
 	/**

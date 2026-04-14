@@ -4,7 +4,7 @@ WordPress database integration that stores content as markdown files. SQLite for
 
 ## What This Does
 
-Every time you create, update, or delete a post in WordPress, the content is written to a `.md` file on disk:
+Every time you create, update, or delete a post in WordPress, the content is converted to **clean markdown** and written to a `.md` file on disk:
 
 ```
 wp-content/markdown/
@@ -18,7 +18,7 @@ wp-content/markdown/
     woocommerce-pricing.md
 ```
 
-Each file has YAML frontmatter with metadata and the post content as the body:
+Each file has YAML frontmatter with metadata and the post content as clean markdown:
 
 ```markdown
 ---
@@ -32,16 +32,17 @@ modified: "2026-04-14 03:14:49"
 slug: gutenberg-block-test
 ---
 
-<!-- wp:heading -->
-<h2 class="wp-block-heading">This is a heading block</h2>
-<!-- /wp:heading -->
+## This is a heading block
 
-<!-- wp:paragraph -->
-<p>Content goes here.</p>
-<!-- /wp:paragraph -->
+Content goes here with **bold** and *italic* text.
+
+- List item one
+- List item two
+
+> A blockquote for good measure.
 ```
 
-WordPress keeps working normally. The block editor works. Plugins work. Everything that reads from `$wpdb` gets the same data it always did — because SQLite is still the query engine. The markdown files are a sync layer on top.
+No block comments. No HTML. Just markdown. WordPress keeps working normally — the block editor, plugins, everything. The conversion between markdown and blocks happens automatically.
 
 ## Why
 
@@ -59,28 +60,79 @@ This plugin makes that happen. Content is files. Files are:
 - **Human-readable** — open in any text editor, any IDE, any markdown viewer.
 - **LLM Wiki ready** — this is the Karpathy LLM Wiki pattern running on WordPress.
 
+## Conversion Pipeline
+
+HTML is the intermediary format. Content converts freely between Gutenberg blocks and markdown by going through HTML:
+
+```
+WRITE (post saved in WordPress):
+
+  Gutenberg Blocks
+       │
+       ▼  serialize_blocks()        [WordPress core]
+  Block HTML (<!-- wp:paragraph --><p>...</p><!-- /wp:paragraph -->)
+       │
+       ▼  strip_block_comments()    [WP_Markdown_Converter]
+  Clean HTML (<p>...</p>)
+       │
+       ▼  league/html-to-markdown
+  Markdown (stored in .md file)
+
+
+READ (site boots):
+
+  Markdown (.md file on disk)
+       │
+       ▼  league/commonmark
+  Clean HTML
+       │
+       ▼  html_to_blocks_raw_handler()  [optional: html-to-blocks-converter plugin]
+  Block HTML (with <!-- wp: --> comments)
+       │
+       ▼  INSERT into SQLite
+  WordPress queries normally
+```
+
+### Dependencies
+
+| Package | Direction | Role |
+|---------|-----------|------|
+| [league/commonmark](https://commonmark.thephpleague.com/) | Markdown → HTML | GFM-flavored parser (tables, strikethrough, autolinks) |
+| [league/html-to-markdown](https://github.com/thephpleague/html-to-markdown) | HTML → Markdown | Converts clean HTML back to markdown |
+| [html-to-blocks-converter](https://github.com/chubes4/html-to-blocks-converter) | HTML → Blocks | PHP port of Gutenberg's `rawHandler` (optional) |
+
+The `html-to-blocks-converter` plugin is optional. Without it, clean HTML is inserted directly into SQLite — WordPress handles this gracefully, and the block editor converts to blocks on first open.
+
 ## Architecture
 
 ```
 WordPress Core ($wpdb)
-        |
+        │
     WP_Markdown_DB (extends WP_SQLite_DB)
-        |
+        │
     WP_Markdown_Driver (extends WP_SQLite_Driver)
-        |
-    +-----------------------------------+
-    |  query() override:                |
-    |    1. Execute via SQLite (parent)  |
-    |    2. If wp_posts write:           |
-    |       sync to .md file             |
-    +-----------------------------------+
-        |                    |
+        │
+    ┌───────────────────────────────────────┐
+    │  query() override:                    │
+    │    1. Execute via SQLite (parent)      │
+    │    2. If wp_posts write:               │
+    │       convert blocks → markdown        │
+    │       write to .md file                │
+    └───────────────────────────────────────┘
+        │                    │
     SQLite (all tables)    Markdown files
     wp_options             wp-content/markdown/
     wp_users                 post/*.md
     wp_terms                 page/*.md
     transients               wiki/*.md
     plugin tables
+
+    WP_Markdown_Converter
+    ├── blocks_to_markdown()    — write path
+    ├── markdown_to_html()      — read path
+    ├── markdown_to_blocks()    — read path (with block converter)
+    ├── strip_block_comments()  — removes <!-- wp: --> delimiters
+    └── is_markdown()           — content type detection
 ```
 
 **SQLite** handles: options, users, terms, transients, sessions, plugin tables — the machinery that WordPress hammers thousands of times per page load.
@@ -92,17 +144,18 @@ WordPress Core ($wpdb)
 - WordPress 6.9+
 - [SQLite Database Integration](https://github.com/WordPress/sqlite-database-integration) plugin (installed as mu-plugin)
 - PHP 7.4+
+- Composer (for league/commonmark and league/html-to-markdown)
 
 ## Installation
-
-1. Clone or copy this plugin to `wp-content/plugins/markdown-database-integration/`
-2. Copy `db.php` to `wp-content/db.php` (replacing the SQLite integration's version)
-3. That's it. New posts will appear as markdown files in `wp-content/markdown/`
 
 ```bash
 # Clone the plugin
 git clone https://github.com/chubes4/markdown-database-integration.git \
   wp-content/plugins/markdown-database-integration
+
+# Install PHP dependencies
+cd wp-content/plugins/markdown-database-integration
+composer install --no-dev
 
 # Back up the existing db.php
 cp wp-content/db.php wp-content/db.php.backup
@@ -110,6 +163,8 @@ cp wp-content/db.php wp-content/db.php.backup
 # Install our db.php drop-in
 cp wp-content/plugins/markdown-database-integration/db.php wp-content/db.php
 ```
+
+Optional: install the [HTML to Blocks Converter](https://github.com/chubes4/html-to-blocks-converter) plugin for full block markup round-trips.
 
 ## Configuration
 
@@ -129,7 +184,7 @@ define( 'MARKDOWN_DB_MODE', 'mirror' );
 ### Modes
 
 - **`mirror`** (Phase 1): SQLite is the primary database. Markdown files are synced on every write. WordPress reads from SQLite. AI agents read from markdown.
-- **`primary`** (Phase 2, coming soon): Markdown files are the primary source of truth. SQLite is an index rebuilt from the files. Writes go to markdown first.
+- **`primary`** (Phase 2): Markdown files are the primary source of truth. SQLite is an in-memory index rebuilt from the files on boot. Writes go to markdown first.
 
 ## What Works
 
@@ -138,15 +193,16 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - **Creating posts** via WP-CLI, REST API, or the admin → `.md` file created
 - **Updating posts** → `.md` file updated (title, content, metadata)
 - **Deleting posts** → `.md` file removed
-- **Gutenberg blocks** → block markup preserved in the markdown file
+- **Gutenberg blocks** → converted to clean markdown automatically
 - **Pages** → stored in `page/` subdirectory
 - **Custom post types** → each type gets its own subdirectory
 - **WordPress admin** → works normally, no changes visible
 - **Plugins** → work normally, no compatibility issues observed
+- **Round-trip** → markdown → HTML → blocks → HTML → markdown preserves content
 
 ## File Format
 
-```yaml
+```markdown
 ---
 id: 42
 title: "Post Title"
@@ -167,19 +223,21 @@ comment_count: 0
 excerpt: "Optional excerpt"
 ---
 
-Post content goes here as markdown (or Gutenberg block markup).
+Post content as clean markdown. Headings, lists, bold, italic,
+code blocks, tables — all standard markdown.
 ```
 
 ## Roadmap
 
+- [x] Block-to-markdown conversion — strip Gutenberg comments, output clean markdown
+- [x] Markdown-to-blocks conversion — parse markdown, produce block markup on boot
 - [ ] `wp markdown sync` — one-time sync of existing posts to markdown files
-- [ ] `wp markdown rebuild` — rebuild SQLite index from markdown files (Phase 2)
+- [ ] `wp markdown rebuild` — rebuild SQLite index from markdown files
 - [ ] `wp markdown export` — export all content as a git-ready markdown directory
 - [ ] `wp_postmeta` as frontmatter — custom fields in the YAML
 - [ ] `wp_terms` as frontmatter tags — categories and tags in the YAML
 - [ ] File watcher — detect external edits to `.md` files and sync back to SQLite
 - [ ] Git integration — auto-commit on post save
-- [ ] Block-to-markdown conversion — strip Gutenberg comments, output clean markdown
 - [ ] Transfer to `Automattic/markdown-database-integration`
 
 ## Part of Intelligence

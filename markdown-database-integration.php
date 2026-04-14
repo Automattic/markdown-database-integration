@@ -52,9 +52,10 @@ if ( ! defined( 'MARKDOWN_DB_MODE' ) ) {
 }
 
 /**
- * Post types to store as markdown. Comma-separated.
- * Override in wp-config.php: define( 'MARKDOWN_DB_POST_TYPES', 'post,page,wiki' );
+ * Post types to exclude from markdown storage. Comma-separated.
+ * All types are stored as markdown by default.
+ * Override in wp-config.php: define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,nav_menu_item' );
  */
-if ( ! defined( 'MARKDOWN_DB_POST_TYPES' ) ) {
-	define( 'MARKDOWN_DB_POST_TYPES', 'post,page' );
+if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
+	define( 'MARKDOWN_DB_EXCLUDED_TYPES', '' );
 }

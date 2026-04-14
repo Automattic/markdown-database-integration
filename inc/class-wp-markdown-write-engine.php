@@ -353,17 +353,26 @@ class WP_Markdown_Write_Engine {
 				mkdir( $schema_dir, 0755, true );
 			}
 
+			$schema_path = $schema_dir . '/' . $table_suffix . '.sql';
+
 			if ( 'DROP' === $ddl_type ) {
 				// Remove schema and data files.
-				@unlink( $schema_dir . '/' . $table_suffix . '.sql' );
+				@unlink( $schema_path );
 				@unlink( $this->content_dir . '/_tables/' . $table_suffix . '.json' );
-			} else {
-				// Save the CREATE TABLE statement.
-				// We store the MySQL version — the driver translates on boot.
+			} elseif ( 'CREATE' === $ddl_type ) {
+				// Save the CREATE TABLE statement (overwrites any existing file).
 				file_put_contents(
-					$schema_dir . '/' . $table_suffix . '.sql',
+					$schema_path,
 					$query . ";\n",
 					LOCK_EX
+				);
+			} elseif ( 'ALTER' === $ddl_type ) {
+				// Append ALTER statements after the CREATE TABLE.
+				// This preserves the full DDL history needed to recreate the table.
+				file_put_contents(
+					$schema_path,
+					$query . ";\n",
+					FILE_APPEND | LOCK_EX
 				);
 			}
 		} catch ( \Throwable $e ) {

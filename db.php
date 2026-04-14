@@ -1,12 +1,16 @@
 <?php
 /**
  * Plugin Name: Markdown Database Integration (Drop-in)
- * Version: 0.1.0
+ * Version: 0.2.0
  * Author: Chris Huber
  *
- * WordPress db.php drop-in that extends the SQLite Database Integration
- * with markdown file storage for content. Replaces the SQLite drop-in's
- * db.php — requires the SQLite integration plugin to be installed.
+ * WordPress db.php drop-in that replaces the SQLite database file with
+ * markdown files as the sole source of truth. In-memory SQLite is used
+ * as the runtime query engine.
+ *
+ * Supports two modes (set MARKDOWN_DB_MODE in wp-config.php):
+ *   'mirror'  — Phase 1: SQLite on disk, markdown mirrored on writes
+ *   'primary' — Phase 2: In-memory SQLite, markdown files are the database
  *
  * This file goes in wp-content/db.php (replacing the SQLite drop-in's version).
  *
@@ -87,6 +91,8 @@ if ( ! $markdown_plugin_dir ) {
 // Load markdown integration classes.
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-driver.php';
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-write-engine.php';
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-loader.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-db.php';
 
 // Load plugin constants (if not already loaded via the plugin file).

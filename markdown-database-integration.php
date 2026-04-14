@@ -32,7 +32,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MARKDOWN_DB_VERSION', '0.1.0' );
+define( 'MARKDOWN_DB_VERSION', '0.2.0' );
 define( 'MARKDOWN_DB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
 /**

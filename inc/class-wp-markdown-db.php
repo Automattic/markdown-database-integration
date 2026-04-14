@@ -2,11 +2,10 @@
 /**
  * Markdown Database — wpdb override.
  *
- * Extends WP_SQLite_DB to inject the WP_Markdown_Driver as the database handle.
- * This is the class that gets assigned to $GLOBALS['wpdb'].
- *
- * Everything works exactly like the SQLite integration, except writes to
- * wp_posts are also synced to markdown files on disk.
+ * Extends WP_SQLite_DB to:
+ * - Use in-memory SQLite (:memory:) as the runtime query engine
+ * - Load all data from markdown/JSON files at boot
+ * - Persist all writes back to markdown/JSON files
  *
  * @package Markdown_Database_Integration
  * @since 0.1.0
@@ -19,10 +18,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WP_Markdown_DB extends WP_SQLite_DB {
 
 	/**
+	 * The boot loader (null until boot completes).
+	 *
+	 * @var WP_Markdown_Loader|null
+	 */
+	private $loader = null;
+
+	/**
 	 * Connects to the database.
 	 *
-	 * Overrides WP_SQLite_DB::db_connect() to use our WP_Markdown_Driver
-	 * instead of the standard WP_SQLite_Driver.
+	 * In 'primary' mode (Phase 2): creates an in-memory SQLite database,
+	 * loads all data from markdown/JSON files, then WordPress proceeds
+	 * with the in-memory database as its query engine.
+	 *
+	 * In 'mirror' mode (Phase 1): uses the on-disk SQLite file and
+	 * mirrors writes to markdown files.
 	 *
 	 * @param bool $allow_bail Not used.
 	 * @return void
@@ -46,8 +56,19 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			return false;
 		}
 
-		// Ensure the database directory exists.
-		$this->ensure_database_directory_exists();
+		$mode = defined( 'MARKDOWN_DB_MODE' ) ? MARKDOWN_DB_MODE : 'mirror';
+
+		// Determine the SQLite path.
+		if ( 'primary' === $mode ) {
+			// Phase 2: in-memory database — markdown files are the source of truth.
+			$db_path = ':memory:';
+			// Don't reuse any existing PDO — we need a fresh in-memory database.
+			$pdo = null;
+		} else {
+			// Phase 1 / mirror: use on-disk SQLite file.
+			$db_path = FQDB;
+			$this->ensure_database_directory_exists();
+		}
 
 		// Create the markdown storage engine.
 		$content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
@@ -62,21 +83,43 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		$storage = new WP_Markdown_Storage( $content_dir, $post_types );
 
-		$mode = defined( 'MARKDOWN_DB_MODE' ) ? MARKDOWN_DB_MODE : 'mirror';
-
 		try {
 			$connection = new WP_SQLite_Connection(
 				array(
 					'pdo'          => $pdo,
-					'path'         => FQDB,
+					'path'         => $db_path,
 					'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
 				)
 			);
 
 			$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage, $mode );
 			$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
+
+			// Set up the write engine.
+			global $table_prefix;
+			$prefix = $table_prefix ?? 'wp_';
+
+			$write_engine = new WP_Markdown_Write_Engine(
+				$content_dir,
+				$storage,
+				$this->dbh,
+				$prefix
+			);
+			$this->dbh->set_write_engine( $write_engine );
+
+			// In primary mode, load all data from files into memory.
+			if ( 'primary' === $mode ) {
+				$this->loader = new WP_Markdown_Loader(
+					$content_dir,
+					$this->dbh,
+					$storage,
+					$prefix
+				);
+				$this->loader->load_all();
+			}
 		} catch ( \Throwable $e ) {
 			$this->last_error = $e->getMessage();
+			error_log( 'Markdown DB connect error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
 		}
 
 		if ( $this->last_error ) {
@@ -85,6 +128,15 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		$this->ready = true;
 		$this->set_sql_mode();
+	}
+
+	/**
+	 * Get the boot loader (for debugging/timing).
+	 *
+	 * @return WP_Markdown_Loader|null
+	 */
+	public function get_loader(): ?WP_Markdown_Loader {
+		return $this->loader;
 	}
 
 	/**

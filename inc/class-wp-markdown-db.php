@@ -108,6 +108,25 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			);
 			$this->dbh->set_write_engine( $write_engine );
 
+			// Set up the post resolver so the storage engine can build
+			// hierarchical directory paths. See GitHub issue #14.
+			$driver_ref = $this->dbh;
+			$prefix_ref = $prefix;
+			$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
+				$table = $prefix_ref . 'posts';
+				try {
+					$rows = $driver_ref->query(
+						"SELECT post_name, post_parent, post_type FROM `{$table}` WHERE ID = {$post_id}"
+					);
+					if ( is_array( $rows ) && ! empty( $rows ) ) {
+						return $rows[0];
+					}
+				} catch ( \Throwable $e ) {
+					// Silently fail — the write engine will use a flat path.
+				}
+				return null;
+			} );
+
 			// In primary mode, load all data from files into memory.
 			if ( 'primary' === $mode ) {
 				$this->loader = new WP_Markdown_Loader(

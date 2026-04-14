@@ -3,7 +3,17 @@
  * Markdown Storage Engine
  *
  * Reads and writes WordPress posts as markdown files with YAML frontmatter.
- * Each post becomes a file at: {content_dir}/{post_type}/{slug}.md
+ * Posts are stored hierarchically: directory structure matches the post
+ * parent-child hierarchy. Parent posts that have children become directories
+ * with their content in _index.md (Hugo convention).
+ *
+ * File layout:
+ *   {content_dir}/{post_type}/slug.md              — leaf post (no children)
+ *   {content_dir}/{post_type}/parent-slug/_index.md — parent post (has children)
+ *   {content_dir}/{post_type}/parent-slug/child.md  — child post
+ *
+ * The directory structure IS the hierarchy — no `parent` field in frontmatter.
+ * The loader derives post_parent from the filesystem path.
  *
  * File format:
  *   ---
@@ -15,30 +25,17 @@
  *   date: "2026-04-13 21:17:48"
  *   modified: "2026-04-14 00:33:50"
  *   slug: my-post-title
- *   parent: 0
  *   menu_order: 0
  *   comment_status: open
  *   ping_status: open
- *   excerpt: "A short excerpt..."
- *   meta:
- *     custom_field: "value"
- *     another_field: "value"
- *   terms:
- *     category:
- *       - uncategorized
- *     post_tag:
- *       - ai
- *       - wordpress
  *   ---
  *
  *   The post content goes here as markdown.
  *
- *   ## Subheading
- *
- *   More content...
+ * Ref: GitHub issue #14
  *
  * @package Markdown_Database_Integration
- * @since 0.1.0
+ * @since 0.3.0
  */
 
 if ( ! defined( 'ABSPATH' ) ) {
@@ -70,6 +67,16 @@ class WP_Markdown_Storage {
 	private $index = null;
 
 	/**
+	 * Callback to resolve a post's slug and parent ID by post ID.
+	 * Set by the write engine so we can build hierarchical paths.
+	 *
+	 * Returns: (object) { post_name: string, post_parent: int, post_type: string }
+	 *
+	 * @var callable|null
+	 */
+	private $post_resolver = null;
+
+	/**
 	 * Constructor.
 	 *
 	 * All post types are stored as markdown by default.
@@ -84,10 +91,24 @@ class WP_Markdown_Storage {
 	}
 
 	/**
+	 * Set the post resolver callback.
+	 *
+	 * The resolver takes a post ID and returns an object with at minimum:
+	 *   post_name (string), post_parent (int), post_type (string)
+	 *
+	 * @param callable $resolver
+	 */
+	public function set_post_resolver( callable $resolver ): void {
+		$this->post_resolver = $resolver;
+	}
+
+	/**
 	 * Write a post to a markdown file.
 	 *
-	 * Accepts a row object (as returned by $wpdb) and writes it as a .md file
-	 * with YAML frontmatter.
+	 * Builds a hierarchical directory path based on the post's ancestry.
+	 * If the post has a parent, it's written inside the parent's directory.
+	 * If a parent post gains its first child, the parent's leaf file is
+	 * promoted to a directory with _index.md.
 	 *
 	 * @param object $post A post row object with WordPress column names.
 	 * @return string|false The file path written, or false on failure.
@@ -114,13 +135,17 @@ class WP_Markdown_Storage {
 			$slug = $id ? (string) $id : 'untitled-' . time();
 		}
 
-		// Build the directory path: {content_dir}/{post_type}/
-		$dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
-		if ( ! is_dir( $dir ) ) {
-			mkdir( $dir, 0755, true );
+		$parent_id = (int) ( $post->post_parent ?? 0 );
+
+		// Build the hierarchical directory path.
+		$type_dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
+		$parent_dir = $this->resolve_parent_dir( $type_dir, $parent_id );
+
+		if ( ! is_dir( $parent_dir ) ) {
+			mkdir( $parent_dir, 0755, true );
 		}
 
-		$file_path = $dir . '/' . $this->sanitize_path( $slug ) . '.md';
+		$file_path = $parent_dir . '/' . $this->sanitize_path( $slug ) . '.md';
 
 		// Build frontmatter.
 		$frontmatter = $this->build_frontmatter( $post );
@@ -139,9 +164,11 @@ class WP_Markdown_Storage {
 		if ( false !== $result ) {
 			// Update the in-memory index.
 			if ( $id && null !== $this->index ) {
-				// Remove old path if slug changed.
+				// Remove old file if path changed (slug change or reparent).
 				if ( isset( $this->index[ $id ] ) && $this->index[ $id ] !== $file_path ) {
-					@unlink( $this->index[ $id ] );
+					$old_path = $this->index[ $id ];
+					@unlink( $old_path );
+					$this->cleanup_empty_dirs( dirname( $old_path ), $type_dir );
 				}
 				$this->index[ $id ] = $file_path;
 			}
@@ -170,6 +197,10 @@ class WP_Markdown_Storage {
 	/**
 	 * Delete a post's markdown file.
 	 *
+	 * If the post is a parent (has a directory), and the directory
+	 * still has children, only the _index.md is removed. If the
+	 * directory becomes empty, it's cleaned up.
+	 *
 	 * @param int $post_id The post ID.
 	 * @return bool True if deleted, false if not found.
 	 */
@@ -182,8 +213,15 @@ class WP_Markdown_Storage {
 
 		$result = @unlink( $file_path );
 
-		if ( $result && null !== $this->index ) {
-			unset( $this->index[ $post_id ] );
+		if ( $result ) {
+			// Clean up empty directories up to the post type dir.
+			$dir = dirname( $file_path );
+			$type_dir = $this->guess_type_dir( $file_path );
+			$this->cleanup_empty_dirs( $dir, $type_dir );
+
+			if ( null !== $this->index ) {
+				unset( $this->index[ $post_id ] );
+			}
 		}
 
 		return $result;
@@ -197,14 +235,14 @@ class WP_Markdown_Storage {
 	public function truncate( string $post_type = '' ): void {
 		if ( ! empty( $post_type ) ) {
 			$dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
-			$this->remove_directory_contents( $dir );
+			$this->remove_directory_recursive( $dir );
 		} else {
 			// Truncate all post type directories.
 			$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
 			if ( $dirs ) {
 				foreach ( $dirs as $dir ) {
 					if ( ! str_starts_with( basename( $dir ), '_' ) ) {
-						$this->remove_directory_contents( $dir );
+						$this->remove_directory_recursive( $dir );
 					}
 				}
 			}
@@ -215,13 +253,11 @@ class WP_Markdown_Storage {
 	/**
 	 * Get all markdown files as post objects.
 	 *
-	 * Scans every subdirectory in the content dir. Each subdirectory
-	 * is a post type. Used for rebuilding the SQLite database from
-	 * markdown files at boot (Phase 2).
+	 * Recursively scans each post type directory. Derives post_parent
+	 * from the directory structure: _index.md files are parents, files
+	 * inside a directory are children of that directory's _index.md.
 	 *
-	 * Deduplicates by post ID: when two files share the same ID,
-	 * the most recently modified file wins. Conflicts are logged
-	 * so they can be resolved. See GitHub issue #9.
+	 * Deduplicates by post ID. See GitHub issue #9.
 	 *
 	 * @return object[] Array of post-like objects (unique by ID).
 	 */
@@ -238,12 +274,11 @@ class WP_Markdown_Storage {
 
 		// Collect all posts, keyed by ID for dedup.
 		$posts_by_id = array();
-		// Track file paths for conflict logging.
 		$paths_by_id = array();
 		$conflicts   = array();
 
-		foreach ( $dirs as $dir ) {
-			$dirname = basename( $dir );
+		foreach ( $dirs as $type_dir ) {
+			$dirname = basename( $type_dir );
 
 			// Skip internal directories (prefixed with underscore).
 			if ( str_starts_with( $dirname, '_' ) ) {
@@ -255,15 +290,49 @@ class WP_Markdown_Storage {
 				continue;
 			}
 
-			$files = glob( $dir . '/*.md' );
-			if ( ! $files ) {
-				continue;
+			// Recursively scan this post type directory.
+			// First pass: collect all posts and build an ID → post map.
+			$all_files = $this->scan_directory_recursive( $type_dir );
+
+			// Second pass: resolve parent IDs from directory structure.
+			// An _index.md file IS the parent for all siblings in its directory.
+			// We need to find the _index.md's ID for each directory.
+			$dir_parent_ids = array();
+
+			// First, find all _index.md files and record their directory → ID mapping.
+			foreach ( $all_files as $file ) {
+				if ( basename( $file ) === '_index.md' ) {
+					$id = $this->extract_id_from_file( $file );
+					if ( $id ) {
+						$dir_parent_ids[ dirname( $file ) ] = $id;
+					}
+				}
 			}
 
-			foreach ( $files as $file ) {
+			// Now parse all files and set post_parent from directory structure.
+			foreach ( $all_files as $file ) {
 				$post = $this->parse_file( $file );
 				if ( ! $post ) {
 					continue;
+				}
+
+				// Derive post_parent from the directory hierarchy.
+				$file_dir = dirname( $file );
+
+				if ( basename( $file ) === '_index.md' ) {
+					// This is a parent post. Its parent is the _index.md of
+					// the directory one level up (if it exists).
+					$parent_dir = dirname( $file_dir );
+					$post->post_parent = $dir_parent_ids[ $parent_dir ] ?? 0;
+				} else {
+					// Regular file. Its parent is the _index.md in its directory
+					// (if one exists and we're not at the post type root).
+					if ( $file_dir === $type_dir ) {
+						// Top-level file in the post type dir — no parent.
+						$post->post_parent = 0;
+					} else {
+						$post->post_parent = $dir_parent_ids[ $file_dir ] ?? 0;
+					}
 				}
 
 				$id = (int) $post->ID;
@@ -308,7 +377,7 @@ class WP_Markdown_Storage {
 			}
 		}
 
-		// Log conflicts so admins can resolve the root cause.
+		// Log conflicts.
 		if ( ! empty( $conflicts ) ) {
 			error_log( 'Markdown DB: Resolved ' . count( $conflicts ) . ' duplicate post ID(s) during scan:' );
 			foreach ( $conflicts as $msg ) {
@@ -317,6 +386,160 @@ class WP_Markdown_Storage {
 		}
 
 		return array_values( $posts_by_id );
+	}
+
+	/**
+	 * Resolve the parent directory for a post's file.
+	 *
+	 * Walks up the ancestor chain using the post resolver to build
+	 * the full hierarchical path. If a parent post is currently stored
+	 * as a leaf file (slug.md), promotes it to a directory (slug/_index.md).
+	 *
+	 * @param string $type_dir  The post type root directory.
+	 * @param int    $parent_id The post_parent ID (0 = top level).
+	 * @return string The directory to write the file in.
+	 */
+	private function resolve_parent_dir( string $type_dir, int $parent_id ): string {
+		if ( 0 === $parent_id || null === $this->post_resolver ) {
+			return $type_dir;
+		}
+
+		// Build the ancestor chain (bottom-up, then reverse).
+		$ancestors = array();
+		$current_id = $parent_id;
+		$seen = array(); // Guard against infinite loops.
+
+		while ( $current_id > 0 && ! isset( $seen[ $current_id ] ) ) {
+			$seen[ $current_id ] = true;
+
+			$parent_post = call_user_func( $this->post_resolver, $current_id );
+			if ( ! $parent_post ) {
+				break;
+			}
+
+			$slug = $parent_post->post_name ?? '';
+			if ( empty( $slug ) ) {
+				$slug = (string) $current_id;
+			}
+
+			$ancestors[] = $this->sanitize_path( $slug );
+			$current_id  = (int) ( $parent_post->post_parent ?? 0 );
+		}
+
+		// Reverse so we go from root → leaf.
+		$ancestors = array_reverse( $ancestors );
+
+		// Build the directory path, promoting leaf files along the way.
+		$current_dir = $type_dir;
+		foreach ( $ancestors as $slug ) {
+			$target_dir  = $current_dir . '/' . $slug;
+			$leaf_file   = $current_dir . '/' . $slug . '.md';
+
+			if ( file_exists( $leaf_file ) && ! is_dir( $target_dir ) ) {
+				// Promote leaf file to directory with _index.md.
+				mkdir( $target_dir, 0755, true );
+				rename( $leaf_file, $target_dir . '/_index.md' );
+
+				// Update the index if we have one.
+				if ( null !== $this->index ) {
+					$promoted_id = $this->extract_id_from_file( $target_dir . '/_index.md' );
+					if ( $promoted_id ) {
+						$this->index[ $promoted_id ] = $target_dir . '/_index.md';
+					}
+				}
+			} elseif ( ! is_dir( $target_dir ) ) {
+				mkdir( $target_dir, 0755, true );
+			}
+
+			$current_dir = $target_dir;
+		}
+
+		return $current_dir;
+	}
+
+	/**
+	 * Clean up empty directories after a file is deleted or moved.
+	 *
+	 * Walks up from $dir to $stop_dir, removing empty directories.
+	 *
+	 * @param string $dir      The directory to start cleaning from.
+	 * @param string $stop_dir Stop when reaching this directory (don't delete it).
+	 */
+	private function cleanup_empty_dirs( string $dir, string $stop_dir ): void {
+		while ( $dir !== $stop_dir && str_starts_with( $dir, $stop_dir ) ) {
+			// Check if directory is empty (no files, no subdirs).
+			$entries = @scandir( $dir );
+			if ( false === $entries ) {
+				break;
+			}
+
+			// Filter out . and ..
+			$entries = array_diff( $entries, array( '.', '..' ) );
+
+			if ( ! empty( $entries ) ) {
+				break; // Directory has contents, stop.
+			}
+
+			@rmdir( $dir );
+			$dir = dirname( $dir );
+		}
+	}
+
+	/**
+	 * Guess the post type directory from a file path.
+	 *
+	 * The post type dir is the first directory after content_dir.
+	 *
+	 * @param string $file_path
+	 * @return string
+	 */
+	private function guess_type_dir( string $file_path ): string {
+		$relative = $this->relative_path( $file_path );
+		$parts    = explode( '/', $relative );
+		if ( ! empty( $parts[0] ) ) {
+			return $this->content_dir . '/' . $parts[0];
+		}
+		return $this->content_dir;
+	}
+
+	/**
+	 * Recursively scan a directory for .md files.
+	 *
+	 * @param string $dir Directory to scan.
+	 * @return string[] Array of file paths.
+	 */
+	private function scan_directory_recursive( string $dir ): array {
+		$files = array();
+
+		if ( ! is_dir( $dir ) ) {
+			return $files;
+		}
+
+		$entries = scandir( $dir );
+		if ( false === $entries ) {
+			return $files;
+		}
+
+		foreach ( $entries as $entry ) {
+			if ( '.' === $entry || '..' === $entry ) {
+				continue;
+			}
+
+			$path = $dir . '/' . $entry;
+
+			if ( is_dir( $path ) ) {
+				// Skip internal directories (e.g. _tables, _schema).
+				if ( str_starts_with( $entry, '_' ) ) {
+					continue;
+				}
+				// Recurse into subdirectories (these are parent post directories).
+				$files = array_merge( $files, $this->scan_directory_recursive( $path ) );
+			} elseif ( str_ends_with( $entry, '.md' ) ) {
+				$files[] = $path;
+			}
+		}
+
+		return $files;
 	}
 
 	/**
@@ -349,7 +572,7 @@ class WP_Markdown_Storage {
 	}
 
 	/**
-	 * Rebuild the in-memory index by scanning all markdown files.
+	 * Rebuild the in-memory index by scanning all markdown files recursively.
 	 *
 	 * Deduplicates by ID: when two files share the same ID,
 	 * the most recently modified file wins. See GitHub issue #9.
@@ -374,10 +597,7 @@ class WP_Markdown_Storage {
 				continue;
 			}
 
-			$files = glob( $dir . '/*.md' );
-			if ( ! $files ) {
-				continue;
-			}
+			$files = $this->scan_directory_recursive( $dir );
 
 			foreach ( $files as $file ) {
 				$id = $this->extract_id_from_file( $file );
@@ -393,7 +613,6 @@ class WP_Markdown_Storage {
 					if ( $new_mtime > $existing_mtime ) {
 						$this->index[ $id ] = $file;
 					}
-					// else keep existing (it's newer or same age).
 				} else {
 					$this->index[ $id ] = $file;
 				}
@@ -429,6 +648,9 @@ class WP_Markdown_Storage {
 	/**
 	 * Parse a markdown file into a post-like object.
 	 *
+	 * Note: post_parent is NOT set here — it's derived from the directory
+	 * structure by get_all_posts(). The caller is responsible for setting it.
+	 *
 	 * @param string $file_path Path to the markdown file.
 	 * @return object|null A post object, or null on parse failure.
 	 */
@@ -463,7 +685,7 @@ class WP_Markdown_Storage {
 		$post->post_modified         = $frontmatter['modified'] ?? $post->post_date;
 		$post->post_modified_gmt     = $frontmatter['modified_gmt'] ?? $post->post_modified;
 		$post->post_name             = $frontmatter['slug'] ?? '';
-		$post->post_parent           = (int) ( $frontmatter['parent'] ?? 0 );
+		$post->post_parent           = 0; // Derived from directory structure, not frontmatter.
 		$post->menu_order            = (int) ( $frontmatter['menu_order'] ?? 0 );
 		$post->comment_status        = $frontmatter['comment_status'] ?? 'open';
 		$post->ping_status           = $frontmatter['ping_status'] ?? 'open';
@@ -478,11 +700,20 @@ class WP_Markdown_Storage {
 		$post->comment_count         = (int) ( $frontmatter['comment_count'] ?? 0 );
 		$post->filter                = 'raw';
 
+		// Backwards compat: if a `parent` field exists in frontmatter (old format),
+		// use it as a fallback. It will be overwritten by get_all_posts().
+		if ( isset( $frontmatter['parent'] ) ) {
+			$post->post_parent = (int) $frontmatter['parent'];
+		}
+
 		return $post;
 	}
 
 	/**
 	 * Build the YAML frontmatter array from a post object.
+	 *
+	 * Does NOT include `parent` — hierarchy is expressed by directory
+	 * structure, not frontmatter. See GitHub issue #14.
 	 *
 	 * @param object $post A WordPress post row.
 	 * @return array Frontmatter key-value pairs.
@@ -500,7 +731,6 @@ class WP_Markdown_Storage {
 		$fm['modified']       = $post->post_modified ?? '';
 		$fm['modified_gmt']   = $post->post_modified_gmt ?? '';
 		$fm['slug']           = $post->post_name ?? '';
-		$fm['parent']         = (int) ( $post->post_parent ?? 0 );
 		$fm['menu_order']     = (int) ( $post->menu_order ?? 0 );
 		$fm['comment_status'] = $post->comment_status ?? 'open';
 		$fm['ping_status']    = $post->ping_status ?? 'open';
@@ -726,19 +956,31 @@ class WP_Markdown_Storage {
 	}
 
 	/**
-	 * Remove all files in a directory (non-recursive).
+	 * Remove all files and subdirectories in a directory (recursive).
 	 *
 	 * @param string $dir Directory path.
 	 */
-	private function remove_directory_contents( string $dir ): void {
+	private function remove_directory_recursive( string $dir ): void {
 		if ( ! is_dir( $dir ) ) {
 			return;
 		}
 
-		$files = glob( $dir . '/*.md' );
-		if ( $files ) {
-			foreach ( $files as $file ) {
-				@unlink( $file );
+		$entries = scandir( $dir );
+		if ( false === $entries ) {
+			return;
+		}
+
+		foreach ( $entries as $entry ) {
+			if ( '.' === $entry || '..' === $entry ) {
+				continue;
+			}
+
+			$path = $dir . '/' . $entry;
+			if ( is_dir( $path ) ) {
+				$this->remove_directory_recursive( $path );
+				@rmdir( $path );
+			} else {
+				@unlink( $path );
 			}
 		}
 	}

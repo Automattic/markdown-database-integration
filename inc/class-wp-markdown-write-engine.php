@@ -126,6 +126,10 @@ class WP_Markdown_Write_Engine {
 				$this->persist_options();
 			} elseif ( $table_suffix === 'posts' ) {
 				$this->persist_post_write( $query, $op_type );
+			} elseif ( $table_suffix === 'postmeta' ) {
+				$this->persist_postmeta_write( $query, $op_type );
+			} elseif ( in_array( $table_suffix, array( 'term_relationships', 'term_taxonomy', 'terms' ), true ) ) {
+				$this->persist_terms_write( $query, $op_type, $table_suffix );
 			} else {
 				$this->persist_table( $table_suffix );
 			}
@@ -261,6 +265,189 @@ class WP_Markdown_Write_Engine {
 
 		$this->storage->write_post( $row );
 		return false;
+	}
+
+	/**
+	 * Persist a postmeta write.
+	 *
+	 * For meta belonging to markdown-type posts, rewrites the post's .md file
+	 * (the meta is embedded in frontmatter). For non-markdown posts, dumps
+	 * the remaining rows to postmeta.json.
+	 *
+	 * See GitHub issue #6.
+	 *
+	 * @param string $query   The SQL query.
+	 * @param string $op_type INSERT, UPDATE, DELETE, REPLACE.
+	 */
+	private function persist_postmeta_write( string $query, string $op_type ): void {
+		// Find which post IDs are affected.
+		$post_ids = $this->extract_post_ids_from_meta_query( $query );
+
+		// Rewrite the .md file for each affected markdown-type post.
+		foreach ( $post_ids as $post_id ) {
+			$this->rewrite_post_if_markdown( $post_id );
+		}
+
+		// Dump non-markdown postmeta to JSON (excluding markdown-post rows).
+		$this->persist_table_excluding_markdown_posts( 'postmeta', 'post_id' );
+	}
+
+	/**
+	 * Persist a terms-related write (term_relationships, term_taxonomy, terms).
+	 *
+	 * For relationships belonging to markdown-type posts, rewrites the post's
+	 * .md file. For non-markdown posts, dumps to JSON.
+	 *
+	 * See GitHub issue #6.
+	 *
+	 * @param string $query        The SQL query.
+	 * @param string $op_type      INSERT, UPDATE, DELETE, REPLACE.
+	 * @param string $table_suffix Which terms table was written.
+	 */
+	private function persist_terms_write( string $query, string $op_type, string $table_suffix ): void {
+		if ( $table_suffix === 'term_relationships' ) {
+			// Find affected post IDs and rewrite their .md files.
+			$post_ids = $this->extract_ids_from_query( $query, 'object_id' );
+			foreach ( $post_ids as $post_id ) {
+				$this->rewrite_post_if_markdown( $post_id );
+			}
+
+			// Dump non-markdown term_relationships to JSON.
+			$this->persist_table_excluding_markdown_posts( 'term_relationships', 'object_id' );
+		}
+
+		// Always persist the terms and term_taxonomy tables fully
+		// (they're shared across all posts, not post-specific).
+		if ( $table_suffix === 'terms' || $table_suffix === 'term_taxonomy' ) {
+			$this->persist_table( $table_suffix );
+		}
+	}
+
+	/**
+	 * Rewrite a post's .md file if it's a markdown type.
+	 *
+	 * Used when meta or terms change — the .md file needs to be
+	 * regenerated with updated frontmatter.
+	 *
+	 * @param int $post_id
+	 */
+	private function rewrite_post_if_markdown( int $post_id ): void {
+		$table = $this->prefix . 'posts';
+
+		try {
+			$rows = $this->driver->query(
+				"SELECT * FROM `{$table}` WHERE ID = {$post_id}"
+			);
+		} catch ( \Throwable $e ) {
+			return;
+		}
+
+		if ( ! is_array( $rows ) || empty( $rows ) ) {
+			return;
+		}
+
+		$row = $rows[0];
+		$post_type = $row->post_type ?? 'post';
+
+		if ( ! $this->storage->is_markdown_type( $post_type ) ) {
+			return;
+		}
+
+		// Convert block HTML to clean markdown.
+		$content = $row->post_content ?? '';
+		if ( ! empty( $content ) ) {
+			$converter = WP_Markdown_Converter::get_instance();
+			$row->post_content = $converter->blocks_to_markdown( $content );
+		}
+
+		$this->storage->write_post( $row );
+	}
+
+	/**
+	 * Persist a table to JSON, excluding rows that belong to markdown-type posts.
+	 *
+	 * Used for postmeta and term_relationships — those rows are embedded
+	 * in the .md frontmatter instead.
+	 *
+	 * @param string $table_suffix  Table name without prefix.
+	 * @param string $post_id_col   Column name that references the post ID.
+	 */
+	private function persist_table_excluding_markdown_posts( string $table_suffix, string $post_id_col ): void {
+		$table      = $this->prefix . $table_suffix;
+		$posts_table = $this->prefix . 'posts';
+
+		try {
+			// Get all rows from the table.
+			$rows = $this->driver->query(
+				"SELECT * FROM `{$table}` ORDER BY 1"
+			);
+		} catch ( \Throwable $e ) {
+			return;
+		}
+
+		if ( ! is_array( $rows ) ) {
+			return;
+		}
+
+		// Build a set of markdown-type post IDs for fast lookup.
+		$markdown_post_ids = $this->get_markdown_post_ids();
+
+		$data = array();
+		foreach ( $rows as $row ) {
+			$row_array = (array) $row;
+			$pid = (int) ( $row_array[ $post_id_col ] ?? 0 );
+
+			// Skip rows belonging to markdown-type posts (they're in frontmatter).
+			if ( isset( $markdown_post_ids[ $pid ] ) ) {
+				continue;
+			}
+
+			$data[] = $row_array;
+		}
+
+		$this->ensure_tables_dir();
+		$this->write_json( $this->content_dir . '/_tables/' . $table_suffix . '.json', $data );
+	}
+
+	/**
+	 * Get a set of post IDs that belong to markdown-type post types.
+	 *
+	 * @return array<int, bool>
+	 */
+	private function get_markdown_post_ids(): array {
+		$table = $this->prefix . 'posts';
+		$ids   = array();
+
+		try {
+			$rows = $this->driver->query(
+				"SELECT ID, post_type FROM `{$table}`"
+			);
+		} catch ( \Throwable $e ) {
+			return $ids;
+		}
+
+		if ( ! is_array( $rows ) ) {
+			return $ids;
+		}
+
+		foreach ( $rows as $row ) {
+			$type = $row->post_type ?? 'post';
+			if ( $this->storage->is_markdown_type( $type ) ) {
+				$ids[ (int) $row->ID ] = true;
+			}
+		}
+
+		return $ids;
+	}
+
+	/**
+	 * Extract post IDs from a postmeta query.
+	 *
+	 * @param string $query The SQL query.
+	 * @return int[]
+	 */
+	private function extract_post_ids_from_meta_query( string $query ): array {
+		return $this->extract_ids_from_query( $query, 'post_id' );
 	}
 
 	/**

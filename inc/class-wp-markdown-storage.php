@@ -77,6 +77,22 @@ class WP_Markdown_Storage {
 	private $post_resolver = null;
 
 	/**
+	 * Callback to resolve a post's meta by post ID.
+	 * Returns: array of { meta_key: string, meta_value: string }
+	 *
+	 * @var callable|null
+	 */
+	private $meta_resolver = null;
+
+	/**
+	 * Callback to resolve a post's terms by post ID.
+	 * Returns: array of { taxonomy: string, slug: string }
+	 *
+	 * @var callable|null
+	 */
+	private $terms_resolver = null;
+
+	/**
 	 * Constructor.
 	 *
 	 * All post types are stored as markdown by default.
@@ -100,6 +116,24 @@ class WP_Markdown_Storage {
 	 */
 	public function set_post_resolver( callable $resolver ): void {
 		$this->post_resolver = $resolver;
+	}
+
+	/**
+	 * Set the meta resolver callback.
+	 *
+	 * @param callable $resolver Takes post ID, returns array of {meta_key, meta_value}.
+	 */
+	public function set_meta_resolver( callable $resolver ): void {
+		$this->meta_resolver = $resolver;
+	}
+
+	/**
+	 * Set the terms resolver callback.
+	 *
+	 * @param callable $resolver Takes post ID, returns array of {taxonomy, slug}.
+	 */
+	public function set_terms_resolver( callable $resolver ): void {
+		$this->terms_resolver = $resolver;
 	}
 
 	/**
@@ -700,10 +734,18 @@ class WP_Markdown_Storage {
 		$post->comment_count         = (int) ( $frontmatter['comment_count'] ?? 0 );
 		$post->filter                = 'raw';
 
-		// Backwards compat: if a `parent` field exists in frontmatter (old format),
-		// use it as a fallback. It will be overwritten by get_all_posts().
-		if ( isset( $frontmatter['parent'] ) ) {
-			$post->post_parent = (int) $frontmatter['parent'];
+		// Extract meta from frontmatter (key-value pairs).
+		// These will be INSERTed into wp_postmeta by the loader.
+		$post->_frontmatter_meta = array();
+		if ( isset( $frontmatter['meta'] ) && is_array( $frontmatter['meta'] ) ) {
+			$post->_frontmatter_meta = $frontmatter['meta'];
+		}
+
+		// Extract terms from frontmatter (taxonomy → [slugs]).
+		// These will be resolved and INSERTed into wp_term_relationships by the loader.
+		$post->_frontmatter_terms = array();
+		if ( isset( $frontmatter['terms'] ) && is_array( $frontmatter['terms'] ) ) {
+			$post->_frontmatter_terms = $frontmatter['terms'];
 		}
 
 		return $post;
@@ -753,6 +795,49 @@ class WP_Markdown_Storage {
 		$mime = $post->post_mime_type ?? '';
 		if ( ! empty( $mime ) ) {
 			$fm['mime_type'] = $mime;
+		}
+
+		$id = (int) ( $post->ID ?? 0 );
+
+		// Post meta — fetch from SQLite and include in frontmatter.
+		// Each post's .md file is self-contained. See GitHub issue #6.
+		if ( $id > 0 && null !== $this->meta_resolver ) {
+			$meta_rows = call_user_func( $this->meta_resolver, $id );
+			if ( ! empty( $meta_rows ) ) {
+				$meta = array();
+				foreach ( $meta_rows as $row ) {
+					$key   = $row->meta_key ?? '';
+					$value = $row->meta_value ?? '';
+
+					// Skip internal/WordPress meta that's not useful in frontmatter.
+					if ( empty( $key ) || str_starts_with( $key, '_' ) ) {
+						continue;
+					}
+
+					$meta[ $key ] = $value;
+				}
+				if ( ! empty( $meta ) ) {
+					$fm['meta'] = $meta;
+				}
+			}
+		}
+
+		// Terms — fetch from SQLite and group by taxonomy.
+		if ( $id > 0 && null !== $this->terms_resolver ) {
+			$term_rows = call_user_func( $this->terms_resolver, $id );
+			if ( ! empty( $term_rows ) ) {
+				$terms = array();
+				foreach ( $term_rows as $row ) {
+					$taxonomy = $row->taxonomy ?? '';
+					$slug     = $row->slug ?? '';
+					if ( ! empty( $taxonomy ) && ! empty( $slug ) ) {
+						$terms[ $taxonomy ][] = $slug;
+					}
+				}
+				if ( ! empty( $terms ) ) {
+					$fm['terms'] = $terms;
+				}
+			}
 		}
 
 		return $fm;

@@ -1,0 +1,16 @@
+{
+    "name": "chubes4/markdown-database-integration",
+    "description": "WordPress database integration that stores content as markdown files.",
+    "type": "wordpress-plugin",
+    "license": "GPL-2.0-or-later",
+    "require": {
+        "php": ">=7.4",
+        "league/commonmark": "^2.5",
+        "league/html-to-markdown": "^5.1"
+    },
+    "autoload": {
+        "classmap": [
+            "inc/"
+        ]
+    }
+}

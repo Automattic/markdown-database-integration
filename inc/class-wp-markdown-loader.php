@@ -466,6 +466,17 @@ class WP_Markdown_Loader {
 		// First load posts from markdown files.
 		$posts = $this->storage->get_all_posts();
 
+		// Convert markdown content → HTML for each post.
+		// Files on disk store clean markdown; SQLite needs HTML for WordPress.
+		// See GitHub issue #11.
+		$converter = WP_Markdown_Converter::get_instance();
+		foreach ( $posts as $post ) {
+			$content = $post->post_content ?? '';
+			if ( ! empty( $content ) && $converter->is_markdown( $content ) ) {
+				$post->post_content = $converter->markdown_to_blocks( $content );
+			}
+		}
+
 		// Also load any non-markdown posts from the JSON fallback.
 		$json_file = $this->content_dir . '/_tables/posts.json';
 		$json_posts = array();

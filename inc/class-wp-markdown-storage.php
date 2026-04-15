@@ -792,8 +792,8 @@ class WP_Markdown_Storage {
 	/**
 	 * Build the YAML frontmatter array from a post object.
 	 *
-	 * Does NOT include `parent` — hierarchy is expressed by directory
-	 * structure, not frontmatter. See GitHub issue #14.
+	 * Includes `parent` as a fallback for flat layouts; directory structure
+	 * takes precedence on read. See GitHub issue #14.
 	 *
 	 * @param object $post A WordPress post row.
 	 * @return array Frontmatter key-value pairs.

@@ -125,36 +125,6 @@ class WP_Markdown_Converter {
 	}
 
 	/**
-	 * Convert clean markdown to block markup for SQLite.
-	 *
-	 * Uses html_to_blocks_raw_handler() if the HTML-to-Blocks plugin is
-	 * active. Falls back to clean HTML (which WordPress handles fine).
-	 *
-	 * @param string $markdown The markdown content.
-	 * @return string Block-commented HTML, or clean HTML as fallback.
-	 */
-	public function markdown_to_blocks( string $markdown ): string {
-		$html = $this->markdown_to_html( $markdown );
-
-		if ( empty( $html ) ) {
-			return '';
-		}
-
-		// If the HTML-to-Blocks converter plugin is active, use it.
-		if ( function_exists( 'html_to_blocks_raw_handler' ) ) {
-			$blocks = html_to_blocks_raw_handler( [ 'HTML' => $html ] );
-			if ( ! empty( $blocks ) && function_exists( 'serialize_blocks' ) ) {
-				return serialize_blocks( $blocks );
-			}
-		}
-
-		// Fallback: return clean HTML. WordPress handles this gracefully —
-		// parse_blocks() wraps it in a freeform block, and the editor
-		// offers "Convert to blocks" on first edit.
-		return $html;
-	}
-
-	/**
 	 * Strip Gutenberg block comment delimiters from HTML.
 	 *
 	 * Removes both opening (<!-- wp:blockname {...} -->) and closing
@@ -164,7 +134,7 @@ class WP_Markdown_Converter {
 	 * @param string $html HTML with block comments.
 	 * @return string HTML without block comments.
 	 */
-	public function strip_block_comments( string $html ): string {
+	private function strip_block_comments( string $html ): string {
 		// Self-closing blocks: <!-- wp:separator /-->
 		$html = preg_replace( '/<!--\s*wp:[a-z][a-z0-9-]*\/[a-z0-9-]*\s+(?:\{[^}]*\}\s*)?\/-->\s*/s', '', $html );
 
@@ -175,36 +145,6 @@ class WP_Markdown_Converter {
 		$html = preg_replace( '/<!--\s*\/wp:[a-z][a-z0-9-]*(?:\/[a-z0-9-]*)?\s*-->\s*/s', '', $html );
 
 		return $html;
-	}
-
-	/**
-	 * Detect if content is markdown (vs HTML or block markup).
-	 *
-	 * Heuristic: if it contains block comments or significant HTML tags,
-	 * it's not markdown.
-	 *
-	 * @param string $content The content to check.
-	 * @return bool True if the content appears to be markdown.
-	 */
-	public function is_markdown( string $content ): bool {
-		// Block comments = definitely not markdown.
-		if ( str_contains( $content, '<!-- wp:' ) ) {
-			return false;
-		}
-
-		// Check for significant HTML block-level tags.
-		// Inline tags like <strong>, <em>, <a>, <code> are fine in markdown.
-		$block_tags = [ '<div', '<p>', '<h1', '<h2', '<h3', '<h4', '<h5', '<h6',
-			'<table', '<ul>', '<ol>', '<blockquote', '<figure', '<section' ];
-
-		$html_tag_count = 0;
-		foreach ( $block_tags as $tag ) {
-			$html_tag_count += substr_count( strtolower( $content ), $tag );
-		}
-
-		// If there are many block-level HTML tags, it's probably HTML.
-		// A few is OK — markdown files can contain some inline HTML.
-		return $html_tag_count < 3;
 	}
 
 	/**

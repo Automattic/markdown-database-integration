@@ -1,0 +1,19 @@
+{
+  "auto_cleanup": false,
+  "changelog_target": "CHANGELOG.md",
+  "extensions": {
+    "wordpress": {}
+  },
+  "id": "markdown-database-integration",
+  "remote_path": "wp-content/plugins/markdown-database-integration",
+  "version_targets": [
+    {
+      "file": "markdown-database-integration.php",
+      "pattern": "(?m)^\\s*\\*?\\s*Version:\\s*([0-9.]+)"
+    },
+    {
+      "file": "markdown-database-integration.php",
+      "pattern": "MARKDOWN_DB_VERSION',\\s*'([0-9.]+)'"
+    }
+  ]
+}

@@ -196,8 +196,15 @@ class WP_Markdown_Storage {
 		$result = file_put_contents( $file_path, $output, LOCK_EX );
 
 		if ( false !== $result ) {
-			// Update the in-memory index.
-			if ( $id && null !== $this->index ) {
+			// Ensure the index is built so we can detect path changes.
+			// Without this, the cleanup block is skipped when the index is
+			// null (lazy-init), leaving stale files on disk when posts are
+			// reparented or renamed. See GitHub issue #31.
+			if ( $id ) {
+				if ( null === $this->index ) {
+					$this->rebuild_index();
+				}
+
 				// Remove old file if path changed (slug change or reparent).
 				if ( isset( $this->index[ $id ] ) && $this->index[ $id ] !== $file_path ) {
 					$old_path = $this->index[ $id ];
@@ -645,13 +652,38 @@ class WP_Markdown_Storage {
 					continue;
 				}
 
-				// Dedup: prefer the most recently modified file.
+				// Dedup: prefer the hierarchical (deeper) file path.
+				// When a post is reparented, the old flat file may linger on disk.
+				// The hierarchical version is canonical — delete the flat stale copy.
+				// See GitHub issue #31.
 				if ( isset( $this->index[ $id ] ) ) {
-					$existing_mtime = filemtime( $this->index[ $id ] );
-					$new_mtime      = filemtime( $file );
+					$existing = $this->index[ $id ];
 
-					if ( $new_mtime > $existing_mtime ) {
+					// Deeper path (more slashes) = hierarchical = canonical.
+					$existing_depth = substr_count( $existing, '/' );
+					$new_depth      = substr_count( $file, '/' );
+
+					if ( $new_depth > $existing_depth ) {
+						// New file is deeper — it's canonical. Delete the old flat one.
+						@unlink( $existing );
+						$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
 						$this->index[ $id ] = $file;
+					} elseif ( $new_depth < $existing_depth ) {
+						// Existing is deeper — it's canonical. Delete this flat one.
+						@unlink( $file );
+						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+					} else {
+						// Same depth — prefer most recently modified.
+						$existing_mtime = filemtime( $existing );
+						$new_mtime      = filemtime( $file );
+						if ( $new_mtime > $existing_mtime ) {
+							@unlink( $existing );
+							$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
+							$this->index[ $id ] = $file;
+						} else {
+							@unlink( $file );
+							$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+						}
 					}
 				} else {
 					$this->index[ $id ] = $file;

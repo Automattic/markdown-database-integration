@@ -482,12 +482,17 @@ class WP_Markdown_Loader {
 
 		// Convert markdown content → HTML for each post.
 		// Files on disk store clean markdown; SQLite needs HTML for WordPress.
-		// See GitHub issue #11.
+		// We convert to HTML only — NOT to blocks. HTML is the intermediary format.
+		// The html-to-blocks-converter plugin converts HTML → blocks on save via
+		// the wp_insert_post_data filter. Converting to blocks at boot time caused
+		// infinite recursion in the block editor's order() function because the
+		// server-side block serialization didn't perfectly match what the editor
+		// expects. See GitHub issue #11.
 		$converter = WP_Markdown_Converter::get_instance();
 		foreach ( $posts as $post ) {
 			$content = $post->post_content ?? '';
 			if ( ! empty( $content ) && $converter->is_markdown( $content ) ) {
-				$post->post_content = $converter->markdown_to_blocks( $content );
+				$post->post_content = $converter->markdown_to_html( $content );
 			}
 		}
 

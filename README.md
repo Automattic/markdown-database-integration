@@ -218,33 +218,6 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - **Plugins** → work normally, no compatibility issues observed
 - **Round-trip** → markdown → HTML → blocks → HTML → markdown preserves content
 
-## File Format
-
-```markdown
----
-id: 42
-title: "Post Title"
-status: publish
-type: post
-author: 1
-date: "2026-04-13 21:17:48"
-date_gmt: "2026-04-13 21:17:48"
-modified: "2026-04-14 00:33:50"
-modified_gmt: "2026-04-14 00:33:50"
-slug: post-title
-parent: 0
-menu_order: 0
-comment_status: open
-ping_status: open
-guid: "http://localhost:8881/2026/04/13/post-title/"
-comment_count: 0
-excerpt: "Optional excerpt"
----
-
-Post content as clean markdown. Headings, lists, bold, italic,
-code blocks, tables — all standard markdown.
-```
-
 ## Roadmap
 
 - [x] Block-to-markdown conversion — strip Gutenberg comments, output clean markdown

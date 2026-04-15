@@ -480,31 +480,13 @@ class WP_Markdown_Loader {
 		// First load posts from markdown files.
 		$posts = $this->storage->get_all_posts();
 
-		// Convert markdown content → HTML for each post.
-		// Files on disk store clean markdown; SQLite needs HTML for WordPress.
-		// We convert to HTML only — NOT to blocks. HTML is the intermediary format.
-		// The html-to-blocks-converter plugin converts HTML → blocks on save via
-		// the wp_insert_post_data filter. Converting to blocks at boot time caused
-		// infinite recursion in the block editor's order() function because the
-		// server-side block serialization didn't perfectly match what the editor
-		// expects. See GitHub issue #11.
-		//
-		// IMPORTANT: We always convert content from .md files — these are markdown
-		// by definition. The is_markdown() heuristic is NOT used here because .md
-		// files can legitimately contain embedded HTML (tables, figures) which
-		// causes the heuristic to false-negative. See GitHub issue #27.
-		//
-		// We only skip conversion for content that is already block markup
-		// (contains <!-- wp: --> delimiters), which shouldn't happen for .md files
-		// but is a safety check. Note: has_blocks() is a WP core function that
-		// may not be loaded yet at db.php boot time, so we check directly.
-		$converter = WP_Markdown_Converter::get_instance();
-		foreach ( $posts as $post ) {
-			$content = $post->post_content ?? '';
-			if ( ! empty( $content ) && ! str_contains( $content, '<!-- wp:' ) ) {
-				$post->post_content = $converter->markdown_to_html( $content );
-			}
-		}
+		// Raw markdown goes into SQLite as-is.
+		// Markdown → HTML conversion happens at render time via filters:
+		//   - the_content filter: markdown → HTML (frontend)
+		//   - rest_prepare_{type} filter: markdown → HTML → blocks (editor)
+		// This ensures that code reading post_content directly (CLI, abilities,
+		// plugins) gets raw markdown — WordPress is markdown-native.
+		// See GitHub issue #30.
 
 		// Store posts for load_frontmatter_meta() and load_frontmatter_terms().
 		$this->loaded_posts = $posts;

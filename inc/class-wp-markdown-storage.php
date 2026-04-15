@@ -351,6 +351,10 @@ class WP_Markdown_Storage {
 				}
 
 				// Derive post_parent from the directory hierarchy.
+				// For hierarchical layouts (_index.md / subdirs), the directory
+				// structure is authoritative. For flat layouts (all files at the
+				// type root), fall back to the frontmatter `parent` field so
+				// pre-migration files retain their hierarchy.
 				$file_dir = dirname( $file );
 
 				if ( basename( $file ) === '_index.md' ) {
@@ -362,8 +366,10 @@ class WP_Markdown_Storage {
 					// Regular file. Its parent is the _index.md in its directory
 					// (if one exists and we're not at the post type root).
 					if ( $file_dir === $type_dir ) {
-						// Top-level file in the post type dir — no parent.
-						$post->post_parent = 0;
+						// Top-level file in the post type dir.
+						// Keep the frontmatter parent value (set by parse_file)
+						// as a fallback for flat/pre-migration layouts.
+						// post_parent is already set from frontmatter; don't zero it.
 					} else {
 						$post->post_parent = $dir_parent_ids[ $file_dir ] ?? 0;
 					}
@@ -719,7 +725,7 @@ class WP_Markdown_Storage {
 		$post->post_modified         = $frontmatter['modified'] ?? $post->post_date;
 		$post->post_modified_gmt     = $frontmatter['modified_gmt'] ?? $post->post_modified;
 		$post->post_name             = $frontmatter['slug'] ?? '';
-		$post->post_parent           = 0; // Derived from directory structure, not frontmatter.
+		$post->post_parent           = (int) ( $frontmatter['parent'] ?? 0 ); // Frontmatter fallback; overridden by directory structure in get_all_posts().
 		$post->menu_order            = (int) ( $frontmatter['menu_order'] ?? 0 );
 		$post->comment_status        = $frontmatter['comment_status'] ?? 'open';
 		$post->ping_status           = $frontmatter['ping_status'] ?? 'open';
@@ -773,6 +779,7 @@ class WP_Markdown_Storage {
 		$fm['modified']       = $post->post_modified ?? '';
 		$fm['modified_gmt']   = $post->post_modified_gmt ?? '';
 		$fm['slug']           = $post->post_name ?? '';
+		$fm['parent']         = (int) ( $post->post_parent ?? 0 );
 		$fm['menu_order']     = (int) ( $post->menu_order ?? 0 );
 		$fm['comment_status'] = $post->comment_status ?? 'open';
 		$fm['ping_status']    = $post->ping_status ?? 'open';

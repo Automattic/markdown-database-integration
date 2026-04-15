@@ -108,6 +108,8 @@ class WP_Markdown_Write_Engine {
 	 * Handle a write query — persist affected data to disk.
 	 *
 	 * Called by WP_Markdown_Driver after a successful write query.
+	 * Markdown-type post writes are immediate (one file per post).
+	 * Everything else is deferred to shutdown via dirty flags.
 	 *
 	 * @param string $query   The MySQL query.
 	 * @param string $table   The affected table name.
@@ -122,20 +124,75 @@ class WP_Markdown_Write_Engine {
 		try {
 			$table_suffix = $this->strip_prefix( $table );
 
-			if ( $table_suffix === 'options' ) {
-				$this->persist_options();
-			} elseif ( $table_suffix === 'posts' ) {
+			if ( $table_suffix === 'posts' ) {
 				$this->persist_post_write( $query, $op_type );
 			} elseif ( $table_suffix === 'postmeta' ) {
 				$this->persist_postmeta_write( $query, $op_type );
 			} elseif ( in_array( $table_suffix, array( 'term_relationships', 'term_taxonomy', 'terms' ), true ) ) {
 				$this->persist_terms_write( $query, $op_type, $table_suffix );
 			} else {
-				$this->persist_table( $table_suffix );
+				// Defer options, users, usermeta, and all other tables to shutdown.
+				$this->mark_dirty( $table_suffix );
 			}
 		} catch ( \Throwable $e ) {
 			// Write failures should never break WordPress.
 			error_log( 'Markdown DB write error: ' . $e->getMessage() );
+		}
+
+		$this->writing = false;
+	}
+
+	/**
+	 * Mark a table as dirty (needs to be flushed at shutdown).
+	 *
+	 * @param string $table_suffix Table name without prefix.
+	 */
+	private function mark_dirty( string $table_suffix ): void {
+		$this->dirty[ $table_suffix ] = true;
+		$this->ensure_shutdown_registered();
+	}
+
+	/**
+	 * Register the shutdown flush handler (once).
+	 */
+	private function ensure_shutdown_registered(): void {
+		if ( $this->shutdown_registered ) {
+			return;
+		}
+		$this->shutdown_registered = true;
+		register_shutdown_function( array( $this, 'flush_dirty' ) );
+	}
+
+	/**
+	 * Flush all dirty tables to disk.
+	 *
+	 * Called at shutdown. Each table is persisted once, regardless of how
+	 * many writes happened during the request.
+	 */
+	public function flush_dirty(): void {
+		if ( empty( $this->dirty ) ) {
+			return;
+		}
+
+		$this->writing = true;
+
+		try {
+			foreach ( array_keys( $this->dirty ) as $table_suffix ) {
+				if ( $table_suffix === 'options' ) {
+					$this->persist_options();
+				} elseif ( $table_suffix === 'posts_non_markdown' ) {
+					$this->persist_non_markdown_posts();
+				} elseif ( $table_suffix === 'postmeta_non_markdown' ) {
+					$this->persist_table_excluding_markdown_posts( 'postmeta', 'post_id' );
+				} elseif ( $table_suffix === 'term_relationships_non_markdown' ) {
+					$this->persist_table_excluding_markdown_posts( 'term_relationships', 'object_id' );
+				} else {
+					$this->persist_table( $table_suffix );
+				}
+			}
+			$this->dirty = array();
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB flush error: ' . $e->getMessage() );
 		}
 
 		$this->writing = false;
@@ -185,6 +242,9 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Persist a post write to markdown files.
 	 *
+	 * Markdown-type posts are written immediately as individual .md files.
+	 * Non-markdown posts JSON is deferred to shutdown.
+	 *
 	 * @param string $query   The SQL query.
 	 * @param string $op_type INSERT, UPDATE, DELETE, REPLACE.
 	 */
@@ -196,12 +256,12 @@ class WP_Markdown_Write_Engine {
 				$this->storage->delete_post( $id );
 			}
 
-			// Deletions may affect the non-markdown fallback JSON.
-			$this->persist_non_markdown_posts();
+			// Non-markdown posts JSON also needs updating.
+			$this->mark_dirty( 'posts_non_markdown' );
 			return;
 		}
 
-		// For INSERT/UPDATE/REPLACE, read back the affected row.
+		// For INSERT/UPDATE/REPLACE, read back the affected row and write immediately.
 		$affected_is_non_markdown = false;
 
 		if ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) {
@@ -218,10 +278,9 @@ class WP_Markdown_Write_Engine {
 			}
 		}
 
-		// Only dump the non-markdown JSON if the affected post was non-markdown.
-		// This avoids a full table scan on every regular post write.
+		// Defer non-markdown posts JSON update to shutdown.
 		if ( $affected_is_non_markdown ) {
-			$this->persist_non_markdown_posts();
+			$this->mark_dirty( 'posts_non_markdown' );
 		}
 	}
 
@@ -283,13 +342,13 @@ class WP_Markdown_Write_Engine {
 		// Find which post IDs are affected.
 		$post_ids = $this->extract_post_ids_from_meta_query( $query );
 
-		// Rewrite the .md file for each affected markdown-type post.
+		// Rewrite the .md file for each affected markdown-type post (immediate).
 		foreach ( $post_ids as $post_id ) {
 			$this->rewrite_post_if_markdown( $post_id );
 		}
 
-		// Dump non-markdown postmeta to JSON (excluding markdown-post rows).
-		$this->persist_table_excluding_markdown_posts( 'postmeta', 'post_id' );
+		// Defer non-markdown postmeta JSON dump to shutdown.
+		$this->mark_dirty( 'postmeta_non_markdown' );
 	}
 
 	/**
@@ -306,20 +365,19 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function persist_terms_write( string $query, string $op_type, string $table_suffix ): void {
 		if ( $table_suffix === 'term_relationships' ) {
-			// Find affected post IDs and rewrite their .md files.
+			// Find affected post IDs and rewrite their .md files (immediate).
 			$post_ids = $this->extract_ids_from_query( $query, 'object_id' );
 			foreach ( $post_ids as $post_id ) {
 				$this->rewrite_post_if_markdown( $post_id );
 			}
 
-			// Dump non-markdown term_relationships to JSON.
-			$this->persist_table_excluding_markdown_posts( 'term_relationships', 'object_id' );
+			// Defer non-markdown term_relationships JSON dump to shutdown.
+			$this->mark_dirty( 'term_relationships_non_markdown' );
 		}
 
-		// Always persist the terms and term_taxonomy tables fully
-		// (they're shared across all posts, not post-specific).
+		// Defer terms and term_taxonomy table dumps to shutdown.
 		if ( $table_suffix === 'terms' || $table_suffix === 'term_taxonomy' ) {
-			$this->persist_table( $table_suffix );
+			$this->mark_dirty( $table_suffix );
 		}
 	}
 

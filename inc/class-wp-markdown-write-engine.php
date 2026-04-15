@@ -78,6 +78,20 @@ class WP_Markdown_Write_Engine {
 	);
 
 	/**
+	 * Tables that have been modified and need flushing at shutdown.
+	 *
+	 * @var array<string, bool>
+	 */
+	private $dirty = array();
+
+	/**
+	 * Whether the shutdown flush handler has been registered.
+	 *
+	 * @var bool
+	 */
+	private $shutdown_registered = false;
+
+	/**
 	 * Whether we're currently writing (prevents recursion).
 	 *
 	 * @var bool

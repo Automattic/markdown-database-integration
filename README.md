@@ -62,35 +62,42 @@ This plugin makes that happen. Content is files. Files are:
 
 ## Conversion Pipeline
 
-HTML is the intermediary format. Content converts freely between Gutenberg blocks and markdown by going through HTML:
+Content is stored as raw markdown. Conversion happens at write time (blocks → markdown) and render time (markdown → HTML/blocks):
 
 ```
-WRITE (post saved in WordPress):
+WRITE (post saved in editor):
 
   Gutenberg Blocks
        │
-       ▼  serialize_blocks()        [WordPress core]
+       ▼  serialize_blocks()                    [WordPress core]
   Block HTML (<!-- wp:paragraph --><p>...</p><!-- /wp:paragraph -->)
        │
-       ▼  strip_block_comments()    [WP_Markdown_Converter]
+       ▼  strip_block_comments()                [WP_Markdown_Converter]
+       ▼  unwrap_block_elements()               [WP_Markdown_Converter]
   Clean HTML (<p>...</p>)
        │
-       ▼  league/html-to-markdown
-  Markdown (stored in .md file)
+       ▼  league/html-to-markdown (+ TableConverter)
+  Clean Markdown (stored in .md file)
 
 
 READ (site boots):
 
   Markdown (.md file on disk)
        │
-       ▼  league/commonmark
-  Clean HTML
-       │
-       ▼  html_to_blocks_raw_handler()  [optional: html-to-blocks-converter plugin]
-  Block HTML (with <!-- wp: --> comments)
-       │
-       ▼  INSERT into SQLite
-  WordPress queries normally
+       ▼  loaded AS-IS into in-memory SQLite
+  post_content is raw markdown
+
+
+RENDER (display time):
+
+  Frontend:
+    post_content (markdown) → the_content filter (p1) → league/commonmark → HTML → browser
+
+  Editor:
+    post_content (markdown) → REST filter (p5) → HTML → html-to-blocks-converter REST filter (p10) → blocks → editor
+
+  CLI/API:
+    post_content (markdown) → returned as-is
 ```
 
 ### Dependencies
@@ -128,16 +135,27 @@ WordPress Core ($wpdb)
     plugin tables
 
     WP_Markdown_Converter
-    ├── blocks_to_markdown()    — write path
-    ├── markdown_to_html()      — read path
-    ├── markdown_to_blocks()    — read path (with block converter)
-    ├── strip_block_comments()  — removes <!-- wp: --> delimiters
-    └── is_markdown()           — content type detection
+    ├── blocks_to_markdown()    — write path (unwrap_block_elements, TableConverter)
+    ├── markdown_to_html()      — render path (the_content filter, REST filter)
+    └── strip_block_comments()  — internal to blocks_to_markdown pipeline
 ```
 
 **SQLite** handles: options, users, terms, transients, sessions, plugin tables — the machinery that WordPress hammers thousands of times per page load.
 
 **Markdown** handles: posts, pages, custom post types — the content that humans and AI agents want to read, search, and sync.
+
+## Render-Time Conversion
+
+`post_content` in SQLite stores raw markdown. Conversion to HTML or blocks happens at render time through WordPress filters:
+
+| Context | Filter | Priority | Output |
+|---------|--------|----------|--------|
+| Frontend (theme) | `the_content` | 1 | league/commonmark → HTML for the browser |
+| REST API / editor | REST `prepare_value` | 5 | league/commonmark → HTML for the REST response |
+| Block editor | REST `prepare_value` | 10 | html-to-blocks-converter turns the HTML into block markup |
+| WP-CLI / abilities | — | — | Raw markdown returned as-is |
+
+This means WordPress is effectively **markdown-native**. The database holds markdown, and the conversion to whatever format the consumer needs happens on the way out. CLI tools and AI agents skip conversion entirely — they get the markdown directly.
 
 ## Requirements
 
@@ -174,8 +192,8 @@ Add to `wp-config.php`:
 // Where markdown files are stored (default: wp-content/markdown/)
 define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/markdown' );
 
-// Which post types to store as markdown (default: post,page)
-define( 'MARKDOWN_DB_POST_TYPES', 'post,page,wiki' );
+// Post types to exclude from markdown storage (default: none — all types stored as markdown)
+define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'attachment,revision,nav_menu_item' );
 
 // Operating mode (default: mirror)
 define( 'MARKDOWN_DB_MODE', 'mirror' );
@@ -230,12 +248,12 @@ code blocks, tables — all standard markdown.
 ## Roadmap
 
 - [x] Block-to-markdown conversion — strip Gutenberg comments, output clean markdown
-- [x] Markdown-to-blocks conversion — parse markdown, produce block markup on boot
+- [x] Markdown-to-blocks conversion — via html-to-blocks-converter REST filter
+- [x] `wp_postmeta` as frontmatter — custom fields in the YAML
+- [x] `wp_terms` as frontmatter tags — categories and tags in the YAML
 - [ ] `wp markdown sync` — one-time sync of existing posts to markdown files
 - [ ] `wp markdown rebuild` — rebuild SQLite index from markdown files
 - [ ] `wp markdown export` — export all content as a git-ready markdown directory
-- [ ] `wp_postmeta` as frontmatter — custom fields in the YAML
-- [ ] `wp_terms` as frontmatter tags — categories and tags in the YAML
 - [ ] File watcher — detect external edits to `.md` files and sync back to SQLite
 - [ ] Git integration — auto-commit on post save
 - [ ] Transfer to `Automattic/markdown-database-integration`

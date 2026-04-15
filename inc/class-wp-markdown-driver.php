@@ -31,13 +31,6 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	private $storage;
 
 	/**
-	 * Operating mode: 'mirror' or 'primary'.
-	 *
-	 * @var string
-	 */
-	private $mode;
-
-	/**
 	 * The write engine for persisting changes.
 	 *
 	 * @var WP_Markdown_Write_Engine|null
@@ -86,18 +79,15 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	 * @param WP_SQLite_Connection $connection The SQLite connection.
 	 * @param string               $database   The database name.
 	 * @param WP_Markdown_Storage  $storage    The markdown storage engine.
-	 * @param string               $mode       Operating mode: 'mirror' or 'primary'.
 	 */
 	public function __construct(
 		WP_SQLite_Connection $connection,
 		string $database,
-		WP_Markdown_Storage $storage,
-		string $mode = 'mirror'
+		WP_Markdown_Storage $storage
 	) {
 		parent::__construct( $connection, $database );
 
 		$this->storage = $storage;
-		$this->mode    = $mode;
 
 		global $table_prefix;
 		$this->table_prefix = $table_prefix ?? 'wp_';

@@ -409,36 +409,7 @@ class WP_Markdown_Write_Engine {
 	 * @param int $post_id
 	 */
 	private function rewrite_post_if_markdown( int $post_id ): void {
-		$table = $this->prefix . 'posts';
-
-		try {
-			$rows = $this->driver->query(
-				"SELECT * FROM `{$table}` WHERE ID = {$post_id}"
-			);
-		} catch ( \Throwable $e ) {
-			return;
-		}
-
-		if ( ! is_array( $rows ) || empty( $rows ) ) {
-			return;
-		}
-
-		$row = $rows[0];
-		$post_type = $row->post_type ?? 'post';
-
-		if ( ! $this->storage->is_markdown_type( $post_type ) ) {
-			return;
-		}
-
-		// Convert block HTML to clean markdown — only if content has block markup.
-		// See persist_single_post() comment and GitHub issue #27.
-		$content = $row->post_content ?? '';
-		if ( ! empty( $content ) && str_contains( $content, '<!-- wp:' ) ) {
-			$converter = WP_Markdown_Converter::get_instance();
-			$row->post_content = $converter->blocks_to_markdown( $content );
-		}
-
-		$this->storage->write_post( $row );
+		$this->persist_single_post( $post_id );
 	}
 
 	/**
@@ -724,12 +695,4 @@ class WP_Markdown_Write_Engine {
 		}
 	}
 
-	/**
-	 * Check if the write engine is currently writing (prevents recursion).
-	 *
-	 * @return bool
-	 */
-	public function is_writing(): bool {
-		return $this->writing;
-	}
 }

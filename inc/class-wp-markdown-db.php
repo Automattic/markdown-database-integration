@@ -93,7 +93,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				)
 			);
 
-			$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage, $mode );
+			$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
 			$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
 
 			// Set up the write engine.

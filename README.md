@@ -168,7 +168,7 @@ This means WordPress is effectively **markdown-native**. The database holds mark
 
 ```bash
 # Clone the plugin
-git clone https://github.com/chubes4/markdown-database-integration.git \
+git clone https://github.com/Automattic/markdown-database-integration.git \
   wp-content/plugins/markdown-database-integration
 
 # Install PHP dependencies
@@ -229,7 +229,7 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - [ ] `wp markdown export` — export all content as a git-ready markdown directory
 - [ ] File watcher — detect external edits to `.md` files and sync back to SQLite
 - [ ] Git integration — auto-commit on post save
-- [ ] Transfer to `Automattic/markdown-database-integration`
+- [x] Transfer to `Automattic/markdown-database-integration`
 
 ## Part of Intelligence
 

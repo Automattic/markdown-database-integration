@@ -132,7 +132,11 @@ class WP_Markdown_Converter {
 			return '';
 		}
 
-		// If the HTML-to-Blocks converter plugin is active, use it.
+		// Use the HTML-to-Blocks converter if available.
+		// Note: At boot time (Loader), block types aren't registered yet so
+		// html_to_blocks_raw_handler cannot produce valid blocks. In that case,
+		// we return HTML and rely on the wp_insert_post_data filter to convert
+		// HTML → blocks when a post is first saved through WordPress.
 		if ( function_exists( 'html_to_blocks_raw_handler' ) ) {
 			$blocks = html_to_blocks_raw_handler( [ 'HTML' => $html ] );
 			if ( ! empty( $blocks ) && function_exists( 'serialize_blocks' ) ) {
@@ -140,9 +144,8 @@ class WP_Markdown_Converter {
 			}
 		}
 
-		// Fallback: return clean HTML. WordPress handles this gracefully —
-		// parse_blocks() wraps it in a freeform block, and the editor
-		// offers "Convert to blocks" on first edit.
+		// Fallback: return clean HTML. The html-to-blocks-converter plugin
+		// converts this to blocks via the wp_insert_post_data filter on save.
 		return $html;
 	}
 

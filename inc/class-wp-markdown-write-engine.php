@@ -330,8 +330,13 @@ class WP_Markdown_Write_Engine {
 		}
 
 		// Convert block HTML to clean markdown before writing to disk.
+		// Only convert if the content contains block markup (<!-- wp: --> delimiters).
+		// Content written directly as markdown (e.g. via the wiki ability or CLI)
+		// should NOT be re-converted — running html_to_markdown on markdown text
+		// escapes syntax characters (**→\*\*, [→\[) and produces corrupt files.
+		// See GitHub issue #27.
 		$content = $row->post_content ?? '';
-		if ( ! empty( $content ) ) {
+		if ( ! empty( $content ) && str_contains( $content, '<!-- wp:' ) ) {
 			$converter = WP_Markdown_Converter::get_instance();
 			$row->post_content = $converter->blocks_to_markdown( $content );
 		}
@@ -425,9 +430,10 @@ class WP_Markdown_Write_Engine {
 			return;
 		}
 
-		// Convert block HTML to clean markdown.
+		// Convert block HTML to clean markdown — only if content has block markup.
+		// See persist_single_post() comment and GitHub issue #27.
 		$content = $row->post_content ?? '';
-		if ( ! empty( $content ) ) {
+		if ( ! empty( $content ) && str_contains( $content, '<!-- wp:' ) ) {
 			$converter = WP_Markdown_Converter::get_instance();
 			$row->post_content = $converter->blocks_to_markdown( $content );
 		}

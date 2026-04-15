@@ -70,7 +70,14 @@ class WP_Markdown_Converter {
 			'hard_break'         => true,
 			'preserve_comments'  => false,
 			'remove_nodes'       => '',
+			'header_style'       => 'atx', // Use # headings instead of underline style
 		] );
+
+		// Register the table converter — not included in the default environment.
+		// Without this, <table> elements pass through as raw HTML.
+		$this->html_to_md->getEnvironment()->addConverter(
+			new \League\HTMLToMarkdown\Converter\TableConverter()
+		);
 	}
 
 	/**

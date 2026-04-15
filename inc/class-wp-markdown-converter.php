@@ -76,7 +76,7 @@ class WP_Markdown_Converter {
 	/**
 	 * Convert block HTML (from post_content) to clean markdown for .md files.
 	 *
-	 * Pipeline: Block HTML → strip block comments → clean HTML → markdown
+	 * Pipeline: Block HTML → strip block comments → unwrap block wrappers → clean HTML → markdown
 	 *
 	 * @param string $block_html The block-commented HTML from post_content.
 	 * @return string Clean markdown.
@@ -89,10 +89,18 @@ class WP_Markdown_Converter {
 		// Step 1: Strip Gutenberg block comment delimiters.
 		$html = $this->strip_block_comments( $block_html );
 
-		// Step 2: Clean up whitespace from removed comments.
+		// Step 2: Unwrap Gutenberg wrapper elements that confuse html-to-markdown.
+		// The block editor wraps tables in <figure class="wp-block-table">, images
+		// in <figure class="wp-block-image">, etc. The html-to-markdown library
+		// has no converter for <figure>, so these become raw HTML in the output.
+		// Unwrapping exposes the inner <table>/<img> so the library can convert
+		// them to markdown tables/images. See GitHub issue #27.
+		$html = $this->unwrap_block_elements( $html );
+
+		// Step 3: Clean up whitespace from removed comments/wrappers.
 		$html = $this->normalize_html( $html );
 
-		// Step 3: Convert HTML to markdown.
+		// Step 4: Convert HTML to markdown.
 		$markdown = $this->html_to_markdown( $html );
 
 		return trim( $markdown );
@@ -210,10 +218,57 @@ class WP_Markdown_Converter {
 	}
 
 	/**
-	 * Normalize HTML after stripping block comments.
+	 * Unwrap Gutenberg wrapper elements that html-to-markdown can't handle.
+	 *
+	 * The block editor wraps many elements in container tags:
+	 *   <figure class="wp-block-table"><table>...</table></figure>
+	 *   <figure class="wp-block-image"><img ...></figure>
+	 *   <div class="wp-block-group">...</div>
+	 *
+	 * The html-to-markdown library has no converter for <figure>, so the
+	 * entire contents (including the <table>) get passed through as raw HTML.
+	 * This method strips the wrapper while keeping the inner content, so
+	 * the library's TableConverter/ImageConverter can do their job.
+	 *
+	 * See GitHub issue #27.
+	 *
+	 * @param string $html HTML with block comments already stripped.
+	 * @return string HTML with block wrappers removed.
+	 */
+	private function unwrap_block_elements( string $html ): string {
+		// Unwrap <figure class="wp-block-*">...</figure>
+		// Captures inner content and replaces the figure wrapper with just the content.
+		$html = preg_replace(
+			'/<figure[^>]*class="[^"]*wp-block-[^"]*"[^>]*>(.*?)<\/figure>/s',
+			'$1',
+			$html
+		);
+
+		// Unwrap <div class="wp-block-*">...</div> (non-greedy, innermost first).
+		// Run twice to handle one level of nesting.
+		for ( $i = 0; $i < 2; $i++ ) {
+			$html = preg_replace(
+				'/<div[^>]*class="[^"]*wp-block-[^"]*"[^>]*>(.*?)<\/div>/s',
+				'$1',
+				$html
+			);
+		}
+
+		// Remove <figcaption> (block captions) — convert to text on its own line.
+		$html = preg_replace(
+			'/<figcaption[^>]*>(.*?)<\/figcaption>/s',
+			"\n$1\n",
+			$html
+		);
+
+		return $html;
+	}
+
+	/**
+	 * Normalize HTML after stripping block comments and wrappers.
 	 *
 	 * Cleans up extra whitespace, empty lines, and formatting artifacts
-	 * left behind after removing block comment delimiters.
+	 * left behind after removing block comment delimiters and wrappers.
 	 *
 	 * @param string $html HTML with comments already stripped.
 	 * @return string Cleaned HTML.

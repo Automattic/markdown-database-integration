@@ -488,10 +488,20 @@ class WP_Markdown_Loader {
 		// infinite recursion in the block editor's order() function because the
 		// server-side block serialization didn't perfectly match what the editor
 		// expects. See GitHub issue #11.
+		//
+		// IMPORTANT: We always convert content from .md files — these are markdown
+		// by definition. The is_markdown() heuristic is NOT used here because .md
+		// files can legitimately contain embedded HTML (tables, figures) which
+		// causes the heuristic to false-negative. See GitHub issue #27.
+		//
+		// We only skip conversion for content that is already block markup
+		// (contains <!-- wp: --> delimiters), which shouldn't happen for .md files
+		// but is a safety check. Note: has_blocks() is a WP core function that
+		// may not be loaded yet at db.php boot time, so we check directly.
 		$converter = WP_Markdown_Converter::get_instance();
 		foreach ( $posts as $post ) {
 			$content = $post->post_content ?? '';
-			if ( ! empty( $content ) && $converter->is_markdown( $content ) ) {
+			if ( ! empty( $content ) && ! str_contains( $content, '<!-- wp:' ) ) {
 				$post->post_content = $converter->markdown_to_html( $content );
 			}
 		}

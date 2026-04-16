@@ -1454,21 +1454,35 @@ class WP_Markdown_Loader {
 					continue;
 				}
 
+				// Inject IF NOT EXISTS for CREATE TABLE statements so
+				// concurrent workers don't fail on tables that were already
+				// created by another worker. See issue #50.
+				$exec_stmt = $this->ensure_if_not_exists( $stmt );
+
 				// Try the driver first (MySQL syntax). This creates the table
 				// AND populates the information schema, which is required for
 				// the MySQL→SQLite query translator to work correctly.
 				try {
-					$this->driver->query( $stmt );
+					$this->driver->query( $exec_stmt );
 					$table_created = true;
 				} catch ( \Throwable $e ) {
-					// Driver failed — likely SQLite syntax from a legacy schema
-					// file. Fall back to raw PDO exec.
-					try {
-						$pdo->exec( $stmt );
-						$table_created        = true;
-						$needs_schema_rebuild = true;
-					} catch ( \Throwable $e2 ) {
-						error_log( "Markdown DB: Failed to execute schema for {$basename}: " . $e2->getMessage() );
+					// "already exists" is fine — another worker created it.
+					if ( str_contains( $e->getMessage(), 'already exists' ) ) {
+						$table_created = true;
+					} else {
+						// Driver failed — likely SQLite syntax from a legacy
+						// schema file. Fall back to raw PDO exec.
+						try {
+							$pdo->exec( $exec_stmt );
+							$table_created        = true;
+							$needs_schema_rebuild = true;
+						} catch ( \Throwable $e2 ) {
+							if ( str_contains( $e2->getMessage(), 'already exists' ) ) {
+								$table_created = true;
+							} else {
+								error_log( "Markdown DB: Failed to execute schema for {$basename}: " . $e2->getMessage() );
+							}
+						}
 					}
 				}
 			}
@@ -1502,6 +1516,32 @@ class WP_Markdown_Loader {
 	 * @param string $stmt The SQL statement to check.
 	 * @return bool True if the statement is an ALTER TABLE statement.
 	 */
+	/**
+	 * Ensure a CREATE TABLE statement includes IF NOT EXISTS.
+	 *
+	 * Makes table creation idempotent so concurrent workers don't fail
+	 * when a table was already created by another worker. See issue #50.
+	 *
+	 * @param string $stmt The SQL statement.
+	 * @return string The statement with IF NOT EXISTS injected if needed.
+	 */
+	private function ensure_if_not_exists( string $stmt ): string {
+		// Only modify CREATE TABLE statements.
+		if ( ! preg_match( '/^\s*CREATE\s+TABLE\s+/i', $stmt ) ) {
+			return $stmt;
+		}
+		// Already has IF NOT EXISTS — leave it.
+		if ( preg_match( '/^\s*CREATE\s+TABLE\s+IF\s+NOT\s+EXISTS\s+/i', $stmt ) ) {
+			return $stmt;
+		}
+		// Inject IF NOT EXISTS after CREATE TABLE.
+		return preg_replace(
+			'/^(\s*CREATE\s+TABLE\s+)/i',
+			'$1IF NOT EXISTS ',
+			$stmt
+		);
+	}
+
 	private function is_alter_table_statement( string $stmt ): bool {
 		// Normalize whitespace and check for ALTER TABLE prefix.
 		$normalized = preg_replace( '/\s+/', ' ', strtoupper( ltrim( $stmt ) ) );

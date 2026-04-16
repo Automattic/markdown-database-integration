@@ -95,37 +95,19 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		$storage = new WP_Markdown_Storage( $content_dir, $excluded_types );
 
-		// Detect warm vs cold boot for primary mode.
-		$is_warm_boot = ( 'primary' === $mode && file_exists( $db_path ) );
-
-		try {
-			$this->boot_connection( $db_path, $pdo, $mode, $is_warm_boot, $content_dir, $storage );
-		} catch ( \Throwable $e ) {
-			// If warm boot fails (corrupted SQLite file), auto-rebuild.
-			// The .md files are the source of truth — the index can always be rebuilt.
-			// See GitHub issue #46.
-			if ( $is_warm_boot && 'primary' === $mode ) {
-				error_log( 'Markdown DB: Corrupted index detected (' . $e->getMessage() . '). Auto-rebuilding...' );
-
-				// Delete the corrupted file and any journal files.
-				@unlink( $db_path );
-				@unlink( $db_path . '-wal' );
-				@unlink( $db_path . '-shm' );
-				@unlink( $db_path . '-journal' );
-
-				// Reset state for a clean cold boot.
-				$this->dbh        = null;
-				$this->last_error = '';
-				$this->loader     = null;
-
-				try {
-					$this->boot_connection( $db_path, null, $mode, false, $content_dir, $storage );
-					error_log( 'Markdown DB: Index rebuilt successfully.' );
-				} catch ( \Throwable $rebuild_error ) {
-					$this->last_error = $rebuild_error->getMessage();
-					error_log( 'Markdown DB: Rebuild failed: ' . $rebuild_error->getMessage() . "\n" . $rebuild_error->getTraceAsString() );
-				}
-			} else {
+		// Primary mode: atomic index build to prevent concurrent boot races.
+		// See GitHub issue #50.
+		//
+		// The index file (.sqlite) is the signal for warm vs cold boot.
+		// Cold boot builds into a temp file, then renames atomically.
+		// Other workers either see the complete file (warm boot) or no
+		// file (wait for build to finish, then warm boot).
+		if ( 'primary' === $mode ) {
+			$this->boot_primary( $db_path, $content_dir, $storage );
+		} else {
+			try {
+				$this->boot_connection( $db_path, $pdo, $mode, false, $content_dir, $storage );
+			} catch ( \Throwable $e ) {
 				$this->last_error = $e->getMessage();
 				error_log( 'Markdown DB connect error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
 			}
@@ -251,6 +233,130 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$this->loader->load_all();
 			}
 		}
+	}
+
+	/**
+	 * Boot in primary mode with isolated cold boot.
+	 *
+	 * Each worker builds its index independently — no shared writes.
+	 *
+	 * Warm boot: index file exists → connect to it, sync incrementally.
+	 * Cold boot: index file doesn't exist → build into a private temp
+	 *   file (unique per worker), then rename atomically into place.
+	 *   If rename fails (another worker beat us), discard our temp file
+	 *   and warm-boot from theirs.
+	 *
+	 * This avoids all cross-worker coordination. Concurrent cold boots
+	 * each build independently, the first rename wins, losers discard
+	 * their work. No locking, no sentinels, no shared SQLite writes.
+	 *
+	 * See GitHub issue #50.
+	 *
+	 * @param string              $db_path     Path to the final SQLite index file.
+	 * @param string              $content_dir Path to the markdown content directory.
+	 * @param WP_Markdown_Storage $storage     The markdown storage engine.
+	 */
+	private function boot_primary(
+		string $db_path,
+		string $content_dir,
+		WP_Markdown_Storage $storage
+	): void {
+		// --- Warm boot: index exists ---
+		if ( file_exists( $db_path ) ) {
+			try {
+				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $storage );
+				return;
+			} catch ( \Throwable $e ) {
+				// Index exists but is unusable (corrupted, incomplete from
+				// a concurrent worker's rename, etc.). Fall through to cold
+				// boot — we'll build our own and try to rename over it.
+				$this->dbh        = null;
+				$this->last_error = '';
+				$this->loader     = null;
+			}
+		}
+
+		// --- Cold boot: build into a private temp file ---
+		//
+		// Each worker gets its own temp file (unique suffix). Multiple
+		// workers may build simultaneously — that's fine, they don't
+		// share a file. The first to finish renames into place.
+		$tmp_path = $db_path . '.tmp.' . getmypid() . '.' . substr( md5( uniqid( '', true ) ), 0, 8 );
+
+		try {
+			$this->boot_connection( $tmp_path, null, 'primary', false, $content_dir, $storage );
+
+			// Checkpoint WAL so the temp file is self-contained.
+			$pdo = $this->dbh->get_connection()->get_pdo();
+			$pdo->exec( 'PRAGMA wal_checkpoint(TRUNCATE)' );
+
+			// Check: did another worker finish first?
+			if ( file_exists( $db_path ) ) {
+				// Someone beat us. Discard our temp file, use theirs.
+				$this->dbh        = null;
+				$this->last_error = '';
+				$this->loader     = null;
+				$this->cleanup_index_files( $tmp_path );
+
+				try {
+					$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $storage );
+					return;
+				} catch ( \Throwable $e ) {
+					// Their file is bad too? Delete it, fall through to our rename.
+					error_log( 'Markdown DB: Rival index unreadable (' . $e->getMessage() . '). Using ours.' );
+					$this->cleanup_index_files( $db_path );
+					$this->dbh        = null;
+					$this->last_error = '';
+					$this->loader     = null;
+					// Re-build connection to our temp file for the rename below.
+					$this->boot_connection( $tmp_path, null, 'primary', true, $content_dir, $storage );
+				}
+			}
+
+			// Atomic swap: rename our temp file into place.
+			// The open PDO connection follows the inode, not the path,
+			// so it keeps working after rename. No reconnect needed.
+			$renamed = @rename( $tmp_path, $db_path );
+
+			// Also move any leftover WAL/journal files.
+			if ( file_exists( $tmp_path . '-wal' ) ) {
+				@rename( $tmp_path . '-wal', $db_path . '-wal' );
+			}
+			if ( file_exists( $tmp_path . '-shm' ) ) {
+				@rename( $tmp_path . '-shm', $db_path . '-shm' );
+			}
+
+			if ( ! $renamed ) {
+				// Rename failed — another worker likely beat us.
+				// Discard our connection and use the winner's index.
+				$this->dbh        = null;
+				$this->last_error = '';
+				$this->loader     = null;
+				$this->cleanup_index_files( $tmp_path );
+
+				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $storage );
+			}
+			// If rename succeeded, we keep our existing connection — it's
+			// already fully loaded from the cold boot above.
+
+		} catch ( \Throwable $e ) {
+			// Build failed — clean up.
+			$this->cleanup_index_files( $tmp_path );
+			$this->last_error = $e->getMessage();
+			error_log( 'Markdown DB: Cold boot failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
+		}
+	}
+
+	/**
+	 * Delete a SQLite file and its associated journal/WAL files.
+	 *
+	 * @param string $path Path to the SQLite file.
+	 */
+	private function cleanup_index_files( string $path ): void {
+		@unlink( $path );
+		@unlink( $path . '-wal' );
+		@unlink( $path . '-shm' );
+		@unlink( $path . '-journal' );
 	}
 
 	/**

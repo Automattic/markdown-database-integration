@@ -5,11 +5,11 @@
  * Reads and writes WordPress posts as markdown files with YAML frontmatter.
  * Posts are stored hierarchically: directory structure matches the post
  * parent-child hierarchy. Parent posts that have children become directories
- * with their content in _index.md (Hugo convention).
+ * with their content in index.md.
  *
  * File layout:
  *   {content_dir}/{post_type}/slug.md              — leaf post (no children)
- *   {content_dir}/{post_type}/parent-slug/_index.md — parent post (has children)
+ *   {content_dir}/{post_type}/parent-slug/index.md — parent post (has children)
  *   {content_dir}/{post_type}/parent-slug/child.md  — child post
  *
  * The directory structure IS the hierarchy — no `parent` field in frontmatter.
@@ -142,7 +142,7 @@ class WP_Markdown_Storage {
 	 * Builds a hierarchical directory path based on the post's ancestry.
 	 * If the post has a parent, it's written inside the parent's directory.
 	 * If a parent post gains its first child, the parent's leaf file is
-	 * promoted to a directory with _index.md.
+	 * promoted to a directory with index.md.
 	 *
 	 * @param object $post A post row object with WordPress column names.
 	 * @return string|false The file path written, or false on failure.
@@ -179,7 +179,16 @@ class WP_Markdown_Storage {
 			mkdir( $parent_dir, 0755, true );
 		}
 
-		$file_path = $parent_dir . '/' . $this->sanitize_path( $slug ) . '.md';
+		$sanitized_slug = $this->sanitize_path( $slug );
+		$slug_dir       = $parent_dir . '/' . $sanitized_slug;
+		$file_path      = $parent_dir . '/' . $sanitized_slug . '.md';
+
+		// If a directory with this slug already exists (i.e. this post has
+		// children), write as index.md inside it instead of a sibling file.
+		// This keeps the directory structure in sync with the hierarchy.
+		if ( is_dir( $slug_dir ) ) {
+			$file_path = $slug_dir . '/index.md';
+		}
 
 		// Build frontmatter.
 		$frontmatter = $this->build_frontmatter( $post );
@@ -239,7 +248,7 @@ class WP_Markdown_Storage {
 	 * Delete a post's markdown file.
 	 *
 	 * If the post is a parent (has a directory), and the directory
-	 * still has children, only the _index.md is removed. If the
+	 * still has children, only the index.md is removed. If the
 	 * directory becomes empty, it's cleaned up.
 	 *
 	 * @param int $post_id The post ID.
@@ -295,8 +304,8 @@ class WP_Markdown_Storage {
 	 * Get all markdown files as post objects.
 	 *
 	 * Recursively scans each post type directory. Derives post_parent
-	 * from the directory structure: _index.md files are parents, files
-	 * inside a directory are children of that directory's _index.md.
+	 * from the directory structure: index.md files are parents, files
+	 * inside a directory are children of that directory's index.md.
 	 *
 	 * Deduplicates by post ID. See GitHub issue #9.
 	 *
@@ -336,13 +345,13 @@ class WP_Markdown_Storage {
 			$all_files = $this->scan_directory_recursive( $type_dir );
 
 			// Second pass: resolve parent IDs from directory structure.
-			// An _index.md file IS the parent for all siblings in its directory.
-			// We need to find the _index.md's ID for each directory.
+			// An index.md file IS the parent for all siblings in its directory.
+			// We need to find the index.md's ID for each directory.
 			$dir_parent_ids = array();
 
-			// First, find all _index.md files and record their directory → ID mapping.
+			// First, find all index.md files and record their directory → ID mapping.
 			foreach ( $all_files as $file ) {
-				if ( basename( $file ) === '_index.md' ) {
+				if ( basename( $file ) === 'index.md' ) {
 					$id = $this->extract_id_from_file( $file );
 					if ( $id ) {
 						$dir_parent_ids[ dirname( $file ) ] = $id;
@@ -358,19 +367,19 @@ class WP_Markdown_Storage {
 				}
 
 				// Derive post_parent from the directory hierarchy.
-				// For hierarchical layouts (_index.md / subdirs), the directory
+				// For hierarchical layouts (index.md / subdirs), the directory
 				// structure is authoritative. For flat layouts (all files at the
 				// type root), fall back to the frontmatter `parent` field so
 				// pre-migration files retain their hierarchy.
 				$file_dir = dirname( $file );
 
-				if ( basename( $file ) === '_index.md' ) {
-					// This is a parent post. Its parent is the _index.md of
+				if ( basename( $file ) === 'index.md' ) {
+					// This is a parent post. Its parent is the index.md of
 					// the directory one level up (if it exists).
 					$parent_dir = dirname( $file_dir );
 					$post->post_parent = $dir_parent_ids[ $parent_dir ] ?? 0;
 				} else {
-					// Regular file. Its parent is the _index.md in its directory
+					// Regular file. Its parent is the index.md in its directory
 					// (if one exists and we're not at the post type root).
 					if ( $file_dir === $type_dir ) {
 						// Top-level file in the post type dir.
@@ -440,7 +449,7 @@ class WP_Markdown_Storage {
 	 *
 	 * Walks up the ancestor chain using the post resolver to build
 	 * the full hierarchical path. If a parent post is currently stored
-	 * as a leaf file (slug.md), promotes it to a directory (slug/_index.md).
+	 * as a leaf file (slug.md), promotes it to a directory (slug/index.md).
 	 *
 	 * @param string $type_dir  The post type root directory.
 	 * @param int    $parent_id The post_parent ID (0 = top level).
@@ -481,17 +490,29 @@ class WP_Markdown_Storage {
 		foreach ( $ancestors as $slug ) {
 			$target_dir  = $current_dir . '/' . $slug;
 			$leaf_file   = $current_dir . '/' . $slug . '.md';
+			$index_file  = $target_dir . '/index.md';
 
 			if ( file_exists( $leaf_file ) && ! is_dir( $target_dir ) ) {
-				// Promote leaf file to directory with _index.md.
+				// Promote leaf file to directory with index.md.
 				mkdir( $target_dir, 0755, true );
-				rename( $leaf_file, $target_dir . '/_index.md' );
+				rename( $leaf_file, $index_file );
 
 				// Update the index if we have one.
 				if ( null !== $this->index ) {
-					$promoted_id = $this->extract_id_from_file( $target_dir . '/_index.md' );
+					$promoted_id = $this->extract_id_from_file( $index_file );
 					if ( $promoted_id ) {
-						$this->index[ $promoted_id ] = $target_dir . '/_index.md';
+						$this->index[ $promoted_id ] = $index_file;
+					}
+				}
+			} elseif ( file_exists( $leaf_file ) && is_dir( $target_dir ) && ! file_exists( $index_file ) ) {
+				// Directory exists (has children) but the parent post is still
+				// a sibling leaf file. Move it into the directory as index.md.
+				rename( $leaf_file, $index_file );
+
+				if ( null !== $this->index ) {
+					$promoted_id = $this->extract_id_from_file( $index_file );
+					if ( $promoted_id ) {
+						$this->index[ $promoted_id ] = $index_file;
 					}
 				}
 			} elseif ( ! is_dir( $target_dir ) ) {

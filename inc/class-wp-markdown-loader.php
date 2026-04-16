@@ -35,6 +35,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WP_Markdown_Loader {
 
 	/**
+	 * Core WordPress table suffixes.
+	 *
+	 * These tables are created and loaded explicitly by the loader —
+	 * they're excluded from the generic plugin table loader.
+	 *
+	 * Shared with WP_Markdown_Driver::CORE_TABLE_SUFFIXES — keep in sync
+	 * or reference this constant from there.
+	 */
+	private const CORE_TABLE_SUFFIXES = array(
+		'options', 'users', 'usermeta', 'posts', 'postmeta',
+		'terms', 'term_taxonomy', 'term_relationships', 'termmeta',
+		'comments', 'commentmeta', 'links',
+	);
+
+	/**
 	 * The base content directory for markdown/YAML files.
 	 *
 	 * @var string
@@ -76,6 +91,14 @@ class WP_Markdown_Loader {
 	 * @var object[]
 	 */
 	private $loaded_posts = array();
+
+	/**
+	 * Cached term map: (taxonomy::slug) → term_taxonomy_id.
+	 * Built lazily by get_term_map(), cleared when no longer needed.
+	 *
+	 * @var array<string, int>|null
+	 */
+	private $term_map = null;
 
 	/**
 	 * Constructor.
@@ -178,6 +201,13 @@ class WP_Markdown_Loader {
 			$this->create_file_index_table();
 			$this->create_json_manifest_table();
 
+			// 0. Self-heal: detect orphaned file index entries.
+			// If the file index has entries but wp_posts doesn't have
+			// matching rows, re-insert those posts from their markdown
+			// files. This recovers from data corruption where wp_posts
+			// rows were lost but the file index survived. See #47.
+			$this->heal_orphaned_index_entries();
+
 			// 1. Sync JSON tables — reload any whose file changed.
 			$this->sync_json_tables();
 
@@ -238,13 +268,12 @@ class WP_Markdown_Loader {
 
 		// Check all JSON files in _tables/.
 		$tables_dir = $this->content_dir . '/_tables';
-		$json_tables = array(
-			'users', 'usermeta', 'terms', 'term_taxonomy', 'termmeta',
-			'posts', 'postmeta', 'term_relationships',
-			'comments', 'commentmeta', 'links',
-		);
 
-		foreach ( $json_tables as $table_suffix ) {
+		foreach ( self::CORE_TABLE_SUFFIXES as $table_suffix ) {
+			// Options are handled separately above (different file location).
+			if ( 'options' === $table_suffix ) {
+				continue;
+			}
 			$file = $tables_dir . '/' . $table_suffix . '.json';
 			$file_key = '_tables/' . $table_suffix . '.json';
 
@@ -268,10 +297,10 @@ class WP_Markdown_Loader {
 		if ( is_dir( $tables_dir ) ) {
 			$all_json_files = glob( $tables_dir . '/*.json' );
 			if ( $all_json_files ) {
-				$core_tables = array_flip( $json_tables );
+				$core_lookup = array_flip( self::CORE_TABLE_SUFFIXES );
 				foreach ( $all_json_files as $file ) {
 					$basename = basename( $file, '.json' );
-					if ( isset( $core_tables[ $basename ] ) ) {
+					if ( isset( $core_lookup[ $basename ] ) ) {
 						continue; // Already handled above.
 					}
 
@@ -332,10 +361,7 @@ class WP_Markdown_Loader {
 			if ( empty( $source_file ) || ! file_exists( $source_file ) ) {
 				continue;
 			}
-			$relative_path = $source_file;
-			if ( str_starts_with( $source_file, $this->content_dir . '/' ) ) {
-				$relative_path = substr( $source_file, strlen( $this->content_dir ) + 1 );
-			}
+			$relative_path = $this->to_relative_path( $source_file );
 			$current_files[ $relative_path ] = array(
 				'mtime'    => (int) filemtime( $source_file ),
 				'size'     => (int) filesize( $source_file ),
@@ -406,21 +432,10 @@ class WP_Markdown_Loader {
 				);
 				$index_stmt->execute( array( $id, $rel_path, $file_info['mtime'], $file_info['size'] ) );
 
-				// Update frontmatter meta: delete old, insert new.
+				// Replace meta and terms: delete old, insert new from frontmatter.
 				$pdo->exec( "DELETE FROM `{$meta_table}` WHERE post_id = {$id}" );
-				$meta = $post->_frontmatter_meta ?? array();
-				if ( ! empty( $meta ) ) {
-					$meta_stmt = $pdo->prepare(
-						"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
-					);
-					foreach ( $meta as $key => $value ) {
-						$meta_stmt->execute( array( $id, (string) $key, (string) $value ) );
-					}
-				}
-
-				// Update term relationships: delete old, insert new.
 				$pdo->exec( "DELETE FROM `{$rel_table}` WHERE object_id = {$id}" );
-				$this->insert_post_terms( $pdo, $post );
+				$this->insert_post_meta_and_terms( $pdo, $post );
 			}
 
 			// 6. Handle new posts — INSERT them.
@@ -439,19 +454,8 @@ class WP_Markdown_Loader {
 				);
 				$index_stmt->execute( array( $id, $rel_path, $file_info['mtime'], $file_info['size'] ) );
 
-				// Insert frontmatter meta.
-				$meta = $post->_frontmatter_meta ?? array();
-				if ( ! empty( $meta ) ) {
-					$meta_stmt = $pdo->prepare(
-						"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
-					);
-					foreach ( $meta as $key => $value ) {
-						$meta_stmt->execute( array( $id, (string) $key, (string) $value ) );
-					}
-				}
-
-				// Insert term relationships.
-				$this->insert_post_terms( $pdo, $post );
+				// Insert meta and terms from frontmatter.
+				$this->insert_post_meta_and_terms( $pdo, $post );
 			}
 
 			$pdo->exec( 'COMMIT' );
@@ -468,6 +472,104 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['sync_posts'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Self-heal orphaned file index entries.
+	 *
+	 * Detects file index entries that have no corresponding wp_posts row
+	 * and re-inserts the posts from their markdown files on disk.
+	 *
+	 * This handles the case where wp_posts rows were lost (e.g., due to
+	 * info schema rebuild corruption — see #47) but _markdown_file_index
+	 * survived. Without this, warm boot would see "nothing changed" and
+	 * never re-insert the missing posts.
+	 */
+	private function heal_orphaned_index_entries(): void {
+		$start = microtime( true );
+		$pdo   = $this->driver->get_connection()->get_pdo();
+
+		$posts_table = $this->prefix . 'posts';
+
+		// Find orphaned entries: file index has a record but wp_posts doesn't.
+		try {
+			$orphans = $pdo->query(
+				"SELECT fi.post_id, fi.file_path
+				 FROM `_markdown_file_index` fi
+				 LEFT JOIN `{$posts_table}` p ON fi.post_id = p.ID
+				 WHERE p.ID IS NULL"
+			)->fetchAll( \PDO::FETCH_OBJ );
+		} catch ( \Throwable $e ) {
+			// Index table might not exist yet — that's fine.
+			$this->timings['heal_orphans'] = microtime( true ) - $start;
+			return;
+		}
+
+		if ( empty( $orphans ) ) {
+			$this->timings['heal_orphans'] = microtime( true ) - $start;
+			return;
+		}
+
+		$count = count( $orphans );
+		error_log( "Markdown DB: Found {$count} orphaned file index entries — re-inserting from disk." );
+
+		// Build a lookup of all posts on disk (by ID) for re-insertion.
+		$all_posts = $this->storage->get_all_posts( true );
+		$posts_by_id = array();
+		foreach ( $all_posts as $post ) {
+			$id = (int) ( $post->ID ?? 0 );
+			if ( $id > 0 ) {
+				$posts_by_id[ $id ] = $post;
+			}
+		}
+
+		$pdo->exec( 'BEGIN TRANSACTION' );
+
+		try {
+			$healed = 0;
+
+			foreach ( $orphans as $orphan ) {
+				$post_id = (int) $orphan->post_id;
+				$post    = $posts_by_id[ $post_id ] ?? null;
+
+				if ( ! $post ) {
+					// File no longer exists on disk — clean up the orphan.
+					$pdo->exec( "DELETE FROM `_markdown_file_index` WHERE post_id = {$post_id}" );
+					continue;
+				}
+
+				// Re-insert the post row, meta, and terms.
+				$this->insert_post_row( $pdo, $post );
+				$this->insert_post_meta_and_terms( $pdo, $post );
+
+				// Update the file index mtime/size.
+				$source_file = $post->_source_file ?? '';
+				if ( ! empty( $source_file ) && file_exists( $source_file ) ) {
+					$index_stmt = $pdo->prepare(
+						'INSERT OR REPLACE INTO `_markdown_file_index` (post_id, file_path, file_mtime, file_size) VALUES (?, ?, ?, ?)'
+					);
+					$index_stmt->execute( array(
+						$post_id,
+						$this->to_relative_path( $source_file ),
+						(int) filemtime( $source_file ),
+						(int) filesize( $source_file ),
+					) );
+				}
+
+				$healed++;
+			}
+
+			$pdo->exec( 'COMMIT' );
+
+			if ( $healed > 0 ) {
+				error_log( "Markdown DB: Healed {$healed} orphaned posts." );
+			}
+		} catch ( \Throwable $e ) {
+			$pdo->exec( 'ROLLBACK' );
+			error_log( 'Markdown DB: Failed to heal orphaned entries: ' . $e->getMessage() );
+		}
+
+		$this->timings['heal_orphans'] = microtime( true ) - $start;
 	}
 
 	/**
@@ -557,7 +659,42 @@ class WP_Markdown_Loader {
 	}
 
 	/**
+	 * Insert frontmatter meta and term relationships for a post.
+	 *
+	 * Convenience method that handles both meta and terms in one call,
+	 * deduplicating the pattern used in sync_markdown_posts() and
+	 * heal_orphaned_index_entries().
+	 *
+	 * @param \PDO   $pdo  The PDO connection.
+	 * @param object $post The post object (with _frontmatter_meta and _frontmatter_terms).
+	 */
+	private function insert_post_meta_and_terms( \PDO $pdo, object $post ): void {
+		$id = (int) $post->ID;
+		if ( $id <= 0 ) {
+			return;
+		}
+
+		// Insert frontmatter meta.
+		$meta = $post->_frontmatter_meta ?? array();
+		if ( ! empty( $meta ) ) {
+			$meta_table = $this->prefix . 'postmeta';
+			$meta_stmt = $pdo->prepare(
+				"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
+			);
+			foreach ( $meta as $key => $value ) {
+				$meta_stmt->execute( array( $id, (string) $key, (string) $value ) );
+			}
+		}
+
+		// Insert term relationships.
+		$this->insert_post_terms( $pdo, $post );
+	}
+
+	/**
 	 * Insert term relationships for a post from its frontmatter.
+	 *
+	 * Uses the cached term map to avoid re-querying the taxonomy tables
+	 * on every call. The cache is built lazily via get_term_map().
 	 *
 	 * @param \PDO   $pdo  The PDO connection.
 	 * @param object $post The post object.
@@ -568,25 +705,9 @@ class WP_Markdown_Loader {
 			return;
 		}
 
-		$id = (int) $post->ID;
-		$rel_table      = $this->prefix . 'term_relationships';
-		$taxonomy_table = $this->prefix . 'term_taxonomy';
-		$terms_table    = $this->prefix . 'terms';
-
-		// Build term lookup.
-		$term_map = array();
-		try {
-			$rows = $pdo->query(
-				"SELECT tt.term_taxonomy_id, tt.taxonomy, t.slug
-				 FROM `{$taxonomy_table}` tt
-				 JOIN `{$terms_table}` t ON tt.term_id = t.term_id"
-			)->fetchAll( \PDO::FETCH_OBJ );
-			foreach ( $rows as $row ) {
-				$term_map[ $row->taxonomy . '::' . $row->slug ] = (int) $row->term_taxonomy_id;
-			}
-		} catch ( \Throwable $e ) {
-			return;
-		}
+		$term_map  = $this->get_term_map( $pdo );
+		$id        = (int) $post->ID;
+		$rel_table = $this->prefix . 'term_relationships';
 
 		$stmt = $pdo->prepare(
 			"INSERT OR IGNORE INTO `{$rel_table}` (object_id, term_taxonomy_id, term_order) VALUES (?, ?, 0)"
@@ -603,6 +724,40 @@ class WP_Markdown_Loader {
 				}
 			}
 		}
+	}
+
+	/**
+	 * Get the term map, building it lazily from the taxonomy tables.
+	 *
+	 * Maps (taxonomy::slug) → term_taxonomy_id. Built once per boot,
+	 * cached on the instance for reuse across multiple post insertions.
+	 *
+	 * @param \PDO $pdo The PDO connection.
+	 * @return array<string, int>
+	 */
+	private function get_term_map( \PDO $pdo ): array {
+		if ( null !== $this->term_map ) {
+			return $this->term_map;
+		}
+
+		$this->term_map = array();
+		$taxonomy_table = $this->prefix . 'term_taxonomy';
+		$terms_table    = $this->prefix . 'terms';
+
+		try {
+			$rows = $pdo->query(
+				"SELECT tt.term_taxonomy_id, tt.taxonomy, t.slug
+				 FROM `{$taxonomy_table}` tt
+				 JOIN `{$terms_table}` t ON tt.term_id = t.term_id"
+			)->fetchAll( \PDO::FETCH_OBJ );
+			foreach ( $rows as $row ) {
+				$this->term_map[ $row->taxonomy . '::' . $row->slug ] = (int) $row->term_taxonomy_id;
+			}
+		} catch ( \Throwable $e ) {
+			// Tables might not exist yet — return empty map.
+		}
+
+		return $this->term_map;
 	}
 
 	/**
@@ -1073,13 +1228,9 @@ class WP_Markdown_Loader {
 				// Populate the file index for lazy-loading.
 				$source_file = $post->_source_file ?? '';
 				if ( $id > 0 && ! empty( $source_file ) && file_exists( $source_file ) ) {
-					$relative_path = $source_file;
-					if ( str_starts_with( $source_file, $this->content_dir . '/' ) ) {
-						$relative_path = substr( $source_file, strlen( $this->content_dir ) + 1 );
-					}
 					$index_stmt->execute( array(
 						$id,
-						$relative_path,
+						$this->to_relative_path( $source_file ),
 						(int) filemtime( $source_file ),
 						(int) filesize( $source_file ),
 					) );
@@ -1178,28 +1329,14 @@ class WP_Markdown_Loader {
 	 * See GitHub issue #6.
 	 */
 	private function load_frontmatter_terms(): void {
-		$start = microtime( true );
-		$rel_table      = $this->prefix . 'term_relationships';
-		$taxonomy_table = $this->prefix . 'term_taxonomy';
-		$terms_table    = $this->prefix . 'terms';
+		$start     = microtime( true );
+		$rel_table = $this->prefix . 'term_relationships';
+		$pdo       = $this->driver->get_connection()->get_pdo();
 
-		$pdo = $this->driver->get_connection()->get_pdo();
-
-		// Build a lookup: (taxonomy, slug) → term_taxonomy_id.
-		$term_map = array();
-		try {
-			$rows = $pdo->query(
-				"SELECT tt.term_taxonomy_id, tt.taxonomy, t.slug
-				 FROM `{$taxonomy_table}` tt
-				 JOIN `{$terms_table}` t ON tt.term_id = t.term_id"
-			)->fetchAll( PDO::FETCH_OBJ );
-
-			foreach ( $rows as $row ) {
-				$key = $row->taxonomy . '::' . $row->slug;
-				$term_map[ $key ] = (int) $row->term_taxonomy_id;
-			}
-		} catch ( \Throwable $e ) {
-			error_log( 'Markdown DB: Failed to build term map: ' . $e->getMessage() );
+		$term_map = $this->get_term_map( $pdo );
+		if ( empty( $term_map ) ) {
+			// No terms loaded — nothing to map.
+			$this->loaded_posts = array();
 			$this->timings['load_frontmatter_terms'] = microtime( true ) - $start;
 			return;
 		}
@@ -1240,6 +1377,7 @@ class WP_Markdown_Loader {
 
 		// Free memory — no longer needed after boot.
 		$this->loaded_posts = array();
+		$this->term_map     = null;
 
 		$this->timings['load_frontmatter_terms'] = microtime( true ) - $start;
 	}
@@ -1250,11 +1388,16 @@ class WP_Markdown_Loader {
 	 * Scans {content_dir}/_tables/ for any .json files that correspond
 	 * to tables NOT in the core set (those are loaded explicitly above).
 	 *
-	 * Schema files may contain either MySQL or SQLite syntax. We try the
-	 * driver first (MySQL path — populates the information schema) and
-	 * fall back to raw PDO (SQLite path) for legacy schema files. After
-	 * the fallback path, we synchronize the information schema so the
-	 * translator can find column metadata for these tables.
+	 * Schema files may contain CREATE TABLE and ALTER TABLE statements.
+	 * During boot, we ONLY process CREATE TABLE statements — ALTER TABLE
+	 * is a migration concern and should not run at boot time. Specifically,
+	 * ALTER TABLE CHANGE (MySQL syntax) is unsupported by SQLite and was
+	 * causing info schema rebuilds that corrupted wp_posts data. See #47.
+	 *
+	 * For CREATE TABLE, we try the driver first (MySQL path — populates the
+	 * information schema) and fall back to raw PDO (SQLite path) for legacy
+	 * schema files. After the fallback path, we synchronize the information
+	 * schema so the translator can find column metadata for these tables.
 	 */
 	private function load_plugin_tables(): void {
 		$start = microtime( true );
@@ -1265,12 +1408,6 @@ class WP_Markdown_Loader {
 			return;
 		}
 
-		$core_tables = array(
-			'options', 'users', 'usermeta', 'posts', 'postmeta',
-			'terms', 'term_taxonomy', 'term_relationships', 'termmeta',
-			'comments', 'commentmeta', 'links',
-		);
-
 		$files = glob( $dir . '/*.json' );
 		if ( ! $files ) {
 			$this->timings['load_plugin_tables'] = microtime( true ) - $start;
@@ -1279,10 +1416,11 @@ class WP_Markdown_Loader {
 
 		$pdo                     = $this->driver->get_connection()->get_pdo();
 		$needs_schema_rebuild    = false;
+		$core_lookup             = array_flip( self::CORE_TABLE_SUFFIXES );
 
 		foreach ( $files as $file ) {
 			$basename = basename( $file, '.json' );
-			if ( in_array( $basename, $core_tables, true ) ) {
+			if ( isset( $core_lookup[ $basename ] ) ) {
 				continue; // Already loaded.
 			}
 
@@ -1303,6 +1441,16 @@ class WP_Markdown_Loader {
 			foreach ( $statements as $stmt ) {
 				$stmt = trim( $stmt );
 				if ( empty( $stmt ) ) {
+					continue;
+				}
+
+				// Only process CREATE TABLE statements during boot.
+				// ALTER TABLE statements are migration concerns — they should
+				// not run at boot time. In particular, ALTER TABLE CHANGE is
+				// MySQL-only syntax that SQLite doesn't support, and attempting
+				// it was triggering info schema rebuilds that corrupted already-
+				// loaded core table data (wp_posts). See issue #47.
+				if ( $this->is_alter_table_statement( $stmt ) ) {
 					continue;
 				}
 
@@ -1342,6 +1490,36 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['load_plugin_tables'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Check if a SQL statement is an ALTER TABLE statement.
+	 *
+	 * Used during boot to skip ALTER TABLE statements in schema files.
+	 * ALTER TABLE is a migration concern — during cold boot we only need
+	 * CREATE TABLE to establish the table structure.
+	 *
+	 * @param string $stmt The SQL statement to check.
+	 * @return bool True if the statement is an ALTER TABLE statement.
+	 */
+	private function is_alter_table_statement( string $stmt ): bool {
+		// Normalize whitespace and check for ALTER TABLE prefix.
+		$normalized = preg_replace( '/\s+/', ' ', strtoupper( ltrim( $stmt ) ) );
+		return str_starts_with( $normalized, 'ALTER TABLE ' );
+	}
+
+	/**
+	 * Convert an absolute file path to a path relative to the content directory.
+	 *
+	 * @param string $absolute_path The absolute file path.
+	 * @return string The relative path (unchanged if not under content_dir).
+	 */
+	private function to_relative_path( string $absolute_path ): string {
+		$prefix = $this->content_dir . '/';
+		if ( str_starts_with( $absolute_path, $prefix ) ) {
+			return substr( $absolute_path, strlen( $prefix ) );
+		}
+		return $absolute_path;
 	}
 
 	/**
@@ -1398,12 +1576,22 @@ class WP_Markdown_Loader {
 	/**
 	 * Split a SQL file into individual statements.
 	 *
+	 * Splits on semicolons that are either at end of line or followed by
+	 * another SQL statement. This handles schema files where CREATE TABLE
+	 * and ALTER TABLE are joined on the same line (e.g., `) STRICT;ALTER TABLE ...`).
+	 *
+	 * Note: This is a simple splitter that does NOT handle semicolons inside
+	 * string literals. This is fine for DDL schema files (CREATE TABLE, ALTER
+	 * TABLE) which don't contain semicolons in their string values.
+	 *
 	 * @param string $sql Multi-statement SQL.
 	 * @return string[]
 	 */
 	private function split_sql( string $sql ): array {
-		// Simple split on semicolons at line endings.
-		return preg_split( '/;\s*$/m', $sql, -1, PREG_SPLIT_NO_EMPTY );
+		// Split on semicolons followed by optional whitespace.
+		// This handles both ";\n" (end-of-line) and ";ALTER" (mid-line) cases.
+		$parts = preg_split( '/;\s*/', $sql, -1, PREG_SPLIT_NO_EMPTY );
+		return array_filter( array_map( 'trim', $parts ), fn( $s ) => $s !== '' );
 	}
 
 	/**

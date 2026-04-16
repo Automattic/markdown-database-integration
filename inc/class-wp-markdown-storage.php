@@ -309,9 +309,15 @@ class WP_Markdown_Storage {
 	 *
 	 * Deduplicates by post ID. See GitHub issue #9.
 	 *
+	 * When $metadata_only is true, only frontmatter is parsed — content
+	 * bodies are skipped. This dramatically speeds up boot by avoiding
+	 * reading file bodies that will be lazy-loaded on demand.
+	 * See: Index/Map Architecture design doc.
+	 *
+	 * @param bool $metadata_only If true, skip content bodies (for index boot).
 	 * @return object[] Array of post-like objects (unique by ID).
 	 */
-	public function get_all_posts(): array {
+	public function get_all_posts( bool $metadata_only = false ): array {
 		if ( ! is_dir( $this->content_dir ) ) {
 			return array();
 		}
@@ -361,7 +367,7 @@ class WP_Markdown_Storage {
 
 			// Now parse all files and set post_parent from directory structure.
 			foreach ( $all_files as $file ) {
-				$post = $this->parse_file( $file );
+				$post = $this->parse_file( $file, $metadata_only );
 				if ( ! $post ) {
 					continue;
 				}
@@ -744,12 +750,26 @@ class WP_Markdown_Storage {
 	 * Note: post_parent is NOT set here — it's derived from the directory
 	 * structure by get_all_posts(). The caller is responsible for setting it.
 	 *
-	 * @param string $file_path Path to the markdown file.
+	 * When $metadata_only is true, only frontmatter is parsed — the body
+	 * content is skipped entirely (post_content set to empty string). This
+	 * is used during boot to populate the SQLite index without reading
+	 * file bodies. Content is lazy-loaded from disk on demand.
+	 * See: Index/Map Architecture design doc.
+	 *
+	 * @param string $file_path     Path to the markdown file.
+	 * @param bool   $metadata_only If true, skip body content (for index-only boot).
 	 * @return object|null A post object, or null on parse failure.
 	 */
-	private function parse_file( string $file_path ): ?object {
-		$raw = file_get_contents( $file_path );
-		if ( false === $raw ) {
+	private function parse_file( string $file_path, bool $metadata_only = false ): ?object {
+		if ( $metadata_only ) {
+			// Fast path: read only enough of the file to get the frontmatter.
+			// Avoids reading potentially large content bodies during boot.
+			$raw = $this->read_frontmatter_only( $file_path );
+		} else {
+			$raw = file_get_contents( $file_path );
+		}
+
+		if ( false === $raw || '' === $raw ) {
 			return null;
 		}
 
@@ -759,7 +779,7 @@ class WP_Markdown_Storage {
 		}
 
 		$frontmatter = $this->decode_yaml( $m[1] );
-		$content     = rtrim( $m[2] );
+		$content     = $metadata_only ? '' : rtrim( $m[2] );
 
 		if ( ! $frontmatter ) {
 			return null;
@@ -793,6 +813,10 @@ class WP_Markdown_Storage {
 		$post->comment_count         = (int) ( $frontmatter['comment_count'] ?? 0 );
 		$post->filter                = 'raw';
 
+		// Store the source file path on the post object.
+		// Used by the loader to populate the _markdown_file_index table.
+		$post->_source_file = $file_path;
+
 		// Extract meta from frontmatter (key-value pairs).
 		// These will be INSERTed into wp_postmeta by the loader.
 		$post->_frontmatter_meta = array();
@@ -808,6 +832,87 @@ class WP_Markdown_Storage {
 		}
 
 		return $post;
+	}
+
+	/**
+	 * Read only the frontmatter portion of a markdown file.
+	 *
+	 * Reads the file in chunks until the closing `---` delimiter is found,
+	 * avoiding reading the potentially large content body. Returns the raw
+	 * string up to and including the closing delimiter.
+	 *
+	 * @param string $file_path Path to the markdown file.
+	 * @return string|false The frontmatter portion (with delimiters), or false on failure.
+	 */
+	private function read_frontmatter_only( string $file_path ) {
+		$handle = fopen( $file_path, 'r' );
+		if ( ! $handle ) {
+			return false;
+		}
+
+		// Read in 4KB chunks — frontmatter is typically < 1KB.
+		$buffer = '';
+		$chunk_size = 4096;
+		$found_end = false;
+
+		// Read the opening "---\n".
+		$first_line = fgets( $handle );
+		if ( false === $first_line || trim( $first_line ) !== '---' ) {
+			fclose( $handle );
+			return false;
+		}
+		$buffer = $first_line;
+
+		// Read until we find the closing "---\n".
+		while ( ! feof( $handle ) ) {
+			$line = fgets( $handle );
+			if ( false === $line ) {
+				break;
+			}
+			$buffer .= $line;
+			if ( trim( $line ) === '---' ) {
+				$found_end = true;
+				break;
+			}
+		}
+
+		fclose( $handle );
+
+		if ( ! $found_end ) {
+			return false;
+		}
+
+		// Append an empty content section so the regex in parse_file() matches.
+		$buffer .= "\n";
+
+		return $buffer;
+	}
+
+	/**
+	 * Read the content body from a markdown file (everything after frontmatter).
+	 *
+	 * Used by the driver for lazy-loading post_content on demand.
+	 * Only reads the body — skips the frontmatter header.
+	 *
+	 * @param string $file_path Absolute path to the markdown file.
+	 * @return string|null The content body, or null on failure.
+	 */
+	public function read_content_from_file( string $file_path ): ?string {
+		if ( ! file_exists( $file_path ) ) {
+			return null;
+		}
+
+		$raw = file_get_contents( $file_path );
+		if ( false === $raw ) {
+			return null;
+		}
+
+		// Split frontmatter and content.
+		if ( ! preg_match( '/^---\n.+?\n---\n\n?(.*)/s', $raw, $m ) ) {
+			return null;
+		}
+
+		return rtrim( $m[1] );
 	}
 
 	/**

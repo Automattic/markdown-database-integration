@@ -264,10 +264,13 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function persist_post_write( string $query, string $op_type ): void {
 		if ( 'DELETE' === $op_type ) {
-			// Extract IDs and delete markdown files.
+			// Extract IDs and delete markdown files + file index entries.
 			$ids = $this->extract_ids_from_query( $query, 'ID' );
 			foreach ( $ids as $id ) {
 				$this->storage->delete_post( $id );
+				if ( $this->driver instanceof WP_Markdown_Driver ) {
+					$this->driver->remove_from_file_index( $id );
+				}
 			}
 
 			// Non-markdown posts JSON also needs updating.
@@ -341,7 +344,24 @@ class WP_Markdown_Write_Engine {
 			$row->post_content = $converter->blocks_to_markdown( $content );
 		}
 
-		$this->storage->write_post( $row );
+		$file_path = $this->storage->write_post( $row );
+
+		// Update the file index after writing the .md file.
+		// The driver uses this index for lazy-loading content on demand.
+		if ( false !== $file_path && $post_id > 0 && $this->driver instanceof WP_Markdown_Driver ) {
+			$content_dir = $this->storage->get_content_dir();
+			$relative_path = $file_path;
+			if ( str_starts_with( $file_path, $content_dir . '/' ) ) {
+				$relative_path = substr( $file_path, strlen( $content_dir ) + 1 );
+			}
+			$this->driver->update_file_index(
+				$post_id,
+				$relative_path,
+				(int) filemtime( $file_path ),
+				(int) filesize( $file_path )
+			);
+		}
+
 		return false;
 	}
 

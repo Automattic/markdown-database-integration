@@ -472,21 +472,23 @@ class WP_Markdown_Loader {
 	 *
 	 * Uses WP_Markdown_Storage::get_all_posts() to read all .md files,
 	 * then INSERTs them into the in-memory SQLite.
+	 *
+	 * Index/Map Architecture: post_content is stored as empty string in
+	 * SQLite for markdown-sourced posts. A _markdown_file_index table
+	 * maps post_id → file_path for lazy-loading content on demand.
+	 * Content is resolved by the driver's query() method when accessed.
 	 */
 	private function load_posts(): void {
 		$start = microtime( true );
 		$table = $this->prefix . 'posts';
 
-		// First load posts from markdown files.
-		$posts = $this->storage->get_all_posts();
+		// Create the file index table for lazy-loading content.
+		$this->create_file_index_table();
 
-		// Raw markdown goes into SQLite as-is.
-		// Markdown → HTML conversion happens at render time via filters:
-		//   - the_content filter: markdown → HTML (frontend)
-		//   - rest_prepare_{type} filter: markdown → HTML → blocks (editor)
-		// This ensures that code reading post_content directly (CLI, abilities,
-		// plugins) gets raw markdown — WordPress is markdown-native.
-		// See GitHub issue #30.
+		// Load posts with metadata only — skip reading file bodies.
+		// Content will be lazy-loaded from disk on demand.
+		// See: Index/Map Architecture design doc.
+		$posts = $this->storage->get_all_posts( true );
 
 		// Store posts for load_frontmatter_meta() and load_frontmatter_terms().
 		$this->loaded_posts = $posts;
@@ -527,15 +529,22 @@ class WP_Markdown_Loader {
 				"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
 			);
 
+			// Prepared statement for the file index.
+			$index_stmt = $pdo->prepare(
+				'INSERT OR REPLACE INTO `_markdown_file_index` (`post_id`, `file_path`, `file_mtime`, `file_size`) VALUES (?, ?, ?, ?)'
+			);
+
 			foreach ( $posts as $post ) {
 				$id = (int) $post->ID;
 
+				// Index/Map: insert empty string for post_content.
+				// Content lives in the .md file, not in SQLite.
 				$stmt->execute( array(
 					$id,
 					(int) $post->post_author,
 					$post->post_date,
 					$post->post_date_gmt,
-					$post->post_content ?? '',
+					'',  // post_content — empty, lazy-loaded from .md file
 					$post->post_title ?? '',
 					$post->post_excerpt ?? '',
 					$post->post_status ?? 'publish',
@@ -556,6 +565,21 @@ class WP_Markdown_Loader {
 					(int) ( $post->comment_count ?? 0 ),
 				) );
 				$loaded_ids[ $id ] = true;
+
+				// Populate the file index for lazy-loading.
+				$source_file = $post->_source_file ?? '';
+				if ( $id > 0 && ! empty( $source_file ) && file_exists( $source_file ) ) {
+					$relative_path = $source_file;
+					if ( str_starts_with( $source_file, $this->content_dir . '/' ) ) {
+						$relative_path = substr( $source_file, strlen( $this->content_dir ) + 1 );
+					}
+					$index_stmt->execute( array(
+						$id,
+						$relative_path,
+						(int) filemtime( $source_file ),
+						(int) filesize( $source_file ),
+					) );
+				}
 			}
 
 			// Load non-markdown posts from JSON (revisions, nav items, etc.).
@@ -579,6 +603,27 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['load_posts'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Create the _markdown_file_index table.
+	 *
+	 * Maps post_id → file_path for lazy-loading content from disk.
+	 * This is a SQLite-native table (not a WordPress table), created
+	 * directly via PDO since it doesn't need MySQL translation.
+	 *
+	 * See: Index/Map Architecture design doc.
+	 */
+	private function create_file_index_table(): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+		$pdo->exec(
+			'CREATE TABLE IF NOT EXISTS `_markdown_file_index` (
+				`post_id` INTEGER PRIMARY KEY,
+				`file_path` TEXT NOT NULL,
+				`file_mtime` INTEGER NOT NULL,
+				`file_size` INTEGER NOT NULL
+			)'
+		);
 	}
 
 	/**

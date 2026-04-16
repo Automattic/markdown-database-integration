@@ -145,10 +145,29 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	}
 
 	/**
+	 * Whether the file index table has been created (for lazy-loading).
+	 *
+	 * @var bool
+	 */
+	private $file_index_ready = false;
+
+	/**
+	 * In-memory cache of post_id → file_path from _markdown_file_index.
+	 * Loaded once on first content resolution, then kept in memory.
+	 *
+	 * @var array<int, string>|null
+	 */
+	private $file_index_cache = null;
+
+	/**
 	 * Execute a MySQL query.
 	 *
 	 * All queries go through the parent SQLite driver. For write operations,
 	 * we also persist to disk via the write engine.
+	 *
+	 * For SELECT queries on wp_posts that include post_content, the driver
+	 * resolves empty content by lazy-loading from the source .md files.
+	 * See: Index/Map Architecture design doc.
 	 *
 	 * @param string $query              Full MySQL query string.
 	 * @param int    $fetch_mode         PDO fetch mode.
@@ -160,6 +179,12 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	public function query( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
 		// Execute via parent SQLite driver.
 		$result = parent::query( $query, $fetch_mode, ...$fetch_mode_args );
+
+		// Lazy-load post_content from .md files for SELECT queries on wp_posts.
+		// This must run before the write engine check (reads don't trigger writes).
+		if ( is_array( $result ) && ! $this->syncing && $this->is_posts_content_query( $query ) ) {
+			$result = $this->resolve_content( $result );
+		}
 
 		// If we're already syncing or no write engine, skip.
 		if ( $this->syncing || null === $this->write_engine ) {
@@ -184,6 +209,167 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Check if a query is a SELECT on wp_posts that may need content resolution.
+	 *
+	 * Only intercepts queries that SELECT from wp_posts and include
+	 * post_content in the result set (SELECT * or explicit post_content).
+	 *
+	 * @param string $query The SQL query.
+	 * @return bool
+	 */
+	private function is_posts_content_query( string $query ): bool {
+		// Must be a SELECT.
+		if ( ! preg_match( '/^\s*SELECT\b/i', $query ) ) {
+			return false;
+		}
+
+		// Must reference wp_posts table.
+		$posts_table = $this->table_prefix . 'posts';
+		if ( ! preg_match( '/\b' . preg_quote( $posts_table, '/' ) . '\b/i', $query ) ) {
+			return false;
+		}
+
+		// Check if post_content is in the SELECT list.
+		// SELECT * includes everything, so always resolve.
+		if ( preg_match( '/SELECT\s+.*\*.*\s+FROM/is', $query ) ) {
+			return true;
+		}
+		if ( preg_match( '/\bpost_content\b/i', $query ) ) {
+			return true;
+		}
+
+		return false;
+	}
+
+	/**
+	 * Resolve empty post_content by reading from .md files on disk.
+	 *
+	 * For each row that has an ID and empty post_content, looks up the
+	 * file path in the _markdown_file_index and reads the content body.
+	 *
+	 * @param array $rows Query result rows.
+	 * @return array Rows with post_content resolved.
+	 */
+	private function resolve_content( array $rows ): array {
+		if ( empty( $rows ) ) {
+			return $rows;
+		}
+
+		// Load the file index cache on first use.
+		if ( null === $this->file_index_cache ) {
+			$this->load_file_index_cache();
+		}
+
+		$content_dir = $this->storage->get_content_dir();
+
+		foreach ( $rows as &$row ) {
+			// Support both object and array result formats.
+			$is_object = is_object( $row );
+			$id = $is_object ? ( $row->ID ?? null ) : ( $row['ID'] ?? null );
+			$content = $is_object ? ( $row->post_content ?? null ) : ( $row['post_content'] ?? null );
+
+			// Only resolve if we have an ID and content is empty.
+			if ( null === $id || ( null !== $content && '' !== $content ) ) {
+				continue;
+			}
+
+			$id = (int) $id;
+			if ( $id <= 0 ) {
+				continue;
+			}
+
+			// Look up the file path in the index.
+			$relative_path = $this->file_index_cache[ $id ] ?? null;
+			if ( null === $relative_path ) {
+				continue;
+			}
+
+			$file_path = $content_dir . '/' . $relative_path;
+			$resolved = $this->storage->read_content_from_file( $file_path );
+
+			if ( null !== $resolved ) {
+				if ( $is_object ) {
+					$row->post_content = $resolved;
+				} else {
+					$row['post_content'] = $resolved;
+				}
+			}
+		}
+		unset( $row );
+
+		return $rows;
+	}
+
+	/**
+	 * Load the file index into memory from the _markdown_file_index table.
+	 */
+	private function load_file_index_cache(): void {
+		$this->file_index_cache = array();
+
+		try {
+			$pdo = $this->get_connection()->get_pdo();
+			$stmt = $pdo->query( 'SELECT post_id, file_path FROM `_markdown_file_index`' );
+			if ( $stmt ) {
+				while ( $row = $stmt->fetch( \PDO::FETCH_OBJ ) ) {
+					$this->file_index_cache[ (int) $row->post_id ] = $row->file_path;
+				}
+			}
+		} catch ( \Throwable $e ) {
+			// Table might not exist yet during early boot.
+			$this->file_index_cache = array();
+		}
+	}
+
+	/**
+	 * Update the file index cache entry for a post.
+	 *
+	 * Called by the write engine after writing a .md file.
+	 *
+	 * @param int    $post_id       The post ID.
+	 * @param string $relative_path File path relative to MARKDOWN_DB_CONTENT_DIR.
+	 * @param int    $mtime         File modification time.
+	 * @param int    $size          File size in bytes.
+	 */
+	public function update_file_index( int $post_id, string $relative_path, int $mtime, int $size ): void {
+		try {
+			$pdo = $this->get_connection()->get_pdo();
+			$stmt = $pdo->prepare(
+				'INSERT OR REPLACE INTO `_markdown_file_index` (`post_id`, `file_path`, `file_mtime`, `file_size`) VALUES (?, ?, ?, ?)'
+			);
+			$stmt->execute( array( $post_id, $relative_path, $mtime, $size ) );
+
+			// Update in-memory cache too.
+			if ( null !== $this->file_index_cache ) {
+				$this->file_index_cache[ $post_id ] = $relative_path;
+			}
+		} catch ( \Throwable $e ) {
+			// Non-fatal — the index will be rebuilt on next boot.
+			error_log( 'Markdown DB: Failed to update file index: ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Remove a post from the file index.
+	 *
+	 * Called by the write engine after deleting a .md file.
+	 *
+	 * @param int $post_id The post ID.
+	 */
+	public function remove_from_file_index( int $post_id ): void {
+		try {
+			$pdo = $this->get_connection()->get_pdo();
+			$stmt = $pdo->prepare( 'DELETE FROM `_markdown_file_index` WHERE `post_id` = ?' );
+			$stmt->execute( array( $post_id ) );
+
+			if ( null !== $this->file_index_cache ) {
+				unset( $this->file_index_cache[ $post_id ] );
+			}
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB: Failed to remove from file index: ' . $e->getMessage() );
+		}
 	}
 
 	/**

@@ -1,21 +1,26 @@
 <?php
 /**
- * Boot Loader — Populates in-memory SQLite from markdown/YAML files.
+ * Boot Loader — Populates persistent SQLite from markdown/YAML files.
  *
- * This is the heart of Phase 2: on every boot, it reads all content
- * from markdown files on disk and INSERTs them into the in-memory
- * SQLite database so WordPress can query normally.
+ * Two boot modes:
+ *   Cold boot (load_all):  SQLite file doesn't exist — full load from disk.
+ *   Warm boot (sync_incremental): SQLite file exists — only sync changes.
  *
- * Order matters:
+ * Cold boot order:
  *   1. Create all WordPress tables (via MySQL CREATE TABLE statements)
  *   2. Load wp_options (WordPress needs these first — wp_load_alloptions)
  *   3. Load wp_users / wp_usermeta
  *   4. Load wp_terms / wp_term_taxonomy / wp_termmeta
- *   5. Load wp_posts (from markdown files)
+ *   5. Load wp_posts (from markdown files — metadata only, content lazy-loaded)
  *   6. Load wp_postmeta / wp_term_relationships (from post frontmatter or separate files)
  *   7. Load wp_comments / wp_commentmeta
  *   8. Load wp_links
  *   9. Load any plugin tables that have YAML data files
+ *   10. Save JSON manifest for future warm boots
+ *
+ * Warm boot:
+ *   1. Check JSON file manifests — reload only changed tables
+ *   2. Stat all .md files — re-parse only changed/new, delete removed
  *
  * Refs: GitHub issues #1, #2
  *
@@ -93,9 +98,11 @@ class WP_Markdown_Loader {
 	}
 
 	/**
-	 * Load everything from disk into in-memory SQLite.
+	 * Cold boot: load everything from disk into SQLite.
 	 *
-	 * This is the main entry point, called during db_connect().
+	 * Called when the persistent SQLite index file doesn't exist yet.
+	 * Creates all tables and INSERTs all data from markdown/JSON files.
+	 * Also saves the JSON file manifest for future warm boots.
 	 */
 	public function load_all(): void {
 		$start = microtime( true );
@@ -103,6 +110,9 @@ class WP_Markdown_Loader {
 		try {
 			// 1. Create WordPress core tables.
 			$this->create_core_tables();
+
+			// 1b. Create manifest tables for incremental sync.
+			$this->create_json_manifest_table();
 
 			// 2. Load options first — WordPress needs them immediately.
 			$this->load_options();
@@ -138,12 +148,506 @@ class WP_Markdown_Loader {
 
 			// 9. Load any plugin tables.
 			$this->load_plugin_tables();
+
+			// 10. Save JSON file manifest for future warm boots.
+			$this->save_json_manifest();
 		} catch ( \Throwable $e ) {
 			// Boot failures should log but not kill WordPress.
 			error_log( 'Markdown DB Loader error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
 		}
 
 		$this->timings['total'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Warm boot: incrementally sync only changed files.
+	 *
+	 * Called when the persistent SQLite index file already exists.
+	 * Compares current filesystem state against the stored manifests:
+	 *   - _markdown_file_index: tracks .md file paths, mtimes, sizes
+	 *   - _json_file_manifest: tracks JSON file mtimes, sizes
+	 *
+	 * Only re-parses files whose mtime or size changed.
+	 * Detects new files, deleted files, and moved files.
+	 */
+	public function sync_incremental(): void {
+		$start = microtime( true );
+
+		try {
+			// Ensure manifest tables exist (in case of schema upgrade).
+			$this->create_file_index_table();
+			$this->create_json_manifest_table();
+
+			// 1. Sync JSON tables — reload any whose file changed.
+			$this->sync_json_tables();
+
+			// 2. Sync markdown posts — the main event.
+			$this->sync_markdown_posts();
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB sync error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
+
+			// If incremental sync fails, fall back to full reload.
+			// Delete all data and reload from scratch.
+			error_log( 'Markdown DB: Falling back to full reload.' );
+			$this->load_all();
+			return;
+		}
+
+		$this->timings['total'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Sync JSON-backed tables.
+	 *
+	 * Checks each JSON file's mtime/size against the stored manifest.
+	 * Only reloads tables whose JSON file changed.
+	 */
+	private function sync_json_tables(): void {
+		$start = microtime( true );
+		$pdo = $this->driver->get_connection()->get_pdo();
+
+		// Load the current manifest.
+		$manifest = array();
+		try {
+			$rows = $pdo->query( 'SELECT file_name, file_mtime, file_size FROM `_json_file_manifest`' )->fetchAll( \PDO::FETCH_OBJ );
+			foreach ( $rows as $row ) {
+				$manifest[ $row->file_name ] = array(
+					'mtime' => (int) $row->file_mtime,
+					'size'  => (int) $row->file_size,
+				);
+			}
+		} catch ( \Throwable $e ) {
+			// No manifest — reload everything.
+			$manifest = array();
+		}
+
+		// Check options.json separately (it lives at content_dir root).
+		$options_file = $this->content_dir . '/options.json';
+		if ( file_exists( $options_file ) ) {
+			$mtime = (int) filemtime( $options_file );
+			$size  = (int) filesize( $options_file );
+			$cached = $manifest['options.json'] ?? null;
+
+			if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
+				// Options changed — truncate and reload.
+				$table = $this->prefix . 'options';
+				$pdo->exec( "DELETE FROM `{$table}`" );
+				$this->load_options();
+			}
+		}
+
+		// Check all JSON files in _tables/.
+		$tables_dir = $this->content_dir . '/_tables';
+		$json_tables = array(
+			'users', 'usermeta', 'terms', 'term_taxonomy', 'termmeta',
+			'posts', 'postmeta', 'term_relationships',
+			'comments', 'commentmeta', 'links',
+		);
+
+		foreach ( $json_tables as $table_suffix ) {
+			$file = $tables_dir . '/' . $table_suffix . '.json';
+			$file_key = '_tables/' . $table_suffix . '.json';
+
+			if ( ! file_exists( $file ) ) {
+				continue;
+			}
+
+			$mtime = (int) filemtime( $file );
+			$size  = (int) filesize( $file );
+			$cached = $manifest[ $file_key ] ?? null;
+
+			if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
+				// JSON file changed — truncate the table and reload.
+				$table = $this->prefix . $table_suffix;
+				$pdo->exec( "DELETE FROM `{$table}`" );
+				$this->load_table_from_json( $table_suffix );
+			}
+		}
+
+		// Also check for plugin table JSON files that may have changed.
+		if ( is_dir( $tables_dir ) ) {
+			$all_json_files = glob( $tables_dir . '/*.json' );
+			if ( $all_json_files ) {
+				$core_tables = array_flip( $json_tables );
+				foreach ( $all_json_files as $file ) {
+					$basename = basename( $file, '.json' );
+					if ( isset( $core_tables[ $basename ] ) ) {
+						continue; // Already handled above.
+					}
+
+					$file_key = '_tables/' . $basename . '.json';
+					$mtime = (int) filemtime( $file );
+					$size  = (int) filesize( $file );
+					$cached = $manifest[ $file_key ] ?? null;
+
+					if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
+						$table = $this->prefix . $basename;
+						$pdo->exec( "DELETE FROM `{$table}`" );
+						$this->load_table_from_json( $basename );
+					}
+				}
+			}
+		}
+
+		// Save updated manifest.
+		$this->save_json_manifest();
+
+		$this->timings['sync_json'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Sync markdown posts incrementally.
+	 *
+	 * Compares current filesystem state against _markdown_file_index:
+	 *   - Changed files (mtime/size differ): re-parse and UPDATE
+	 *   - New files (not in index): parse and INSERT
+	 *   - Deleted files (in index but not on disk): DELETE from posts
+	 */
+	private function sync_markdown_posts(): void {
+		$start = microtime( true );
+		$pdo = $this->driver->get_connection()->get_pdo();
+
+		// 1. Load current file index from SQLite.
+		$index = array(); // file_path → { post_id, mtime, size }
+		try {
+			$rows = $pdo->query( 'SELECT post_id, file_path, file_mtime, file_size FROM `_markdown_file_index`' )
+				->fetchAll( \PDO::FETCH_OBJ );
+			foreach ( $rows as $row ) {
+				$index[ $row->file_path ] = array(
+					'post_id' => (int) $row->post_id,
+					'mtime'   => (int) $row->file_mtime,
+					'size'    => (int) $row->file_size,
+				);
+			}
+		} catch ( \Throwable $e ) {
+			// No index — fall back to full reload.
+			throw $e;
+		}
+
+		// 2. Scan all current .md files on disk.
+		$current_files = array(); // relative_path → { mtime, size, absolute_path }
+		$all_posts = $this->storage->get_all_posts( true );
+		foreach ( $all_posts as $post ) {
+			$source_file = $post->_source_file ?? '';
+			if ( empty( $source_file ) || ! file_exists( $source_file ) ) {
+				continue;
+			}
+			$relative_path = $source_file;
+			if ( str_starts_with( $source_file, $this->content_dir . '/' ) ) {
+				$relative_path = substr( $source_file, strlen( $this->content_dir ) + 1 );
+			}
+			$current_files[ $relative_path ] = array(
+				'mtime'    => (int) filemtime( $source_file ),
+				'size'     => (int) filesize( $source_file ),
+				'absolute' => $source_file,
+				'post'     => $post,
+			);
+		}
+
+		// 3. Diff: find changed, new, and deleted files.
+		$changed = array();
+		$new_files = array();
+		$deleted_post_ids = array();
+
+		// Check existing index entries against current files.
+		foreach ( $index as $rel_path => $cached ) {
+			if ( isset( $current_files[ $rel_path ] ) ) {
+				$current = $current_files[ $rel_path ];
+				if ( $current['mtime'] !== $cached['mtime'] || $current['size'] !== $cached['size'] ) {
+					$changed[ $rel_path ] = $current;
+				}
+				// Mark as seen.
+				unset( $current_files[ $rel_path ] );
+			} else {
+				// File no longer exists — post was deleted externally.
+				$deleted_post_ids[] = $cached['post_id'];
+			}
+		}
+
+		// Remaining current_files are new (not in index).
+		$new_files = $current_files;
+
+		// If nothing changed, we're done.
+		if ( empty( $changed ) && empty( $new_files ) && empty( $deleted_post_ids ) ) {
+			$this->timings['sync_posts'] = microtime( true ) - $start;
+			return;
+		}
+
+		$posts_table = $this->prefix . 'posts';
+		$meta_table  = $this->prefix . 'postmeta';
+		$rel_table   = $this->prefix . 'term_relationships';
+
+		$pdo->exec( 'BEGIN TRANSACTION' );
+
+		try {
+			// 4. Handle deleted posts.
+			if ( ! empty( $deleted_post_ids ) ) {
+				$id_list = implode( ',', $deleted_post_ids );
+				$pdo->exec( "DELETE FROM `{$posts_table}` WHERE ID IN ({$id_list})" );
+				$pdo->exec( "DELETE FROM `{$meta_table}` WHERE post_id IN ({$id_list})" );
+				$pdo->exec( "DELETE FROM `{$rel_table}` WHERE object_id IN ({$id_list})" );
+				$pdo->exec( "DELETE FROM `_markdown_file_index` WHERE post_id IN ({$id_list})" );
+			}
+
+			// 5. Handle changed posts — UPDATE their metadata.
+			foreach ( $changed as $rel_path => $file_info ) {
+				$post = $file_info['post'];
+				$id = (int) $post->ID;
+				if ( $id <= 0 ) {
+					continue;
+				}
+
+				// Update the post row (all metadata columns).
+				$this->update_post_row( $pdo, $post );
+
+				// Update the file index.
+				$index_stmt = $pdo->prepare(
+					'INSERT OR REPLACE INTO `_markdown_file_index` (post_id, file_path, file_mtime, file_size) VALUES (?, ?, ?, ?)'
+				);
+				$index_stmt->execute( array( $id, $rel_path, $file_info['mtime'], $file_info['size'] ) );
+
+				// Update frontmatter meta: delete old, insert new.
+				$pdo->exec( "DELETE FROM `{$meta_table}` WHERE post_id = {$id}" );
+				$meta = $post->_frontmatter_meta ?? array();
+				if ( ! empty( $meta ) ) {
+					$meta_stmt = $pdo->prepare(
+						"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
+					);
+					foreach ( $meta as $key => $value ) {
+						$meta_stmt->execute( array( $id, (string) $key, (string) $value ) );
+					}
+				}
+
+				// Update term relationships: delete old, insert new.
+				$pdo->exec( "DELETE FROM `{$rel_table}` WHERE object_id = {$id}" );
+				$this->insert_post_terms( $pdo, $post );
+			}
+
+			// 6. Handle new posts — INSERT them.
+			foreach ( $new_files as $rel_path => $file_info ) {
+				$post = $file_info['post'];
+				$id = (int) $post->ID;
+				if ( $id <= 0 ) {
+					continue;
+				}
+
+				$this->insert_post_row( $pdo, $post );
+
+				// Add to file index.
+				$index_stmt = $pdo->prepare(
+					'INSERT OR REPLACE INTO `_markdown_file_index` (post_id, file_path, file_mtime, file_size) VALUES (?, ?, ?, ?)'
+				);
+				$index_stmt->execute( array( $id, $rel_path, $file_info['mtime'], $file_info['size'] ) );
+
+				// Insert frontmatter meta.
+				$meta = $post->_frontmatter_meta ?? array();
+				if ( ! empty( $meta ) ) {
+					$meta_stmt = $pdo->prepare(
+						"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
+					);
+					foreach ( $meta as $key => $value ) {
+						$meta_stmt->execute( array( $id, (string) $key, (string) $value ) );
+					}
+				}
+
+				// Insert term relationships.
+				$this->insert_post_terms( $pdo, $post );
+			}
+
+			$pdo->exec( 'COMMIT' );
+		} catch ( \Throwable $e ) {
+			$pdo->exec( 'ROLLBACK' );
+			throw $e;
+		}
+
+		$count_changed = count( $changed );
+		$count_new     = count( $new_files );
+		$count_deleted = count( $deleted_post_ids );
+		if ( $count_changed > 0 || $count_new > 0 || $count_deleted > 0 ) {
+			error_log( "Markdown DB sync: {$count_changed} changed, {$count_new} new, {$count_deleted} deleted" );
+		}
+
+		$this->timings['sync_posts'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Insert a single post row into wp_posts.
+	 *
+	 * @param \PDO   $pdo  The PDO connection.
+	 * @param object $post The post object (from parse_file).
+	 */
+	private function insert_post_row( \PDO $pdo, object $post ): void {
+		$table = $this->prefix . 'posts';
+		$stmt = $pdo->prepare(
+			"INSERT OR IGNORE INTO `{$table}` (
+				ID, post_author, post_date, post_date_gmt,
+				post_content, post_title, post_excerpt, post_status,
+				comment_status, ping_status, post_password, post_name,
+				to_ping, pinged, post_modified, post_modified_gmt,
+				post_content_filtered, post_parent, guid, menu_order,
+				post_type, post_mime_type, comment_count
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)"
+		);
+		$stmt->execute( array(
+			(int) $post->ID,
+			(int) $post->post_author,
+			$post->post_date,
+			$post->post_date_gmt,
+			'',  // post_content — empty, lazy-loaded from .md file
+			$post->post_title ?? '',
+			$post->post_excerpt ?? '',
+			$post->post_status ?? 'publish',
+			$post->comment_status ?? 'open',
+			$post->ping_status ?? 'open',
+			$post->post_password ?? '',
+			$post->post_name ?? '',
+			$post->to_ping ?? '',
+			$post->pinged ?? '',
+			$post->post_modified ?? '0000-00-00 00:00:00',
+			$post->post_modified_gmt ?? '0000-00-00 00:00:00',
+			$post->post_content_filtered ?? '',
+			(int) ( $post->post_parent ?? 0 ),
+			$post->guid ?? '',
+			(int) ( $post->menu_order ?? 0 ),
+			$post->post_type ?? 'post',
+			$post->post_mime_type ?? '',
+			(int) ( $post->comment_count ?? 0 ),
+		) );
+	}
+
+	/**
+	 * Update a single post row in wp_posts.
+	 *
+	 * @param \PDO   $pdo  The PDO connection.
+	 * @param object $post The post object (from parse_file).
+	 */
+	private function update_post_row( \PDO $pdo, object $post ): void {
+		$table = $this->prefix . 'posts';
+		$stmt = $pdo->prepare(
+			"UPDATE `{$table}` SET
+				post_author = ?, post_date = ?, post_date_gmt = ?,
+				post_title = ?, post_excerpt = ?, post_status = ?,
+				comment_status = ?, ping_status = ?, post_password = ?,
+				post_name = ?, post_modified = ?, post_modified_gmt = ?,
+				post_parent = ?, guid = ?, menu_order = ?,
+				post_type = ?, post_mime_type = ?, comment_count = ?
+			WHERE ID = ?"
+		);
+		$stmt->execute( array(
+			(int) $post->post_author,
+			$post->post_date,
+			$post->post_date_gmt,
+			$post->post_title ?? '',
+			$post->post_excerpt ?? '',
+			$post->post_status ?? 'publish',
+			$post->comment_status ?? 'open',
+			$post->ping_status ?? 'open',
+			$post->post_password ?? '',
+			$post->post_name ?? '',
+			$post->post_modified ?? '0000-00-00 00:00:00',
+			$post->post_modified_gmt ?? '0000-00-00 00:00:00',
+			(int) ( $post->post_parent ?? 0 ),
+			$post->guid ?? '',
+			(int) ( $post->menu_order ?? 0 ),
+			$post->post_type ?? 'post',
+			$post->post_mime_type ?? '',
+			(int) ( $post->comment_count ?? 0 ),
+			(int) $post->ID,
+		) );
+	}
+
+	/**
+	 * Insert term relationships for a post from its frontmatter.
+	 *
+	 * @param \PDO   $pdo  The PDO connection.
+	 * @param object $post The post object.
+	 */
+	private function insert_post_terms( \PDO $pdo, object $post ): void {
+		$terms = $post->_frontmatter_terms ?? array();
+		if ( empty( $terms ) ) {
+			return;
+		}
+
+		$id = (int) $post->ID;
+		$rel_table      = $this->prefix . 'term_relationships';
+		$taxonomy_table = $this->prefix . 'term_taxonomy';
+		$terms_table    = $this->prefix . 'terms';
+
+		// Build term lookup.
+		$term_map = array();
+		try {
+			$rows = $pdo->query(
+				"SELECT tt.term_taxonomy_id, tt.taxonomy, t.slug
+				 FROM `{$taxonomy_table}` tt
+				 JOIN `{$terms_table}` t ON tt.term_id = t.term_id"
+			)->fetchAll( \PDO::FETCH_OBJ );
+			foreach ( $rows as $row ) {
+				$term_map[ $row->taxonomy . '::' . $row->slug ] = (int) $row->term_taxonomy_id;
+			}
+		} catch ( \Throwable $e ) {
+			return;
+		}
+
+		$stmt = $pdo->prepare(
+			"INSERT OR IGNORE INTO `{$rel_table}` (object_id, term_taxonomy_id, term_order) VALUES (?, ?, 0)"
+		);
+
+		foreach ( $terms as $taxonomy => $slugs ) {
+			if ( ! is_array( $slugs ) ) {
+				continue;
+			}
+			foreach ( $slugs as $slug ) {
+				$key = $taxonomy . '::' . $slug;
+				if ( isset( $term_map[ $key ] ) ) {
+					$stmt->execute( array( $id, $term_map[ $key ] ) );
+				}
+			}
+		}
+	}
+
+	/**
+	 * Create the _json_file_manifest table.
+	 *
+	 * Tracks JSON file mtimes/sizes for incremental sync.
+	 */
+	private function create_json_manifest_table(): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+		$pdo->exec(
+			'CREATE TABLE IF NOT EXISTS `_json_file_manifest` (
+				`file_name` TEXT PRIMARY KEY,
+				`file_mtime` INTEGER NOT NULL,
+				`file_size` INTEGER NOT NULL
+			)'
+		);
+	}
+
+	/**
+	 * Save the current JSON file mtimes/sizes to the manifest.
+	 */
+	private function save_json_manifest(): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+
+		$stmt = $pdo->prepare(
+			'INSERT OR REPLACE INTO `_json_file_manifest` (file_name, file_mtime, file_size) VALUES (?, ?, ?)'
+		);
+
+		// Track options.json.
+		$options_file = $this->content_dir . '/options.json';
+		if ( file_exists( $options_file ) ) {
+			$stmt->execute( array( 'options.json', (int) filemtime( $options_file ), (int) filesize( $options_file ) ) );
+		}
+
+		// Track all JSON files in _tables/.
+		$tables_dir = $this->content_dir . '/_tables';
+		if ( is_dir( $tables_dir ) ) {
+			$files = glob( $tables_dir . '/*.json' );
+			if ( $files ) {
+				foreach ( $files as $file ) {
+					$key = '_tables/' . basename( $file );
+					$stmt->execute( array( $key, (int) filemtime( $file ), (int) filesize( $file ) ) );
+				}
+			}
+		}
 	}
 
 	/**
@@ -472,21 +976,23 @@ class WP_Markdown_Loader {
 	 *
 	 * Uses WP_Markdown_Storage::get_all_posts() to read all .md files,
 	 * then INSERTs them into the in-memory SQLite.
+	 *
+	 * Index/Map Architecture: post_content is stored as empty string in
+	 * SQLite for markdown-sourced posts. A _markdown_file_index table
+	 * maps post_id → file_path for lazy-loading content on demand.
+	 * Content is resolved by the driver's query() method when accessed.
 	 */
 	private function load_posts(): void {
 		$start = microtime( true );
 		$table = $this->prefix . 'posts';
 
-		// First load posts from markdown files.
-		$posts = $this->storage->get_all_posts();
+		// Create the file index table for lazy-loading content.
+		$this->create_file_index_table();
 
-		// Raw markdown goes into SQLite as-is.
-		// Markdown → HTML conversion happens at render time via filters:
-		//   - the_content filter: markdown → HTML (frontend)
-		//   - rest_prepare_{type} filter: markdown → HTML → blocks (editor)
-		// This ensures that code reading post_content directly (CLI, abilities,
-		// plugins) gets raw markdown — WordPress is markdown-native.
-		// See GitHub issue #30.
+		// Load posts with metadata only — skip reading file bodies.
+		// Content will be lazy-loaded from disk on demand.
+		// See: Index/Map Architecture design doc.
+		$posts = $this->storage->get_all_posts( true );
 
 		// Store posts for load_frontmatter_meta() and load_frontmatter_terms().
 		$this->loaded_posts = $posts;
@@ -527,15 +1033,22 @@ class WP_Markdown_Loader {
 				"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
 			);
 
+			// Prepared statement for the file index.
+			$index_stmt = $pdo->prepare(
+				'INSERT OR REPLACE INTO `_markdown_file_index` (`post_id`, `file_path`, `file_mtime`, `file_size`) VALUES (?, ?, ?, ?)'
+			);
+
 			foreach ( $posts as $post ) {
 				$id = (int) $post->ID;
 
+				// Index/Map: insert empty string for post_content.
+				// Content lives in the .md file, not in SQLite.
 				$stmt->execute( array(
 					$id,
 					(int) $post->post_author,
 					$post->post_date,
 					$post->post_date_gmt,
-					$post->post_content ?? '',
+					'',  // post_content — empty, lazy-loaded from .md file
 					$post->post_title ?? '',
 					$post->post_excerpt ?? '',
 					$post->post_status ?? 'publish',
@@ -556,6 +1069,21 @@ class WP_Markdown_Loader {
 					(int) ( $post->comment_count ?? 0 ),
 				) );
 				$loaded_ids[ $id ] = true;
+
+				// Populate the file index for lazy-loading.
+				$source_file = $post->_source_file ?? '';
+				if ( $id > 0 && ! empty( $source_file ) && file_exists( $source_file ) ) {
+					$relative_path = $source_file;
+					if ( str_starts_with( $source_file, $this->content_dir . '/' ) ) {
+						$relative_path = substr( $source_file, strlen( $this->content_dir ) + 1 );
+					}
+					$index_stmt->execute( array(
+						$id,
+						$relative_path,
+						(int) filemtime( $source_file ),
+						(int) filesize( $source_file ),
+					) );
+				}
 			}
 
 			// Load non-markdown posts from JSON (revisions, nav items, etc.).
@@ -579,6 +1107,27 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['load_posts'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Create the _markdown_file_index table.
+	 *
+	 * Maps post_id → file_path for lazy-loading content from disk.
+	 * This is a SQLite-native table (not a WordPress table), created
+	 * directly via PDO since it doesn't need MySQL translation.
+	 *
+	 * See: Index/Map Architecture design doc.
+	 */
+	private function create_file_index_table(): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+		$pdo->exec(
+			'CREATE TABLE IF NOT EXISTS `_markdown_file_index` (
+				`post_id` INTEGER PRIMARY KEY,
+				`file_path` TEXT NOT NULL,
+				`file_mtime` INTEGER NOT NULL,
+				`file_size` INTEGER NOT NULL
+			)'
+		);
 	}
 
 	/**

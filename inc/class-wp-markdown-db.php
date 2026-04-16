@@ -99,102 +99,36 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$is_warm_boot = ( 'primary' === $mode && file_exists( $db_path ) );
 
 		try {
-			$connection = new WP_SQLite_Connection(
-				array(
-					'pdo'          => $pdo,
-					'path'         => $db_path,
-					'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
-				)
-			);
-
-			$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
-			$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
-
-			// Set up the write engine.
-			global $table_prefix;
-			$prefix = $table_prefix ?? 'wp_';
-
-			$write_engine = new WP_Markdown_Write_Engine(
-				$content_dir,
-				$storage,
-				$this->dbh,
-				$prefix
-			);
-			$this->dbh->set_write_engine( $write_engine );
-
-			// Set up the post resolver so the storage engine can build
-			// hierarchical directory paths. See GitHub issue #14.
-			$driver_ref = $this->dbh;
-			$prefix_ref = $prefix;
-			$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-				$table = $prefix_ref . 'posts';
-				try {
-					$rows = $driver_ref->query(
-						"SELECT post_name, post_parent, post_type FROM `{$table}` WHERE ID = {$post_id}"
-					);
-					if ( is_array( $rows ) && ! empty( $rows ) ) {
-						return $rows[0];
-					}
-				} catch ( \Throwable $e ) {
-					// Silently fail — the write engine will use a flat path.
-				}
-				return null;
-			} );
-
-			// Meta resolver — fetches all post meta for a given post ID.
-			// Used by build_frontmatter() to embed meta in .md files. See issue #6.
-			$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-				$table = $prefix_ref . 'postmeta';
-				try {
-					$rows = $driver_ref->query(
-						"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
-					);
-					return is_array( $rows ) ? $rows : array();
-				} catch ( \Throwable $e ) {
-					return array();
-				}
-			} );
-
-			// Terms resolver — fetches all terms for a given post ID.
-			// Used by build_frontmatter() to embed terms in .md files. See issue #6.
-			$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-				$terms_table    = $prefix_ref . 'terms';
-				$taxonomy_table = $prefix_ref . 'term_taxonomy';
-				$rel_table      = $prefix_ref . 'term_relationships';
-				try {
-					$rows = $driver_ref->query(
-						"SELECT tt.taxonomy, t.slug
-						 FROM `{$rel_table}` tr
-						 JOIN `{$taxonomy_table}` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-						 JOIN `{$terms_table}` t ON tt.term_id = t.term_id
-						 WHERE tr.object_id = {$post_id}"
-					);
-					return is_array( $rows ) ? $rows : array();
-				} catch ( \Throwable $e ) {
-					return array();
-				}
-			} );
-
-			// In primary mode, load or sync data.
-			if ( 'primary' === $mode ) {
-				$this->loader = new WP_Markdown_Loader(
-					$content_dir,
-					$this->dbh,
-					$storage,
-					$prefix
-				);
-
-				if ( $is_warm_boot ) {
-					// Warm boot: SQLite index exists — only sync changes.
-					$this->loader->sync_incremental();
-				} else {
-					// Cold boot: no SQLite index — full load from disk.
-					$this->loader->load_all();
-				}
-			}
+			$this->boot_connection( $db_path, $pdo, $mode, $is_warm_boot, $content_dir, $storage );
 		} catch ( \Throwable $e ) {
-			$this->last_error = $e->getMessage();
-			error_log( 'Markdown DB connect error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
+			// If warm boot fails (corrupted SQLite file), auto-rebuild.
+			// The .md files are the source of truth — the index can always be rebuilt.
+			// See GitHub issue #46.
+			if ( $is_warm_boot && 'primary' === $mode ) {
+				error_log( 'Markdown DB: Corrupted index detected (' . $e->getMessage() . '). Auto-rebuilding...' );
+
+				// Delete the corrupted file and any journal files.
+				@unlink( $db_path );
+				@unlink( $db_path . '-wal' );
+				@unlink( $db_path . '-shm' );
+				@unlink( $db_path . '-journal' );
+
+				// Reset state for a clean cold boot.
+				$this->dbh        = null;
+				$this->last_error = '';
+				$this->loader     = null;
+
+				try {
+					$this->boot_connection( $db_path, null, $mode, false, $content_dir, $storage );
+					error_log( 'Markdown DB: Index rebuilt successfully.' );
+				} catch ( \Throwable $rebuild_error ) {
+					$this->last_error = $rebuild_error->getMessage();
+					error_log( 'Markdown DB: Rebuild failed: ' . $rebuild_error->getMessage() . "\n" . $rebuild_error->getTraceAsString() );
+				}
+			} else {
+				$this->last_error = $e->getMessage();
+				error_log( 'Markdown DB connect error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
+			}
 		}
 
 		if ( $this->last_error ) {
@@ -203,6 +137,120 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		$this->ready = true;
 		$this->set_sql_mode();
+	}
+
+	/**
+	 * Boot the database connection, write engine, resolvers, and loader.
+	 *
+	 * Extracted from db_connect() so it can be retried on corruption.
+	 * See GitHub issue #46.
+	 *
+	 * @param string              $db_path       Path to the SQLite file.
+	 * @param \PDO|null           $pdo           Existing PDO connection (null for fresh).
+	 * @param string              $mode          Operating mode ('primary' or 'mirror').
+	 * @param bool                $is_warm_boot  Whether the SQLite file already exists.
+	 * @param string              $content_dir   Path to the markdown content directory.
+	 * @param WP_Markdown_Storage $storage       The markdown storage engine.
+	 */
+	private function boot_connection(
+		string $db_path,
+		?\PDO $pdo,
+		string $mode,
+		bool $is_warm_boot,
+		string $content_dir,
+		WP_Markdown_Storage $storage
+	): void {
+		$connection = new WP_SQLite_Connection(
+			array(
+				'pdo'          => $pdo,
+				'path'         => $db_path,
+				'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
+			)
+		);
+
+		$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
+		$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
+
+		// Set up the write engine.
+		global $table_prefix;
+		$prefix = $table_prefix ?? 'wp_';
+
+		$write_engine = new WP_Markdown_Write_Engine(
+			$content_dir,
+			$storage,
+			$this->dbh,
+			$prefix
+		);
+		$this->dbh->set_write_engine( $write_engine );
+
+		// Set up the post resolver so the storage engine can build
+		// hierarchical directory paths. See GitHub issue #14.
+		$driver_ref = $this->dbh;
+		$prefix_ref = $prefix;
+		$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
+			$table = $prefix_ref . 'posts';
+			try {
+				$rows = $driver_ref->query(
+					"SELECT post_name, post_parent, post_type FROM `{$table}` WHERE ID = {$post_id}"
+				);
+				if ( is_array( $rows ) && ! empty( $rows ) ) {
+					return $rows[0];
+				}
+			} catch ( \Throwable $e ) {
+				// Silently fail — the write engine will use a flat path.
+			}
+			return null;
+		} );
+
+		// Meta resolver — fetches all post meta for a given post ID.
+		// Used by build_frontmatter() to embed meta in .md files. See issue #6.
+		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
+			$table = $prefix_ref . 'postmeta';
+			try {
+				$rows = $driver_ref->query(
+					"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
+				);
+				return is_array( $rows ) ? $rows : array();
+			} catch ( \Throwable $e ) {
+				return array();
+			}
+		} );
+
+		// Terms resolver — fetches all terms for a given post ID.
+		// Used by build_frontmatter() to embed terms in .md files. See issue #6.
+		$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
+			$terms_table    = $prefix_ref . 'terms';
+			$taxonomy_table = $prefix_ref . 'term_taxonomy';
+			$rel_table      = $prefix_ref . 'term_relationships';
+			try {
+				$rows = $driver_ref->query(
+					"SELECT tt.taxonomy, t.slug
+					 FROM `{$rel_table}` tr
+					 JOIN `{$taxonomy_table}` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
+					 JOIN `{$terms_table}` t ON tt.term_id = t.term_id
+					 WHERE tr.object_id = {$post_id}"
+				);
+				return is_array( $rows ) ? $rows : array();
+			} catch ( \Throwable $e ) {
+				return array();
+			}
+		} );
+
+		// In primary mode, load or sync data.
+		if ( 'primary' === $mode ) {
+			$this->loader = new WP_Markdown_Loader(
+				$content_dir,
+				$this->dbh,
+				$storage,
+				$prefix
+			);
+
+			if ( $is_warm_boot ) {
+				$this->loader->sync_incremental();
+			} else {
+				$this->loader->load_all();
+			}
+		}
 	}
 
 	/**

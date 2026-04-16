@@ -103,7 +103,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				array(
 					'pdo'          => $pdo,
 					'path'         => $db_path,
-					'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : 'WAL',
+					'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
 				)
 			);
 

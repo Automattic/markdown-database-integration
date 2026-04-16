@@ -582,6 +582,11 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Persist a schema change (CREATE TABLE, ALTER TABLE, DROP TABLE).
 	 *
+	 * For CREATE and ALTER, we snapshot the current table schema via
+	 * SHOW CREATE TABLE — this gives us a single clean MySQL CREATE TABLE
+	 * with all columns, indexes, and constraints as they are NOW. No more
+	 * append logs of ALTER TABLE history. See issue #47.
+	 *
 	 * @param string $query    The DDL query.
 	 * @param string $table    The affected table name.
 	 * @param string $ddl_type CREATE, ALTER, or DROP.
@@ -606,27 +611,50 @@ class WP_Markdown_Write_Engine {
 				// Remove schema and data files.
 				@unlink( $schema_path );
 				@unlink( $this->content_dir . '/_tables/' . $table_suffix . '.json' );
-			} elseif ( 'CREATE' === $ddl_type ) {
-				// Save the CREATE TABLE statement (overwrites any existing file).
-				file_put_contents(
-					$schema_path,
-					$query . ";\n",
-					LOCK_EX
-				);
-			} elseif ( 'ALTER' === $ddl_type ) {
-				// Append ALTER statements after the CREATE TABLE.
-				// This preserves the full DDL history needed to recreate the table.
-				file_put_contents(
-					$schema_path,
-					$query . ";\n",
-					FILE_APPEND | LOCK_EX
-				);
+			} else {
+				// CREATE or ALTER — snapshot the current table state.
+				// SHOW CREATE TABLE returns a clean MySQL CREATE TABLE
+				// with all columns, types, defaults, and indexes.
+				$create_sql = $this->get_create_table_sql( $table );
+				if ( null !== $create_sql ) {
+					file_put_contents(
+						$schema_path,
+						$create_sql . ";\n",
+						LOCK_EX
+					);
+				}
 			}
 		} catch ( \Throwable $e ) {
 			error_log( 'Markdown DB schema persist error: ' . $e->getMessage() );
 		}
 
 		$this->writing = false;
+	}
+
+	/**
+	 * Get the CREATE TABLE statement for a table via SHOW CREATE TABLE.
+	 *
+	 * The SQLite driver's MySQL translator supports this and returns
+	 * clean MySQL DDL from the information schema.
+	 *
+	 * @param string $table The full table name.
+	 * @return string|null The CREATE TABLE SQL, or null on failure.
+	 */
+	private function get_create_table_sql( string $table ): ?string {
+		try {
+			$rows = $this->driver->query(
+				"SHOW CREATE TABLE `{$table}`"
+			);
+			if ( is_array( $rows ) && ! empty( $rows ) ) {
+				$row = $rows[0];
+				// The column name varies: "Create Table" or "create table".
+				return $row->{'Create Table'} ?? $row->{'create table'} ?? null;
+			}
+		} catch ( \Throwable $e ) {
+			// Table might not exist yet (race on CREATE TABLE).
+			error_log( "Markdown DB: SHOW CREATE TABLE failed for {$table}: " . $e->getMessage() );
+		}
+		return null;
 	}
 
 	/**

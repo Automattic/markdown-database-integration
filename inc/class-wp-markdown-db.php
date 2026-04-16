@@ -3,9 +3,14 @@
  * Markdown Database — wpdb override.
  *
  * Extends WP_SQLite_DB to:
- * - Use in-memory SQLite (:memory:) as the runtime query engine
- * - Load all data from markdown/JSON files at boot
+ * - Use persistent on-disk SQLite as the index/query engine
+ * - Load all data from markdown/JSON files on cold boot
+ * - Incrementally sync only changed files on warm boot
  * - Persist all writes back to markdown/JSON files
+ *
+ * Boot modes:
+ *   Cold boot: SQLite file doesn't exist → full load from disk
+ *   Warm boot: SQLite file exists → incremental sync (stat changed files only)
  *
  * @package Markdown_Database_Integration
  * @since 0.1.0
@@ -27,12 +32,13 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	/**
 	 * Connects to the database.
 	 *
-	 * In 'primary' mode (Phase 2): creates an in-memory SQLite database,
-	 * loads all data from markdown/JSON files, then WordPress proceeds
-	 * with the in-memory database as its query engine.
+	 * In 'primary' mode: uses a persistent on-disk SQLite file as the index.
+	 * On cold boot (no file), does a full load from markdown/JSON files.
+	 * On warm boot (file exists), does an incremental sync — only re-parses
+	 * .md files whose mtime/size changed since last boot.
 	 *
-	 * In 'mirror' mode (Phase 1): uses the on-disk SQLite file and
-	 * mirrors writes to markdown files.
+	 * In 'mirror' mode: uses the standard on-disk SQLite file and mirrors
+	 * writes to markdown files.
 	 *
 	 * @param bool $allow_bail Not used.
 	 * @return void
@@ -60,9 +66,14 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// Determine the SQLite path.
 		if ( 'primary' === $mode ) {
-			// Phase 2: in-memory database — markdown files are the source of truth.
-			$db_path = ':memory:';
-			// Don't reuse any existing PDO — we need a fresh in-memory database.
+			// Persistent on-disk SQLite — the index file.
+			// Stored alongside the content directory for co-location.
+			$content_dir_for_path = defined( 'MARKDOWN_DB_CONTENT_DIR' )
+				? MARKDOWN_DB_CONTENT_DIR
+				: WP_CONTENT_DIR . '/markdown';
+			$db_path = dirname( $content_dir_for_path ) . '/markdown-index.sqlite';
+			$this->ensure_directory_exists( dirname( $db_path ) );
+			// Don't reuse any existing PDO — we need our own connection.
 			$pdo = null;
 		} else {
 			// Phase 1 / mirror: use on-disk SQLite file.
@@ -84,12 +95,15 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		$storage = new WP_Markdown_Storage( $content_dir, $excluded_types );
 
+		// Detect warm vs cold boot for primary mode.
+		$is_warm_boot = ( 'primary' === $mode && file_exists( $db_path ) );
+
 		try {
 			$connection = new WP_SQLite_Connection(
 				array(
 					'pdo'          => $pdo,
 					'path'         => $db_path,
-					'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
+					'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : 'WAL',
 				)
 			);
 
@@ -161,7 +175,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				}
 			} );
 
-			// In primary mode, load all data from files into memory.
+			// In primary mode, load or sync data.
 			if ( 'primary' === $mode ) {
 				$this->loader = new WP_Markdown_Loader(
 					$content_dir,
@@ -169,7 +183,14 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 					$storage,
 					$prefix
 				);
-				$this->loader->load_all();
+
+				if ( $is_warm_boot ) {
+					// Warm boot: SQLite index exists — only sync changes.
+					$this->loader->sync_incremental();
+				} else {
+					// Cold boot: no SQLite index — full load from disk.
+					$this->loader->load_all();
+				}
 			}
 		} catch ( \Throwable $e ) {
 			$this->last_error = $e->getMessage();
@@ -194,15 +215,24 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	}
 
 	/**
-	 * Ensure the SQLite database directory exists.
+	 * Ensure a directory exists.
+	 *
+	 * @param string $dir Directory path.
+	 */
+	private function ensure_directory_exists( string $dir ): void {
+		if ( ! is_dir( $dir ) ) {
+			$umask = umask( 0 );
+			@mkdir( $dir, 0755, true );
+			umask( $umask );
+		}
+	}
+
+	/**
+	 * Ensure the SQLite database directory exists with protections.
 	 */
 	private function ensure_database_directory_exists(): void {
 		$dir = dirname( FQDB );
-		if ( ! is_dir( $dir ) ) {
-			$umask = umask( 0 );
-			@mkdir( $dir, 0700, true );
-			umask( $umask );
-		}
+		$this->ensure_directory_exists( $dir );
 
 		// .htaccess protection.
 		$htaccess = $dir . '/.htaccess';

@@ -85,6 +85,38 @@ class WP_Markdown_Write_Engine {
 	private $dirty = array();
 
 	/**
+	 * Specific wp_options names changed in this request.
+	 *
+	 * Populated by persist_write() when it can cleanly parse the option_name
+	 * from the query. Used by persist_options() to merge only these keys
+	 * into options.json rather than overwriting the entire file.
+	 *
+	 * Concurrent requests (e.g., wp-cron spawned mid-request) race on
+	 * options.json writes; whole-file replacement causes lost writes
+	 * (the slower writer overwrites the faster writer's in-memory SQLite
+	 * state, which never saw the other request's changes). Tracking
+	 * specific names + read-merge-write + flock eliminates the race for
+	 * disjoint-key writers.
+	 *
+	 * Keyed by option_name for uniqueness and O(1) presence checks.
+	 *
+	 * @var array<string, bool>
+	 * @since 0.3.0
+	 */
+	private $dirty_option_names = array();
+
+	/**
+	 * When true, persist_options() writes the entire options table (legacy
+	 * behavior) instead of the surgical merge. Set when query parsing fails
+	 * for any options write in this request — ensures we never silently
+	 * drop a write we couldn't analyze.
+	 *
+	 * @var bool
+	 * @since 0.3.0
+	 */
+	private $dirty_options_all = false;
+
+	/**
 	 * Whether the shutdown flush handler has been registered.
 	 *
 	 * @var bool
@@ -144,8 +176,13 @@ class WP_Markdown_Write_Engine {
 				$this->persist_postmeta_write( $query, $op_type );
 			} elseif ( in_array( $table_suffix, array( 'term_relationships', 'term_taxonomy', 'terms' ), true ) ) {
 				$this->persist_terms_write( $query, $op_type, $table_suffix );
+			} elseif ( $table_suffix === 'options' ) {
+				// Defer to shutdown. Track specific option_name(s) so we can merge
+				// into options.json without overwriting concurrent writers.
+				$this->mark_dirty( 'options' );
+				$this->track_options_change( $query );
 			} else {
-				// Defer options, users, usermeta, and all other tables to shutdown.
+				// Defer users, usermeta, and all other tables to shutdown.
 				$this->mark_dirty( $table_suffix );
 			}
 		} catch ( \Throwable $e ) {
@@ -164,6 +201,78 @@ class WP_Markdown_Write_Engine {
 	private function mark_dirty( string $table_suffix ): void {
 		$this->dirty[ $table_suffix ] = true;
 		$this->ensure_shutdown_registered();
+	}
+
+	/**
+	 * Extract the option_name(s) touched by an options-table query and record
+	 * them in $dirty_option_names.
+	 *
+	 * If the query shape cannot be parsed, set $dirty_options_all so
+	 * persist_options() falls back to a full-table rewrite. Better to
+	 * over-write than silently lose a change.
+	 *
+	 * Supported shapes (all WordPress-generated):
+	 *   INSERT INTO `...options` (`option_name`, `option_value`, `autoload`) VALUES ('name', ...)
+	 *   REPLACE INTO `...options` (`option_name`, ...) VALUES ('name', ...)
+	 *   INSERT ... ON DUPLICATE KEY UPDATE ... (MySQL upsert — option_name in VALUES list)
+	 *   UPDATE `...options` SET ... WHERE `option_name` = 'name'
+	 *   DELETE FROM `...options` WHERE `option_name` = 'name'
+	 *
+	 * @since 0.3.0
+	 *
+	 * @param string $query The SQL query string.
+	 */
+	private function track_options_change( string $query ): void {
+		// INSERT / REPLACE: option_name appears as the first VALUES entry
+		// when the column list starts with option_name. WordPress always
+		// emits the column list in this order.
+		if ( preg_match( '/^\s*(?:INSERT|REPLACE)\b/i', $query ) ) {
+			// Match VALUES ('name', ...) — the first string literal after VALUES(
+			// is option_name per WordPress's column order.
+			if ( preg_match(
+				'/VALUES\s*\(\s*\'((?:\\\\\'|[^\'])*)\'/i',
+				$query,
+				$m
+			) ) {
+				$this->dirty_option_names[ $this->unslash_sql_string( $m[1] ) ] = true;
+				return;
+			}
+			$this->dirty_options_all = true;
+			return;
+		}
+
+		// UPDATE / DELETE: option_name appears in WHERE clause.
+		if ( preg_match( '/^\s*(?:UPDATE|DELETE)\b/i', $query ) ) {
+			if ( preg_match(
+				'/WHERE\s+`?option_name`?\s*=\s*\'((?:\\\\\'|[^\'])*)\'/i',
+				$query,
+				$m
+			) ) {
+				$this->dirty_option_names[ $this->unslash_sql_string( $m[1] ) ] = true;
+				return;
+			}
+			$this->dirty_options_all = true;
+			return;
+		}
+
+		// Unknown shape — safe fallback.
+		$this->dirty_options_all = true;
+	}
+
+	/**
+	 * Reverse SQL-escape sequences in an extracted string literal.
+	 *
+	 * Handles the two escape styles WordPress/the SQLite driver produce:
+	 *   \\' → '
+	 *   \\\\ → \
+	 *
+	 * @since 0.3.0
+	 *
+	 * @param string $raw String captured from inside single quotes.
+	 * @return string
+	 */
+	private function unslash_sql_string( string $raw ): string {
+		return str_replace( array( "\\'", '\\\\' ), array( "'", '\\' ), $raw );
 	}
 
 	/**
@@ -204,7 +313,9 @@ class WP_Markdown_Write_Engine {
 					$this->persist_table( $table_suffix );
 				}
 			}
-			$this->dirty = array();
+			$this->dirty              = array();
+			$this->dirty_option_names = array();
+			$this->dirty_options_all  = false;
 		} catch ( \Throwable $e ) {
 			error_log( 'Markdown DB flush error: ' . $e->getMessage() );
 		}
@@ -213,11 +324,83 @@ class WP_Markdown_Write_Engine {
 	}
 
 	/**
-	 * Persist the entire wp_options table to options.json.
+	 * Persist wp_options writes to options.json.
 	 *
-	 * Filters out ephemeral options (transients, cron).
+	 * Strategy: read-merge-write under an exclusive file lock so concurrent
+	 * writers (e.g. wp-cron spawned mid-request) don't overwrite each
+	 * other's changes.
+	 *
+	 * - Read the current options.json into a name-keyed map.
+	 * - For each option_name marked dirty in this request, read its current
+	 *   value from SQLite and either overwrite the map entry or delete it
+	 *   (if the option no longer exists in SQLite → was deleted).
+	 * - Untouched keys in options.json are preserved as-is, so concurrent
+	 *   writers that modified disjoint keys don't lose their work.
+	 * - Write the merged map back atomically.
+	 *
+	 * Fallback: if $dirty_options_all is set (query parsing failed for any
+	 * options write this request), we persist the full current SQLite
+	 * snapshot instead of merging. Correct but loses the concurrency
+	 * protection for that request — the surgical path is preferred.
+	 *
+	 * @since 0.3.0 Rewritten as read-merge-write with flock.
 	 */
 	private function persist_options(): void {
+		$path = $this->content_dir . '/options.json';
+
+		// Ensure the directory exists so we can open the lock file.
+		if ( ! is_dir( $this->content_dir ) ) {
+			mkdir( $this->content_dir, 0755, true );
+		}
+
+		// Open (or create) the options.json for read+write with an
+		// exclusive lock. Serializes concurrent persist_options() calls.
+		$fh = @fopen( $path, 'c+' );
+		if ( false === $fh ) {
+			error_log( 'Markdown DB: Failed to open options.json for persist.' );
+			return;
+		}
+
+		try {
+			if ( ! flock( $fh, LOCK_EX ) ) {
+				error_log( 'Markdown DB: Failed to acquire lock on options.json.' );
+				return;
+			}
+
+			if ( $this->dirty_options_all || empty( $this->dirty_option_names ) ) {
+				// Full-table fallback — either we couldn't parse a query,
+				// or nothing name-specific was recorded (defensive: should
+				// not happen since persist_write always calls track_options_change
+				// for options, but handle it rather than write an empty file).
+				$options = $this->read_full_options_from_sqlite();
+				if ( null === $options ) {
+					return; // SQLite read failed — preserve existing file.
+				}
+			} else {
+				// Surgical merge: start with disk state, overlay SQLite values for dirty keys.
+				$options = $this->merge_dirty_options( $fh );
+				if ( null === $options ) {
+					return; // Error during merge — preserve existing file.
+				}
+			}
+
+			$this->write_locked( $fh, $options );
+		} finally {
+			flock( $fh, LOCK_UN );
+			fclose( $fh );
+		}
+	}
+
+	/**
+	 * Read the full wp_options table from SQLite into the persisted-shape array.
+	 *
+	 * Used for the whole-table fallback path.
+	 *
+	 * @since 0.3.0
+	 *
+	 * @return array|null Array of option rows, or null on failure.
+	 */
+	private function read_full_options_from_sqlite(): ?array {
 		$table = $this->prefix . 'options';
 
 		try {
@@ -226,22 +409,19 @@ class WP_Markdown_Write_Engine {
 			);
 		} catch ( \Throwable $e ) {
 			error_log( 'Markdown DB: Failed to read options for persist: ' . $e->getMessage() );
-			return;
+			return null;
 		}
 
 		if ( ! is_array( $rows ) ) {
-			return;
+			return null;
 		}
 
 		$options = array();
 		foreach ( $rows as $row ) {
 			$name = $row->option_name;
-
-			// Skip ephemeral options.
 			if ( $this->is_ephemeral_option( $name ) ) {
 				continue;
 			}
-
 			$options[] = array(
 				'option_id'    => (int) $row->option_id,
 				'option_name'  => $name,
@@ -250,7 +430,149 @@ class WP_Markdown_Write_Engine {
 			);
 		}
 
-		$this->write_json( $this->content_dir . '/options.json', $options );
+		return $options;
+	}
+
+	/**
+	 * Read existing options.json through the open handle, then merge this
+	 * request's dirty keys from SQLite on top.
+	 *
+	 * @since 0.3.0
+	 *
+	 * @param resource $fh File handle opened with 'c+' and holding LOCK_EX.
+	 * @return array|null Merged option rows (persisted shape), or null on
+	 *                    catastrophic error — caller preserves existing file.
+	 */
+	private function merge_dirty_options( $fh ): ?array {
+		// Read existing file via the locked handle (safe against concurrent writers).
+		$existing = $this->read_options_from_handle( $fh );
+
+		// Index by option_name for O(1) merge. Preserve original option_id.
+		$by_name = array();
+		foreach ( $existing as $row ) {
+			if ( isset( $row['option_name'] ) ) {
+				$by_name[ $row['option_name'] ] = $row;
+			}
+		}
+
+		$table = $this->prefix . 'options';
+
+		foreach ( array_keys( $this->dirty_option_names ) as $name ) {
+			if ( '' === $name || $this->is_ephemeral_option( $name ) ) {
+				unset( $by_name[ $name ] );
+				continue;
+			}
+
+			// Inline-escape the option_name for MySQL string literal context.
+			// Option names are already WP-sanitized but be defensive.
+			$escaped_name = str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), $name );
+
+			try {
+				$rows = $this->driver->query(
+					"SELECT option_id, option_name, option_value, autoload FROM `{$table}` WHERE option_name = '{$escaped_name}'"
+				);
+			} catch ( \Throwable $e ) {
+				error_log( 'Markdown DB: Failed to read dirty option "' . $name . '": ' . $e->getMessage() );
+				// Keep existing value rather than lose data on a read error.
+				continue;
+			}
+
+			if ( ! is_array( $rows ) || empty( $rows ) ) {
+				// Option no longer exists in SQLite → it was deleted. Drop from merged set.
+				unset( $by_name[ $name ] );
+				continue;
+			}
+
+			$row                  = $rows[0];
+			$by_name[ $name ] = array(
+				'option_id'    => (int) $row->option_id,
+				'option_name'  => $row->option_name,
+				'option_value' => $row->option_value,
+				'autoload'     => $row->autoload,
+			);
+		}
+
+		// Return as a stable-ordered list. Preserve on-disk ordering where
+		// possible (options that existed before come first in their
+		// original order), with net-new options appended by option_id.
+		$out  = array();
+		$seen = array();
+		foreach ( $existing as $row ) {
+			$name = $row['option_name'] ?? '';
+			if ( '' === $name ) {
+				continue;
+			}
+			if ( isset( $by_name[ $name ] ) ) {
+				$out[]          = $by_name[ $name ];
+				$seen[ $name ] = true;
+			}
+		}
+		foreach ( $by_name as $name => $row ) {
+			if ( ! isset( $seen[ $name ] ) ) {
+				$out[] = $row;
+			}
+		}
+
+		return $out;
+	}
+
+	/**
+	 * Read JSON contents through an already-open, locked file handle.
+	 *
+	 * @since 0.3.0
+	 *
+	 * @param resource $fh File handle.
+	 * @return array Parsed options, or empty array if file is new/empty/unparseable.
+	 */
+	private function read_options_from_handle( $fh ): array {
+		if ( -1 === fseek( $fh, 0 ) ) {
+			return array();
+		}
+
+		$contents = stream_get_contents( $fh );
+		if ( false === $contents || '' === $contents ) {
+			return array();
+		}
+
+		$decoded = json_decode( $contents, true );
+		return is_array( $decoded ) ? $decoded : array();
+	}
+
+	/**
+	 * Write JSON contents through an already-open, locked file handle.
+	 *
+	 * Uses the locked handle directly — no temp-file rename — because the
+	 * flock already serializes writers. Truncate + rewind + write preserves
+	 * the lock across the write.
+	 *
+	 * @since 0.3.0
+	 *
+	 * @param resource $fh   File handle.
+	 * @param array    $data Data to encode.
+	 */
+	private function write_locked( $fh, array $data ): void {
+		$json = json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		if ( false === $json ) {
+			error_log( 'Markdown DB: Failed to encode options.json.' );
+			return;
+		}
+
+		if ( -1 === fseek( $fh, 0 ) ) {
+			error_log( 'Markdown DB: Failed to seek options.json.' );
+			return;
+		}
+
+		if ( ! ftruncate( $fh, 0 ) ) {
+			error_log( 'Markdown DB: Failed to truncate options.json.' );
+			return;
+		}
+
+		if ( false === fwrite( $fh, $json ) ) {
+			error_log( 'Markdown DB: Failed to write options.json.' );
+			return;
+		}
+
+		fflush( $fh );
 	}
 
 	/**

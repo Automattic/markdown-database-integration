@@ -373,6 +373,79 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	}
 
 	/**
+	 * Upsert rows into the _options_file_index table.
+	 *
+	 * Called by the write engine after writing per-option files, so the
+	 * loader's incremental sync can diff per-row instead of per-table.
+	 * See issue #55.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param array<int, array{option_name:string,file_path:string,file_mtime:int,file_size:int,option_id:int,autoload:string}> $rows
+	 */
+	public function upsert_options_index( array $rows ): void {
+		if ( empty( $rows ) ) {
+			return;
+		}
+
+		try {
+			$pdo  = $this->get_connection()->get_pdo();
+			$stmt = $pdo->prepare(
+				'INSERT OR REPLACE INTO `_options_file_index`
+				 (`option_name`, `file_path`, `file_mtime`, `file_size`, `option_id`, `autoload`)
+				 VALUES (?, ?, ?, ?, ?, ?)'
+			);
+
+			$pdo->exec( 'BEGIN TRANSACTION' );
+			try {
+				foreach ( $rows as $row ) {
+					$stmt->execute( array(
+						$row['option_name'],
+						$row['file_path'],
+						$row['file_mtime'],
+						$row['file_size'],
+						$row['option_id'],
+						$row['autoload'],
+					) );
+				}
+				$pdo->exec( 'COMMIT' );
+			} catch ( \Throwable $e ) {
+				$pdo->exec( 'ROLLBACK' );
+				throw $e;
+			}
+		} catch ( \Throwable $e ) {
+			// Index failure is non-fatal — sync_incremental() will just see
+			// the files as "new" next boot and re-index them.
+			error_log( 'Markdown DB: Failed to upsert options index: ' . $e->getMessage() );
+		}
+	}
+
+	/**
+	 * Remove rows from the _options_file_index table.
+	 *
+	 * Called by the write engine when options are deleted.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string[] $option_names
+	 */
+	public function remove_from_options_index( array $option_names ): void {
+		if ( empty( $option_names ) ) {
+			return;
+		}
+
+		try {
+			$pdo = $this->get_connection()->get_pdo();
+			$stmt = $pdo->prepare( 'DELETE FROM `_options_file_index` WHERE `option_name` = ?' );
+			foreach ( $option_names as $name ) {
+				$stmt->execute( array( $name ) );
+			}
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB: Failed to remove from options index: ' . $e->getMessage() );
+		}
+	}
+
+	/**
 	 * Detect the type of SQL operation and affected table.
 	 *
 	 * All DML is persisted unless the table is ephemeral.

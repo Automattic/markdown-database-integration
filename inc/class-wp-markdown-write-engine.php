@@ -85,6 +85,33 @@ class WP_Markdown_Write_Engine {
 	private $dirty = array();
 
 	/**
+	 * Specific wp_options names changed in this request.
+	 *
+	 * Populated by persist_write() when it can cleanly parse the option_name
+	 * from the query. persist_options() uses this to write only the changed
+	 * options to disk (one file per option) instead of re-dumping the whole
+	 * table. This eliminates whole-file races between concurrent workers
+	 * since each worker only ever writes files it itself changed.
+	 *
+	 * Keyed by option_name for uniqueness.
+	 *
+	 * @var array<string, bool>
+	 * @since 0.4.0
+	 */
+	private $dirty_option_names = array();
+
+	/**
+	 * When true, persist_options() falls back to persisting every non-
+	 * ephemeral option currently in SQLite. Set when query parsing fails
+	 * for any options write — ensures we never silently drop a change
+	 * we couldn't analyze.
+	 *
+	 * @var bool
+	 * @since 0.4.0
+	 */
+	private $dirty_options_all = false;
+
+	/**
 	 * Whether the shutdown flush handler has been registered.
 	 *
 	 * @var bool
@@ -144,8 +171,14 @@ class WP_Markdown_Write_Engine {
 				$this->persist_postmeta_write( $query, $op_type );
 			} elseif ( in_array( $table_suffix, array( 'term_relationships', 'term_taxonomy', 'terms' ), true ) ) {
 				$this->persist_terms_write( $query, $op_type, $table_suffix );
+			} elseif ( $table_suffix === 'options' ) {
+				// Defer to shutdown. Track which specific option_name(s) were
+				// touched so we can write only the changed files — per-option
+				// persistence eliminates whole-file races. See issue #55.
+				$this->mark_dirty( 'options' );
+				$this->track_options_change( $query );
 			} else {
-				// Defer options, users, usermeta, and all other tables to shutdown.
+				// Defer users, usermeta, and all other tables to shutdown.
 				$this->mark_dirty( $table_suffix );
 			}
 		} catch ( \Throwable $e ) {
@@ -204,7 +237,9 @@ class WP_Markdown_Write_Engine {
 					$this->persist_table( $table_suffix );
 				}
 			}
-			$this->dirty = array();
+			$this->dirty               = array();
+			$this->dirty_option_names  = array();
+			$this->dirty_options_all   = false;
 		} catch ( \Throwable $e ) {
 			error_log( 'Markdown DB flush error: ' . $e->getMessage() );
 		}
@@ -213,44 +248,345 @@ class WP_Markdown_Write_Engine {
 	}
 
 	/**
-	 * Persist the entire wp_options table to options.json.
+	 * Extract the option_name(s) touched by an options-table query and record
+	 * them in $dirty_option_names.
 	 *
-	 * Filters out ephemeral options (transients, cron).
+	 * If the query shape cannot be parsed, set $dirty_options_all so
+	 * persist_options() falls back to persisting every non-ephemeral option
+	 * currently in SQLite — better to over-write than silently lose a change.
+	 *
+	 * Supported shapes (all WordPress-generated):
+	 *   INSERT INTO `...options` (`option_name`, `option_value`, `autoload`) VALUES ('name', ...)
+	 *   REPLACE INTO `...options` (`option_name`, ...) VALUES ('name', ...)
+	 *   INSERT ... ON DUPLICATE KEY UPDATE ... (MySQL upsert — option_name in VALUES list)
+	 *   UPDATE `...options` SET ... WHERE `option_name` = 'name'
+	 *   DELETE FROM `...options` WHERE `option_name` = 'name'
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string $query The SQL query string.
+	 */
+	private function track_options_change( string $query ): void {
+		// INSERT / REPLACE: option_name appears as the first VALUES entry
+		// when the column list starts with option_name. WordPress always
+		// emits the column list in this order.
+		if ( preg_match( '/^\s*(?:INSERT|REPLACE)\b/i', $query ) ) {
+			if ( preg_match( '/VALUES\s*\(\s*\'((?:\\\\\'|[^\'])*)\'/i', $query, $m ) ) {
+				$this->dirty_option_names[ $this->unslash_sql_string( $m[1] ) ] = true;
+				return;
+			}
+			$this->dirty_options_all = true;
+			return;
+		}
+
+		// UPDATE / DELETE: option_name appears in WHERE clause.
+		if ( preg_match( '/^\s*(?:UPDATE|DELETE)\b/i', $query ) ) {
+			if ( preg_match( '/WHERE\s+`?option_name`?\s*=\s*\'((?:\\\\\'|[^\'])*)\'/i', $query, $m ) ) {
+				$this->dirty_option_names[ $this->unslash_sql_string( $m[1] ) ] = true;
+				return;
+			}
+			$this->dirty_options_all = true;
+			return;
+		}
+
+		// Unknown shape — safe fallback.
+		$this->dirty_options_all = true;
+	}
+
+	/**
+	 * Reverse SQL-escape sequences in an extracted string literal.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string $raw String captured from inside single quotes.
+	 * @return string
+	 */
+	private function unslash_sql_string( string $raw ): string {
+		return str_replace( array( "\\'", '\\\\' ), array( "'", '\\' ), $raw );
+	}
+
+	/**
+	 * Persist wp_options changes to disk as one file per option.
+	 *
+	 * Layout:
+	 *   wp-content/markdown/_options/{sanitized_name}.json
+	 *
+	 * Each file contains a single JSON object:
+	 *   { "option_id": ..., "option_name": ..., "option_value": ..., "autoload": ... }
+	 *
+	 * Why one-file-per-option: see issue #55. Concurrent writers touching
+	 * different options write to different files and cannot clobber each
+	 * other. No flock, no merge logic — the filesystem provides isolation.
+	 *
+	 * For each dirty option name:
+	 *   - Row exists in SQLite → write/overwrite the file, update index.
+	 *   - Row missing in SQLite → option was deleted → remove file + index row.
+	 *
+	 * Fallback: if $dirty_options_all is set (query parsing failed), persist
+	 * every non-ephemeral option currently in SQLite.
+	 *
+	 * Ephemerals (transients, cron locks) are filtered here — they never
+	 * hit disk.
+	 *
+	 * @since 0.4.0 Rewritten as per-file persistence.
 	 */
 	private function persist_options(): void {
-		$table = $this->prefix . 'options';
+		$names = $this->dirty_options_all
+			? $this->list_all_non_ephemeral_option_names()
+			: array_keys( $this->dirty_option_names );
 
-		try {
-			$rows = $this->driver->query(
-				"SELECT option_id, option_name, option_value, autoload FROM `{$table}` ORDER BY option_id"
-			);
-		} catch ( \Throwable $e ) {
-			error_log( 'Markdown DB: Failed to read options for persist: ' . $e->getMessage() );
+		if ( empty( $names ) ) {
 			return;
 		}
 
-		if ( ! is_array( $rows ) ) {
-			return;
+		// Ensure the _options directory exists.
+		$options_dir = $this->content_dir . '/_options';
+		if ( ! is_dir( $options_dir ) ) {
+			if ( ! @mkdir( $options_dir, 0755, true ) && ! is_dir( $options_dir ) ) {
+				error_log( 'Markdown DB: Failed to create _options directory.' );
+				return;
+			}
 		}
 
-		$options = array();
-		foreach ( $rows as $row ) {
-			$name = $row->option_name;
+		// Read existing SQLite rows for the dirty names in one query.
+		$rows_by_name = $this->fetch_options_by_names( $names );
 
-			// Skip ephemeral options.
+		// Track which files we wrote/deleted so the driver can update the
+		// _options_file_index in one batch.
+		$index_updates = array();
+		$index_deletes = array();
+
+		foreach ( $names as $name ) {
 			if ( $this->is_ephemeral_option( $name ) ) {
+				// Ephemerals never hit disk. If one was previously persisted
+				// (legacy migration edge case), remove its file.
+				$this->delete_option_file( $name, $index_deletes );
 				continue;
 			}
 
-			$options[] = array(
+			if ( ! isset( $rows_by_name[ $name ] ) ) {
+				// Not in SQLite → was deleted in-request.
+				$this->delete_option_file( $name, $index_deletes );
+				continue;
+			}
+
+			$row = $rows_by_name[ $name ];
+			$path = $this->write_option_file( $name, $row );
+			if ( null === $path ) {
+				continue;
+			}
+
+			$abs = $this->content_dir . '/' . $path;
+			$index_updates[] = array(
+				'option_name' => $name,
+				'file_path'   => $path,
+				'file_mtime'  => (int) @filemtime( $abs ),
+				'file_size'   => (int) @filesize( $abs ),
+				'option_id'   => (int) $row['option_id'],
+				'autoload'    => (string) $row['autoload'],
+			);
+		}
+
+		// Update the index table so sync_incremental() can diff per-row.
+		if ( $this->driver instanceof WP_Markdown_Driver ) {
+			if ( ! empty( $index_updates ) ) {
+				$this->driver->upsert_options_index( $index_updates );
+			}
+			if ( ! empty( $index_deletes ) ) {
+				$this->driver->remove_from_options_index( $index_deletes );
+			}
+		}
+	}
+
+	/**
+	 * Fetch current SQLite rows for the given option names, keyed by name.
+	 *
+	 * Uses a single SELECT with an IN clause for efficiency. Names are
+	 * escaped inline (option names are already WP-sanitized; we quote
+	 * defensively).
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string[] $names
+	 * @return array<string, array{option_id:int,option_name:string,option_value:string,autoload:string}>
+	 */
+	private function fetch_options_by_names( array $names ): array {
+		if ( empty( $names ) ) {
+			return array();
+		}
+
+		$table   = $this->prefix . 'options';
+		$escaped = array();
+		foreach ( $names as $name ) {
+			$escaped[] = "'" . str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), $name ) . "'";
+		}
+		$in_list = implode( ',', $escaped );
+
+		try {
+			$rows = $this->driver->query(
+				"SELECT option_id, option_name, option_value, autoload
+				 FROM `{$table}` WHERE option_name IN ({$in_list})"
+			);
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB: Failed to read dirty options: ' . $e->getMessage() );
+			return array();
+		}
+
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+
+		$out = array();
+		foreach ( $rows as $row ) {
+			$out[ $row->option_name ] = array(
 				'option_id'    => (int) $row->option_id,
-				'option_name'  => $name,
+				'option_name'  => $row->option_name,
 				'option_value' => $row->option_value,
 				'autoload'     => $row->autoload,
 			);
 		}
+		return $out;
+	}
 
-		$this->write_json( $this->content_dir . '/options.json', $options );
+	/**
+	 * List every non-ephemeral option_name currently in SQLite.
+	 *
+	 * Used as a fallback when query parsing failed. O(n) but only runs
+	 * in the rare fallback path.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @return string[]
+	 */
+	private function list_all_non_ephemeral_option_names(): array {
+		$table = $this->prefix . 'options';
+
+		try {
+			$rows = $this->driver->query(
+				"SELECT option_name FROM `{$table}` ORDER BY option_id"
+			);
+		} catch ( \Throwable $e ) {
+			error_log( 'Markdown DB: Failed to list options: ' . $e->getMessage() );
+			return array();
+		}
+
+		if ( ! is_array( $rows ) ) {
+			return array();
+		}
+
+		$names = array();
+		foreach ( $rows as $row ) {
+			if ( ! $this->is_ephemeral_option( $row->option_name ) ) {
+				$names[] = $row->option_name;
+			}
+		}
+		return $names;
+	}
+
+	/**
+	 * Write a single option to disk atomically. Uses temp+rename so
+	 * concurrent readers never see a partial file.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string $name Option name.
+	 * @param array  $row  Row data (option_id, option_name, option_value, autoload).
+	 * @return string|null Relative path under content_dir on success, null on failure.
+	 */
+	private function write_option_file( string $name, array $row ): ?string {
+		$filename = self::option_filename( $name );
+		$relative = '_options/' . $filename;
+		$abs      = $this->content_dir . '/' . $relative;
+
+		$payload = array(
+			'option_id'    => (int) $row['option_id'],
+			'option_name'  => $row['option_name'],
+			'option_value' => $row['option_value'],
+			'autoload'     => $row['autoload'],
+		);
+
+		$json = json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+		if ( false === $json ) {
+			error_log( 'Markdown DB: Failed to encode option "' . $name . '".' );
+			return null;
+		}
+
+		$tmp = $abs . '.tmp.' . getmypid() . '.' . substr( md5( uniqid( '', true ) ), 0, 8 );
+		if ( false === @file_put_contents( $tmp, $json ) ) {
+			error_log( 'Markdown DB: Failed to write option file: ' . $abs );
+			return null;
+		}
+
+		if ( ! @rename( $tmp, $abs ) ) {
+			@unlink( $tmp );
+			error_log( 'Markdown DB: Failed to rename option file: ' . $abs );
+			return null;
+		}
+
+		return $relative;
+	}
+
+	/**
+	 * Delete an option's file on disk and record the index deletion.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string   $name           Option name.
+	 * @param string[] $index_deletes  Reference — name appended if a delete is needed.
+	 */
+	private function delete_option_file( string $name, array &$index_deletes ): void {
+		$filename = self::option_filename( $name );
+		$abs      = $this->content_dir . '/_options/' . $filename;
+		if ( file_exists( $abs ) ) {
+			@unlink( $abs );
+		}
+		$index_deletes[] = $name;
+	}
+
+	/**
+	 * Derive a safe, stable filename from an option_name.
+	 *
+	 * Option names can contain characters that are legal in MySQL but
+	 * problematic on disk or in paths (slashes, control chars, non-ASCII
+	 * above certain encodings, etc.). WordPress core option names are
+	 * ASCII + [_.\-] but plugin/theme code is not bound by that.
+	 *
+	 * Strategy:
+	 *   - Replace any character outside [A-Za-z0-9._-] with '_'.
+	 *   - Collapse runs of '_'.
+	 *   - If any replacement happened OR the name is longer than 180
+	 *     bytes, append a short hash of the original name so different
+	 *     names can never collide on the same file.
+	 *   - Always append .json.
+	 *
+	 * The function is deterministic — same name always maps to same
+	 * filename — so the loader can round-trip via the index table.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string $name Option name.
+	 * @return string Safe filename with .json extension.
+	 */
+	public static function option_filename( string $name ): string {
+		$safe = preg_replace( '/[^A-Za-z0-9._\-]/', '_', $name );
+		$safe = preg_replace( '/_+/', '_', $safe );
+		$safe = trim( $safe, '._' );
+		if ( '' === $safe ) {
+			$safe = 'option';
+		}
+
+		$needs_hash = ( $safe !== $name ) || strlen( $name ) > 180;
+		if ( $needs_hash ) {
+			$hash = substr( md5( $name ), 0, 8 );
+			// Keep the readable prefix short enough to fit with hash + ext
+			// inside common filesystem limits (255 bytes).
+			if ( strlen( $safe ) > 180 ) {
+				$safe = substr( $safe, 0, 180 );
+			}
+			return $safe . '-' . $hash . '.json';
+		}
+
+		return $safe . '.json';
 	}
 
 	/**

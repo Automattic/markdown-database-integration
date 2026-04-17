@@ -136,6 +136,7 @@ class WP_Markdown_Loader {
 
 			// 1b. Create manifest tables for incremental sync.
 			$this->create_json_manifest_table();
+			$this->create_options_index_table();
 
 			// 2. Load options first — WordPress needs them immediately.
 			$this->load_options();
@@ -200,6 +201,7 @@ class WP_Markdown_Loader {
 			// Ensure manifest tables exist (in case of schema upgrade).
 			$this->create_file_index_table();
 			$this->create_json_manifest_table();
+			$this->create_options_index_table();
 
 			// 0. Self-heal: detect orphaned file index entries.
 			// If the file index has entries but wp_posts doesn't have
@@ -208,10 +210,13 @@ class WP_Markdown_Loader {
 			// rows were lost but the file index survived. See #47.
 			$this->heal_orphaned_index_entries();
 
-			// 1. Sync JSON tables — reload any whose file changed.
+			// 1. Sync options — per-file surgical diff. See #55.
+			$this->sync_options();
+
+			// 2. Sync other JSON tables — reload any whose file changed.
 			$this->sync_json_tables();
 
-			// 2. Sync markdown posts — the main event.
+			// 3. Sync markdown posts — the main event.
 			$this->sync_markdown_posts();
 		} catch ( \Throwable $e ) {
 			error_log( 'Markdown DB sync error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
@@ -251,20 +256,8 @@ class WP_Markdown_Loader {
 			$manifest = array();
 		}
 
-		// Check options.json separately (it lives at content_dir root).
-		$options_file = $this->content_dir . '/options.json';
-		if ( file_exists( $options_file ) ) {
-			$mtime = (int) filemtime( $options_file );
-			$size  = (int) filesize( $options_file );
-			$cached = $manifest['options.json'] ?? null;
-
-			if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
-				// Options changed — truncate and reload.
-				$table = $this->prefix . 'options';
-				$pdo->exec( "DELETE FROM `{$table}`" );
-				$this->load_options();
-			}
-		}
+		// Options are handled by sync_options() (per-file index).
+		// See #55.
 
 		// Check all JSON files in _tables/.
 		$tables_dir = $this->content_dir . '/_tables';
@@ -786,11 +779,8 @@ class WP_Markdown_Loader {
 			'INSERT OR REPLACE INTO `_json_file_manifest` (file_name, file_mtime, file_size) VALUES (?, ?, ?)'
 		);
 
-		// Track options.json.
-		$options_file = $this->content_dir . '/options.json';
-		if ( file_exists( $options_file ) ) {
-			$stmt->execute( array( 'options.json', (int) filemtime( $options_file ), (int) filesize( $options_file ) ) );
-		}
+		// options.json is no longer persisted — options are one-file-per-option
+		// tracked in _options_file_index. See #55.
 
 		// Track all JSON files in _tables/.
 		$tables_dir = $this->content_dir . '/_tables';
@@ -1019,48 +1009,74 @@ class WP_Markdown_Loader {
 	}
 
 	/**
-	 * Load wp_options from options.json file.
+	 * Load wp_options from disk on cold boot.
 	 *
-	 * Uses JSON because option values contain serialized PHP which
-	 * would be mangled by YAML encoding. JSON preserves them exactly.
+	 * Reads every option file under {content_dir}/_options/ and inserts
+	 * into wp_options. Also populates _options_file_index so incremental
+	 * sync works on subsequent warm boots.
+	 *
+	 * If _options/ does not exist but a legacy options.json does, we
+	 * migrate: split options.json into per-file rows, then load from the
+	 * new directory. This lets existing sites upgrade transparently.
+	 *
+	 * Option values contain serialized PHP; JSON preserves them exactly.
+	 *
+	 * @since 0.4.0 Rewritten for per-file layout. See issue #55.
 	 */
 	private function load_options(): void {
 		$start = microtime( true );
-		$table = $this->prefix . 'options';
-		$file  = $this->content_dir . '/options.json';
 
-		if ( ! file_exists( $file ) ) {
+		$options_dir = $this->content_dir . '/_options';
+		$legacy_file = $this->content_dir . '/options.json';
+
+		// Migrate legacy options.json → _options/*.json on first boot.
+		if ( ! is_dir( $options_dir ) && file_exists( $legacy_file ) ) {
+			$this->migrate_options_json_to_per_file( $legacy_file, $options_dir );
+		}
+
+		if ( ! is_dir( $options_dir ) ) {
 			$this->timings['load_options'] = microtime( true ) - $start;
 			return;
 		}
 
-		$json = file_get_contents( $file );
-		$options = json_decode( $json, true );
+		$this->create_options_index_table();
 
-		if ( ! is_array( $options ) ) {
-			error_log( 'Markdown DB: Failed to parse options.json' );
-			return;
-		}
+		$table = $this->prefix . 'options';
+		$pdo   = $this->driver->get_connection()->get_pdo();
 
-		// Use the raw PDO for bulk inserts — much faster than going through
-		// the MySQL-to-SQLite translation layer for simple INSERTs.
-		$pdo = $this->driver->get_connection()->get_pdo();
+		$insert_stmt = $pdo->prepare(
+			"INSERT OR IGNORE INTO `{$table}`
+			 (`option_id`, `option_name`, `option_value`, `autoload`) VALUES (?, ?, ?, ?)"
+		);
+		$index_stmt = $pdo->prepare(
+			'INSERT OR REPLACE INTO `_options_file_index`
+			 (`option_name`, `file_path`, `file_mtime`, `file_size`, `option_id`, `autoload`)
+			 VALUES (?, ?, ?, ?, ?, ?)'
+		);
 
 		$pdo->exec( 'BEGIN TRANSACTION' );
 		try {
-			$stmt = $pdo->prepare(
-				"INSERT OR IGNORE INTO `{$table}` (`option_id`, `option_name`, `option_value`, `autoload`) VALUES (?, ?, ?, ?)"
-			);
-
-			foreach ( $options as $opt ) {
-				$stmt->execute( array(
-					(int) $opt['option_id'],
-					$opt['option_name'],
-					$opt['option_value'],
-					$opt['autoload'],
+			$files = glob( $options_dir . '/*.json' );
+			foreach ( (array) $files as $file ) {
+				$row = $this->read_option_file( $file );
+				if ( null === $row ) {
+					continue;
+				}
+				$insert_stmt->execute( array(
+					(int) $row['option_id'],
+					$row['option_name'],
+					$row['option_value'],
+					$row['autoload'],
+				) );
+				$index_stmt->execute( array(
+					$row['option_name'],
+					'_options/' . basename( $file ),
+					(int) @filemtime( $file ),
+					(int) @filesize( $file ),
+					(int) $row['option_id'],
+					$row['autoload'],
 				) );
 			}
-
 			$pdo->exec( 'COMMIT' );
 		} catch ( \Throwable $e ) {
 			$pdo->exec( 'ROLLBACK' );
@@ -1068,6 +1084,271 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['load_options'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Read and validate a single option JSON file.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string $file Absolute path.
+	 * @return array|null Option row or null on parse error.
+	 */
+	private function read_option_file( string $file ): ?array {
+		$json = @file_get_contents( $file );
+		if ( false === $json ) {
+			return null;
+		}
+		$decoded = json_decode( $json, true );
+		if ( ! is_array( $decoded ) || ! isset( $decoded['option_name'] ) ) {
+			error_log( 'Markdown DB: Malformed option file: ' . $file );
+			return null;
+		}
+		return array(
+			'option_id'    => (int) ( $decoded['option_id'] ?? 0 ),
+			'option_name'  => (string) $decoded['option_name'],
+			'option_value' => (string) ( $decoded['option_value'] ?? '' ),
+			'autoload'     => (string) ( $decoded['autoload'] ?? 'yes' ),
+		);
+	}
+
+	/**
+	 * Migrate a legacy options.json file into per-option files under _options/.
+	 *
+	 * Idempotent — safe to call when _options/ already exists (no-op).
+	 * Leaves options.json in place as a read-only fallback for the current
+	 * release; a future release can drop it.
+	 *
+	 * @since 0.4.0
+	 *
+	 * @param string $legacy_file Path to options.json.
+	 * @param string $options_dir Target directory (_options).
+	 */
+	private function migrate_options_json_to_per_file( string $legacy_file, string $options_dir ): void {
+		if ( ! @mkdir( $options_dir, 0755, true ) && ! is_dir( $options_dir ) ) {
+			error_log( 'Markdown DB: Failed to create _options directory for migration.' );
+			return;
+		}
+
+		$json = @file_get_contents( $legacy_file );
+		if ( false === $json ) {
+			return;
+		}
+		$options = json_decode( $json, true );
+		if ( ! is_array( $options ) ) {
+			error_log( 'Markdown DB: Failed to parse legacy options.json.' );
+			return;
+		}
+
+		$count = 0;
+		foreach ( $options as $opt ) {
+			if ( ! isset( $opt['option_name'] ) ) {
+				continue;
+			}
+			$filename = WP_Markdown_Write_Engine::option_filename( $opt['option_name'] );
+			$target   = $options_dir . '/' . $filename;
+
+			$payload = array(
+				'option_id'    => (int) ( $opt['option_id'] ?? 0 ),
+				'option_name'  => (string) $opt['option_name'],
+				'option_value' => (string) ( $opt['option_value'] ?? '' ),
+				'autoload'     => (string) ( $opt['autoload'] ?? 'yes' ),
+			);
+
+			$encoded = json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+			if ( false === $encoded ) {
+				continue;
+			}
+			if ( false !== @file_put_contents( $target, $encoded ) ) {
+				$count++;
+			}
+		}
+
+		error_log( "Markdown DB: Migrated {$count} options from options.json to _options/*.json." );
+	}
+
+	/**
+	 * Incrementally sync _options/*.json files into wp_options.
+	 *
+	 * Surgical per-file diff: compare each on-disk file's mtime/size
+	 * against _options_file_index, then INSERT/UPDATE/DELETE per row.
+	 * Never truncates the table — concurrent workers cannot clobber
+	 * each other's pending writes. See issue #55.
+	 *
+	 * @since 0.4.0
+	 */
+	private function sync_options(): void {
+		$start = microtime( true );
+
+		$options_dir = $this->content_dir . '/_options';
+		$legacy_file = $this->content_dir . '/options.json';
+
+		// Migrate legacy options.json if needed (first warm boot after upgrade).
+		if ( ! is_dir( $options_dir ) && file_exists( $legacy_file ) ) {
+			$this->migrate_options_json_to_per_file( $legacy_file, $options_dir );
+		}
+
+		if ( ! is_dir( $options_dir ) ) {
+			$this->timings['sync_options'] = microtime( true ) - $start;
+			return;
+		}
+
+		$pdo   = $this->driver->get_connection()->get_pdo();
+		$table = $this->prefix . 'options';
+
+		// 1. Load the existing index.
+		$index = array(); // option_name => { file_path, mtime, size, option_id, autoload }
+		try {
+			$rows = $pdo->query(
+				'SELECT option_name, file_path, file_mtime, file_size, option_id, autoload
+				 FROM `_options_file_index`'
+			)->fetchAll( \PDO::FETCH_OBJ );
+			foreach ( $rows as $row ) {
+				$index[ $row->option_name ] = array(
+					'file_path'  => $row->file_path,
+					'file_mtime' => (int) $row->file_mtime,
+					'file_size'  => (int) $row->file_size,
+					'option_id'  => (int) $row->option_id,
+					'autoload'   => $row->autoload,
+				);
+			}
+		} catch ( \Throwable $e ) {
+			// Index missing — fall through; every file will look "new".
+			$index = array();
+		}
+
+		// 2. Scan current files on disk.
+		$files = glob( $options_dir . '/*.json' ) ?: array();
+		$on_disk = array(); // option_name => { absolute_path, mtime, size, parsed_row }
+
+		foreach ( $files as $abs ) {
+			$mtime = (int) @filemtime( $abs );
+			$size  = (int) @filesize( $abs );
+			$basename = basename( $abs );
+
+			// Fast path: filename matches an index entry's path — use index's
+			// option_name without parsing the file yet.
+			$matched_name = null;
+			foreach ( $index as $name => $info ) {
+				if ( $info['file_path'] === '_options/' . $basename ) {
+					$matched_name = $name;
+					break;
+				}
+			}
+
+			if ( null !== $matched_name
+				&& $index[ $matched_name ]['file_mtime'] === $mtime
+				&& $index[ $matched_name ]['file_size'] === $size
+			) {
+				// Unchanged — skip parse, skip SQL.
+				$on_disk[ $matched_name ] = array( 'unchanged' => true );
+				continue;
+			}
+
+			// Changed or new — parse the file to get the option_name.
+			$row = $this->read_option_file( $abs );
+			if ( null === $row ) {
+				continue;
+			}
+			$on_disk[ $row['option_name'] ] = array(
+				'unchanged' => false,
+				'row'       => $row,
+				'path'      => '_options/' . $basename,
+				'mtime'     => $mtime,
+				'size'      => $size,
+			);
+		}
+
+		// 3. Diff and apply.
+		$pdo->exec( 'BEGIN TRANSACTION' );
+		try {
+			$upsert_opt = $pdo->prepare(
+				"INSERT OR REPLACE INTO `{$table}`
+				 (`option_id`, `option_name`, `option_value`, `autoload`)
+				 VALUES (?, ?, ?, ?)"
+			);
+			$upsert_idx = $pdo->prepare(
+				'INSERT OR REPLACE INTO `_options_file_index`
+				 (`option_name`, `file_path`, `file_mtime`, `file_size`, `option_id`, `autoload`)
+				 VALUES (?, ?, ?, ?, ?, ?)'
+			);
+			$delete_opt = $pdo->prepare(
+				"DELETE FROM `{$table}` WHERE `option_name` = ?"
+			);
+			$delete_idx = $pdo->prepare(
+				'DELETE FROM `_options_file_index` WHERE `option_name` = ?'
+			);
+
+			// Deletions: in index but not on disk anymore.
+			foreach ( $index as $name => $info ) {
+				if ( ! isset( $on_disk[ $name ] ) ) {
+					$delete_opt->execute( array( $name ) );
+					$delete_idx->execute( array( $name ) );
+				}
+			}
+
+			// Changes + new: upsert row + index.
+			$changed = 0;
+			$added   = 0;
+			foreach ( $on_disk as $name => $info ) {
+				if ( ! empty( $info['unchanged'] ) ) {
+					continue;
+				}
+				$row = $info['row'];
+				$upsert_opt->execute( array(
+					(int) $row['option_id'],
+					$row['option_name'],
+					$row['option_value'],
+					$row['autoload'],
+				) );
+				$upsert_idx->execute( array(
+					$row['option_name'],
+					$info['path'],
+					$info['mtime'],
+					$info['size'],
+					(int) $row['option_id'],
+					$row['autoload'],
+				) );
+				if ( isset( $index[ $name ] ) ) {
+					$changed++;
+				} else {
+					$added++;
+				}
+			}
+
+			$pdo->exec( 'COMMIT' );
+
+			if ( $added || $changed ) {
+				error_log( "Markdown DB sync_options: {$added} new, {$changed} changed." );
+			}
+		} catch ( \Throwable $e ) {
+			$pdo->exec( 'ROLLBACK' );
+			throw $e;
+		}
+
+		$this->timings['sync_options'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Create the _options_file_index table.
+	 *
+	 * Per-row index that maps option_name to its file on disk. Used by
+	 * sync_options() for surgical incremental sync. See issue #55.
+	 *
+	 * @since 0.4.0
+	 */
+	private function create_options_index_table(): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+		$pdo->exec(
+			'CREATE TABLE IF NOT EXISTS `_options_file_index` (
+				`option_name` TEXT PRIMARY KEY,
+				`file_path` TEXT NOT NULL,
+				`file_mtime` INTEGER NOT NULL,
+				`file_size` INTEGER NOT NULL,
+				`option_id` INTEGER NOT NULL,
+				`autoload` TEXT NOT NULL DEFAULT "yes"
+			)'
+		);
 	}
 
 	/**

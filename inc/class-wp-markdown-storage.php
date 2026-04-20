@@ -921,6 +921,14 @@ class WP_Markdown_Storage {
 	 * Includes `parent` as a fallback for flat layouts; directory structure
 	 * takes precedence on read. See GitHub issue #14.
 	 *
+	 * Extension point: the assembled frontmatter array is passed through the
+	 * `markdown_db_frontmatter` filter before being returned. Consumers that
+	 * want to contribute additional fields — derived attribution, domain
+	 * metadata, anything that should travel with the file rather than live
+	 * in post meta — should hook that filter. Fields added via the filter
+	 * are included in the written YAML; removing or renaming core fields
+	 * (id, title, status, etc.) is unsupported and will break round-trip.
+	 *
 	 * @param object $post A WordPress post row.
 	 * @return array Frontmatter key-value pairs.
 	 */
@@ -1003,6 +1011,33 @@ class WP_Markdown_Storage {
 					$fm['terms'] = $terms;
 				}
 			}
+		}
+
+		/**
+		 * Filter the frontmatter array before it is written to disk.
+		 *
+		 * Fires after MDI has assembled its core fields (post columns,
+		 * meta, terms). Extensions should add their own fields to the
+		 * returned array — nested under a namespace key is recommended
+		 * to avoid collisions with future MDI additions:
+		 *
+		 *     add_filter( 'markdown_db_frontmatter', function ( $fm, $post ) {
+		 *         if ( 'wiki' === $post->post_type ) {
+		 *             $fm['my_extension'] = array( 'custom' => 'value' );
+		 *         }
+		 *         return $fm;
+		 *     }, 10, 2 );
+		 *
+		 * Removing or mutating MDI's own fields (id, title, status, etc.)
+		 * is unsupported and will corrupt round-trip read/write.
+		 *
+		 * @since next
+		 *
+		 * @param array  $fm   Frontmatter key-value pairs.
+		 * @param object $post The post being written.
+		 */
+		if ( function_exists( 'apply_filters' ) ) {
+			$fm = apply_filters( 'markdown_db_frontmatter', $fm, $post );
 		}
 
 		return $fm;

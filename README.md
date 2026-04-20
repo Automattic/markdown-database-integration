@@ -204,6 +204,27 @@ define( 'MARKDOWN_DB_MODE', 'mirror' );
 - **`mirror`** (Phase 1): SQLite is the primary database. Markdown files are synced on every write. WordPress reads from SQLite. AI agents read from markdown.
 - **`primary`** (Phase 2): Markdown files are the primary source of truth. SQLite is an in-memory index rebuilt from the files on boot. Writes go to markdown first.
 
+## Extension Points
+
+### `markdown_db_frontmatter` filter
+
+Extensions that want to contribute additional YAML fields to every `.md` file can hook the `markdown_db_frontmatter` filter. MDI assembles its core fields (post columns, meta, terms) and then passes the array through the filter before writing. Fields added via the filter travel with the file — useful for provenance, domain metadata, or anything that should survive export to git.
+
+```php
+add_filter( 'markdown_db_frontmatter', function ( array $fm, $post ) {
+    if ( 'wiki' === ( $post->post_type ?? '' ) ) {
+        // Nest under a namespace key to avoid collisions with future
+        // MDI core fields.
+        $fm['my_extension'] = array(
+            'custom_attribution' => 'value derived from post meta',
+        );
+    }
+    return $fm;
+}, 10, 2 );
+```
+
+MDI's own fields (`id`, `title`, `status`, `type`, `slug`, `parent`, etc.) are required for round-trip read/write — removing or mutating them is unsupported and will corrupt the files.
+
 ## What Works
 
 Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):

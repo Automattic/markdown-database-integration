@@ -709,7 +709,8 @@ class WP_Markdown_Loader {
 			return;
 		}
 
-		// Insert frontmatter meta.
+		// Insert frontmatter meta. Values may be scalar (single row) or an
+		// array (multi-row meta per issue #20) — iterate both shapes.
 		$meta = $post->_frontmatter_meta ?? array();
 		if ( ! empty( $meta ) ) {
 			$meta_table = $this->prefix . 'postmeta';
@@ -717,7 +718,10 @@ class WP_Markdown_Loader {
 				"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
 			);
 			foreach ( $meta as $key => $value ) {
-				$meta_stmt->execute( array( $id, (string) $key, (string) $value ) );
+				$values = is_array( $value ) ? $value : array( $value );
+				foreach ( $values as $v ) {
+					$meta_stmt->execute( array( $id, (string) $key, (string) $v ) );
+				}
 			}
 		}
 
@@ -1760,8 +1764,14 @@ class WP_Markdown_Loader {
 					continue;
 				}
 
+				// Values may be scalar or an array (multi-row meta per issue
+				// #20). Iterate both shapes so every frontmatter entry emits
+				// the right number of postmeta rows.
 				foreach ( $meta as $key => $value ) {
-					$stmt->execute( array( $id, (string) $key, (string) $value ) );
+					$values = is_array( $value ) ? $value : array( $value );
+					foreach ( $values as $v ) {
+						$stmt->execute( array( $id, (string) $key, (string) $v ) );
+					}
 				}
 			}
 

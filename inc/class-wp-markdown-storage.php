@@ -1105,7 +1105,13 @@ class WP_Markdown_Storage {
 				);
 				$allowed_internal = array_flip( $internal_meta_allowlist );
 
-				$meta = array();
+				// Group by key so multi-row meta survives the round-trip.
+				// WordPress allows multiple rows with the same meta_key per
+				// post (ACF repeaters, WooCommerce product attributes, raw
+				// `add_post_meta` calls without unique=true). A flat
+				// $meta[$key] = $value assignment loses all but the last
+				// row. See GitHub issue #20.
+				$grouped = array();
 				foreach ( $meta_rows as $row ) {
 					$key   = $row->meta_key ?? '';
 					$value = $row->meta_value ?? '';
@@ -1119,9 +1125,15 @@ class WP_Markdown_Storage {
 						continue;
 					}
 
-					$meta[ $key ] = $value;
+					$grouped[ $key ][] = $value;
 				}
-				if ( ! empty( $meta ) ) {
+
+				if ( ! empty( $grouped ) ) {
+					$meta = array();
+					foreach ( $grouped as $key => $values ) {
+						// Single row → scalar (cleanest YAML); multiple → array.
+						$meta[ $key ] = ( count( $values ) === 1 ) ? $values[0] : $values;
+					}
 					$fm['meta'] = $meta;
 				}
 			}

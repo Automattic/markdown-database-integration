@@ -93,6 +93,28 @@ class WP_Markdown_Storage {
 	private $terms_resolver = null;
 
 	/**
+	 * Callback that persists a file-index update for a post.
+	 *
+	 * Signature: function ( int $post_id, string $relative_path, int $mtime, int $size ): void
+	 *
+	 * Invoked whenever the storage engine renames a file as a side effect of
+	 * another write (parent promotion in resolve_parent_dir — a child write
+	 * forces its ancestor's leaf file to migrate to `index.md`). Without this
+	 * hook the persistent `_markdown_file_index` row points at a path that
+	 * no longer exists on disk, and `sync_markdown_posts()` on the next
+	 * warm boot treats the old path as a deletion and the new path as a
+	 * fresh insert — churning the ancestor through a full delete-and-
+	 * reinsert on every boot. See GitHub issue #68.
+	 *
+	 * Optional. Cold-boot paths that build storage before the driver exists
+	 * simply skip the callback — their in-memory `$this->index` is enough
+	 * until the index is materialised.
+	 *
+	 * @var callable|null
+	 */
+	private $index_writer = null;
+
+	/**
 	 * Constructor.
 	 *
 	 * All post types are stored as markdown by default.
@@ -134,6 +156,28 @@ class WP_Markdown_Storage {
 	 */
 	public function set_terms_resolver( callable $resolver ): void {
 		$this->terms_resolver = $resolver;
+	}
+
+	/**
+	 * Set the index-writer callback.
+	 *
+	 * Invoked whenever the storage engine renames a file as a side effect
+	 * of another write (currently only parent promotion in
+	 * resolve_parent_dir). Callback signature:
+	 *
+	 *     function ( int $post_id, string $relative_path, int $mtime, int $size ): void
+	 *
+	 * $relative_path is relative to the storage's content_dir. The callback
+	 * is expected to upsert the corresponding row in `_markdown_file_index`
+	 * so warm boot comparisons see the file as unchanged rather than as a
+	 * delete + re-insert pair.
+	 *
+	 * See GitHub issue #68.
+	 *
+	 * @param callable $writer Index-update callback.
+	 */
+	public function set_index_writer( callable $writer ): void {
+		$this->index_writer = $writer;
 	}
 
 	/**
@@ -502,25 +546,12 @@ class WP_Markdown_Storage {
 				// Promote leaf file to directory with index.md.
 				mkdir( $target_dir, 0755, true );
 				rename( $leaf_file, $index_file );
-
-				// Update the index if we have one.
-				if ( null !== $this->index ) {
-					$promoted_id = $this->extract_id_from_file( $index_file );
-					if ( $promoted_id ) {
-						$this->index[ $promoted_id ] = $index_file;
-					}
-				}
+				$this->record_promoted_file( $index_file );
 			} elseif ( file_exists( $leaf_file ) && is_dir( $target_dir ) && ! file_exists( $index_file ) ) {
 				// Directory exists (has children) but the parent post is still
 				// a sibling leaf file. Move it into the directory as index.md.
 				rename( $leaf_file, $index_file );
-
-				if ( null !== $this->index ) {
-					$promoted_id = $this->extract_id_from_file( $index_file );
-					if ( $promoted_id ) {
-						$this->index[ $promoted_id ] = $index_file;
-					}
-				}
+				$this->record_promoted_file( $index_file );
 			} elseif ( ! is_dir( $target_dir ) ) {
 				mkdir( $target_dir, 0755, true );
 			}
@@ -529,6 +560,59 @@ class WP_Markdown_Storage {
 		}
 
 		return $current_dir;
+	}
+
+	/**
+	 * Record that a file was renamed during parent promotion.
+	 *
+	 * Updates the in-memory index for the duration of the request AND
+	 * invokes the persistent index-writer callback so the SQLite
+	 * `_markdown_file_index` row tracks the new path. Without the
+	 * callback, warm boot would see the old path as deleted and the new
+	 * path as new, churning the promoted post through a full delete-
+	 * and-reinsert. See GitHub issue #68.
+	 *
+	 * Extracts the post ID from the new file's frontmatter. If the file
+	 * has no parseable `id:` (shouldn't happen for renamed posts, but
+	 * defend against corruption), silently returns — the next warm boot
+	 * will detect the mismatch and recover via heal / sync.
+	 *
+	 * @param string $absolute_file_path The renamed file's absolute path.
+	 */
+	private function record_promoted_file( string $absolute_file_path ): void {
+		$promoted_id = $this->extract_id_from_file( $absolute_file_path );
+		if ( ! $promoted_id ) {
+			return;
+		}
+
+		// Keep the in-memory index in sync so same-request lookups see the
+		// post at its new path.
+		if ( null !== $this->index ) {
+			$this->index[ $promoted_id ] = $absolute_file_path;
+		}
+
+		if ( null === $this->index_writer ) {
+			return;
+		}
+
+		// Relative-to-content-dir path matches what the loader stores when
+		// it rebuilds the index from disk, so later mtime/size comparisons
+		// see the same string the driver's update_file_index uses.
+		$relative_path = $absolute_file_path;
+		$prefix        = $this->content_dir . '/';
+		if ( str_starts_with( $absolute_file_path, $prefix ) ) {
+			$relative_path = substr( $absolute_file_path, strlen( $prefix ) );
+		}
+
+		$mtime = @filemtime( $absolute_file_path );
+		$size  = @filesize( $absolute_file_path );
+		if ( false === $mtime || false === $size ) {
+			// Stat failed — defer to the next sync rather than writing
+			// bogus values.
+			return;
+		}
+
+		call_user_func( $this->index_writer, (int) $promoted_id, $relative_path, (int) $mtime, (int) $size );
 	}
 
 	/**

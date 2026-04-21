@@ -218,6 +218,18 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			}
 		} );
 
+		// Index writer — upserts `_markdown_file_index` when storage renames
+		// a file as a side effect of another write. Without this hook,
+		// resolve_parent_dir's promotion of a leaf file to `index.md`
+		// leaves the index row pointing at a path that no longer exists,
+		// and warm boot churns the promoted post through a full delete
+		// and reinsert on every sync. See GitHub issue #68.
+		$storage->set_index_writer( function ( int $post_id, string $relative_path, int $mtime, int $size ) use ( $driver_ref ) {
+			if ( $driver_ref instanceof WP_Markdown_Driver ) {
+				$driver_ref->update_file_index( $post_id, $relative_path, $mtime, $size );
+			}
+		} );
+
 		// In primary mode, load or sync data.
 		if ( 'primary' === $mode ) {
 			$this->loader = new WP_Markdown_Loader(

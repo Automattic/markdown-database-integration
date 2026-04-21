@@ -308,7 +308,26 @@ class WP_Markdown_Loader {
 			$cached = $manifest[ $file_key ] ?? null;
 
 			if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
-				// JSON file changed — truncate the table and reload.
+				// Postmeta and term_relationships carry rows for BOTH markdown
+				// posts (sourced from .md frontmatter) and non-markdown posts
+				// (sourced from the JSON fallback). Truncating the whole table
+				// would wipe the frontmatter-sourced rows, and sync_markdown_posts
+				// only re-inserts them for files whose mtime/size changed —
+				// unchanged .md files are left stripped of their meta/terms. So
+				// for these two tables, delete only the rows whose post IDs
+				// belong to non-markdown post types, then reload from JSON.
+				// See issue #64.
+				if ( 'postmeta' === $table_suffix ) {
+					$this->sync_partitioned_table_from_json( 'postmeta', 'post_id' );
+					continue;
+				}
+				if ( 'term_relationships' === $table_suffix ) {
+					$this->sync_partitioned_table_from_json( 'term_relationships', 'object_id' );
+					continue;
+				}
+
+				// Other core tables have no frontmatter source — full reload
+				// is safe.
 				$table = $this->prefix . $table_suffix;
 				$pdo->exec( "DELETE FROM `{$table}`" );
 				$this->load_table_from_json( $table_suffix );
@@ -344,6 +363,54 @@ class WP_Markdown_Loader {
 		$this->save_json_manifest();
 
 		$this->timings['sync_json'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Reload a partitioned table (postmeta, term_relationships) from JSON
+	 * without clobbering rows that belong to markdown-type posts.
+	 *
+	 * The JSON file holds only the non-markdown-post partition of the table
+	 * (see WP_Markdown_Write_Engine::persist_table_excluding_markdown_posts).
+	 * A naive "DELETE FROM table; load JSON" reload wipes the frontmatter-
+	 * sourced partition, and sync_markdown_posts() can't recover it for files
+	 * whose mtime/size didn't change. This helper runs a surgical delete
+	 * bounded to the non-markdown partition, then reloads the JSON rows.
+	 *
+	 * See issue #64.
+	 *
+	 * @param string $table_suffix Table name without prefix (postmeta | term_relationships).
+	 * @param string $post_id_col  Column that references the post ID (post_id | object_id).
+	 */
+	private function sync_partitioned_table_from_json( string $table_suffix, string $post_id_col ): void {
+		$pdo          = $this->driver->get_connection()->get_pdo();
+		$table        = $this->prefix . $table_suffix;
+		$posts_table  = $this->prefix . 'posts';
+		$excluded     = $this->storage->get_excluded_types();
+
+		if ( empty( $excluded ) ) {
+			// No excluded types configured → the JSON fallback is always empty.
+			// Nothing to reload; frontmatter rows are authoritative.
+			return;
+		}
+
+		$quoted = array();
+		foreach ( $excluded as $type ) {
+			$quoted[] = "'" . str_replace( "'", "''", $type ) . "'";
+		}
+		$type_list = implode( ',', $quoted );
+
+		// Delete rows whose post is a non-markdown (excluded) type. Leaves
+		// rows for markdown-type posts (and rows with no matching wp_posts
+		// entry, which shouldn't exist but are safer to preserve than drop)
+		// untouched.
+		$pdo->exec(
+			"DELETE FROM `{$table}`
+			 WHERE `{$post_id_col}` IN (
+			     SELECT ID FROM `{$posts_table}` WHERE post_type IN ({$type_list})
+			 )"
+		);
+
+		$this->load_table_from_json( $table_suffix );
 	}
 
 	/**

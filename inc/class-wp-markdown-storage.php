@@ -798,6 +798,19 @@ class WP_Markdown_Storage {
 		$post->post_modified         = $frontmatter['modified'] ?? $post->post_date;
 		$post->post_modified_gmt     = $frontmatter['modified_gmt'] ?? $post->post_modified;
 		$post->post_name             = $frontmatter['slug'] ?? '';
+		// Derive slug from the filename when the frontmatter has none.
+		// Supports the "just drop a file" workflow — an AI agent or git
+		// pull creating `wiki/my-topic.md` gets `my-topic` as post_name
+		// without needing a slug field. `index.md` files (used when a
+		// post has children) fall back to the parent directory name.
+		// See GitHub issue #42.
+		if ( '' === $post->post_name && '' !== $file_path ) {
+			$stem = basename( $file_path, '.md' );
+			if ( 'index' === $stem ) {
+				$stem = basename( dirname( $file_path ) );
+			}
+			$post->post_name = $stem;
+		}
 		$post->post_parent           = (int) ( $frontmatter['parent'] ?? 0 ); // Frontmatter fallback; overridden by directory structure in get_all_posts().
 		$post->menu_order            = (int) ( $frontmatter['menu_order'] ?? 0 );
 		$post->comment_status        = $frontmatter['comment_status'] ?? 'open';
@@ -913,6 +926,96 @@ class WP_Markdown_Storage {
 		}
 
 		return rtrim( $m[1] );
+	}
+
+	/**
+	 * Inject or replace the `id:` field in a markdown file's frontmatter.
+	 *
+	 * Used by the loader when it auto-assigns an ID to a file that was
+	 * dropped on disk without one (via AI agents, git pulls, or hand-
+	 * written content). The rewrite is surgical — only the `id:` line is
+	 * touched; body content, other frontmatter keys, and their order are
+	 * preserved.
+	 *
+	 * The write is atomic (tmp file + rename) so a crash mid-write cannot
+	 * leave a partially-updated file.
+	 *
+	 * See GitHub issue #42.
+	 *
+	 * @param string $file_path Absolute path to the .md file.
+	 * @param int    $id        The post ID to inject.
+	 * @return bool True on successful write, false on any failure.
+	 */
+	public function inject_id_into_frontmatter( string $file_path, int $id ): bool {
+		if ( $id <= 0 || ! file_exists( $file_path ) ) {
+			return false;
+		}
+
+		$raw = file_get_contents( $file_path );
+		if ( false === $raw ) {
+			return false;
+		}
+
+		// Split the file into frontmatter block + body. Frontmatter is
+		// between a leading `---\n` and the next `---\n` on its own line.
+		if ( ! preg_match( '/\A---\n(.*?)\n---\n?(.*)\z/s', $raw, $m ) ) {
+			// No frontmatter block at all — prepend a minimal one.
+			$new = "---\nid: {$id}\n---\n\n" . $raw;
+			return $this->atomic_write( $file_path, $new );
+		}
+
+		$frontmatter = $m[1];
+		$separator   = "---\n";
+		// Preserve the original trailing newline/whitespace after the closing `---`.
+		$after_close = '';
+		if ( preg_match( '/\A---\n.*?\n(---\n?)(.*)\z/s', $raw, $m2 ) ) {
+			$separator   = $m2[1];
+			$after_close = $m2[2];
+		} else {
+			$after_close = $m[2];
+		}
+
+		// Replace existing `id:` line, or prepend one at the top of the block.
+		$lines       = explode( "\n", $frontmatter );
+		$id_replaced = false;
+		foreach ( $lines as $i => $line ) {
+			if ( preg_match( '/^id\s*:/i', $line ) ) {
+				$lines[ $i ] = "id: {$id}";
+				$id_replaced = true;
+				break;
+			}
+		}
+		if ( ! $id_replaced ) {
+			array_unshift( $lines, "id: {$id}" );
+		}
+
+		$new_frontmatter = implode( "\n", $lines );
+		$new_raw         = "---\n{$new_frontmatter}\n{$separator}{$after_close}";
+
+		return $this->atomic_write( $file_path, $new_raw );
+	}
+
+	/**
+	 * Atomically write content to a file.
+	 *
+	 * Writes to a temp file in the same directory and renames to the
+	 * target. Rename is atomic on POSIX, so readers never observe a
+	 * partially-written file.
+	 *
+	 * @param string $file_path Target file path.
+	 * @param string $content   Content to write.
+	 * @return bool True on success.
+	 */
+	private function atomic_write( string $file_path, string $content ): bool {
+		$tmp = $file_path . '.' . uniqid() . '.tmp';
+		if ( false === @file_put_contents( $tmp, $content, LOCK_EX ) ) {
+			return false;
+		}
+		if ( ! @rename( $tmp, $file_path ) ) {
+			@unlink( $tmp );
+			return false;
+		}
+		return true;
 	}
 
 	/**

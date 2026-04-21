@@ -101,6 +101,35 @@ class WP_Markdown_Loader {
 	private $term_map = null;
 
 	/**
+	 * Next post ID to allocate for dropped-on-disk files with no `id:`.
+	 *
+	 * Initialized lazily to `MAX(ID) + 1` across wp_posts and the JSON
+	 * fallback table, then incremented on each assignment. Held on the
+	 * loader instance so one boot allocates a contiguous range without
+	 * re-querying MAX(ID) on every new file.
+	 *
+	 * See GitHub issue #42.
+	 *
+	 * @var int|null
+	 */
+	private $id_cursor = null;
+
+	/**
+	 * Queued frontmatter writes: `absolute_file_path => assigned_id`.
+	 *
+	 * Files given a new ID during a boot transaction are recorded here
+	 * and flushed (written back to disk with `id:` in the frontmatter)
+	 * after the transaction commits. Writing the ID back is what makes
+	 * the assignment durable across boots — without the flush, the next
+	 * cold boot would re-assign a different ID to the same file.
+	 *
+	 * See GitHub issue #42.
+	 *
+	 * @var array<string, int>
+	 */
+	private $pending_id_writes = array();
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string              $content_dir The markdown content directory.
@@ -435,8 +464,15 @@ class WP_Markdown_Loader {
 			foreach ( $new_files as $rel_path => $file_info ) {
 				$post = $file_info['post'];
 				$id = (int) $post->ID;
+
+				// Auto-assign a fresh ID if the file was dropped on disk
+				// without one (AI agent creating files directly, git pull
+				// of a new markdown file, etc.). See issue #42.
 				if ( $id <= 0 ) {
-					continue;
+					$id = $this->assign_next_id( $post );
+					if ( $id <= 0 ) {
+						continue;
+					}
 				}
 
 				$this->insert_post_row( $pdo, $post );
@@ -452,8 +488,14 @@ class WP_Markdown_Loader {
 			}
 
 			$pdo->exec( 'COMMIT' );
+
+			// Persist auto-assigned IDs back to their source files.
+			// Deferred until after COMMIT so a rollback can't leave us
+			// with files claiming IDs that aren't in the database.
+			$this->flush_pending_id_writes();
 		} catch ( \Throwable $e ) {
 			$pdo->exec( 'ROLLBACK' );
+			$this->pending_id_writes = array();
 			throw $e;
 		}
 
@@ -1477,6 +1519,17 @@ class WP_Markdown_Loader {
 			foreach ( $posts as $post ) {
 				$id = (int) $post->ID;
 
+				// Auto-assign a fresh ID if the file was dropped on disk
+				// without one. Returns 0 when no source file is known to
+				// write back to, in which case skip rather than inserting
+				// an orphan row. See issue #42.
+				if ( $id <= 0 ) {
+					$id = $this->assign_next_id( $post );
+					if ( $id <= 0 ) {
+						continue;
+					}
+				}
+
 				// Index/Map: insert empty string for post_content.
 				// Content lives in the .md file, not in SQLite.
 				$stmt->execute( array(
@@ -1533,12 +1586,131 @@ class WP_Markdown_Loader {
 			}
 
 			$pdo->exec( 'COMMIT' );
+
+			// Persist auto-assigned IDs back to their source files. This
+			// runs after COMMIT so a rollback can't leave us with files
+			// claiming IDs that aren't in the database. Worst case on a
+			// failed flush: the next boot re-assigns and tries again.
+			$this->flush_pending_id_writes();
 		} catch ( \Throwable $e ) {
 			$pdo->exec( 'ROLLBACK' );
+			$this->pending_id_writes = array();
 			error_log( 'Markdown DB: Failed to load posts: ' . $e->getMessage() );
 		}
 
 		$this->timings['load_posts'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Auto-assign a post ID to a markdown file that has none.
+	 *
+	 * Used when a user (or AI agent, or git pull) drops a `.md` file on
+	 * disk without an `id:` frontmatter field. The loader asks this
+	 * method for the next ID, updates the post object in place, and
+	 * records the file for a post-commit frontmatter rewrite so the
+	 * assignment survives future boots.
+	 *
+	 * Returns 0 if assignment is impossible (no source file to write
+	 * back to); callers should skip the post in that case rather than
+	 * inserting a ghost row that the next boot would orphan.
+	 *
+	 * See GitHub issue #42.
+	 *
+	 * @param object $post Post object parsed from a markdown file.
+	 * @return int The assigned ID, or 0 if the post cannot be given one.
+	 */
+	private function assign_next_id( object $post ): int {
+		$source_file = (string) ( $post->_source_file ?? '' );
+		if ( '' === $source_file || ! file_exists( $source_file ) ) {
+			// No source file — cannot write the ID back, would re-assign
+			// every boot. Better to skip than to orphan a row.
+			return 0;
+		}
+
+		if ( null === $this->id_cursor ) {
+			$this->id_cursor = $this->compute_next_id_start();
+		}
+
+		$new_id   = $this->id_cursor++;
+		$post->ID = $new_id;
+
+		$this->pending_id_writes[ $source_file ] = $new_id;
+
+		return $new_id;
+	}
+
+	/**
+	 * Compute the starting value for the ID cursor.
+	 *
+	 * Looks at `MAX(ID)` across wp_posts AND the JSON fallback table so
+	 * assigned IDs never collide with non-markdown posts (revisions, nav
+	 * items, etc.) even before their rows are inserted into wp_posts.
+	 *
+	 * @return int Next free ID (max existing ID + 1), minimum 1.
+	 */
+	private function compute_next_id_start(): int {
+		$max_id = 0;
+
+		try {
+			$pdo   = $this->driver->get_connection()->get_pdo();
+			$table = $this->prefix . 'posts';
+			$row   = $pdo->query( "SELECT COALESCE(MAX(ID), 0) AS max_id FROM `{$table}`" )->fetch( \PDO::FETCH_OBJ );
+			if ( $row ) {
+				$max_id = max( $max_id, (int) $row->max_id );
+			}
+		} catch ( \Throwable $e ) {
+			// Table may not exist yet during very early boot — fall through.
+		}
+
+		// Also consult the JSON fallback: during cold boot, non-markdown
+		// posts are loaded from _tables/posts.json AFTER markdown posts,
+		// so their IDs are not yet in wp_posts when assign_next_id fires.
+		$json_file = $this->content_dir . '/_tables/posts.json';
+		if ( file_exists( $json_file ) ) {
+			$json = @file_get_contents( $json_file );
+			if ( false !== $json ) {
+				$rows = json_decode( $json, true );
+				if ( is_array( $rows ) ) {
+					foreach ( $rows as $row ) {
+						$id = (int) ( $row['ID'] ?? 0 );
+						if ( $id > $max_id ) {
+							$max_id = $id;
+						}
+					}
+				}
+			}
+		}
+
+		return max( 1, $max_id + 1 );
+	}
+
+	/**
+	 * Write queued ID assignments back to their source `.md` files.
+	 *
+	 * Called by the loader after a sync transaction commits. Each entry
+	 * in the pending queue corresponds to a file that was given a new
+	 * ID during this boot; the frontmatter is updated atomically so the
+	 * assignment survives across boots.
+	 *
+	 * Clears the queue whether or not writes succeeded — failures are
+	 * logged but non-fatal, since the next boot will re-assign and try
+	 * again. The DB row is already persisted by the time we get here.
+	 *
+	 * See GitHub issue #42.
+	 */
+	private function flush_pending_id_writes(): void {
+		if ( empty( $this->pending_id_writes ) ) {
+			return;
+		}
+
+		foreach ( $this->pending_id_writes as $file_path => $new_id ) {
+			$ok = $this->storage->inject_id_into_frontmatter( $file_path, (int) $new_id );
+			if ( ! $ok ) {
+				error_log( "Markdown DB: Failed to persist assigned ID {$new_id} back to {$file_path}" );
+			}
+		}
+
+		$this->pending_id_writes = array();
 	}
 
 	/**

@@ -85,6 +85,21 @@ class WP_Markdown_Write_Engine {
 	private $dirty = array();
 
 	/**
+	 * Post IDs whose `.md` files need rewriting at shutdown.
+	 *
+	 * Populated by post-row updates, postmeta writes, and term-relationship
+	 * writes. Each ID gets rewritten exactly once per request regardless of
+	 * how many writes touched it — a plugin doing 50 `update_post_meta()`
+	 * calls in a loop produces one file write, not fifty.
+	 *
+	 * Keyed by post_id for uniqueness. See GitHub issue #21.
+	 *
+	 * @var array<int, bool>
+	 * @since 0.3.0
+	 */
+	private $dirty_posts = array();
+
+	/**
 	 * Specific wp_options names changed in this request.
 	 *
 	 * Populated by persist_write() when it can cleanly parse the option_name
@@ -200,6 +215,40 @@ class WP_Markdown_Write_Engine {
 	}
 
 	/**
+	 * Mark a post as needing a `.md` file rewrite at shutdown.
+	 *
+	 * Called whenever a post-row, postmeta, or term-relationship write
+	 * affects a post. The file is actually written once in `flush_dirty()`,
+	 * no matter how many marks accumulate against the same post ID during
+	 * the request. This is the debounce that keeps bulk meta updates
+	 * (ACF repeaters, WooCommerce product attributes, etc.) from
+	 * rewriting the same file fifty times.
+	 *
+	 * See GitHub issue #21.
+	 *
+	 * @param int $post_id Post ID (ignored if ≤ 0).
+	 */
+	private function mark_post_dirty( int $post_id ): void {
+		if ( $post_id <= 0 ) {
+			return;
+		}
+		$this->dirty_posts[ $post_id ] = true;
+		$this->ensure_shutdown_registered();
+	}
+
+	/**
+	 * Cancel a queued rewrite for a post that has since been deleted.
+	 *
+	 * Keeps flush_dirty() from attempting to re-persist a post whose
+	 * source file has already been unlinked this request.
+	 *
+	 * @param int $post_id Post ID.
+	 */
+	private function unmark_post_dirty( int $post_id ): void {
+		unset( $this->dirty_posts[ $post_id ] );
+	}
+
+	/**
 	 * Register the shutdown flush handler (once).
 	 */
 	private function ensure_shutdown_registered(): void {
@@ -211,19 +260,35 @@ class WP_Markdown_Write_Engine {
 	}
 
 	/**
-	 * Flush all dirty tables to disk.
+	 * Flush all dirty tables and post rewrites to disk.
 	 *
-	 * Called at shutdown. Each table is persisted once, regardless of how
-	 * many writes happened during the request.
+	 * Called at shutdown. Dirty posts flush first so that a post turning
+	 * out to be a non-markdown type can raise the `posts_non_markdown`
+	 * table flag before the table-level flush loop runs. Each post is
+	 * rewritten exactly once regardless of how many dirty marks landed
+	 * against it during the request — see `mark_post_dirty`.
 	 */
 	public function flush_dirty(): void {
-		if ( empty( $this->dirty ) ) {
+		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) ) {
 			return;
 		}
 
 		$this->writing = true;
 
 		try {
+			// Debounced post rewrites — each dirty post becomes exactly one
+			// call to persist_single_post(). A post turning out to be a
+			// non-markdown type raises the `posts_non_markdown` flag, which
+			// the table-level flush below then persists.
+			if ( ! empty( $this->dirty_posts ) ) {
+				foreach ( array_keys( $this->dirty_posts ) as $post_id ) {
+					if ( $this->persist_single_post( (int) $post_id ) ) {
+						$this->dirty['posts_non_markdown'] = true;
+					}
+				}
+				$this->dirty_posts = array();
+			}
+
 			foreach ( array_keys( $this->dirty ) as $table_suffix ) {
 				if ( $table_suffix === 'options' ) {
 					$this->persist_options();
@@ -600,13 +665,15 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function persist_post_write( string $query, string $op_type ): void {
 		if ( 'DELETE' === $op_type ) {
-			// Extract IDs and delete markdown files + file index entries.
+			// Deletes must fire immediately — a queued rewrite for the same
+			// ID in this request would try to re-persist a vanished post.
 			$ids = $this->extract_ids_from_query( $query, 'ID' );
 			foreach ( $ids as $id ) {
 				$this->storage->delete_post( $id );
 				if ( $this->driver instanceof WP_Markdown_Driver ) {
 					$this->driver->remove_from_file_index( $id );
 				}
+				$this->unmark_post_dirty( $id );
 			}
 
 			// Non-markdown posts JSON also needs updating.
@@ -614,26 +681,19 @@ class WP_Markdown_Write_Engine {
 			return;
 		}
 
-		// For INSERT/UPDATE/REPLACE, read back the affected row and write immediately.
-		$affected_is_non_markdown = false;
-
+		// For INSERT/UPDATE/REPLACE, queue the rewrite for the shutdown
+		// flush. Any number of downstream writes (postmeta, terms, etc.)
+		// in the same request collapses to a single file write. See #21.
 		if ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) {
 			$id = $this->driver->get_insert_id();
 			if ( $id ) {
-				$affected_is_non_markdown = $this->persist_single_post( (int) $id );
+				$this->mark_post_dirty( (int) $id );
 			}
 		} elseif ( 'UPDATE' === $op_type ) {
 			$ids = $this->extract_ids_from_query( $query, 'ID' );
 			foreach ( $ids as $id ) {
-				if ( $this->persist_single_post( $id ) ) {
-					$affected_is_non_markdown = true;
-				}
+				$this->mark_post_dirty( (int) $id );
 			}
-		}
-
-		// Defer non-markdown posts JSON update to shutdown.
-		if ( $affected_is_non_markdown ) {
-			$this->mark_dirty( 'posts_non_markdown' );
 		}
 	}
 
@@ -715,11 +775,13 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function persist_postmeta_write( string $query, string $op_type ): void {
 		// Find which post IDs are affected.
-		$post_ids = $this->extract_post_ids_from_meta_query( $query );
+		$post_ids = $this->extract_post_ids_from_meta_query( $query, $op_type );
 
-		// Rewrite the .md file for each affected markdown-type post (immediate).
+		// Queue each affected post for a single shutdown rewrite, so bulk
+		// meta updates (ACF repeaters, Woo product attributes, 50-key
+		// loops) collapse to one file write per post. See issue #21.
 		foreach ( $post_ids as $post_id ) {
-			$this->rewrite_post_if_markdown( $post_id );
+			$this->mark_post_dirty( (int) $post_id );
 		}
 
 		// Defer non-markdown postmeta JSON dump to shutdown.
@@ -740,10 +802,12 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function persist_terms_write( string $query, string $op_type, string $table_suffix ): void {
 		if ( $table_suffix === 'term_relationships' ) {
-			// Find affected post IDs and rewrite their .md files (immediate).
+			// Queue affected posts for a single shutdown rewrite. Assigning
+			// N categories + M tags in one request collapses to one file
+			// write per post, not one per relationship. See issue #21.
 			$post_ids = $this->extract_ids_from_query( $query, 'object_id' );
 			foreach ( $post_ids as $post_id ) {
-				$this->rewrite_post_if_markdown( $post_id );
+				$this->mark_post_dirty( (int) $post_id );
 			}
 
 			// Defer non-markdown term_relationships JSON dump to shutdown.
@@ -754,18 +818,6 @@ class WP_Markdown_Write_Engine {
 		if ( $table_suffix === 'terms' || $table_suffix === 'term_taxonomy' ) {
 			$this->mark_dirty( $table_suffix );
 		}
-	}
-
-	/**
-	 * Rewrite a post's .md file if it's a markdown type.
-	 *
-	 * Used when meta or terms change — the .md file needs to be
-	 * regenerated with updated frontmatter.
-	 *
-	 * @param int $post_id
-	 */
-	private function rewrite_post_if_markdown( int $post_id ): void {
-		$this->persist_single_post( $post_id );
 	}
 
 	/**
@@ -851,8 +903,36 @@ class WP_Markdown_Write_Engine {
 	 * @param string $query The SQL query.
 	 * @return int[]
 	 */
-	private function extract_post_ids_from_meta_query( string $query ): array {
-		return $this->extract_ids_from_query( $query, 'post_id' );
+	private function extract_post_ids_from_meta_query( string $query, string $op_type = '' ): array {
+		$ids = $this->extract_ids_from_query( $query, 'post_id' );
+
+		// INSERT queries into wp_postmeta have no WHERE clause — the
+		// post_id lives in the VALUES list, which is awkward to parse
+		// reliably in raw SQL. Cheaper and more robust: look up the
+		// freshly-inserted row by the auto-assigned meta_id.
+		if ( empty( $ids ) && ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) ) {
+			$meta_id = (int) $this->driver->get_insert_id();
+			if ( $meta_id > 0 ) {
+				$meta_table = $this->prefix . 'postmeta';
+				try {
+					$rows = $this->driver->query(
+						"SELECT post_id FROM `{$meta_table}` WHERE meta_id = {$meta_id}"
+					);
+					if ( is_array( $rows ) && ! empty( $rows ) ) {
+						$post_id = (int) ( $rows[0]->post_id ?? 0 );
+						if ( $post_id > 0 ) {
+							$ids[] = $post_id;
+						}
+					}
+				} catch ( \Throwable $e ) {
+					// No recovery — a failed lookup means this INSERT
+					// won't drive a file rewrite, but the DB write itself
+					// already succeeded. Next warm boot will rebuild.
+				}
+			}
+		}
+
+		return array_unique( array_filter( $ids ) );
 	}
 
 	/**

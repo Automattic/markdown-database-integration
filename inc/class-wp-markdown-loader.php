@@ -308,15 +308,20 @@ class WP_Markdown_Loader {
 			$cached = $manifest[ $file_key ] ?? null;
 
 			if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
-				// Postmeta and term_relationships carry rows for BOTH markdown
-				// posts (sourced from .md frontmatter) and non-markdown posts
-				// (sourced from the JSON fallback). Truncating the whole table
-				// would wipe the frontmatter-sourced rows, and sync_markdown_posts
-				// only re-inserts them for files whose mtime/size changed —
-				// unchanged .md files are left stripped of their meta/terms. So
-				// for these two tables, delete only the rows whose post IDs
-				// belong to non-markdown post types, then reload from JSON.
-				// See issue #64.
+				// Posts, postmeta, and term_relationships carry rows for BOTH
+				// markdown posts (sourced from .md frontmatter) and non-markdown
+				// posts (sourced from the JSON fallback). Truncating the whole
+				// table would wipe the frontmatter-sourced partition, and
+				// sync_markdown_posts only re-inserts rows for files whose
+				// mtime/size changed — unchanged .md files are left missing
+				// from wp_posts (or stripped of their meta/terms). So for
+				// these tables, delete only the rows belonging to non-markdown
+				// post types, then reload from JSON.
+				// See issues #64 (postmeta/terms) and #66 (posts).
+				if ( 'posts' === $table_suffix ) {
+					$this->sync_posts_partition_from_json();
+					continue;
+				}
 				if ( 'postmeta' === $table_suffix ) {
 					$this->sync_partitioned_table_from_json( 'postmeta', 'post_id' );
 					continue;
@@ -393,11 +398,7 @@ class WP_Markdown_Loader {
 			return;
 		}
 
-		$quoted = array();
-		foreach ( $excluded as $type ) {
-			$quoted[] = "'" . str_replace( "'", "''", $type ) . "'";
-		}
-		$type_list = implode( ',', $quoted );
+		$type_list = $this->quote_excluded_types_for_in_clause( $excluded );
 
 		// Delete rows whose post is a non-markdown (excluded) type. Leaves
 		// rows for markdown-type posts (and rows with no matching wp_posts
@@ -411,6 +412,61 @@ class WP_Markdown_Loader {
 		);
 
 		$this->load_table_from_json( $table_suffix );
+	}
+
+	/**
+	 * Reload wp_posts from JSON without clobbering markdown-type rows.
+	 *
+	 * `_tables/posts.json` holds only the non-markdown partition of the
+	 * posts table (see WP_Markdown_Write_Engine::persist_non_markdown_posts).
+	 * Markdown-type rows live in `.md` frontmatter and are re-inserted on
+	 * cold boot by load_posts() or on warm boot by sync_markdown_posts()
+	 * when a file changes. A naive "DELETE FROM wp_posts; load JSON" reload
+	 * therefore wipes every markdown-type row until the NEXT request's
+	 * heal_orphaned_index_entries() recovers them — a full request window
+	 * with an empty wp_posts for every markdown-type post.
+	 *
+	 * This helper filters on wp_posts.post_type directly, since wp_posts
+	 * IS the authority on which IDs are markdown-type.
+	 *
+	 * See issue #66.
+	 */
+	private function sync_posts_partition_from_json(): void {
+		$pdo      = $this->driver->get_connection()->get_pdo();
+		$table    = $this->prefix . 'posts';
+		$excluded = $this->storage->get_excluded_types();
+
+		if ( empty( $excluded ) ) {
+			// No excluded types configured → the JSON fallback is always empty.
+			// Nothing to reload; frontmatter rows are authoritative.
+			return;
+		}
+
+		$type_list = $this->quote_excluded_types_for_in_clause( $excluded );
+
+		// Delete only non-markdown rows. Markdown-type rows (sourced from
+		// .md frontmatter) survive the sync untouched.
+		$pdo->exec( "DELETE FROM `{$table}` WHERE post_type IN ({$type_list})" );
+
+		$this->load_table_from_json( 'posts' );
+	}
+
+	/**
+	 * Build an SQL-safe IN-clause body from a list of post type slugs.
+	 *
+	 * Post types are WP-sanitized (a-z, 0-9, _, -) in normal operation, but
+	 * MARKDOWN_DB_EXCLUDED_TYPES is a user-supplied constant — quote defensively
+	 * so a hand-crafted value cannot break out of the string literal.
+	 *
+	 * @param string[] $types Post type slugs.
+	 * @return string Comma-separated list of quoted string literals.
+	 */
+	private function quote_excluded_types_for_in_clause( array $types ): string {
+		$quoted = array();
+		foreach ( $types as $type ) {
+			$quoted[] = "'" . str_replace( "'", "''", $type ) . "'";
+		}
+		return implode( ',', $quoted );
 	}
 
 	/**

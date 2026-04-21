@@ -1080,13 +1080,42 @@ class WP_Markdown_Storage {
 		if ( $id > 0 && null !== $this->meta_resolver ) {
 			$meta_rows = call_user_func( $this->meta_resolver, $id );
 			if ( ! empty( $meta_rows ) ) {
+				/**
+				 * Filter the allowlist of internal (underscore-prefixed)
+				 * meta keys to include in markdown frontmatter.
+				 *
+				 * WordPress meta starting with `_` is hidden from the
+				 * admin UI and normally skipped by MDI, but a handful
+				 * carry data users genuinely want to travel with the
+				 * file: featured images (`_thumbnail_id`), page
+				 * templates (`_wp_page_template`), etc.
+				 *
+				 * Return an array of internal meta keys to include.
+				 *
+				 * @since 0.3.0
+				 *
+				 * @param string[] $allowlist Internal meta keys to include
+				 *                            in the frontmatter.
+				 * @param object   $post      The post being serialized.
+				 */
+				$internal_meta_allowlist = apply_filters(
+					'markdown_db_internal_meta_allowlist',
+					array( '_thumbnail_id', '_wp_page_template' ),
+					$post
+				);
+				$allowed_internal = array_flip( $internal_meta_allowlist );
+
 				$meta = array();
 				foreach ( $meta_rows as $row ) {
 					$key   = $row->meta_key ?? '';
 					$value = $row->meta_value ?? '';
 
-					// Skip internal/WordPress meta that's not useful in frontmatter.
-					if ( empty( $key ) || str_starts_with( $key, '_' ) ) {
+					if ( '' === $key ) {
+						continue;
+					}
+
+					// Skip internal meta unless it's explicitly allowlisted.
+					if ( str_starts_with( $key, '_' ) && ! isset( $allowed_internal[ $key ] ) ) {
 						continue;
 					}
 

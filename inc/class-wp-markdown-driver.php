@@ -160,6 +160,16 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	private $file_index_cache = null;
 
 	/**
+	 * Lazily-constructed file-grep search helper.
+	 *
+	 * Rewrites `post_content LIKE '%foo%'` clauses into `ID IN (...)` lists
+	 * by scanning the source .md files on disk. See issue #43.
+	 *
+	 * @var WP_Markdown_Search|null
+	 */
+	private $search = null;
+
+	/**
 	 * Execute a MySQL query.
 	 *
 	 * All queries go through the parent SQLite driver. For write operations,
@@ -169,6 +179,13 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	 * resolves empty content by lazy-loading from the source .md files.
 	 * See: Index/Map Architecture design doc.
 	 *
+	 * For SELECT queries with `post_content LIKE '%foo%'` clauses, the
+	 * driver rewrites those clauses into `ID IN (...)` lists by grepping
+	 * the source .md files before handing the query to SQLite. Without
+	 * this rewrite, WordPress search (`?s=foo`) and any `LIKE`-based
+	 * content query would silently match nothing because post_content is
+	 * stored as an empty string. See issue #43.
+	 *
 	 * @param string $query              Full MySQL query string.
 	 * @param int    $fetch_mode         PDO fetch mode.
 	 * @param array  ...$fetch_mode_args Additional fetch mode args.
@@ -177,6 +194,16 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	 * @throws WP_SQLite_Driver_Exception On query failure.
 	 */
 	public function query( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
+		// Rewrite `post_content LIKE '%needle%'` clauses into `ID IN (...)`
+		// by grepping the source .md files. Skipped during sync so the
+		// loader's own SELECTs never bounce through the file system.
+		if ( ! $this->syncing ) {
+			$rewritten = $this->get_search()->maybe_rewrite_query( $query );
+			if ( null !== $rewritten ) {
+				$query = $rewritten;
+			}
+		}
+
 		// Execute via parent SQLite driver.
 		$result = parent::query( $query, $fetch_mode, ...$fetch_mode_args );
 
@@ -301,6 +328,34 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 		unset( $row );
 
 		return $rows;
+	}
+
+	/**
+	 * Get the file index cache (post_id → relative file path).
+	 *
+	 * Loads the cache from `_markdown_file_index` on first access. Used by
+	 * the search helper to iterate source .md files without re-querying
+	 * SQLite on every search.
+	 *
+	 * @return array<int, string>
+	 */
+	public function get_file_index_cache(): array {
+		if ( null === $this->file_index_cache ) {
+			$this->load_file_index_cache();
+		}
+		return $this->file_index_cache;
+	}
+
+	/**
+	 * Get (lazily construct) the file-grep search helper.
+	 *
+	 * @return WP_Markdown_Search
+	 */
+	public function get_search(): WP_Markdown_Search {
+		if ( null === $this->search ) {
+			$this->search = new WP_Markdown_Search( $this, $this->storage );
+		}
+		return $this->search;
 	}
 
 	/**

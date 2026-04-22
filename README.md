@@ -168,7 +168,7 @@ This means WordPress is effectively **markdown-native**. The database holds mark
 
 ```bash
 # Clone the plugin
-git clone https://github.com/chubes4/markdown-database-integration.git \
+git clone https://github.com/Automattic/markdown-database-integration.git \
   wp-content/plugins/markdown-database-integration
 
 # Install PHP dependencies
@@ -192,17 +192,21 @@ Add to `wp-config.php`:
 // Where markdown files are stored (default: wp-content/markdown/)
 define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/markdown' );
 
-// Post types to exclude from markdown storage (default: none — all types stored as markdown)
-define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'attachment,revision,nav_menu_item' );
+// Post types to exclude from markdown storage (comma-separated).
+// Default: all types stored as markdown. Override if you want certain
+// types (e.g. attachments) to live only in SQLite.
+define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'attachment,nav_menu_item' );
 
-// Operating mode (default: mirror)
+// Operating mode. 'mirror' (default) or 'primary' — see Modes below.
 define( 'MARKDOWN_DB_MODE', 'mirror' );
 ```
 
 ### Modes
 
-- **`mirror`** (Phase 1): SQLite is the primary database. Markdown files are synced on every write. WordPress reads from SQLite. AI agents read from markdown.
-- **`primary`** (Phase 2): Markdown files are the primary source of truth. SQLite is an in-memory index rebuilt from the files on boot. Writes go to markdown first.
+- **`mirror`** (default): SQLite on disk is authoritative. Markdown files are mirrored on every write. WordPress reads from SQLite. AI agents read from markdown. Safe, conservative — SQLite on disk survives even if a `.md` file is lost.
+- **`primary`**: Markdown files are the sole source of truth. SQLite is rebuilt in-memory from the files on every boot (backed by `wp-content/markdown-index.sqlite`). Writes go to markdown first. Anything without a `.md` file is ephemeral — non-markdown tables (options, users, transients, etc.) are snapshot to `wp-content/markdown/_tables/*.json` and reloaded on boot.
+
+`primary` mode is in production use on personal intelligence sites. It trades a minor boot cost (rebuild from markdown) for a much stronger guarantee: your content is files, not database rows. `git clone` the markdown tree and a fresh WordPress install reconstructs the exact same site.
 
 ## Extension Points
 
@@ -245,12 +249,14 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - [x] Markdown-to-blocks conversion — via html-to-blocks-converter REST filter
 - [x] `wp_postmeta` as frontmatter — custom fields in the YAML
 - [x] `wp_terms` as frontmatter tags — categories and tags in the YAML
+- [x] `primary` mode — markdown as sole source of truth, in-memory SQLite rebuilt on boot
+- [x] Transferred to `Automattic/markdown-database-integration`
 - [ ] `wp markdown sync` — one-time sync of existing posts to markdown files
 - [ ] `wp markdown rebuild` — rebuild SQLite index from markdown files
 - [ ] `wp markdown export` — export all content as a git-ready markdown directory
 - [ ] File watcher — detect external edits to `.md` files and sync back to SQLite
-- [ ] Git integration — auto-commit on post save
-- [ ] Transfer to `Automattic/markdown-database-integration`
+
+Git concerns (auto-commit on save, branch-per-agent, bind directories to remotes, pull/push/scheduled-sync) are intentionally **not** in MDI scope. They're handled by [`data-machine-code`'s GitSync](https://github.com/Extra-Chill/data-machine-code), which binds any site-owned directory — including `wp-content/markdown/` — to a git remote without MDI needing to know git exists.
 
 ## Part of Intelligence
 

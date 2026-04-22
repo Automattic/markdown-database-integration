@@ -254,17 +254,35 @@ class WP_Markdown_Storage {
 			// null (lazy-init), leaving stale files on disk when posts are
 			// reparented or renamed. See GitHub issue #31.
 			if ( $id ) {
+				// Claim the just-written path as canonical BEFORE any rebuild.
+				// rebuild_index() respects pre-claimed entries and unlinks
+				// competing disk copies against the claim, instead of applying
+				// its depth heuristic. Without this, a shallow write competing
+				// with a deeper stale copy (e.g. un-reparenting) could be
+				// unlinked by rebuild's dedup — destroying the fresh write.
+				// See GitHub issue #70.
+				$previous_path = $this->index[ $id ] ?? null;
 				if ( null === $this->index ) {
+					$this->index = array();
+				}
+				$this->index[ $id ] = $file_path;
+
+				if ( null === $previous_path ) {
+					// No prior in-memory path — populate the rest of the index
+					// by scanning disk. rebuild_index() honors the claim above,
+					// so the fresh write is safe.
 					$this->rebuild_index();
+					// rebuild_index may have identified a stale copy at a
+					// different path and already unlinked it; refresh
+					// $previous_path from any surviving discrepancy.
+					$previous_path = null;
 				}
 
 				// Remove old file if path changed (slug change or reparent).
-				if ( isset( $this->index[ $id ] ) && $this->index[ $id ] !== $file_path ) {
-					$old_path = $this->index[ $id ];
-					@unlink( $old_path );
-					$this->cleanup_empty_dirs( dirname( $old_path ), $type_dir );
+				if ( null !== $previous_path && $previous_path !== $file_path ) {
+					@unlink( $previous_path );
+					$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
 				}
-				$this->index[ $id ] = $file_path;
 			}
 			return $file_path;
 		}
@@ -736,14 +754,22 @@ class WP_Markdown_Storage {
 	 * the most recently modified file wins. See GitHub issue #9.
 	 */
 	private function rebuild_index(): void {
+		// Preserve any pre-claimed entries (e.g. set by write_post before
+		// calling rebuild during a lazy init). Pre-claimed paths are the
+		// authoritative canonical location for those IDs — any other disk
+		// copy discovered during the scan is stale and should be unlinked,
+		// regardless of path depth. See GitHub issue #70.
+		$claimed     = is_array( $this->index ) ? $this->index : array();
 		$this->index = array();
 
 		if ( ! is_dir( $this->content_dir ) ) {
+			$this->index = $claimed;
 			return;
 		}
 
 		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
 		if ( ! $dirs ) {
+			$this->index = $claimed;
 			return;
 		}
 
@@ -763,42 +789,59 @@ class WP_Markdown_Storage {
 					continue;
 				}
 
-				// Dedup: prefer the hierarchical (deeper) file path.
-				// When a post is reparented, the old flat file may linger on disk.
-				// The hierarchical version is canonical — delete the flat stale copy.
+				// If the caller pre-claimed a canonical path for this ID,
+				// honor it unconditionally. Any competing copy is stale.
+				if ( isset( $claimed[ $id ] ) ) {
+					$canonical = $claimed[ $id ];
+					if ( $file === $canonical ) {
+						$this->index[ $id ] = $canonical;
+						continue;
+					}
+					// Competing disk copy — unlink it.
+					@unlink( $file );
+					$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+					$this->index[ $id ] = $canonical;
+					continue;
+				}
+
+				// No pre-claim — apply dedup heuristic for stale duplicates.
 				// See GitHub issue #31.
 				if ( isset( $this->index[ $id ] ) ) {
 					$existing = $this->index[ $id ];
 
-					// Deeper path (more slashes) = hierarchical = canonical.
-					$existing_depth = substr_count( $existing, '/' );
-					$new_depth      = substr_count( $file, '/' );
+					// Prefer most recently modified — the freshest write on
+					// disk is the authoritative copy. Depth is no longer
+					// used as a tiebreaker; a fresh shallow write should
+					// beat a stale deep copy. See GitHub issue #70.
+					$existing_mtime = @filemtime( $existing );
+					$new_mtime      = @filemtime( $file );
 
-					if ( $new_depth > $existing_depth ) {
-						// New file is deeper — it's canonical. Delete the old flat one.
+					if ( false === $existing_mtime && false === $new_mtime ) {
+						// Both unreadable — skip; neither is a safe canonical.
+						continue;
+					}
+
+					if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
 						@unlink( $existing );
 						$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
 						$this->index[ $id ] = $file;
-					} elseif ( $new_depth < $existing_depth ) {
-						// Existing is deeper — it's canonical. Delete this flat one.
+					} else {
 						@unlink( $file );
 						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
-					} else {
-						// Same depth — prefer most recently modified.
-						$existing_mtime = filemtime( $existing );
-						$new_mtime      = filemtime( $file );
-						if ( $new_mtime > $existing_mtime ) {
-							@unlink( $existing );
-							$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
-							$this->index[ $id ] = $file;
-						} else {
-							@unlink( $file );
-							$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
-						}
 					}
 				} else {
 					$this->index[ $id ] = $file;
 				}
+			}
+		}
+
+		// Ensure any claimed entries that didn't match a disk scan still
+		// persist in the index. (Normal case: they did match and got set
+		// above; this handles the edge where the claimed file is on disk
+		// but in a post-type dir that was skipped or missed.)
+		foreach ( $claimed as $id => $path ) {
+			if ( ! isset( $this->index[ $id ] ) ) {
+				$this->index[ $id ] = $path;
 			}
 		}
 	}

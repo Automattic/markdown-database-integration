@@ -243,25 +243,6 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - **Plugins** → work normally, no compatibility issues observed
 - **Round-trip** → markdown → HTML → blocks → HTML → markdown preserves content
 
-## Scope
-
-**In scope:** WordPress post ↔ `.md` file on disk. Frontmatter round-trip (including `wp_postmeta` + `wp_terms`), block ↔ markdown conversion pipeline, slug/ID derivation for files dropped on disk (#42), filesystem reactivity (boot-time mtime sync detects external edits), the in-memory SQLite index that makes `primary` mode fast.
-
-**Out of scope:** Git. All git concerns — `git commit`, `git push`, `git pull`, remote config, auth, conflict resolution, branch/worktree management — live in [`data-machine-code`'s GitSync](https://github.com/Extra-Chill/data-machine-code), which binds any site-owned directory (including `wp-content/markdown/`) to a GitHub remote via the Contents + Git Data APIs — no shell, no git binary, no `.git/` directory. See [#61](https://github.com/Automattic/markdown-database-integration/issues/61) for the formalized boundary.
-
-## What's next
-
-Open tracking issues reflect the real priorities:
-
-- **[#44](https://github.com/Automattic/markdown-database-integration/issues/44)** — benchmark cold vs warm boot performance. Validate the Index/Map architecture against real timings.
-- **[#45](https://github.com/Automattic/markdown-database-integration/issues/45)** — smart resolution skipping for metadata-only queries. Admin list tables and `fields => 'ids'` queries shouldn't trigger file reads for `post_content` they never use.
-
-Shelved ideas from earlier roadmaps that the architecture outgrew:
-
-- **`wp markdown sync` / `wp markdown rebuild`** — the `primary` mode boot path does exactly this automatically. No CLI needed.
-- **`wp markdown export`** — the markdown tree IS already a canonical git-ready directory. "Export" is just `cp -r` or `git add`.
-- **Live file watcher** — impractical in Playground's PHP-WASM runtime (no inotify/fs_events). Boot-time mtime reconciliation covers the realistic use cases (agent drops a file, site restarts or next request, changes land).
-
 ## Part of Intelligence
 
 This plugin is part of the [Intelligence](https://github.com/Automattic/intelligence) project — a personal AI agent for WordPress. The markdown files are the knowledge layer that Intelligence agents read directly.

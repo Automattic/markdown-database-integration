@@ -20,10 +20,26 @@
 define( 'SQLITE_DB_DROPIN_VERSION', '1.8.0' );
 define( 'MARKDOWN_DB_DROPIN', true );
 
-// Find the SQLite integration plugin.
+// Find the SQLite integration plugin. Probe order:
+//   1. wp-content/mu-plugins/sqlite-database-integration  (typical install)
+//   2. wp-content/plugins/sqlite-database-integration     (regular plugin install)
+//   3. /internal/shared/sqlite-database-integration       (WordPress Playground)
+//
+// The Playground location is the bundled SDI install used by
+// @wp-playground/cli — required so MDI works under the homeboy-extensions
+// wordpress backend (test runner, bench dispatcher) without a separate
+// drop-in. Playground exposes SDI via VFS at this absolute path; the host
+// filesystem doesn't have it, so the realpath() probe is unsafe — file_exists
+// suffices because the file is either there or it's not.
 $sqlite_plugin_implementation_folder_path = realpath( __DIR__ . '/mu-plugins/sqlite-database-integration' );
-if ( ! file_exists( $sqlite_plugin_implementation_folder_path ) ) {
+if ( ! $sqlite_plugin_implementation_folder_path || ! file_exists( $sqlite_plugin_implementation_folder_path ) ) {
 	$sqlite_plugin_implementation_folder_path = realpath( __DIR__ . '/plugins/sqlite-database-integration' );
+}
+if ( ! $sqlite_plugin_implementation_folder_path || ! file_exists( $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/db.php' ) ) {
+	$playground_sqlite = '/internal/shared/sqlite-database-integration';
+	if ( file_exists( $playground_sqlite . '/wp-includes/sqlite/db.php' ) ) {
+		$sqlite_plugin_implementation_folder_path = $playground_sqlite;
+	}
 }
 
 // Bail if SQLite integration is not installed.

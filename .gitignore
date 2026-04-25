@@ -1,1 +1,11 @@
 /vendor/
+
+# Bench result outputs are timestamped run artifacts, not source.
+/tests/bench/results/
+
+# Playground bench dispatcher writes intermediate envelopes here at the
+# plugin root. They get hand-fed to homeboy core's --output, but if a run
+# crashes mid-flight the file lingers.
+/.pg-bench-result*
+/.pg-bench-results*
+

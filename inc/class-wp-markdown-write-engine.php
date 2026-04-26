@@ -48,11 +48,17 @@ class WP_Markdown_Write_Engine {
 	private $driver;
 
 	/**
-	 * Table prefix.
+	 * Table prefix resolver.
 	 *
-	 * @var string
+	 * Stored as a callable instead of a baked string so callers in boot
+	 * paths where `$table_prefix` is unset at construct time still get
+	 * the canonical prefix at query time. See WP_Markdown_DB::
+	 * boot_connection() for the deferral rationale and issue #77 for
+	 * the underlying boot-order bug.
+	 *
+	 * @var callable
 	 */
-	private $prefix;
+	private $prefix_resolver;
 
 	/**
 	 * Options that are ephemeral (not persisted to disk).
@@ -143,21 +149,40 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Constructor.
 	 *
-	 * @param string              $content_dir Content directory.
-	 * @param WP_Markdown_Storage $storage     Markdown storage for posts.
-	 * @param WP_SQLite_Driver    $driver      SQLite driver.
-	 * @param string              $prefix      Table prefix.
+	 * @param string                $content_dir     Content directory.
+	 * @param WP_Markdown_Storage   $storage         Markdown storage for posts.
+	 * @param WP_SQLite_Driver      $driver          SQLite driver.
+	 * @param callable|string       $prefix_resolver Either a callable returning the
+	 *                                               current table prefix at call
+	 *                                               time, or a string for the
+	 *                                               legacy (always-the-same) case.
+	 *                                               String is wrapped in a closure
+	 *                                               internally so call sites stay
+	 *                                               uniform.
 	 */
 	public function __construct(
 		string $content_dir,
 		WP_Markdown_Storage $storage,
 		WP_SQLite_Driver $driver,
-		string $prefix = 'wp_'
+		$prefix_resolver = 'wp_'
 	) {
-		$this->content_dir = rtrim( $content_dir, '/' );
-		$this->storage     = $storage;
-		$this->driver      = $driver;
-		$this->prefix      = $prefix;
+		$this->content_dir     = rtrim( $content_dir, '/' );
+		$this->storage         = $storage;
+		$this->driver          = $driver;
+		$this->prefix_resolver = is_callable( $prefix_resolver )
+			? $prefix_resolver
+			: static function () use ( $prefix_resolver ): string { return (string) $prefix_resolver; };
+	}
+
+	/**
+	 * Resolve the canonical table prefix at the moment of the call.
+	 *
+	 * Internal accessor — callers in this class read `$this->prefix()`
+	 * instead of `$this->prefix() . 'foo'`. See `$prefix_resolver` for
+	 * the deferral rationale.
+	 */
+	private function prefix(): string {
+		return ( $this->prefix_resolver )();
 	}
 
 	/**
@@ -480,7 +505,7 @@ class WP_Markdown_Write_Engine {
 			return array();
 		}
 
-		$table   = $this->prefix . 'options';
+		$table   = $this->prefix() . 'options';
 		$escaped = array();
 		foreach ( $names as $name ) {
 			$escaped[] = "'" . str_replace( array( '\\', "'" ), array( '\\\\', "\\'" ), $name ) . "'";
@@ -524,7 +549,7 @@ class WP_Markdown_Write_Engine {
 	 * @return string[]
 	 */
 	private function list_all_non_ephemeral_option_names(): array {
-		$table = $this->prefix . 'options';
+		$table = $this->prefix() . 'options';
 
 		try {
 			$rows = $this->driver->query(
@@ -707,7 +732,7 @@ class WP_Markdown_Write_Engine {
 	 * @return bool True if the post type is non-markdown (caller should update JSON).
 	 */
 	private function persist_single_post( int $post_id ): bool {
-		$table = $this->prefix . 'posts';
+		$table = $this->prefix() . 'posts';
 
 		try {
 			$rows = $this->driver->query(
@@ -830,8 +855,8 @@ class WP_Markdown_Write_Engine {
 	 * @param string $post_id_col   Column name that references the post ID.
 	 */
 	private function persist_table_excluding_markdown_posts( string $table_suffix, string $post_id_col ): void {
-		$table      = $this->prefix . $table_suffix;
-		$posts_table = $this->prefix . 'posts';
+		$table      = $this->prefix() . $table_suffix;
+		$posts_table = $this->prefix() . 'posts';
 
 		try {
 			// Get all rows from the table.
@@ -872,7 +897,7 @@ class WP_Markdown_Write_Engine {
 	 * @return array<int, bool>
 	 */
 	private function get_markdown_post_ids(): array {
-		$table = $this->prefix . 'posts';
+		$table = $this->prefix() . 'posts';
 		$ids   = array();
 
 		try {
@@ -913,7 +938,7 @@ class WP_Markdown_Write_Engine {
 		if ( empty( $ids ) && ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) ) {
 			$meta_id = (int) $this->driver->get_insert_id();
 			if ( $meta_id > 0 ) {
-				$meta_table = $this->prefix . 'postmeta';
+				$meta_table = $this->prefix() . 'postmeta';
 				try {
 					$rows = $this->driver->query(
 						"SELECT post_id FROM `{$meta_table}` WHERE meta_id = {$meta_id}"
@@ -939,7 +964,7 @@ class WP_Markdown_Write_Engine {
 	 * Persist posts that are excluded from markdown to the JSON fallback.
 	 */
 	private function persist_non_markdown_posts(): void {
-		$table = $this->prefix . 'posts';
+		$table = $this->prefix() . 'posts';
 
 		try {
 			$rows = $this->driver->query(
@@ -971,7 +996,7 @@ class WP_Markdown_Write_Engine {
 	 * @param string $table_suffix Table name without prefix.
 	 */
 	private function persist_table( string $table_suffix ): void {
-		$table = $this->prefix . $table_suffix;
+		$table = $this->prefix() . $table_suffix;
 
 		try {
 			$rows = $this->driver->query(
@@ -1100,8 +1125,9 @@ class WP_Markdown_Write_Engine {
 	 * @return string Table name without prefix.
 	 */
 	private function strip_prefix( string $table ): string {
-		if ( str_starts_with( $table, $this->prefix ) ) {
-			return substr( $table, strlen( $this->prefix ) );
+		$prefix = $this->prefix();
+		if ( str_starts_with( $table, $prefix ) ) {
+			return substr( $table, strlen( $prefix ) );
 		}
 		return $table;
 	}

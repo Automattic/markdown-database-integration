@@ -30,6 +30,13 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	private $loader = null;
 
 	/**
+	 * Deferred primary loader action, if the table prefix is not ready yet.
+	 *
+	 * @var string|null 'load_all' or 'sync_incremental'.
+	 */
+	private $deferred_primary_loader_action = null;
+
+	/**
 	 * Connects to the database.
 	 *
 	 * In 'primary' mode: uses a persistent on-disk SQLite file as the index.
@@ -71,7 +78,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$content_dir_for_path = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 				? MARKDOWN_DB_CONTENT_DIR
 				: WP_CONTENT_DIR . '/markdown';
-			$db_path = dirname( $content_dir_for_path ) . '/markdown-index.sqlite';
+			$db_path = defined( 'MARKDOWN_DB_INDEX_PATH' )
+				? MARKDOWN_DB_INDEX_PATH
+				: dirname( rtrim( $content_dir_for_path, '/\\' ) ) . '/markdown-index.sqlite';
 			$this->ensure_directory_exists( dirname( $db_path ) );
 			// Don't reuse any existing PDO — we need our own connection.
 			$pdo = null;
@@ -153,24 +162,49 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
 		$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
 
-		// Set up the write engine.
-		global $table_prefix;
-		$prefix = $table_prefix ?? 'wp_';
+		// Resolve the table prefix.
+		//
+		// IMPORTANT: in some boot paths (wp-phpunit / homeboy bench
+		// dispatcher / any caller where wp-config.php sets $table_prefix
+		// as a local variable instead of a global), $table_prefix is
+		// NULL at this moment. The fallback to 'wp_' would then bake the
+		// wrong prefix into every table name the loader creates,
+		// breaking every WordPress query that uses the canonical prefix
+		// (e.g. wptests_*). See GitHub issue #77.
+		//
+		// Instead of capturing the prefix as a value at construct time,
+		// we use a closure that resolves the current prefix at call
+		// time. By the time anything actually USES the prefix (a
+		// resolver query, a write_engine call, the loader's table
+		// creation), $table_prefix is set globally even in the
+		// pathological boot paths.
+		$prefix_resolver = static function (): string {
+			global $table_prefix, $wpdb;
+			if ( isset( $table_prefix ) && '' !== $table_prefix ) {
+				return $table_prefix;
+			}
+			if ( isset( $wpdb ) && '' !== $wpdb->prefix ) {
+				return $wpdb->prefix;
+			}
+			return 'wp_';
+		};
 
+		// Set up the write engine. Pass the resolver so the engine
+		// re-reads the prefix on every method call instead of baking
+		// the boot-time value (which may be NULL in test boots).
 		$write_engine = new WP_Markdown_Write_Engine(
 			$content_dir,
 			$storage,
 			$this->dbh,
-			$prefix
+			$prefix_resolver
 		);
 		$this->dbh->set_write_engine( $write_engine );
 
 		// Set up the post resolver so the storage engine can build
 		// hierarchical directory paths. See GitHub issue #14.
 		$driver_ref = $this->dbh;
-		$prefix_ref = $prefix;
-		$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-			$table = $prefix_ref . 'posts';
+		$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
+			$table = $prefix_resolver() . 'posts';
 			try {
 				$rows = $driver_ref->query(
 					"SELECT post_name, post_parent, post_type FROM `{$table}` WHERE ID = {$post_id}"
@@ -186,8 +220,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// Meta resolver — fetches all post meta for a given post ID.
 		// Used by build_frontmatter() to embed meta in .md files. See issue #6.
-		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-			$table = $prefix_ref . 'postmeta';
+		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
+			$table = $prefix_resolver() . 'postmeta';
 			try {
 				$rows = $driver_ref->query(
 					"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
@@ -200,10 +234,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// Terms resolver — fetches all terms for a given post ID.
 		// Used by build_frontmatter() to embed terms in .md files. See issue #6.
-		$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-			$terms_table    = $prefix_ref . 'terms';
-			$taxonomy_table = $prefix_ref . 'term_taxonomy';
-			$rel_table      = $prefix_ref . 'term_relationships';
+		$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
+			$prefix         = $prefix_resolver();
+			$terms_table    = $prefix . 'terms';
+			$taxonomy_table = $prefix . 'term_taxonomy';
+			$rel_table      = $prefix . 'term_relationships';
 			try {
 				$rows = $driver_ref->query(
 					"SELECT tt.taxonomy, t.slug
@@ -231,20 +266,85 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		} );
 
 		// In primary mode, load or sync data.
+		//
 		if ( 'primary' === $mode ) {
 			$this->loader = new WP_Markdown_Loader(
 				$content_dir,
 				$this->dbh,
 				$storage,
-				$prefix
+				$prefix_resolver
 			);
 
-			if ( $is_warm_boot ) {
-				$this->loader->sync_incremental();
+			$loader_action = $is_warm_boot ? 'sync_incremental' : 'load_all';
+			if ( $this->has_resolved_table_prefix() ) {
+				$this->run_primary_loader_action( $loader_action );
 			} else {
-				$this->loader->load_all();
+				$this->deferred_primary_loader_action = $loader_action;
 			}
 		}
+	}
+
+	/**
+	 * Sets the table prefix and runs any deferred primary-mode loader work.
+	 *
+	 * In wp-phpunit-style boots, the drop-in connects before $table_prefix is
+	 * global. WordPress calls set_prefix() shortly after require_wp_db(); that is
+	 * the earliest safe point to create/sync prefixed tables.
+	 *
+	 * @param string $prefix          Table prefix.
+	 * @param bool   $set_table_names Whether to update table name properties.
+	 * @return string|WP_Error Old prefix or WP_Error, matching wpdb::set_prefix().
+	 */
+	public function set_prefix( $prefix, $set_table_names = true ) {
+		$result = parent::set_prefix( $prefix, $set_table_names );
+		$this->run_deferred_primary_loader();
+		return $result;
+	}
+
+	/**
+	 * Whether WordPress has finalized a usable table prefix.
+	 *
+	 * @return bool True when a real prefix is available.
+	 */
+	private function has_resolved_table_prefix(): bool {
+		global $table_prefix;
+
+		if ( isset( $table_prefix ) && '' !== $table_prefix ) {
+			return true;
+		}
+
+		return isset( $this->prefix ) && '' !== $this->prefix;
+	}
+
+	/**
+	 * Run deferred primary-mode loader work once the prefix is ready.
+	 */
+	private function run_deferred_primary_loader(): void {
+		if ( null === $this->deferred_primary_loader_action || ! $this->has_resolved_table_prefix() ) {
+			return;
+		}
+
+		$action = $this->deferred_primary_loader_action;
+		$this->deferred_primary_loader_action = null;
+		$this->run_primary_loader_action( $action );
+	}
+
+	/**
+	 * Run the requested primary loader action.
+	 *
+	 * @param string $action 'load_all' or 'sync_incremental'.
+	 */
+	private function run_primary_loader_action( string $action ): void {
+		if ( null === $this->loader ) {
+			return;
+		}
+
+		if ( 'sync_incremental' === $action ) {
+			$this->loader->sync_incremental();
+			return;
+		}
+
+		$this->loader->load_all();
 	}
 
 	/**

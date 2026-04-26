@@ -64,11 +64,11 @@ class WP_Markdown_Loader {
 	private $driver;
 
 	/**
-	 * The table prefix (usually 'wp_').
+	 * Table prefix resolver.
 	 *
-	 * @var string
+	 * @var callable
 	 */
-	private $prefix;
+	private $prefix_resolver;
 
 	/**
 	 * The markdown storage engine (for posts).
@@ -135,18 +135,29 @@ class WP_Markdown_Loader {
 	 * @param string              $content_dir The markdown content directory.
 	 * @param WP_SQLite_Driver    $driver      The SQLite driver.
 	 * @param WP_Markdown_Storage $storage     The markdown storage engine.
-	 * @param string              $prefix      Table prefix.
+	 * @param callable|string     $prefix      Table prefix or resolver.
 	 */
 	public function __construct(
 		string $content_dir,
 		WP_SQLite_Driver $driver,
 		WP_Markdown_Storage $storage,
-		string $prefix = 'wp_'
+		$prefix = 'wp_'
 	) {
-		$this->content_dir = rtrim( $content_dir, '/' );
-		$this->driver      = $driver;
-		$this->storage     = $storage;
-		$this->prefix      = $prefix;
+		$this->content_dir     = rtrim( $content_dir, '/' );
+		$this->driver          = $driver;
+		$this->storage         = $storage;
+		$this->prefix_resolver = is_callable( $prefix )
+			? $prefix
+			: static function () use ( $prefix ): string { return (string) $prefix; };
+	}
+
+	/**
+	 * Resolve the current WordPress table prefix.
+	 *
+	 * @return string Current table prefix.
+	 */
+	private function prefix(): string {
+		return ( $this->prefix_resolver )();
 	}
 
 	/**
@@ -333,7 +344,7 @@ class WP_Markdown_Loader {
 
 				// Other core tables have no frontmatter source — full reload
 				// is safe.
-				$table = $this->prefix . $table_suffix;
+				$table = $this->prefix() . $table_suffix;
 				$pdo->exec( "DELETE FROM `{$table}`" );
 				$this->load_table_from_json( $table_suffix );
 			}
@@ -356,7 +367,7 @@ class WP_Markdown_Loader {
 					$cached = $manifest[ $file_key ] ?? null;
 
 					if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
-						$table = $this->prefix . $basename;
+						$table = $this->prefix() . $basename;
 						$pdo->exec( "DELETE FROM `{$table}`" );
 						$this->load_table_from_json( $basename );
 					}
@@ -388,8 +399,9 @@ class WP_Markdown_Loader {
 	 */
 	private function sync_partitioned_table_from_json( string $table_suffix, string $post_id_col ): void {
 		$pdo          = $this->driver->get_connection()->get_pdo();
-		$table        = $this->prefix . $table_suffix;
-		$posts_table  = $this->prefix . 'posts';
+		$prefix       = $this->prefix();
+		$table        = $prefix . $table_suffix;
+		$posts_table  = $prefix . 'posts';
 		$excluded     = $this->storage->get_excluded_types();
 
 		if ( empty( $excluded ) ) {
@@ -433,7 +445,7 @@ class WP_Markdown_Loader {
 	 */
 	private function sync_posts_partition_from_json(): void {
 		$pdo      = $this->driver->get_connection()->get_pdo();
-		$table    = $this->prefix . 'posts';
+		$table    = $this->prefix() . 'posts';
 		$excluded = $this->storage->get_excluded_types();
 
 		if ( empty( $excluded ) ) {
@@ -544,9 +556,10 @@ class WP_Markdown_Loader {
 			return;
 		}
 
-		$posts_table = $this->prefix . 'posts';
-		$meta_table  = $this->prefix . 'postmeta';
-		$rel_table   = $this->prefix . 'term_relationships';
+		$prefix      = $this->prefix();
+		$posts_table = $prefix . 'posts';
+		$meta_table  = $prefix . 'postmeta';
+		$rel_table   = $prefix . 'term_relationships';
 
 		$pdo->exec( 'BEGIN TRANSACTION' );
 
@@ -647,7 +660,7 @@ class WP_Markdown_Loader {
 		$start = microtime( true );
 		$pdo   = $this->driver->get_connection()->get_pdo();
 
-		$posts_table = $this->prefix . 'posts';
+		$posts_table = $this->prefix() . 'posts';
 
 		// Find orphaned entries: file index has a record but wp_posts doesn't.
 		try {
@@ -737,7 +750,7 @@ class WP_Markdown_Loader {
 	 * @param object $post The post object (from parse_file).
 	 */
 	private function insert_post_row( \PDO $pdo, object $post ): void {
-		$table = $this->prefix . 'posts';
+		$table = $this->prefix() . 'posts';
 		$stmt = $pdo->prepare(
 			"INSERT OR IGNORE INTO `{$table}` (
 				ID, post_author, post_date, post_date_gmt,
@@ -782,7 +795,7 @@ class WP_Markdown_Loader {
 	 * @param object $post The post object (from parse_file).
 	 */
 	private function update_post_row( \PDO $pdo, object $post ): void {
-		$table = $this->prefix . 'posts';
+		$table = $this->prefix() . 'posts';
 		$stmt = $pdo->prepare(
 			"UPDATE `{$table}` SET
 				post_author = ?, post_date = ?, post_date_gmt = ?,
@@ -836,7 +849,7 @@ class WP_Markdown_Loader {
 		// array (multi-row meta per issue #20) — iterate both shapes.
 		$meta = $post->_frontmatter_meta ?? array();
 		if ( ! empty( $meta ) ) {
-			$meta_table = $this->prefix . 'postmeta';
+			$meta_table = $this->prefix() . 'postmeta';
 			$meta_stmt = $pdo->prepare(
 				"INSERT OR IGNORE INTO `{$meta_table}` (post_id, meta_key, meta_value) VALUES (?, ?, ?)"
 			);
@@ -869,7 +882,7 @@ class WP_Markdown_Loader {
 
 		$term_map  = $this->get_term_map( $pdo );
 		$id        = (int) $post->ID;
-		$rel_table = $this->prefix . 'term_relationships';
+		$rel_table = $this->prefix() . 'term_relationships';
 
 		$stmt = $pdo->prepare(
 			"INSERT OR IGNORE INTO `{$rel_table}` (object_id, term_taxonomy_id, term_order) VALUES (?, ?, 0)"
@@ -903,8 +916,9 @@ class WP_Markdown_Loader {
 		}
 
 		$this->term_map = array();
-		$taxonomy_table = $this->prefix . 'term_taxonomy';
-		$terms_table    = $this->prefix . 'terms';
+		$prefix         = $this->prefix();
+		$taxonomy_table = $prefix . 'term_taxonomy';
+		$terms_table    = $prefix . 'terms';
 
 		try {
 			$rows = $pdo->query(
@@ -972,7 +986,7 @@ class WP_Markdown_Loader {
 	 */
 	private function create_core_tables(): void {
 		$start  = microtime( true );
-		$prefix = $this->prefix;
+		$prefix = $this->prefix();
 
 		// Check if we have a schema cache file.
 		$schema_file = $this->content_dir . '/_schema/create_tables.sql';
@@ -1210,7 +1224,7 @@ class WP_Markdown_Loader {
 
 		$this->create_options_index_table();
 
-		$table = $this->prefix . 'options';
+		$table = $this->prefix() . 'options';
 		$pdo   = $this->driver->get_connection()->get_pdo();
 
 		$insert_stmt = $pdo->prepare(
@@ -1363,7 +1377,7 @@ class WP_Markdown_Loader {
 		}
 
 		$pdo   = $this->driver->get_connection()->get_pdo();
-		$table = $this->prefix . 'options';
+		$table = $this->prefix() . 'options';
 
 		// 1. Load the existing index.
 		$index = array(); // option_name => { file_path, mtime, size, option_id, autoload }
@@ -1530,7 +1544,7 @@ class WP_Markdown_Loader {
 	 */
 	private function load_table_from_json( string $table_suffix ): void {
 		$start = microtime( true );
-		$table = $this->prefix . $table_suffix;
+		$table = $this->prefix() . $table_suffix;
 		$file  = $this->content_dir . '/_tables/' . $table_suffix . '.json';
 
 		if ( ! file_exists( $file ) ) {
@@ -1589,7 +1603,7 @@ class WP_Markdown_Loader {
 	 */
 	private function load_posts(): void {
 		$start = microtime( true );
-		$table = $this->prefix . 'posts';
+		$table = $this->prefix() . 'posts';
 
 		// Create the file index table for lazy-loading content.
 		$this->create_file_index_table();
@@ -1780,7 +1794,7 @@ class WP_Markdown_Loader {
 
 		try {
 			$pdo   = $this->driver->get_connection()->get_pdo();
-			$table = $this->prefix . 'posts';
+			$table = $this->prefix() . 'posts';
 			$row   = $pdo->query( "SELECT COALESCE(MAX(ID), 0) AS max_id FROM `{$table}`" )->fetch( \PDO::FETCH_OBJ );
 			if ( $row ) {
 				$max_id = max( $max_id, (int) $row->max_id );
@@ -1869,7 +1883,7 @@ class WP_Markdown_Loader {
 	 */
 	private function load_frontmatter_meta(): void {
 		$start = microtime( true );
-		$table = $this->prefix . 'postmeta';
+		$table = $this->prefix() . 'postmeta';
 
 		$pdo = $this->driver->get_connection()->get_pdo();
 		$pdo->exec( 'BEGIN TRANSACTION' );
@@ -1916,7 +1930,7 @@ class WP_Markdown_Loader {
 	 */
 	private function load_frontmatter_terms(): void {
 		$start     = microtime( true );
-		$rel_table = $this->prefix . 'term_relationships';
+		$rel_table = $this->prefix() . 'term_relationships';
 		$pdo       = $this->driver->get_connection()->get_pdo();
 
 		$term_map = $this->get_term_map( $pdo );

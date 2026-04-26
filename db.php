@@ -3,6 +3,7 @@
  * Plugin Name: Markdown Database Integration (Drop-in)
  * Version: 0.2.0
  * Author: Chris Huber
+ * Text Domain: markdown-database-integration
  *
  * WordPress db.php drop-in that replaces the SQLite database file with
  * markdown files as the sole source of truth. In-memory SQLite is used
@@ -58,6 +59,26 @@ if ( ! defined( 'DB_ENGINE' ) ) {
 // Force the v2 AST driver — required for our integration.
 if ( ! defined( 'WP_SQLITE_AST_DRIVER' ) ) {
 	define( 'WP_SQLITE_AST_DRIVER', true );
+}
+
+// Primary mode uses markdown-index.sqlite as the active query engine. The
+// SQLite Integration install shim opens FQDB directly during wp_install(), so
+// FQDB must point at the same file MDI's wpdb instance is using.
+if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
+	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
+		? MARKDOWN_DB_CONTENT_DIR
+		: WP_CONTENT_DIR . '/markdown';
+	$markdown_db_index_path = dirname( rtrim( $markdown_db_content_dir, '/\\' ) ) . '/markdown-index.sqlite';
+
+	if ( ! defined( 'MARKDOWN_DB_INDEX_PATH' ) ) {
+		define( 'MARKDOWN_DB_INDEX_PATH', $markdown_db_index_path );
+	}
+	if ( ! defined( 'FQDBDIR' ) ) {
+		define( 'FQDBDIR', rtrim( dirname( MARKDOWN_DB_INDEX_PATH ), '/\\' ) . '/' );
+	}
+	if ( ! defined( 'FQDB' ) ) {
+		define( 'FQDB', MARKDOWN_DB_INDEX_PATH );
+	}
 }
 
 // Load the SQLite integration's version and constants.

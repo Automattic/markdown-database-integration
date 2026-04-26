@@ -30,6 +30,13 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	private $loader = null;
 
 	/**
+	 * Deferred primary loader action, if the table prefix is not ready yet.
+	 *
+	 * @var string|null 'load_all' or 'sync_incremental'.
+	 */
+	private $deferred_primary_loader_action = null;
+
+	/**
 	 * Connects to the database.
 	 *
 	 * In 'primary' mode: uses a persistent on-disk SQLite file as the index.
@@ -71,7 +78,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$content_dir_for_path = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 				? MARKDOWN_DB_CONTENT_DIR
 				: WP_CONTENT_DIR . '/markdown';
-			$db_path = dirname( $content_dir_for_path ) . '/markdown-index.sqlite';
+			$db_path = defined( 'MARKDOWN_DB_INDEX_PATH' )
+				? MARKDOWN_DB_INDEX_PATH
+				: dirname( rtrim( $content_dir_for_path, '/\\' ) ) . '/markdown-index.sqlite';
 			$this->ensure_directory_exists( dirname( $db_path ) );
 			// Don't reuse any existing PDO — we need our own connection.
 			$pdo = null;
@@ -258,34 +267,84 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// In primary mode, load or sync data.
 		//
-		// The loader's table-name prefix is taken from the resolver at
-		// construct time. The resolver returns the canonical
-		// $table_prefix when it's available (production case — wp-config.php
-		// sets the global before this constructor runs) and falls back
-		// to 'wp_' when it's not. Test/dispatcher boot paths where
-		// $table_prefix is unset at this moment still get the bug
-		// described in #77 — the loader bakes 'wp_' into table names
-		// while the rest of WordPress thinks the prefix is e.g.
-		// 'wptests_'. Fixing that requires either deferring load_all()
-		// to plugins_loaded or making the loader's prefix lazy too;
-		// both are bigger refactors with their own risks. This PR
-		// fixes the resolver / write-engine prefix capture (the part
-		// that's safely fixable today); the loader path is tracked as
-		// a follow-up.
 		if ( 'primary' === $mode ) {
 			$this->loader = new WP_Markdown_Loader(
 				$content_dir,
 				$this->dbh,
 				$storage,
-				$prefix_resolver()
+				$prefix_resolver
 			);
 
-			if ( $is_warm_boot ) {
-				$this->loader->sync_incremental();
+			$loader_action = $is_warm_boot ? 'sync_incremental' : 'load_all';
+			if ( $this->has_resolved_table_prefix() ) {
+				$this->run_primary_loader_action( $loader_action );
 			} else {
-				$this->loader->load_all();
+				$this->deferred_primary_loader_action = $loader_action;
 			}
 		}
+	}
+
+	/**
+	 * Sets the table prefix and runs any deferred primary-mode loader work.
+	 *
+	 * In wp-phpunit-style boots, the drop-in connects before $table_prefix is
+	 * global. WordPress calls set_prefix() shortly after require_wp_db(); that is
+	 * the earliest safe point to create/sync prefixed tables.
+	 *
+	 * @param string $prefix          Table prefix.
+	 * @param bool   $set_table_names Whether to update table name properties.
+	 * @return string|WP_Error Old prefix or WP_Error, matching wpdb::set_prefix().
+	 */
+	public function set_prefix( $prefix, $set_table_names = true ) {
+		$result = parent::set_prefix( $prefix, $set_table_names );
+		$this->run_deferred_primary_loader();
+		return $result;
+	}
+
+	/**
+	 * Whether WordPress has finalized a usable table prefix.
+	 *
+	 * @return bool True when a real prefix is available.
+	 */
+	private function has_resolved_table_prefix(): bool {
+		global $table_prefix;
+
+		if ( isset( $table_prefix ) && '' !== $table_prefix ) {
+			return true;
+		}
+
+		return isset( $this->prefix ) && '' !== $this->prefix;
+	}
+
+	/**
+	 * Run deferred primary-mode loader work once the prefix is ready.
+	 */
+	private function run_deferred_primary_loader(): void {
+		if ( null === $this->deferred_primary_loader_action || ! $this->has_resolved_table_prefix() ) {
+			return;
+		}
+
+		$action = $this->deferred_primary_loader_action;
+		$this->deferred_primary_loader_action = null;
+		$this->run_primary_loader_action( $action );
+	}
+
+	/**
+	 * Run the requested primary loader action.
+	 *
+	 * @param string $action 'load_all' or 'sync_incremental'.
+	 */
+	private function run_primary_loader_action( string $action ): void {
+		if ( null === $this->loader ) {
+			return;
+		}
+
+		if ( 'sync_incremental' === $action ) {
+			$this->loader->sync_incremental();
+			return;
+		}
+
+		$this->loader->load_all();
 	}
 
 	/**

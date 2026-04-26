@@ -62,22 +62,22 @@ This plugin makes that happen. Content is files. Files are:
 
 ## Conversion Pipeline
 
-Content is stored as raw markdown. Conversion happens at write time (blocks → markdown) and render time (markdown → HTML/blocks):
+`post_content` is **raw markdown** — exactly what the .md file on disk holds. MDI delegates every conversion to [Block Format Bridge (BFB)](https://github.com/chubes4/block-format-bridge) via `bfb_convert()`, BFB owns the adapter API, vendor-prefixes the underlying league libraries, and bundles `chubes4/html-to-blocks-converter` internally — MDI itself contains no parsing code.
+
+MDI hooks BFB's [`bfb_skip_insert_conversion`](https://github.com/chubes4/block-format-bridge/pull/8) filter to short-circuit BFB's default `wp_insert_post_data` markdown→blocks normalisation for any markdown-managed CPT. Without that veto, agents speaking markdown would get `markdown → blocks (BFB on insert) → SQLite stores blocks → blocks → markdown (MDI on disk write)` — a lossy round-trip that mangles list ordering and paragraph adjacency. With the veto, `post_content` flows in as markdown and is mirrored to disk verbatim.
 
 ```
-WRITE (post saved in editor):
+WRITE (agent or editor inserts a markdown post):
 
-  Gutenberg Blocks
+  Markdown (post_content)
        │
-       ▼  serialize_blocks()                    [WordPress core]
-  Block HTML (<!-- wp:paragraph --><p>...</p><!-- /wp:paragraph -->)
+       ▼  BFB on insert? — vetoed via bfb_skip_insert_conversion
+       │     for markdown-managed CPTs (no conversion happens)
        │
-       ▼  strip_block_comments()                [WP_Markdown_Converter]
-       ▼  unwrap_block_elements()               [WP_Markdown_Converter]
-  Clean HTML (<p>...</p>)
+  SQLite stores raw markdown
        │
-       ▼  league/html-to-markdown (+ TableConverter)
-  Clean Markdown (stored in .md file)
+       ▼  MDI write engine
+  Markdown (.md file on disk — byte-identical to post_content)
 
 
 READ (site boots):
@@ -91,24 +91,24 @@ READ (site boots):
 RENDER (display time):
 
   Frontend:
-    post_content (markdown) → the_content filter (p1) → league/commonmark → HTML → browser
+    post_content (markdown) → the_content filter (p1) → bfb_convert(..., 'markdown', 'html') → browser
 
-  Editor:
-    post_content (markdown) → REST filter (p5) → HTML → html-to-blocks-converter REST filter (p10) → blocks → editor
+  Editor (REST):
+    post_content (markdown) → REST prepare filter (p5) → bfb_convert(..., 'markdown', 'html') → editor parses HTML to blocks
 
-  CLI/API:
+  CLI/abilities:
     post_content (markdown) → returned as-is
 ```
 
+The defensive `blocks → markdown` branch in `WP_Markdown_Write_Engine::persist_single_post()` only fires when something bypasses BFB's veto entirely (e.g. a plugin that inserts pre-serialised block markup straight into `wp_insert_post`). In steady state on a markdown-managed CPT, it never runs.
+
 ### Dependencies
 
-| Package | Direction | Role |
-|---------|-----------|------|
-| [league/commonmark](https://commonmark.thephpleague.com/) | Markdown → HTML | GFM-flavored parser (tables, strikethrough, autolinks) |
-| [league/html-to-markdown](https://github.com/thephpleague/html-to-markdown) | HTML → Markdown | Converts clean HTML back to markdown |
-| [html-to-blocks-converter](https://github.com/chubes4/html-to-blocks-converter) | HTML → Blocks | PHP port of Gutenberg's `rawHandler` (optional) |
+| Package | Role |
+|---------|------|
+| [chubes4/block-format-bridge](https://github.com/chubes4/block-format-bridge) | Owns every HTML/Markdown/Blocks conversion. Bundles `chubes4/html-to-blocks-converter`, `league/commonmark`, and `league/html-to-markdown` as vendor-prefixed packages. |
 
-The `html-to-blocks-converter` plugin is optional. Without it, clean HTML is inserted directly into SQLite — WordPress handles this gracefully, and the block editor converts to blocks on first open.
+You no longer need the standalone `html-to-blocks-converter` plugin installed — BFB carries it internally and registers it on its own `wp_insert_post_data` hook so the block editor and any code path that calls `wp_insert_post()` get the same conversion behaviour.
 
 ## Architecture
 
@@ -123,7 +123,7 @@ WordPress Core ($wpdb)
     │  query() override:                    │
     │    1. Execute via SQLite (parent)      │
     │    2. If wp_posts write:               │
-    │       convert blocks → markdown        │
+    │       bfb_convert(blocks → markdown)   │
     │       write to .md file                │
     └───────────────────────────────────────┘
         │                    │
@@ -134,10 +134,8 @@ WordPress Core ($wpdb)
     transients               wiki/*.md
     plugin tables
 
-    WP_Markdown_Converter
-    ├── blocks_to_markdown()    — write path (unwrap_block_elements, TableConverter)
-    ├── markdown_to_html()      — render path (the_content filter, REST filter)
-    └── strip_block_comments()  — internal to blocks_to_markdown pipeline
+    Conversion lives in Block Format Bridge:
+    └── bfb_convert( $content, $from, $to )    — universal API; routes through the block-array pivot
 ```
 
 **SQLite** handles: options, users, terms, transients, sessions, plugin tables — the machinery that WordPress hammers thousands of times per page load.
@@ -162,7 +160,7 @@ This means WordPress is effectively **markdown-native**. The database holds mark
 - WordPress 6.9+
 - [SQLite Database Integration](https://github.com/WordPress/sqlite-database-integration) plugin (installed as mu-plugin)
 - PHP 7.4+
-- Composer (for league/commonmark and league/html-to-markdown)
+- Composer (for [block-format-bridge](https://github.com/chubes4/block-format-bridge), which carries the vendor-prefixed conversion stack)
 
 ## Installation
 
@@ -171,7 +169,8 @@ This means WordPress is effectively **markdown-native**. The database holds mark
 git clone https://github.com/Automattic/markdown-database-integration.git \
   wp-content/plugins/markdown-database-integration
 
-# Install PHP dependencies
+# Install PHP dependencies (pulls in block-format-bridge + the bundled
+# vendor-prefixed conversion libraries it carries internally).
 cd wp-content/plugins/markdown-database-integration
 composer install --no-dev
 
@@ -181,8 +180,6 @@ cp wp-content/db.php wp-content/db.php.backup
 # Install our db.php drop-in
 cp wp-content/plugins/markdown-database-integration/db.php wp-content/db.php
 ```
-
-Optional: install the [HTML to Blocks Converter](https://github.com/chubes4/html-to-blocks-converter) plugin for full block markup round-trips.
 
 ## Configuration
 

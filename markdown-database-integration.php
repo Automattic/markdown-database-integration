@@ -61,6 +61,93 @@ if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
 }
 
 // ---------------------------------------------------------------------------
+// Substrate veto: keep post_content as raw markdown for markdown-managed
+// post types.
+//
+// Block Format Bridge ships a `wp_insert_post_data` hook (priority 5) that
+// normalises non-html source formats into serialised block markup before
+// WordPress writes them. That's the right behaviour on a vanilla WordPress
+// install — the editor expects blocks. It's the wrong behaviour for an
+// MDI-managed CPT, where the source of truth is the .md file on disk and
+// post_content should mirror it as raw markdown. Without the veto the round
+// trip becomes:
+//
+//   markdown agent input
+//     → BFB on insert: markdown → blocks
+//   SQLite stores blocks
+//     → MDI write engine: blocks → markdown for the .md file
+//   .md file on disk
+//
+// The blocks→markdown hop loses fidelity (heading + list + paragraph re-
+// ordering, attribution prose duplicating across sibling blocks). MDI never
+// wanted blocks in post_content in the first place; the right answer is to
+// short-circuit BFB's insert-time conversion for any markdown-managed type
+// and let post_content stay as the raw markdown the agent sent.
+//
+// The veto fires regardless of mode (mirror or primary) because both modes
+// mirror post_content to .md files; the round-trip is lossy in either.
+//
+// See GitHub issue #82 and chubes4/block-format-bridge#8.
+// ---------------------------------------------------------------------------
+
+/**
+ * Whether a post type is excluded from markdown storage.
+ *
+ * Mirror of `WP_Markdown_Storage::is_markdown_type()` against the
+ * `MARKDOWN_DB_EXCLUDED_TYPES` constant. Inlined here so the BFB skip
+ * filter callback (which runs on every `wp_insert_post_data` call) can
+ * answer without instantiating Storage.
+ *
+ * @param string $post_type The post type slug.
+ * @return bool
+ */
+function markdown_db_is_markdown_type( string $post_type ): bool {
+	if ( '' === $post_type ) {
+		return false;
+	}
+	$excluded = defined( 'MARKDOWN_DB_EXCLUDED_TYPES' )
+		? array_map( 'trim', explode( ',', (string) MARKDOWN_DB_EXCLUDED_TYPES ) )
+		: array();
+	return ! in_array( $post_type, $excluded, true );
+}
+
+/**
+ * Veto BFB's insert-time markdown→blocks conversion for markdown-managed
+ * post types.
+ *
+ * Lets `post_content` flow into wp_posts as the raw markdown the caller
+ * sent, so MDI's write engine writes that same markdown to the .md file
+ * with no lossy blocks→markdown round-trip. The frontend `the_content`
+ * filter (priority 1, below) and REST prepare filter (priority 5, below)
+ * still convert markdown→HTML at render time via `bfb_convert()`.
+ *
+ * Filter contract:
+ *   apply_filters( 'bfb_skip_insert_conversion', false, $data, $postarr, $format )
+ *
+ * Returning true short-circuits BFB's conversion. We veto when:
+ *   - the source format is `markdown` (other formats are out of MDI's
+ *     scope — let html→blocks-via-h2bc continue to fire normally), AND
+ *   - the post type is one MDI manages (mirrored to .md files).
+ *
+ * @param bool   $skip    Default skip flag.
+ * @param array  $data    Sanitized post data.
+ * @param array  $postarr Original wp_insert_post() array.
+ * @param string $format  Resolved BFB source format slug.
+ * @return bool
+ */
+function markdown_db_bfb_skip_insert_conversion( $skip, $data, $postarr, $format ): bool {
+	if ( $skip ) {
+		return true;
+	}
+	if ( 'markdown' !== $format ) {
+		return false;
+	}
+	$post_type = (string) ( $data['post_type'] ?? '' );
+	return markdown_db_is_markdown_type( $post_type );
+}
+add_filter( 'bfb_skip_insert_conversion', 'markdown_db_bfb_skip_insert_conversion', 10, 4 );
+
+// ---------------------------------------------------------------------------
 // Render-time markdown → HTML conversion.
 //
 // post_content stores raw markdown. Conversion to HTML happens at the edges:
@@ -68,7 +155,8 @@ if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
 //   2. rest_prepare_{type} filters (priority 5) — REST API / block editor
 //
 // This ensures CLI, abilities, and direct post_content reads get markdown.
-// See GitHub issue #30.
+// Conversion is delegated to Block Format Bridge (`bfb_convert()`); see
+// GitHub issues #30 and #82.
 // ---------------------------------------------------------------------------
 
 /**
@@ -98,8 +186,10 @@ function markdown_db_the_content_filter( string $content ): string {
 		return $content;
 	}
 
-	// Load the converter (autoloaded via db.php at boot).
-	if ( ! class_exists( 'WP_Markdown_Converter' ) ) {
+	// Block Format Bridge ships the markdown→HTML adapter. If it's not
+	// loaded (standalone plugin not active and not bundled via composer),
+	// pass through unchanged.
+	if ( ! function_exists( 'bfb_convert' ) ) {
 		return $content;
 	}
 
@@ -108,8 +198,7 @@ function markdown_db_the_content_filter( string $content ): string {
 	// it only affects posts that actually get markdown→HTML conversion.
 	remove_filter( 'the_content', 'wpautop' );
 
-	$converter = WP_Markdown_Converter::get_instance();
-	return $converter->markdown_to_html( $content );
+	return bfb_convert( $content, 'markdown', 'html' );
 }
 add_filter( 'the_content', 'markdown_db_the_content_filter', 1 );
 
@@ -123,7 +212,7 @@ add_filter( 'the_content', 'markdown_db_the_content_filter', 1 );
  * For view context: converts content.rendered so the frontend API gets HTML.
  */
 function markdown_db_rest_prepare_filter( $response, $post, $request ) {
-	if ( ! class_exists( 'WP_Markdown_Converter' ) ) {
+	if ( ! function_exists( 'bfb_convert' ) ) {
 		return $response;
 	}
 
@@ -133,15 +222,14 @@ function markdown_db_rest_prepare_filter( $response, $post, $request ) {
 		return $response;
 	}
 
-	$converter = WP_Markdown_Converter::get_instance();
-	$context   = $request->get_param( 'context' ) ?? 'view';
+	$context = $request->get_param( 'context' ) ?? 'view';
 
 	// Edit context: the block editor needs HTML in content.raw so the
 	// html-to-blocks-converter can parse it into blocks.
 	if ( 'edit' === $context && ! empty( $data['content']['raw'] ) ) {
 		$raw = $data['content']['raw'];
 		if ( ! str_contains( $raw, '<!-- wp:' ) ) {
-			$data['content']['raw'] = $converter->markdown_to_html( $raw );
+			$data['content']['raw'] = bfb_convert( $raw, 'markdown', 'html' );
 		}
 	}
 
@@ -150,7 +238,7 @@ function markdown_db_rest_prepare_filter( $response, $post, $request ) {
 		$rendered = $data['content']['rendered'];
 		// If rendered still has markdown patterns (not yet filtered), convert.
 		if ( ! str_contains( $rendered, '<p>' ) && preg_match( '/^#{1,6}\s|\*\*/m', $rendered ) ) {
-			$data['content']['rendered'] = $converter->markdown_to_html( $rendered );
+			$data['content']['rendered'] = bfb_convert( $rendered, 'markdown', 'html' );
 		}
 	}
 

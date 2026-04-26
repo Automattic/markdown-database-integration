@@ -1181,12 +1181,37 @@ class WP_Markdown_Write_Engine {
 		}
 
 		$json = json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
-
-		// Atomic write: write to temp file then rename.
-		$tmp = $path . '.tmp.' . getmypid();
-		if ( false !== file_put_contents( $tmp, $json, LOCK_EX ) ) {
-			rename( $tmp, $path );
+		if ( false === $json ) {
+			error_log( 'Markdown DB: Failed to encode JSON file: ' . $path );
+			return;
 		}
+
+		$tmp = $this->json_tmp_path( $path );
+		if ( false === @file_put_contents( $tmp, $json, LOCK_EX ) ) {
+			error_log( 'Markdown DB: Failed to write JSON file: ' . $path );
+			return;
+		}
+
+		if ( ! @rename( $tmp, $path ) ) {
+			@unlink( $tmp );
+			error_log( 'Markdown DB: Failed to rename JSON file: ' . $path );
+		}
+	}
+
+	/**
+	 * Build a unique temp path for an atomic JSON write.
+	 *
+	 * @param string $path Destination file path.
+	 * @return string Temp file path in the same directory as the destination.
+	 */
+	private function json_tmp_path( string $path ): string {
+		try {
+			$suffix = bin2hex( random_bytes( 4 ) );
+		} catch ( \Throwable $e ) {
+			$suffix = substr( md5( uniqid( '', true ) ), 0, 8 );
+		}
+
+		return $path . '.tmp.' . getmypid() . '.' . $suffix;
 	}
 
 	/**

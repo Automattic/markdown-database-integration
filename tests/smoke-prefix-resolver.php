@@ -1,11 +1,11 @@
 <?php
 /**
- * Smoke tests for the lazy table-prefix resolver in WP_Markdown_Write_Engine.
+ * Smoke tests for lazy table-prefix resolvers.
  *
- * The write engine accepts a callable resolver instead of a baked
- * prefix string, so it picks up the canonical $table_prefix at query
- * time even when it was unset at construct time. See GitHub issue #77
- * for the underlying boot-order bug.
+ * The write engine and primary loader accept callable resolvers instead of a
+ * baked prefix string, so they pick up the canonical $table_prefix at query
+ * time even when it was unset at construct time. See GitHub issue #77 for the
+ * underlying boot-order bug.
  *
  * Pure-PHP tests — no WordPress, no SQLite. Exercises the
  * resolver-vs-string constructor variants and asserts each call to
@@ -36,6 +36,7 @@ if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
 }
 
 require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
 
 $failures = array();
 $total    = 0;
@@ -80,6 +81,14 @@ function read_prefix_via_strip( WP_Markdown_Write_Engine $engine, string $with_p
     // setAccessible(true), so we just construct the method ref and invoke.
     $ref = new \ReflectionMethod( $engine, 'strip_prefix' );
     return (string) $ref->invoke( $engine, $with_prefix_table );
+}
+
+/**
+ * Read the loader's private prefix() value.
+ */
+function read_loader_prefix( WP_Markdown_Loader $loader ): string {
+    $ref = new \ReflectionMethod( $loader, 'prefix' );
+    return (string) $ref->invoke( $loader );
 }
 
 // --- tests -----------------------------------------------------------------
@@ -128,6 +137,26 @@ $engine = build_engine( static function (): string { return ''; } );
 assert_smoke(
     'callable prefix: empty string leaves table name untouched',
     'wp_options' === read_prefix_via_strip( $engine, 'wp_options' )
+);
+
+// 5. Loader also re-reads the resolver. This is the primary-mode cold-boot
+// path that creates core tables, so it must not bake the early fallback prefix.
+$current_prefix = 'wp_';
+$loader         = new WP_Markdown_Loader(
+    sys_get_temp_dir() . '/mdi-bench-prefix-test',
+    new WP_SQLite_Driver(),
+    new WP_Markdown_Storage(),
+    static function () use ( &$current_prefix ): string { return $current_prefix; }
+);
+assert_smoke(
+    'loader callable prefix: initial value is "wp_"',
+    'wp_' === read_loader_prefix( $loader )
+);
+$current_prefix = 'wptests_';
+assert_smoke(
+    'loader callable prefix: re-reads after mutation (wptests_)',
+    'wptests_' === read_loader_prefix( $loader ),
+    'loader must NOT cache the construct-time value'
 );
 
 // --- summary ---------------------------------------------------------------

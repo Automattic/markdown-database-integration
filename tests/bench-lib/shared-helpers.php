@@ -233,3 +233,46 @@ function mdi_bench_pick(array $ids): int {
     $n = count($ids);
     return $n === 0 ? 0 : (int) $ids[mt_rand(0, $n - 1)];
 }
+
+/**
+ * Pick a random index in [0, count($ids) - 1] safely.
+ *
+ * Returns -1 when the array is empty so callers can branch instead of
+ * crashing in `mt_rand(0, -1)`. Workloads that exercise read-by-slug or
+ * other index-keyed operations call this and skip the op when -1 is
+ * returned. Without this guard, a substrate that returns zero posts
+ * from `mdi_bench_seed_corpus()` (for example MDI primary mode under
+ * a non-default `$table_prefix` — see Automattic/markdown-database-
+ * integration#77) would crash every iteration with a `mt_rand(): max
+ * must be >= min` ValueError.
+ */
+function mdi_bench_pick_index(array $ids): int {
+    $n = count($ids);
+    return $n === 0 ? -1 : mt_rand(0, $n - 1);
+}
+
+/**
+ * Skip a workload iteration cleanly when the corpus is empty.
+ *
+ * Workloads call this at the top of their callable, and if the corpus
+ * came back empty (substrate boot failure, install failure, write-engine
+ * misconfiguration, etc.) the workload returns a structured "skipped"
+ * envelope instead of attempting to operate on an empty array. The
+ * dispatcher records the iteration as completed (clean exit, fast time)
+ * and the audit phase can read the skip reason from the envelope.
+ *
+ * Surfaces substrate failure as a clean signal (workload: skipped,
+ * reason: empty_corpus) instead of a stack trace that masks the real
+ * cause.
+ */
+function mdi_bench_corpus_check(array $ids, string $workload_name): ?array {
+    if (count($ids) === 0) {
+        return [
+            'kind'    => $workload_name,
+            'skipped' => true,
+            'reason'  => 'empty_corpus',
+            'note'    => 'Substrate returned zero posts from seed_corpus(). Likely a substrate boot or install failure. See Automattic/markdown-database-integration issue tracker.',
+        ];
+    }
+    return null;
+}

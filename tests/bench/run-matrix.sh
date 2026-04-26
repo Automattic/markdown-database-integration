@@ -94,23 +94,56 @@ restore_db_php() {
 }
 trap restore_db_php EXIT
 
+# Workload knobs forwarded into Playground PHP-WASM via the wordpress
+# extension's `bench_env` setting (homeboy-extensions wordpress v2.18.0+).
+# Host shell env vars don't cross the wp-playground-cli sandbox boundary
+# by default, so `getenv('BENCH_CORPUS_SIZE')` inside a workload returns
+# false unless we forward the var explicitly via the `bench_env` setting.
+#
+# Default corpus size matches mdi_bench_corpus_size()'s fallback so cells
+# without an explicit override still produce comparable numbers across
+# substrates.
+BENCH_CORPUS_SIZE="${BENCH_CORPUS_SIZE:-100}"
+
+# Build the bench_env JSON object — the typed payload `--setting-json`
+# accepts. New workload knobs (BENCH_SEED, BENCH_OPS_PER_ITER, etc.) go
+# here as the harness grows.
+BENCH_ENV_JSON=$(jq -nc --arg size "$BENCH_CORPUS_SIZE" '{
+    BENCH_CORPUS_SIZE: $size
+}')
+
 run_cell() {
     local substrate="$1"
-    shift
+    local mode="$2"  # '' for SDI cell, 'mirror' or 'primary' for MDI cells
+    shift 2
     local result_file="$DATE_DIR/$substrate.json"
 
     echo ""
     echo "============================================"
     echo "  Cell: $substrate"
     echo "  Output: $result_file"
+    echo "  Corpus: $BENCH_CORPUS_SIZE"
     echo "============================================"
 
-    # `--output` is a global flag on `homeboy`. It must be placed BEFORE the
-    # `bench` subcommand — the post-subcommand position is silently swallowed
-    # by clap's trailing-var-arg capture (Extra-Chill/homeboy#1532). The
-    # global position is the documented-correct one; this isn't a workaround,
-    # just the syntax that actually works today.
-    if homeboy --output "$result_file" bench markdown-database-integration "$@"; then
+    # `--output` is a global flag on `homeboy`; placing it BEFORE the
+    # `bench` subcommand is the documented-correct position.
+    #
+    # `--setting-json` (homeboy 0.97.2+, Extra-Chill/homeboy#1538) is the
+    # typed-override flag for object-shaped settings. The value is parsed
+    # as JSON, so wp_config_defines / bench_env arrive at the dispatcher
+    # as actual JSON objects — not as `--setting`'s string-coerced
+    # JSON-encoded literals (which the dispatcher's downstream `jq -c`
+    # extractions would surface as strings, breaking the substitution).
+    local cell_args=(
+        --output "$result_file"
+        bench markdown-database-integration
+        --setting-json "bench_env=${BENCH_ENV_JSON}"
+    )
+    if [ -n "$mode" ]; then
+        cell_args+=(--setting-json "wp_config_defines={\"MARKDOWN_DB_MODE\":\"$mode\"}")
+    fi
+
+    if homeboy "${cell_args[@]}" "$@"; then
         echo "✓ $substrate: complete"
         return 0
     else
@@ -130,28 +163,24 @@ run_cell() {
 # ---------------------------------------------------------------------------
 mv "$DB_PHP" "$DB_PHP_PARKED"
 sdi_status=0
-run_cell "sdi" "$@" || sdi_status=$?
+run_cell "sdi" "" "$@" || sdi_status=$?
 mv "$DB_PHP_PARKED" "$DB_PHP"
 
 # ---------------------------------------------------------------------------
 # Cell 2: MDI mirror
 #
 # wp_config_defines injects MARKDOWN_DB_MODE='mirror' into wp-tests-config.php
-# during pg_run_boot_stage, before MDI's db.php drop-in loads. The dispatcher
-# reads the setting from HOMEBOY_SETTINGS_JSON; we synthesize it here so the
-# cell doesn't depend on a per-component homeboy.json (this script is the
-# orchestration; the component being benched is plain MDI).
+# during pg_run_boot_stage, before MDI's db.php drop-in loads. bench_env
+# carries BENCH_CORPUS_SIZE into the workloads' getenv() resolution.
 # ---------------------------------------------------------------------------
 mirror_status=0
-HOMEBOY_SETTINGS_JSON='{"wp_config_defines":{"MARKDOWN_DB_MODE":"mirror"}}' \
-    run_cell "mirror" "$@" || mirror_status=$?
+run_cell "mirror" "mirror" "$@" || mirror_status=$?
 
 # ---------------------------------------------------------------------------
 # Cell 3: MDI primary
 # ---------------------------------------------------------------------------
 primary_status=0
-HOMEBOY_SETTINGS_JSON='{"wp_config_defines":{"MARKDOWN_DB_MODE":"primary"}}' \
-    run_cell "primary" "$@" || primary_status=$?
+run_cell "primary" "primary" "$@" || primary_status=$?
 
 # ---------------------------------------------------------------------------
 # Summary

@@ -52,6 +52,13 @@ return function (): array {
         mdi_bench_seed(MDI_BENCH_DEFAULT_SEED + 1);
     }
 
+    // Bail cleanly when the corpus is empty so substrate failures
+    // surface as "skipped: empty_corpus" instead of 50 silent no-ops
+    // that look like a successful but suspiciously fast iteration.
+    if ($skip = mdi_bench_corpus_check($live_ids, 'obsidian-bursty')) {
+        return $skip;
+    }
+
     $counts = ['update' => 0, 'create' => 0, 'rename' => 0, 'reparent' => 0, 'delete' => 0];
 
     for ($i = 0; $i < $ops_per_iter; $i++) {

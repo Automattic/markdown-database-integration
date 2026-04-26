@@ -67,6 +67,12 @@ return function (): array {
         mdi_bench_seed(MDI_BENCH_DEFAULT_SEED + 2);
     }
 
+    // Refuse to run on an empty corpus instead of crashing in mt_rand.
+    // See mdi_bench_corpus_check() for context.
+    if ($skip = mdi_bench_corpus_check($ids, 'read-heavy')) {
+        return $skip;
+    }
+
     $counts = ['get_post' => 0, 'by_slug' => 0, 'date_range' => 0, 'taxonomy' => 0, 'search' => 0];
 
     for ($i = 0; $i < $ops_per_iter; $i++) {
@@ -80,9 +86,11 @@ return function (): array {
             }
         } elseif ($roll < 70) {
             // 20% by-slug
-            $idx = mt_rand(0, count($ids) - 1);
-            get_page_by_path('bench-' . $idx, OBJECT, 'post');
-            $counts['by_slug']++;
+            $idx = mdi_bench_pick_index($ids);
+            if ($idx >= 0) {
+                get_page_by_path('bench-' . $idx, OBJECT, 'post');
+                $counts['by_slug']++;
+            }
         } elseif ($roll < 85) {
             // 15% date range
             $q = new WP_Query([

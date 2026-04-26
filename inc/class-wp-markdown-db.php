@@ -153,24 +153,49 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
 		$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
 
-		// Set up the write engine.
-		global $table_prefix;
-		$prefix = $table_prefix ?? 'wp_';
+		// Resolve the table prefix.
+		//
+		// IMPORTANT: in some boot paths (wp-phpunit / homeboy bench
+		// dispatcher / any caller where wp-config.php sets $table_prefix
+		// as a local variable instead of a global), $table_prefix is
+		// NULL at this moment. The fallback to 'wp_' would then bake the
+		// wrong prefix into every table name the loader creates,
+		// breaking every WordPress query that uses the canonical prefix
+		// (e.g. wptests_*). See GitHub issue #77.
+		//
+		// Instead of capturing the prefix as a value at construct time,
+		// we use a closure that resolves the current prefix at call
+		// time. By the time anything actually USES the prefix (a
+		// resolver query, a write_engine call, the loader's table
+		// creation), $table_prefix is set globally even in the
+		// pathological boot paths.
+		$prefix_resolver = static function (): string {
+			global $table_prefix, $wpdb;
+			if ( isset( $table_prefix ) && '' !== $table_prefix ) {
+				return $table_prefix;
+			}
+			if ( isset( $wpdb ) && '' !== $wpdb->prefix ) {
+				return $wpdb->prefix;
+			}
+			return 'wp_';
+		};
 
+		// Set up the write engine. Pass the resolver so the engine
+		// re-reads the prefix on every method call instead of baking
+		// the boot-time value (which may be NULL in test boots).
 		$write_engine = new WP_Markdown_Write_Engine(
 			$content_dir,
 			$storage,
 			$this->dbh,
-			$prefix
+			$prefix_resolver
 		);
 		$this->dbh->set_write_engine( $write_engine );
 
 		// Set up the post resolver so the storage engine can build
 		// hierarchical directory paths. See GitHub issue #14.
 		$driver_ref = $this->dbh;
-		$prefix_ref = $prefix;
-		$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-			$table = $prefix_ref . 'posts';
+		$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
+			$table = $prefix_resolver() . 'posts';
 			try {
 				$rows = $driver_ref->query(
 					"SELECT post_name, post_parent, post_type FROM `{$table}` WHERE ID = {$post_id}"
@@ -186,8 +211,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// Meta resolver — fetches all post meta for a given post ID.
 		// Used by build_frontmatter() to embed meta in .md files. See issue #6.
-		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-			$table = $prefix_ref . 'postmeta';
+		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
+			$table = $prefix_resolver() . 'postmeta';
 			try {
 				$rows = $driver_ref->query(
 					"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
@@ -200,10 +225,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// Terms resolver — fetches all terms for a given post ID.
 		// Used by build_frontmatter() to embed terms in .md files. See issue #6.
-		$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_ref ) {
-			$terms_table    = $prefix_ref . 'terms';
-			$taxonomy_table = $prefix_ref . 'term_taxonomy';
-			$rel_table      = $prefix_ref . 'term_relationships';
+		$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
+			$prefix         = $prefix_resolver();
+			$terms_table    = $prefix . 'terms';
+			$taxonomy_table = $prefix . 'term_taxonomy';
+			$rel_table      = $prefix . 'term_relationships';
 			try {
 				$rows = $driver_ref->query(
 					"SELECT tt.taxonomy, t.slug
@@ -231,12 +257,27 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		} );
 
 		// In primary mode, load or sync data.
+		//
+		// The loader's table-name prefix is taken from the resolver at
+		// construct time. The resolver returns the canonical
+		// $table_prefix when it's available (production case — wp-config.php
+		// sets the global before this constructor runs) and falls back
+		// to 'wp_' when it's not. Test/dispatcher boot paths where
+		// $table_prefix is unset at this moment still get the bug
+		// described in #77 — the loader bakes 'wp_' into table names
+		// while the rest of WordPress thinks the prefix is e.g.
+		// 'wptests_'. Fixing that requires either deferring load_all()
+		// to plugins_loaded or making the loader's prefix lazy too;
+		// both are bigger refactors with their own risks. This PR
+		// fixes the resolver / write-engine prefix capture (the part
+		// that's safely fixable today); the loader path is tracked as
+		// a follow-up.
 		if ( 'primary' === $mode ) {
 			$this->loader = new WP_Markdown_Loader(
 				$content_dir,
 				$this->dbh,
 				$storage,
-				$prefix
+				$prefix_resolver()
 			);
 
 			if ( $is_warm_boot ) {

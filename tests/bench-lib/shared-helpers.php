@@ -117,35 +117,6 @@ function mdi_bench_instance_scratch(): string {
 }
 
 /**
- * Return a structured no-op when BENCH_ONLY selects a different workload.
- *
- * homeboy's WordPress bench dispatcher currently discovers every PHP file in
- * tests/bench/. Focused drivers use BENCH_ONLY to keep unrelated workloads
- * from mutating the shared substrate while still letting the dispatcher run.
- *
- * @param string $workload Workload slug, e.g. "boot-timing".
- * @return array|null Structured skip payload, or null when the workload should run.
- */
-function mdi_bench_skip_if_not_selected(string $workload): ?array {
-    $only = getenv('BENCH_ONLY');
-    if ($only === false || trim($only) === '') {
-        return null;
-    }
-
-    $selected = array_filter(array_map('trim', explode(',', $only)));
-    if (in_array($workload, $selected, true)) {
-        return null;
-    }
-
-    return [
-        'kind'     => $workload,
-        'skipped'  => true,
-        'reason'   => 'bench_only',
-        'selected' => $selected,
-    ];
-}
-
-/**
  * Generate a deterministic corpus of N posts using wp_insert_post.
  *
  * Used by workloads that need a populated starting state (obsidian-bursty,

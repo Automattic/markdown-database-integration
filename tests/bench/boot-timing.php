@@ -12,10 +12,6 @@
 require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
-    if ($skip = mdi_bench_skip_if_not_selected('boot-timing')) {
-        return $skip;
-    }
-
     static $iteration = 0;
 
     $phase = getenv('BENCH_BOOT_PHASE');

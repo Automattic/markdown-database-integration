@@ -145,12 +145,10 @@ delete_index() {
 
 bench_env_json() {
     jq -nc \
-        --arg only "boot-timing" \
         --arg phase "$1" \
         --arg size "$CORPUS_SIZE" \
         --arg lazy "$LAZY_SAMPLE_SIZE" \
         '{
-            BENCH_ONLY:$only,
             BENCH_BOOT_PHASE:$phase,
             BENCH_CORPUS_SIZE:$size,
             BENCH_LAZY_SAMPLE_SIZE:$lazy,
@@ -169,10 +167,12 @@ run_phase() {
     echo "  Corpus: $CORPUS_SIZE"
     echo "============================================"
 
-    HOMEBOY_BENCH_SHARED_STATE="$STATE_DIR" homeboy \
+    homeboy \
         --output "$output" \
         bench markdown-database-integration \
         --iterations "$ITERATIONS" \
+        --shared-state "$STATE_DIR" \
+        --setting-json 'bench_workloads=["boot-timing"]' \
         --setting-json "bench_env=$(bench_env_json "$phase")" \
         --ignore-baseline
 }

@@ -40,6 +40,10 @@
 require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
+    if ($skip = mdi_bench_skip_if_not_selected('bulk-import')) {
+        return $skip;
+    }
+
     $size = mdi_bench_corpus_size();
 
     // Reset the posts table so iteration-K starts with the same blank

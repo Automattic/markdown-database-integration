@@ -20,14 +20,22 @@ BENCH_CORPUS_SIZE=1000 bash tests/bench/run-matrix.sh --iterations 10
 BENCH_CORPUS_SIZE=10000 bash tests/bench/run-matrix.sh --iterations 10
 
 # Concurrent-writer + crash-kill cells need shared state + concurrency.
-# The driver doesn't pass these through automatically — invoke
-# `homeboy bench` directly when you want the multi-instance variants.
-HOMEBOY_SETTINGS_JSON='{"wp_config_defines":{"MARKDOWN_DB_MODE":"primary"}}' \
-  homeboy --output /tmp/primary-concurrent.json bench markdown-database-integration \
-    --iterations 5 --shared-state /tmp/mdi-bench/primary --concurrency 4
+# homeboy core issue #1604 tracks restoring those CLI flags; until then,
+# single-instance shared-state runs can export HOMEBOY_BENCH_SHARED_STATE.
+HOMEBOY_BENCH_SHARED_STATE=/tmp/mdi-bench/primary \
+  homeboy --output /tmp/primary-shared.json bench markdown-database-integration \
+    --iterations 5 \
+    --setting-json wp_config_defines='{"MARKDOWN_DB_MODE":"primary"}'
+
+# Issue #44: cold vs warm MDI loader timings.
+bash tests/bench/run-boot-timing.sh --iterations 5 --corpus-size 1000
 ```
 
 Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
+
+`run-boot-timing.sh` writes a focused summary to
+`tests/bench/results/<YYYY-MM-DD>/boot-timing-summary.json` and raw
+per-iteration observations to the run's shared-state directory.
 
 ## How it works
 
@@ -57,6 +65,8 @@ tests/bench/
 ├── PLAN.md                  ← detailed plan / open questions / homeboy-fit story
 ├── README.md                ← this file
 ├── run-matrix.sh            ← matrix driver (parks db.php, varies env, invokes homeboy bench 3x)
+├── run-boot-timing.sh       ← issue #44 driver (cold / warm-noop / warm-one-file)
+├── boot-timing.php          ← workload: direct WP_Markdown_Loader cold/warm timing
 ├── bulk-import.php          ← workload: empty → N posts via wp_insert_post
 ├── concurrent-writers.php   ← workload: per-instance write streams, surfaces #47/#70 contention
 ├── crash-kill.php           ← workload: simulated mid-write interrupt, shared-state-required
@@ -129,6 +139,10 @@ done
 ## Known harness limitations
 
 - **`crash-kill` cross-boot durability is not reproducible inside Playground.** Each Playground iteration is a fresh PHP-WASM boot; the WordPress SQLite from iteration K does not survive into iteration K+1. The crash-kill workload's "audit phase" therefore always sees `on_disk=0` for the previous iteration's writes — a true cross-boot durability test would require a persistent-WordPress harness, not Playground. Filed as a future enhancement; the current workload still exercises the shared-state contract end-to-end and surfaces the dispatcher seam working correctly.
+- **`run-boot-timing.sh` measures the loader directly, not the full drop-in boot path.** The WordPress Playground bench runner always runs wp-phpunit's install stage, which mutates persisted state and prevents a true installed-site warm boot. The boot-timing workload therefore instantiates `WP_Markdown_Loader` against an isolated shared-state markdown/index directory. This still exercises the real `load_all()` / `sync_incremental()` / lazy content paths, but excludes the surrounding `WP_Markdown_DB::db_connect()` and wp-phpunit install costs. Tracked upstream in [Extra-Chill/homeboy-extensions#267](https://github.com/Extra-Chill/homeboy-extensions/issues/267).
+- **Focused boot timing uses `BENCH_ONLY=boot-timing` as a local filter.** The WordPress bench runner currently discovers and executes every workload under `tests/bench/`. The unrelated workloads return immediate no-ops under `BENCH_ONLY`, but they still appear in the `BenchResults` envelope. Tracked upstream in [Extra-Chill/homeboy-extensions#266](https://github.com/Extra-Chill/homeboy-extensions/issues/266).
+- **Detailed loader metrics are sidecar JSON for now.** The WordPress bench runner ignores callable return payloads, so loader phase stats and lazy content counts are written to `boot-timing-observations.jsonl` and summarized by the driver. Tracked upstream in [Extra-Chill/homeboy-extensions#265](https://github.com/Extra-Chill/homeboy-extensions/issues/265).
+- **The driver exports `HOMEBOY_BENCH_SHARED_STATE` directly.** homeboy core still has shared-state/concurrency workflow plumbing, but the installed CLI no longer exposes the flags. Tracked upstream in [Extra-Chill/homeboy#1604](https://github.com/Extra-Chill/homeboy/issues/1604).
 - **`run-matrix.sh` does not forward `--shared-state` / `--concurrency`** to the cells automatically. Concurrency-shape variants need direct `homeboy bench` invocation today; the matrix driver is single-instance per cell.
 - **No 10k corpus committed result set** ships in the initial PR. Run `BENCH_CORPUS_SIZE=10000 bash tests/bench/run-matrix.sh --iterations 10` locally for the power-user-vault numbers — wall time is single-digit hours.
 - **Iteration noise.** At small iteration counts (<5) and small corpus sizes (<100), substrate ranking can invert run-over-run. Read p99 spread before drawing directionality conclusions; one-shot results are signal-poor.

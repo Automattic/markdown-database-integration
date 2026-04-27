@@ -45,6 +45,10 @@
 require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
+    if ($skip = mdi_bench_skip_if_not_selected('concurrent-writers')) {
+        return $skip;
+    }
+
     static $iter_count = 0;
     static $posts_per_iter = 25;
 

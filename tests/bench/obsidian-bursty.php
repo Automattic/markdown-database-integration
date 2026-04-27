@@ -37,6 +37,10 @@
 require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
+    if ($skip = mdi_bench_skip_if_not_selected('obsidian-bursty')) {
+        return $skip;
+    }
+
     static $live_ids = null;
     static $next_create = 0;
     static $ops_per_iter = 50; // 50 mixed ops per dispatcher iteration

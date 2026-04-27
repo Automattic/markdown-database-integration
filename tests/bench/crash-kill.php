@@ -45,6 +45,10 @@
 require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
+    if ($skip = mdi_bench_skip_if_not_selected('crash-kill')) {
+        return $skip;
+    }
+
     $shared = mdi_bench_shared_state_path();
     if ($shared === '') {
         // No shared state — workload reduces to a noop so the dispatcher

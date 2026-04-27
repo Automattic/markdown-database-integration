@@ -85,6 +85,13 @@ class WP_Markdown_Loader {
 	private $timings = array();
 
 	/**
+	 * Lightweight counters for boot benchmark diagnostics.
+	 *
+	 * @var array
+	 */
+	private $stats = array();
+
+	/**
 	 * Posts loaded from markdown files (with frontmatter meta/terms).
 	 * Populated by load_posts(), consumed by load_frontmatter_meta/terms().
 	 *
@@ -169,6 +176,7 @@ class WP_Markdown_Loader {
 	 */
 	public function load_all(): void {
 		$start = microtime( true );
+		$this->stats = array( 'boot_mode' => 'cold' );
 
 		try {
 			// 1. Create WordPress core tables.
@@ -236,6 +244,7 @@ class WP_Markdown_Loader {
 	 */
 	public function sync_incremental(): void {
 		$start = microtime( true );
+		$this->stats = array( 'boot_mode' => 'warm' );
 
 		try {
 			// Ensure manifest tables exist (in case of schema upgrade).
@@ -513,6 +522,7 @@ class WP_Markdown_Loader {
 		// 2. Scan all current .md files on disk.
 		$current_files = array(); // relative_path → { mtime, size, absolute_path }
 		$all_posts = $this->storage->get_all_posts( true );
+		$this->stats['markdown_files_scanned'] = count( $all_posts );
 		foreach ( $all_posts as $post ) {
 			$source_file = $post->_source_file ?? '';
 			if ( empty( $source_file ) || ! file_exists( $source_file ) ) {
@@ -549,6 +559,10 @@ class WP_Markdown_Loader {
 
 		// Remaining current_files are new (not in index).
 		$new_files = $current_files;
+
+		$this->stats['markdown_files_changed'] = count( $changed );
+		$this->stats['markdown_files_new']     = count( $new_files );
+		$this->stats['markdown_files_deleted'] = count( $deleted_post_ids );
 
 		// If nothing changed, we're done.
 		if ( empty( $changed ) && empty( $new_files ) && empty( $deleted_post_ids ) ) {
@@ -1612,6 +1626,7 @@ class WP_Markdown_Loader {
 		// Content will be lazy-loaded from disk on demand.
 		// See: Index/Map Architecture design doc.
 		$posts = $this->storage->get_all_posts( true );
+		$this->stats['markdown_files_scanned'] = count( $posts );
 
 		// Store posts for load_frontmatter_meta() and load_frontmatter_terms().
 		$this->loaded_posts = $posts;
@@ -1657,6 +1672,8 @@ class WP_Markdown_Loader {
 				'INSERT OR REPLACE INTO `_markdown_file_index` (`post_id`, `file_path`, `file_mtime`, `file_size`) VALUES (?, ?, ?, ?)'
 			);
 
+			$inserted_markdown = 0;
+			$indexed_markdown  = 0;
 			foreach ( $posts as $post ) {
 				$id = (int) $post->ID;
 
@@ -1699,6 +1716,7 @@ class WP_Markdown_Loader {
 					(int) ( $post->comment_count ?? 0 ),
 				) );
 				$loaded_ids[ $id ] = true;
+				$inserted_markdown++;
 
 				// Populate the file index for lazy-loading.
 				$source_file = $post->_source_file ?? '';
@@ -1709,8 +1727,11 @@ class WP_Markdown_Loader {
 						(int) filemtime( $source_file ),
 						(int) filesize( $source_file ),
 					) );
+					$indexed_markdown++;
 				}
 			}
+			$this->stats['markdown_posts_inserted'] = $inserted_markdown;
+			$this->stats['markdown_index_upserts']  = $indexed_markdown;
 
 			// Load non-markdown posts from JSON (revisions, nav items, etc.).
 			// Skip any ID already loaded from markdown — markdown wins.
@@ -2241,5 +2262,14 @@ class WP_Markdown_Loader {
 	 */
 	public function get_timings(): array {
 		return $this->timings;
+	}
+
+	/**
+	 * Get boot/load counters for benchmark diagnostics.
+	 *
+	 * @return array Boot/load counters.
+	 */
+	public function get_stats(): array {
+		return $this->stats;
 	}
 }

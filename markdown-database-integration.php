@@ -247,6 +247,49 @@ function markdown_db_rest_prepare_filter( $response, $post, $request ) {
 }
 
 /**
+ * Convert block-editor REST writes back to markdown before storage.
+ *
+ * MDI owns the stored post_content shape for markdown-managed post types:
+ * it should be raw markdown, not serialized block markup. The REST prepare
+ * filter above gives the editor HTML, and editor saves can send serialized
+ * blocks back. Normalize those blocks through BFB, reject malformed markup
+ * with a structured error, then convert valid blocks to markdown before the
+ * row reaches wp_posts / the write engine.
+ *
+ * @param object $prepared_post Prepared post object from the REST controller.
+ * @param object $request       REST request.
+ * @return object|WP_Error Prepared post object, or validation error.
+ */
+function markdown_db_rest_pre_insert_filter( $prepared_post, $request ) {
+	if ( ! function_exists( 'bfb_normalize' ) || ! function_exists( 'bfb_convert' ) ) {
+		return $prepared_post;
+	}
+
+	$post_type = (string) ( $prepared_post->post_type ?? '' );
+	if ( '' === $post_type && is_object( $request ) && method_exists( $request, 'get_param' ) ) {
+		$post_type = (string) ( $request->get_param( 'type' ) ?? '' );
+	}
+
+	if ( ! markdown_db_is_markdown_type( $post_type ) ) {
+		return $prepared_post;
+	}
+
+	$content = (string) ( $prepared_post->post_content ?? '' );
+	if ( '' === trim( $content ) || ! str_contains( $content, '<!-- wp:' ) ) {
+		return $prepared_post;
+	}
+
+	$normalized = bfb_normalize( $content, 'blocks' );
+	$is_error   = function_exists( 'is_wp_error' ) ? is_wp_error( $normalized ) : $normalized instanceof WP_Error;
+	if ( $is_error ) {
+		return $normalized;
+	}
+
+	$prepared_post->post_content = bfb_convert( (string) $normalized, 'blocks', 'markdown' );
+	return $prepared_post;
+}
+
+/**
  * Register REST filters for all markdown-managed post types.
  *
  * Runs at init priority 25 — after custom post types are registered (10)
@@ -256,6 +299,7 @@ function markdown_db_register_rest_filters() {
 	$post_types = array_keys( get_post_types( [ 'show_in_rest' => true, 'public' => true ] ) );
 
 	foreach ( $post_types as $post_type ) {
+		add_filter( "rest_pre_insert_{$post_type}", 'markdown_db_rest_pre_insert_filter', 5, 2 );
 		add_filter( "rest_prepare_{$post_type}", 'markdown_db_rest_prepare_filter', 5, 3 );
 	}
 }

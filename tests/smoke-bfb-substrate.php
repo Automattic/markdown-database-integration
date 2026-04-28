@@ -196,9 +196,11 @@ $bridge_root = $plugin_dir . '/vendor/chubes4/block-format-bridge';
 $assert( is_dir( $bridge_root ), 'vendor/chubes4/block-format-bridge is installed' );
 $assert( file_exists( $bridge_root . '/library.php' ), 'BFB library.php (composer autoload entry) is present' );
 $assert( file_exists( $bridge_root . '/includes/api.php' ), 'BFB api.php (defines bfb_convert) is present' );
+$assert( file_exists( $bridge_root . '/includes/normalization.php' ), 'BFB normalization API is present' );
+$assert( is_dir( $bridge_root . '/vendor_prefixed/chubes4/html-to-blocks-converter' ), 'BFB ships scoped html-to-blocks-converter internally' );
 $assert(
-	is_dir( $plugin_dir . '/vendor/chubes4/html-to-blocks-converter' ),
-	'BFB transitively pulls in chubes4/html-to-blocks-converter (no separate plugin install required)'
+	! is_dir( $plugin_dir . '/vendor/chubes4/html-to-blocks-converter' ),
+	'MDI does not install unscoped html-to-blocks-converter as a Composer dependency'
 );
 
 // ---------------------------------------------------------------------

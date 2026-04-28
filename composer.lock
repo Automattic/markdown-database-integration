@@ -12,21 +12,21 @@
             "source": {
                 "type": "git",
                 "url": "https://github.com/chubes4/block-format-bridge.git",
-                "reference": "c94a6062f88f305e7b35d52508a1715d555fab30"
+                "reference": "a5207b19c25f7272cfe8d8f8dce8620daef2f5f1"
             },
             "dist": {
                 "type": "zip",
-                "url": "https://api.github.com/repos/chubes4/block-format-bridge/zipball/c94a6062f88f305e7b35d52508a1715d555fab30",
-                "reference": "c94a6062f88f305e7b35d52508a1715d555fab30",
+                "url": "https://api.github.com/repos/chubes4/block-format-bridge/zipball/a5207b19c25f7272cfe8d8f8dce8620daef2f5f1",
+                "reference": "a5207b19c25f7272cfe8d8f8dce8620daef2f5f1",
                 "shasum": ""
             },
             "require": {
-                "chubes4/html-to-blocks-converter": "dev-main",
                 "league/commonmark": "^2.5",
                 "league/html-to-markdown": "^5.1",
                 "php": "^8.1"
             },
             "require-dev": {
+                "chubes4/html-to-blocks-converter": "dev-main",
                 "humbug/php-scoper": "^0.18.19"
             },
             "default-branch": true,
@@ -56,48 +56,7 @@
                 "source": "https://github.com/chubes4/block-format-bridge/tree/main",
                 "issues": "https://github.com/chubes4/block-format-bridge/issues"
             },
-            "time": "2026-04-25T18:53:28+00:00"
-        },
-        {
-            "name": "chubes4/html-to-blocks-converter",
-            "version": "dev-main",
-            "source": {
-                "type": "git",
-                "url": "https://github.com/chubes4/html-to-blocks-converter.git",
-                "reference": "2a3e4bb9837d984f22ac2517c8ae497186b63bd6"
-            },
-            "dist": {
-                "type": "zip",
-                "url": "https://api.github.com/repos/chubes4/html-to-blocks-converter/zipball/2a3e4bb9837d984f22ac2517c8ae497186b63bd6",
-                "reference": "2a3e4bb9837d984f22ac2517c8ae497186b63bd6",
-                "shasum": ""
-            },
-            "require": {
-                "php": ">=7.4"
-            },
-            "default-branch": true,
-            "type": "wordpress-plugin",
-            "autoload": {
-                "files": [
-                    "library.php"
-                ]
-            },
-            "license": [
-                "GPL-2.0-or-later"
-            ],
-            "authors": [
-                {
-                    "name": "Chris Huber",
-                    "homepage": "https://chubes.net"
-                }
-            ],
-            "description": "Convert raw HTML into Gutenberg block arrays using WordPress' HTML API.",
-            "homepage": "https://github.com/chubes4/html-to-blocks-converter",
-            "support": {
-                "source": "https://github.com/chubes4/html-to-blocks-converter/tree/main",
-                "issues": "https://github.com/chubes4/html-to-blocks-converter/issues"
-            },
-            "time": "2026-04-25T18:51:29+00:00"
+            "time": "2026-04-28T17:01:10+00:00"
         },
         {
             "name": "dflydev/dot-access-data",

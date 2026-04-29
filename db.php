@@ -125,11 +125,8 @@ if ( ! $markdown_plugin_dir ) {
 	return;
 }
 
-// Load composer autoloader. MDI's only conversion-layer dep is
-// chubes4/block-format-bridge, which bundles league/commonmark,
-// league/html-to-markdown, and chubes4/html-to-blocks-converter as
-// vendor-prefixed packages and registers `bfb_convert()` for the
-// write engine + render-time filters to call. See GitHub issue #82.
+// Load composer autoloader if present. MDI is storage-only; content-format
+// dependencies belong to the application layer above this drop-in.
 $composer_autoload = $markdown_plugin_dir . '/vendor/autoload.php';
 if ( file_exists( $composer_autoload ) ) {
 	require_once $composer_autoload;

@@ -725,8 +725,8 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Persist a single post — either to markdown or to the JSON fallback.
 	 *
-	 * For markdown-type posts, converts block HTML → clean markdown
-	 * before writing to disk. See GitHub issue #11.
+	 * For markdown-type posts, writes post_content bytes exactly as received.
+	 * Content-format conversion belongs to the caller/policy layer.
 	 *
 	 * @param int $post_id
 	 * @return bool True if the post type is non-markdown (caller should update JSON).
@@ -751,32 +751,6 @@ class WP_Markdown_Write_Engine {
 
 		if ( ! $this->storage->is_markdown_type( $post_type ) ) {
 			return true; // Non-markdown — caller should update JSON fallback.
-		}
-
-		// post_content normally arrives here as raw markdown — MDI vetoes
-		// BFB's insert-time markdown→blocks conversion for every markdown-
-		// managed CPT (see `markdown_db_bfb_skip_insert_conversion()` in
-		// the plugin entry), so no round-trip is needed and the .md file
-		// gets exactly what the caller passed in.
-		//
-		// The block-markup branch below is kept as a defensive fallback
-		// for callers that bypass the bridge entirely (e.g. a plugin that
-		// inserts pre-serialised block markup, or a future direct editor-
-		// save path that lands here before the bridge). In that case BFB's
-		// blocks→markdown path runs `do_blocks()` first so dynamic blocks
-		// resolve to their server-side output before being handed to
-		// league/html-to-markdown, preserving Gutenberg structure
-		// (headings, lists, blockquotes) across the conversion.
-		//
-		// Content written directly as markdown should NOT be re-converted
-		// — running html_to_markdown on markdown text escapes syntax
-		// characters (**→\*\*, [→\[) and produces corrupt files. The
-		// `<!-- wp:` guard below keeps that case off the conversion path.
-		// See GitHub issues #27 and #82, plus
-		// chubes4/block-format-bridge#8 for the upstream veto seam.
-		$content = $row->post_content ?? '';
-		if ( ! empty( $content ) && str_contains( $content, '<!-- wp:' ) && function_exists( 'bfb_convert' ) ) {
-			$row->post_content = bfb_convert( $content, 'blocks', 'markdown' );
 		}
 
 		$file_path = $this->storage->write_post( $row );

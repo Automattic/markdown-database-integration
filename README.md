@@ -1,10 +1,10 @@
 # Markdown Database Integration
 
-WordPress database integration that stores content as markdown files. SQLite for machinery, markdown for knowledge.
+WordPress database integration that persists WordPress database rows as markdown and JSON files. SQLite for machinery, files for knowledge.
 
 ## What This Does
 
-Every time you create, update, or delete a post in WordPress, the content is converted to **clean markdown** and written to a `.md` file on disk:
+Every time you create, update, or delete a post in WordPress, the post row is mirrored to a `.md` file on disk:
 
 ```
 wp-content/markdown/
@@ -18,7 +18,7 @@ wp-content/markdown/
     woocommerce-pricing.md
 ```
 
-Each file has YAML frontmatter with metadata and the post content as clean markdown:
+Each file has YAML frontmatter with metadata and the stored `post_content` bytes as the body:
 
 ```markdown
 ---
@@ -42,7 +42,7 @@ Content goes here with **bold** and *italic* text.
 > A blockquote for good measure.
 ```
 
-No block comments. No HTML. Just markdown. WordPress keeps working normally — the block editor, plugins, everything. The conversion between markdown and blocks happens automatically.
+MDI does not decide whether that body is markdown, block markup, or HTML. It stores whatever the caller/content-format layer writes to `post_content`.
 
 ## Why
 
@@ -57,58 +57,50 @@ This plugin makes that happen. Content is files. Files are:
 - **AI-native** — any agent reads them directly. No API, no auth, just `grep`.
 - **Git-syncable** — `git push` to share knowledge across machines and people.
 - **Instant search** — `grep -r "woocommerce" wp-content/markdown/` is faster than any API.
-- **Human-readable** — open in any text editor, any IDE, any markdown viewer.
+- **Human-readable** — open in any text editor or IDE.
 - **LLM Wiki ready** — this is the Karpathy LLM Wiki pattern running on WordPress.
 
-## Conversion Pipeline
+## Storage Boundary
 
-`post_content` is **raw markdown** — exactly what the .md file on disk holds. MDI delegates every conversion to [Block Format Bridge (BFB)](https://github.com/chubes4/block-format-bridge) via `bfb_convert()`, BFB owns the adapter API, vendor-prefixes the underlying league libraries, and bundles `chubes4/html-to-blocks-converter` internally — MDI itself contains no parsing code.
+MDI is storage/persistence only:
 
-MDI hooks BFB's [`bfb_skip_insert_conversion`](https://github.com/chubes4/block-format-bridge/pull/8) filter to short-circuit BFB's default `wp_insert_post_data` markdown→blocks normalisation for any markdown-managed CPT. Without that veto, agents speaking markdown would get `markdown → blocks (BFB on insert) → SQLite stores blocks → blocks → markdown (MDI on disk write)` — a lossy round-trip that mangles list ordering and paragraph adjacency. With the veto, `post_content` flows in as markdown and is mirrored to disk verbatim.
+- It mirrors WordPress DB rows to files.
+- It rebuilds the SQLite index from files in primary mode.
+- It stores `post_content` bytes exactly as received.
+- It does not render markdown to HTML.
+- It does not convert editor block markup to markdown.
+- It does not hook Block Format Bridge or ship any content-format dependency.
+
+Content-format policy belongs to the application layer above MDI. For example, Intelligence declares wiki content format through Data Machine; Data Machine owns the generic content-format substrate and bundles Block Format Bridge.
 
 ```
-WRITE (agent or editor inserts a markdown post):
+WRITE:
 
-  Markdown (post_content)
+  WordPress caller writes post_content
        │
-       ▼  BFB on insert? — vetoed via bfb_skip_insert_conversion
-       │     for markdown-managed CPTs (no conversion happens)
-       │
-  SQLite stores raw markdown
+       ▼
+  SQLite stores post_content bytes
        │
        ▼  MDI write engine
-  Markdown (.md file on disk — byte-identical to post_content)
+  .md file stores the same bytes
 
 
 READ (site boots):
 
-  Markdown (.md file on disk)
+  .md file body
        │
        ▼  loaded AS-IS into in-memory SQLite
-  post_content is raw markdown
+  post_content has the same bytes
 
 
-RENDER (display time):
+RENDER / EDITOR / API:
 
-  Frontend:
-    post_content (markdown) → the_content filter (p1) → bfb_convert(..., 'markdown', 'html') → browser
-
-  Editor (REST):
-    post_content (markdown) → REST prepare filter (p5) → bfb_convert(..., 'markdown', 'html') → editor parses HTML to blocks
-
-  CLI/abilities:
-    post_content (markdown) → returned as-is
+  Handled by the application/content-format layer, not MDI.
 ```
-
-The defensive `blocks → markdown` branch in `WP_Markdown_Write_Engine::persist_single_post()` only fires when something bypasses BFB's veto entirely (e.g. a plugin that inserts pre-serialised block markup straight into `wp_insert_post`). In steady state on a markdown-managed CPT, it never runs.
 
 ### Dependencies
 
-| Package | Role |
-|---------|------|
-| [chubes4/block-format-bridge](https://github.com/chubes4/block-format-bridge) | Owns every HTML/Markdown/Blocks conversion. Bundles `chubes4/html-to-blocks-converter`, `league/commonmark`, and `league/html-to-markdown` as vendor-prefixed packages. |
-
-You no longer need the standalone `html-to-blocks-converter` plugin installed — BFB carries it internally and registers it on its own `wp_insert_post_data` hook so the block editor and any code path that calls `wp_insert_post()` get the same conversion behaviour.
+MDI has no runtime content-conversion dependencies. Composer autoloading is kept for MDI classes and future storage-layer code, not for format conversion.
 
 ## Architecture
 
@@ -123,8 +115,7 @@ WordPress Core ($wpdb)
     │  query() override:                    │
     │    1. Execute via SQLite (parent)      │
     │    2. If wp_posts write:               │
-    │       bfb_convert(blocks → markdown)   │
-    │       write to .md file                │
+    │       write row bytes to .md file      │
     └───────────────────────────────────────┘
         │                    │
     SQLite (all tables)    Markdown files
@@ -134,33 +125,25 @@ WordPress Core ($wpdb)
     transients               wiki/*.md
     plugin tables
 
-    Conversion lives in Block Format Bridge:
-    └── bfb_convert( $content, $from, $to )    — universal API; routes through the block-array pivot
+    Content conversion lives above MDI.
 ```
 
 **SQLite** handles: options, users, terms, transients, sessions, plugin tables — the machinery that WordPress hammers thousands of times per page load.
 
-**Markdown** handles: posts, pages, custom post types — the content that humans and AI agents want to read, search, and sync.
+**Markdown files** handle: posts, pages, custom post types — the content rows that humans and AI agents want to read, search, and sync.
 
-## Render-Time Conversion
+## Content Formats
 
-`post_content` in SQLite stores raw markdown. Conversion to HTML or blocks happens at render time through WordPress filters:
+MDI does not make WordPress markdown-native by itself. It makes WordPress content file-backed.
 
-| Context | Filter | Priority | Output |
-|---------|--------|----------|--------|
-| Frontend (theme) | `the_content` | 1 | league/commonmark → HTML for the browser |
-| REST API / editor | REST `prepare_value` | 5 | league/commonmark → HTML for the REST response |
-| Block editor | REST `prepare_value` | 10 | html-to-blocks-converter turns the HTML into block markup |
-| WP-CLI / abilities | — | — | Raw markdown returned as-is |
-
-This means WordPress is effectively **markdown-native**. The database holds markdown, and the conversion to whatever format the consumer needs happens on the way out. CLI tools and AI agents skip conversion entirely — they get the markdown directly.
+If a site wants wiki posts stored as markdown and rendered as HTML, the site/application layer should declare that policy and handle conversion at write, render, REST, and editor edges. MDI then persists the resulting `post_content` bytes without knowing which layer produced them.
 
 ## Requirements
 
 - WordPress 6.9+
 - [SQLite Database Integration](https://github.com/WordPress/sqlite-database-integration) plugin (installed as mu-plugin)
 - PHP 7.4+
-- Composer (for [block-format-bridge](https://github.com/chubes4/block-format-bridge), which carries the vendor-prefixed conversion stack)
+- Composer
 
 ## Installation
 
@@ -169,8 +152,7 @@ This means WordPress is effectively **markdown-native**. The database holds mark
 git clone https://github.com/Automattic/markdown-database-integration.git \
   wp-content/plugins/markdown-database-integration
 
-# Install PHP dependencies (pulls in block-format-bridge + the bundled
-# vendor-prefixed conversion libraries it carries internally).
+# Install PHP dependencies.
 cd wp-content/plugins/markdown-database-integration
 composer install --no-dev
 
@@ -233,12 +215,12 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - **Creating posts** via WP-CLI, REST API, or the admin → `.md` file created
 - **Updating posts** → `.md` file updated (title, content, metadata)
 - **Deleting posts** → `.md` file removed
-- **Gutenberg blocks** → converted to clean markdown automatically
+- **Gutenberg blocks** → stored exactly as `post_content` unless another layer converts them first
 - **Pages** → stored in `page/` subdirectory
 - **Custom post types** → each type gets its own subdirectory
 - **WordPress admin** → works normally, no changes visible
 - **Plugins** → work normally, no compatibility issues observed
-- **Round-trip** → markdown → HTML → blocks → HTML → markdown preserves content
+- **Round-trip** → file body and `post_content` stay byte-identical for storage-managed post types
 
 ## Part of Intelligence
 

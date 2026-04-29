@@ -172,10 +172,9 @@ function mdi_bench_make_title(int $i): string {
 /**
  * Generate a seeded Gutenberg-block body.
  *
- * Mix of paragraph + heading blocks at varied lengths. The block
- * serialization matters specifically for MDI: writes round-trip through
- * `html-to-blocks-converter` on disk, which is a write-path cost that
- * SDI doesn't pay. Workload results surface this naturally.
+ * Mix of paragraph + heading blocks at varied lengths. MDI is storage-only,
+ * so this body should be mirrored as post_content bytes rather than converted
+ * during persistence.
  */
 function mdi_bench_make_body(int $i): string {
     $paragraph_count = 2 + ($i % 4);
@@ -203,7 +202,7 @@ function mdi_bench_make_body(int $i): string {
  * Returns 6-14 words from a fixed vocabulary. Not Lorem Ipsum — short
  * everyday words so taxonomy and full-text matching exercise multiple
  * hits per query. Punctuation is intentional (period termination only)
- * so MDI's markdown round-trip doesn't introduce escape variance.
+ * so storage comparisons are stable across iterations.
  */
 function mdi_bench_make_sentence(): string {
     static $vocab = [

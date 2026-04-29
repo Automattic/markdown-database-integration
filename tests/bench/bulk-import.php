@@ -17,9 +17,9 @@
  *
  *   - Throughput curve: degradation as corpus grows is visible in
  *     p99 vs p50 (the last few inserts at size N tail-spike).
- *   - Block serialization cost: MDI round-trips Gutenberg blocks through
- *     html-to-blocks-converter on every write. p95 widening on MDI vs
- *     SDI quantifies that cost.
+ *   - Storage mirror cost: MDI writes each post row to SQLite and mirrors
+ *     post_content bytes to disk. p95 widening on MDI vs SDI quantifies
+ *     the persistence overhead.
  *   - Disk-write pressure: not measured directly here (homeboy bench
  *     reports peak_bytes only). Read off `du -sh` via the harness when
  *     it matters.

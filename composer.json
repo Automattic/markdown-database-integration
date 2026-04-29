@@ -4,23 +4,8 @@
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "require": {
-        "php": ">=7.4",
-        "chubes4/block-format-bridge": "^0.4"
+        "php": ">=7.4"
     },
-    "repositories": [
-        {
-            "type": "composer",
-            "url": "https://wp-packages.org"
-        },
-        {
-            "type": "vcs",
-            "url": "https://github.com/chubes4/block-format-bridge"
-        },
-        {
-            "type": "vcs",
-            "url": "https://github.com/chubes4/html-to-blocks-converter"
-        }
-    ],
     "autoload": {
         "classmap": [
             "inc/"

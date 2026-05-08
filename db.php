@@ -1,10 +1,5 @@
 <?php
 /**
- * Plugin Name: Markdown Database Integration (Drop-in)
- * Version: 0.2.0
- * Author: Chris Huber
- * Text Domain: markdown-database-integration
- *
  * WordPress db.php drop-in that replaces the SQLite database file with
  * markdown files as the sole source of truth. In-memory SQLite is used
  * as the runtime query engine.

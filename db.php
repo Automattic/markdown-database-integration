@@ -69,6 +69,9 @@ if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 		? MARKDOWN_DB_CONTENT_DIR
 		: WP_CONTENT_DIR . '/markdown';
 	$markdown_db_index_path = dirname( rtrim( $markdown_db_content_dir, '/\\' ) ) . '/markdown-index.sqlite';
+	if ( file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' ) ) {
+		$markdown_db_index_path = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-index-' . substr( md5( $markdown_db_index_path ), 0, 12 ) . '.sqlite';
+	}
 
 	if ( ! defined( 'MARKDOWN_DB_INDEX_PATH' ) ) {
 		define( 'MARKDOWN_DB_INDEX_PATH', $markdown_db_index_path );
@@ -96,6 +99,54 @@ require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/
 // Load the SQLite DB class.
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/class-wp-sqlite-db.php';
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/install-functions.php';
+
+if ( ! function_exists( 'markdown_database_integration_store_has_siteurl' ) ) {
+	/**
+	 * Whether the markdown store already contains an installed-site siteurl.
+	 *
+	 * @param string $content_dir Markdown content directory.
+	 * @return bool True when siteurl is persisted in per-option or legacy form.
+	 */
+	function markdown_database_integration_store_has_siteurl( string $content_dir ): bool {
+		$siteurl_file = rtrim( $content_dir, '/\\' ) . '/_options/siteurl.json';
+		if ( file_exists( $siteurl_file ) ) {
+			return true;
+		}
+
+		$legacy_file = rtrim( $content_dir, '/\\' ) . '/options.json';
+		if ( ! file_exists( $legacy_file ) ) {
+			return false;
+		}
+
+		$decoded = json_decode( (string) file_get_contents( $legacy_file ), true );
+		if ( ! is_array( $decoded ) ) {
+			return false;
+		}
+
+		foreach ( $decoded as $row ) {
+			if ( is_array( $row ) && isset( $row['option_name'] ) && 'siteurl' === $row['option_name'] ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
+if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
+	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
+		? MARKDOWN_DB_CONTENT_DIR
+		: WP_CONTENT_DIR . '/markdown';
+
+	if ( ! markdown_database_integration_store_has_siteurl( $markdown_db_content_dir ) ) {
+		if ( ! defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
+			define( 'MARKDOWN_DB_INSTALL_FALLBACK', true );
+		}
+		$db_name          = defined( 'DB_NAME' ) && '' !== DB_NAME ? DB_NAME : 'database_name_here';
+		$GLOBALS['wpdb'] = new WP_SQLite_DB( $db_name );
+		return;
+	}
+}
 
 // Load our markdown classes.
 $markdown_plugin_dir = null;

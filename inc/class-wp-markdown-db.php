@@ -81,6 +81,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$db_path = defined( 'MARKDOWN_DB_INDEX_PATH' )
 				? MARKDOWN_DB_INDEX_PATH
 				: dirname( rtrim( $content_dir_for_path, '/\\' ) ) . '/markdown-index.sqlite';
+			$db_path = $this->resolve_primary_database_path( $db_path );
 			$this->ensure_directory_exists( dirname( $db_path ) );
 			// Don't reuse any existing PDO — we need our own connection.
 			$pdo = null;
@@ -457,6 +458,41 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$this->last_error = $e->getMessage();
 			error_log( 'Markdown DB: Cold boot failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
 		}
+	}
+
+	/**
+	 * Resolve the writable SQLite index path for primary mode.
+	 *
+	 * Markdown files are the durable database in primary mode; the SQLite index is
+	 * runtime query state. When the markdown store is mounted read-only, such as a
+	 * WordPress Playground plugin mount, keep the index in PHP's temp directory.
+	 *
+	 * @param string $db_path Preferred SQLite index path.
+	 * @return string Writable SQLite index path.
+	 */
+	private function resolve_primary_database_path( string $db_path ): string {
+		$dir = dirname( $db_path );
+		if ( ! $this->is_playground_runtime() && is_dir( $dir ) && is_writable( $dir ) ) {
+			return $db_path;
+		}
+
+		$temp_dir = rtrim( sys_get_temp_dir(), '/\\' );
+		$hash     = substr( md5( $db_path ), 0, 12 );
+
+		return $temp_dir . '/markdown-index-' . $hash . '.sqlite';
+	}
+
+	/**
+	 * Whether this request is running inside WordPress Playground.
+	 *
+	 * Playground mounts plugin directories through a VFS layer where PHP file
+	 * writes may appear available, but SQLite write transactions can fail as
+	 * read-only. Keep runtime indexes in PHP temp there.
+	 *
+	 * @return bool True when running in WordPress Playground.
+	 */
+	private function is_playground_runtime(): bool {
+		return file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' );
 	}
 
 	/**

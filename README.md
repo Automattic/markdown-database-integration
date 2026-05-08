@@ -168,8 +168,12 @@ cp wp-content/plugins/markdown-database-integration/db.php wp-content/db.php
 Add to `wp-config.php`:
 
 ```php
-// Where markdown files are stored (default: wp-content/markdown/)
+// Where markdown and JSON table snapshots are stored.
+// Default: wp-content/markdown/
 define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/markdown' );
+
+// Or customize the storage root for a plugin or repo-backed app:
+define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/plugins/my-world/content' );
 
 // Post types to exclude from markdown storage (comma-separated).
 // Default: all types stored as markdown. Override if you want certain
@@ -188,6 +192,11 @@ define( 'MARKDOWN_DB_MODE', 'mirror' );
 `primary` mode trades a minor boot cost (rebuild from markdown) for a much
 stronger guarantee: your content is files, not database rows. `git clone` the
 markdown tree and a fresh WordPress install can reconstruct the same content.
+
+The examples above use the default `wp-content/markdown/` root. When
+`MARKDOWN_DB_CONTENT_DIR` points somewhere else, MDI stores the same layout
+under that directory: post type directories such as `post/` and `page/`, plus
+internal snapshots under `_tables/` and `_options/`.
 
 ## Extension Points
 

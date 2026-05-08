@@ -46,19 +46,17 @@ MDI does not decide whether that body is markdown, block markup, or HTML. It sto
 
 ## Why
 
-Matt Mullenweg, April 2026:
+WordPress stores content in database rows. That is great for runtime queries,
+but awkward for source control, local editing, AI agents, backups, and review.
 
-> "like if we exported all p2s to md files? or talked to mysql directly instead of APIs?"
->
-> "I don't care which p2s I'm a part of or not, or my wordpress.com account, I want all of Automattic's intelligence that's part of our intranet in one super-fast place"
-
-This plugin makes that happen. Content is files. Files are:
+MDI keeps WordPress running on SQLite while making durable content available as
+plain files. Files are:
 
 - **AI-native** — any agent reads them directly. No API, no auth, just `grep`.
 - **Git-syncable** — `git push` to share knowledge across machines and people.
 - **Instant search** — `grep -r "woocommerce" wp-content/markdown/` is faster than any API.
 - **Human-readable** — open in any text editor or IDE.
-- **LLM Wiki ready** — this is the Karpathy LLM Wiki pattern running on WordPress.
+- **Agent/wiki ready** — content can be read directly by local tools and agents.
 
 ## Storage Boundary
 
@@ -69,9 +67,11 @@ MDI is storage/persistence only:
 - It stores `post_content` bytes exactly as received.
 - It does not render markdown to HTML.
 - It does not convert editor block markup to markdown.
-- It does not hook Block Format Bridge or ship any content-format dependency.
+- It does not ship any content-format conversion dependency.
 
-Content-format policy belongs to the application layer above MDI. For example, Intelligence declares wiki content format through Data Machine; Data Machine owns the generic content-format substrate and bundles Block Format Bridge.
+Content-format policy belongs to the application layer above MDI. A site can
+choose to store block markup, HTML, markdown, or another format in
+`post_content`; MDI persists those bytes without interpreting them.
 
 ```
 WRITE:
@@ -185,7 +185,9 @@ define( 'MARKDOWN_DB_MODE', 'mirror' );
 - **`mirror`** (default): SQLite on disk is authoritative. Markdown files are mirrored on every write. WordPress reads from SQLite. AI agents read from markdown. Safe, conservative — SQLite on disk survives even if a `.md` file is lost.
 - **`primary`**: Markdown files are the sole source of truth. SQLite is rebuilt in-memory from the files on every boot (backed by `wp-content/markdown-index.sqlite`). Writes go to markdown first. Anything without a `.md` file is ephemeral — non-markdown tables (options, users, transients, etc.) are snapshot to `wp-content/markdown/_tables/*.json` and reloaded on boot.
 
-`primary` mode is in production use on personal intelligence sites. It trades a minor boot cost (rebuild from markdown) for a much stronger guarantee: your content is files, not database rows. `git clone` the markdown tree and a fresh WordPress install reconstructs the exact same site.
+`primary` mode trades a minor boot cost (rebuild from markdown) for a much
+stronger guarantee: your content is files, not database rows. `git clone` the
+markdown tree and a fresh WordPress install can reconstruct the same content.
 
 ## Extension Points
 
@@ -210,7 +212,7 @@ MDI's own fields (`id`, `title`, `status`, `type`, `slug`, `parent`, etc.) are r
 
 ## What Works
 
-Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
+Tested on WordPress 6.9 with SQLite-backed local and Playground-style runtimes:
 
 - **Creating posts** via WP-CLI, REST API, or the admin → `.md` file created
 - **Updating posts** → `.md` file updated (title, content, metadata)
@@ -221,10 +223,6 @@ Tested on WordPress 6.9 with Studio (SQLite + PHP WASM):
 - **WordPress admin** → works normally, no changes visible
 - **Plugins** → work normally, no compatibility issues observed
 - **Round-trip** → file body and `post_content` stay byte-identical for storage-managed post types
-
-## Part of Intelligence
-
-This plugin is part of the [Intelligence](https://github.com/Automattic/intelligence) project — a personal AI agent for WordPress. The markdown files are the knowledge layer that Intelligence agents read directly.
 
 ## License
 

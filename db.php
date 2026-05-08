@@ -56,45 +56,6 @@ if ( ! defined( 'WP_SQLITE_AST_DRIVER' ) ) {
 	define( 'WP_SQLITE_AST_DRIVER', true );
 }
 
-// Primary mode uses markdown-index.sqlite as the active query engine. The
-// SQLite Integration install shim opens FQDB directly during wp_install(), so
-// FQDB must point at the same file MDI's wpdb instance is using.
-if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
-	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
-		? MARKDOWN_DB_CONTENT_DIR
-		: WP_CONTENT_DIR . '/markdown';
-	$markdown_db_index_path = dirname( rtrim( $markdown_db_content_dir, '/\\' ) ) . '/markdown-index.sqlite';
-	if ( file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' ) ) {
-		$markdown_db_index_path = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-index-' . substr( md5( $markdown_db_index_path ), 0, 12 ) . '.sqlite';
-	}
-
-	if ( ! defined( 'MARKDOWN_DB_INDEX_PATH' ) ) {
-		define( 'MARKDOWN_DB_INDEX_PATH', $markdown_db_index_path );
-	}
-	if ( ! defined( 'FQDBDIR' ) ) {
-		define( 'FQDBDIR', rtrim( dirname( MARKDOWN_DB_INDEX_PATH ), '/\\' ) . '/' );
-	}
-	if ( ! defined( 'FQDB' ) ) {
-		define( 'FQDB', MARKDOWN_DB_INDEX_PATH );
-	}
-}
-
-// Load the SQLite integration's version and constants.
-require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/version.php';
-require_once $sqlite_plugin_implementation_folder_path . '/constants.php';
-
-// Check PDO extensions.
-if ( ! extension_loaded( 'pdo' ) || ! extension_loaded( 'pdo_sqlite' ) ) {
-	return;
-}
-
-// Load the SQLite v2 driver stack (parser, lexer, connection, driver).
-require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/load.php';
-
-// Load the SQLite DB class.
-require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/class-wp-sqlite-db.php';
-require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/install-functions.php';
-
 if ( ! function_exists( 'markdown_database_integration_store_has_siteurl' ) ) {
 	/**
 	 * Whether the markdown store already contains an installed-site siteurl.
@@ -127,6 +88,49 @@ if ( ! function_exists( 'markdown_database_integration_store_has_siteurl' ) ) {
 		return false;
 	}
 }
+
+// Primary mode uses markdown-index.sqlite as the active query engine. The
+// SQLite Integration install shim opens FQDB directly during wp_install(). Only
+// point FQDB at the markdown index when the markdown store already represents an
+// installed site. Partial seed stores fall back to the existing SQLite database
+// so already-installed Playground sites do not reset to the install screen.
+if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
+	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
+		? MARKDOWN_DB_CONTENT_DIR
+		: WP_CONTENT_DIR . '/markdown';
+	if ( markdown_database_integration_store_has_siteurl( $markdown_db_content_dir ) ) {
+		$markdown_db_index_path = dirname( rtrim( $markdown_db_content_dir, '/\\' ) ) . '/markdown-index.sqlite';
+		if ( file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' ) ) {
+			$markdown_db_index_path = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-index-' . substr( md5( $markdown_db_index_path ), 0, 12 ) . '.sqlite';
+		}
+
+		if ( ! defined( 'MARKDOWN_DB_INDEX_PATH' ) ) {
+			define( 'MARKDOWN_DB_INDEX_PATH', $markdown_db_index_path );
+		}
+		if ( ! defined( 'FQDBDIR' ) ) {
+			define( 'FQDBDIR', rtrim( dirname( MARKDOWN_DB_INDEX_PATH ), '/\\' ) . '/' );
+		}
+		if ( ! defined( 'FQDB' ) ) {
+			define( 'FQDB', MARKDOWN_DB_INDEX_PATH );
+		}
+	}
+}
+
+// Load the SQLite integration's version and constants.
+require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/version.php';
+require_once $sqlite_plugin_implementation_folder_path . '/constants.php';
+
+// Check PDO extensions.
+if ( ! extension_loaded( 'pdo' ) || ! extension_loaded( 'pdo_sqlite' ) ) {
+	return;
+}
+
+// Load the SQLite v2 driver stack (parser, lexer, connection, driver).
+require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/load.php';
+
+// Load the SQLite DB class.
+require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/class-wp-sqlite-db.php';
+require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/install-functions.php';
 
 if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )

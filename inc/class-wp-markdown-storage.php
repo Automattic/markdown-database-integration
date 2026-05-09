@@ -626,6 +626,42 @@ class WP_Markdown_Storage {
 	}
 
 	/**
+	 * Iterate markdown posts without retaining every parsed post object.
+	 *
+	 * Files with IDs are deduplicated by newest mtime before parsing, matching
+	 * get_all_posts() without holding full post objects for the entire corpus.
+	 * Files without IDs are yielded as they are found so callers can auto-assign.
+	 *
+	 * @param bool $metadata_only If true, skip content bodies.
+	 * @return \Generator<int,object>
+	 */
+	public function get_all_posts_iterator( bool $metadata_only = false ): \Generator {
+		$winners = array();
+
+		foreach ( $this->get_markdown_file_manifest_iterator() as $file_info ) {
+			$id = $this->extract_id_from_file( $file_info['absolute'] );
+			if ( ! $id ) {
+				$post = $this->read_file( $file_info['absolute'], $metadata_only, $file_info['parent_id'] );
+				if ( $post ) {
+					yield $post;
+				}
+				continue;
+			}
+
+			if ( ! isset( $winners[ $id ] ) || $file_info['mtime'] > $winners[ $id ]['mtime'] ) {
+				$winners[ $id ] = $file_info;
+			}
+		}
+
+		foreach ( $winners as $file_info ) {
+			$post = $this->read_file( $file_info['absolute'], $metadata_only, $file_info['parent_id'] );
+			if ( $post ) {
+				yield $post;
+			}
+		}
+	}
+
+	/**
 	 * Resolve the parent directory for a post's file.
 	 *
 	 * Walks up the ancestor chain using the post resolver to build

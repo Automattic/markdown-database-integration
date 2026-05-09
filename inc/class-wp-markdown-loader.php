@@ -502,45 +502,92 @@ class WP_Markdown_Loader {
 		$start = microtime( true );
 		$pdo = $this->driver->get_connection()->get_pdo();
 
-		// 1. Load current file index from SQLite.
-		$index = array(); // file_path → { post_id, mtime, size }
+		// 1. Verify the persisted file index exists.
 		try {
-			$rows = $pdo->query( 'SELECT post_id, file_path, file_mtime, file_size FROM `_markdown_file_index`' )
-				->fetchAll( \PDO::FETCH_OBJ );
-			foreach ( $rows as $row ) {
-				$index[ $row->file_path ] = array(
-					'post_id' => (int) $row->post_id,
-					'mtime'   => (int) $row->file_mtime,
-					'size'    => (int) $row->file_size,
-				);
-			}
+			$pdo->query( 'SELECT 1 FROM `_markdown_file_index` LIMIT 1' );
 		} catch ( \Throwable $e ) {
 			// No index — fall back to full reload.
 			throw $e;
 		}
+
+		$pdo->exec( 'DROP TABLE IF EXISTS `_markdown_current_files`' );
+		$pdo->exec(
+			'CREATE TEMP TABLE `_markdown_current_files` (
+				`file_path` TEXT PRIMARY KEY,
+				`file_mtime` INTEGER NOT NULL,
+				`file_size` INTEGER NOT NULL,
+				`absolute_path` TEXT NOT NULL,
+				`parent_id` INTEGER NULL
+			)'
+		);
+		$current_stmt = $pdo->prepare(
+			'INSERT OR REPLACE INTO `_markdown_current_files` (`file_path`, `file_mtime`, `file_size`, `absolute_path`, `parent_id`) VALUES (?, ?, ?, ?, ?)'
+		);
 
 		// 2. Diff current .md files on disk against the persisted index.
 		$changed = array();
 		$new_files = array();
 		$files_scanned = 0;
 
-		foreach ( $this->storage->get_markdown_file_manifest_iterator() as $rel_path => $current ) {
-			$files_scanned++;
-
-			if ( isset( $index[ $rel_path ] ) ) {
-				$cached = $index[ $rel_path ];
-				if ( $current['mtime'] !== $cached['mtime'] || $current['size'] !== $cached['size'] ) {
-					$changed[ $rel_path ] = $current;
-				}
-
-				unset( $index[ $rel_path ] );
-			} else {
-				$new_files[ $rel_path ] = $current;
+		$pdo->beginTransaction();
+		try {
+			foreach ( $this->storage->get_markdown_file_manifest_iterator() as $rel_path => $current ) {
+				$files_scanned++;
+				$current_stmt->execute( array(
+					$rel_path,
+					$current['mtime'],
+					$current['size'],
+					$current['absolute'],
+					$current['parent_id'],
+				) );
 			}
+			$pdo->commit();
+		} catch ( \Throwable $e ) {
+			$pdo->rollBack();
+			throw $e;
 		}
 
-		// Remaining index entries no longer exist on disk.
-		$deleted_post_ids = array_column( $index, 'post_id' );
+		$changed_rows = $pdo->query(
+			'SELECT cf.file_path, cf.file_mtime, cf.file_size, cf.absolute_path, cf.parent_id
+			 FROM `_markdown_current_files` cf
+			 INNER JOIN `_markdown_file_index` fi ON cf.file_path = fi.file_path
+			 WHERE cf.file_mtime != fi.file_mtime OR cf.file_size != fi.file_size'
+		)->fetchAll( \PDO::FETCH_OBJ );
+		foreach ( $changed_rows as $row ) {
+			$changed[ $row->file_path ] = array(
+				'mtime'     => (int) $row->file_mtime,
+				'size'      => (int) $row->file_size,
+				'absolute'  => $row->absolute_path,
+				'parent_id' => null === $row->parent_id ? null : (int) $row->parent_id,
+			);
+		}
+
+		$new_rows = $pdo->query(
+			'SELECT cf.file_path, cf.file_mtime, cf.file_size, cf.absolute_path, cf.parent_id
+			 FROM `_markdown_current_files` cf
+			 LEFT JOIN `_markdown_file_index` fi ON cf.file_path = fi.file_path
+			 WHERE fi.file_path IS NULL'
+		)->fetchAll( \PDO::FETCH_OBJ );
+		foreach ( $new_rows as $row ) {
+			$new_files[ $row->file_path ] = array(
+				'mtime'     => (int) $row->file_mtime,
+				'size'      => (int) $row->file_size,
+				'absolute'  => $row->absolute_path,
+				'parent_id' => null === $row->parent_id ? null : (int) $row->parent_id,
+			);
+		}
+
+		$deleted_post_ids = array();
+		$deleted_rows = $pdo->query(
+			'SELECT fi.post_id
+			 FROM `_markdown_file_index` fi
+			 LEFT JOIN `_markdown_current_files` cf ON fi.file_path = cf.file_path
+			 WHERE cf.file_path IS NULL'
+		)->fetchAll( \PDO::FETCH_OBJ );
+		foreach ( $deleted_rows as $row ) {
+			$deleted_post_ids[] = (int) $row->post_id;
+		}
+		$pdo->exec( 'DROP TABLE IF EXISTS `_markdown_current_files`' );
 
 		$this->stats['markdown_files_scanned'] = $files_scanned;
 		$this->stats['markdown_files_changed'] = count( $changed );
@@ -1614,11 +1661,7 @@ class WP_Markdown_Loader {
 		// Load posts with metadata only — skip reading file bodies.
 		// Content will be lazy-loaded from disk on demand.
 		// See: Index/Map Architecture design doc.
-		$posts = $this->storage->get_all_posts( true );
-		$this->stats['markdown_files_scanned'] = count( $posts );
-
-		// Store posts for load_frontmatter_meta() and load_frontmatter_terms().
-		$this->loaded_posts = $posts;
+		$posts = $this->storage->get_all_posts_iterator( true );
 
 		// Also load any non-markdown posts from the JSON fallback.
 		$json_file = $this->content_dir . '/_tables/posts.json';
@@ -1663,7 +1706,9 @@ class WP_Markdown_Loader {
 
 			$inserted_markdown = 0;
 			$indexed_markdown  = 0;
+			$files_scanned     = 0;
 			foreach ( $posts as $post ) {
+				$files_scanned++;
 				$id = (int) $post->ID;
 
 				// Auto-assign a fresh ID if the file was dropped on disk
@@ -1718,7 +1763,10 @@ class WP_Markdown_Loader {
 					) );
 					$indexed_markdown++;
 				}
+
+				$this->insert_post_meta_and_terms( $pdo, $post );
 			}
+			$this->stats['markdown_files_scanned'] = $files_scanned;
 			$this->stats['markdown_posts_inserted'] = $inserted_markdown;
 			$this->stats['markdown_index_upserts']  = $indexed_markdown;
 
@@ -1882,6 +1930,9 @@ class WP_Markdown_Loader {
 				`file_mtime` INTEGER NOT NULL,
 				`file_size` INTEGER NOT NULL
 			)'
+		);
+		$pdo->exec(
+			'CREATE INDEX IF NOT EXISTS `_markdown_file_index_file_path` ON `_markdown_file_index` (`file_path`)'
 		);
 	}
 

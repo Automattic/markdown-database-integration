@@ -20,14 +20,22 @@ BENCH_CORPUS_SIZE=1000 bash tests/bench/run-matrix.sh --iterations 10
 BENCH_CORPUS_SIZE=10000 bash tests/bench/run-matrix.sh --iterations 10
 
 # Concurrent-writer + crash-kill cells need shared state + concurrency.
-# The driver doesn't pass these through automatically — invoke
-# `homeboy bench` directly when you want the multi-instance variants.
-HOMEBOY_SETTINGS_JSON='{"wp_config_defines":{"MARKDOWN_DB_MODE":"primary"}}' \
-  homeboy --output /tmp/primary-concurrent.json bench markdown-database-integration \
-    --iterations 5 --shared-state /tmp/mdi-bench/primary --concurrency 4
+homeboy --output /tmp/primary-concurrent.json bench markdown-database-integration \
+  --iterations 5 \
+  --shared-state /tmp/mdi-bench/primary \
+  --concurrency 4 \
+  --setting-json wp_config_defines='{"MARKDOWN_DB_MODE":"primary"}'
+
+# Issue #44: cold vs warm MDI loader timings.
+bash tests/bench/run-boot-timing.sh --iterations 5 --corpus-size 1000
 ```
 
 Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
+
+`run-boot-timing.sh` writes a focused summary to
+`tests/bench/results/<YYYY-MM-DD>/boot-timing-summary.json`. Detailed loader
+stats, file counts, lazy-content counts, and phase metadata are emitted in the
+normal `boot-timing` BenchResults scenario metrics.
 
 ## How it works
 
@@ -57,6 +65,8 @@ tests/bench/
 ├── PLAN.md                  ← detailed plan / open questions / homeboy-fit story
 ├── README.md                ← this file
 ├── run-matrix.sh            ← matrix driver (parks db.php, varies env, invokes homeboy bench 3x)
+├── run-boot-timing.sh       ← issue #44 driver (cold / warm-noop / warm-one-file)
+├── boot-timing.php          ← workload: direct WP_Markdown_Loader cold/warm timing
 ├── bulk-import.php          ← workload: empty → N posts via wp_insert_post
 ├── concurrent-writers.php   ← workload: per-instance write streams, surfaces #47/#70 contention
 ├── crash-kill.php           ← workload: simulated mid-write interrupt, shared-state-required
@@ -85,14 +95,19 @@ require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
     // ... measurable work ...
-    return ['kind' => 'my-workload', /* ... metadata ... */];
+    return [
+        'metrics' => ['rows' => 100],
+        'metadata' => ['phase' => 'warm'],
+    ];
 };
 ```
 
 The dispatcher discovers each file, runs the callable
 `HOMEBOY_BENCH_ITERATIONS` times (plus one warmup, discarded), and emits
-p50/p95/p99/mean/min/max in the BenchResults envelope. Each iteration is
-a fresh PHP-WASM boot — there is no cross-iteration WordPress state. The
+p50/p95/p99/mean/min/max in the BenchResults envelope. Numeric values returned
+under `metrics` are aggregated into the same scenario metrics object; the
+latest returned `metadata` payload is attached to that scenario. Each iteration
+is a fresh PHP-WASM boot — there is no cross-iteration WordPress state. The
 shared-state file IS persistent across iterations within a run.
 
 ## Constants the workloads read
@@ -129,6 +144,7 @@ done
 ## Known harness limitations
 
 - **`crash-kill` cross-boot durability is not reproducible inside Playground.** Each Playground iteration is a fresh PHP-WASM boot; the WordPress SQLite from iteration K does not survive into iteration K+1. The crash-kill workload's "audit phase" therefore always sees `on_disk=0` for the previous iteration's writes — a true cross-boot durability test would require a persistent-WordPress harness, not Playground. Filed as a future enhancement; the current workload still exercises the shared-state contract end-to-end and surfaces the dispatcher seam working correctly.
+- **`run-boot-timing.sh` measures the loader directly, not the full drop-in boot path.** The WordPress Playground bench runner always runs wp-phpunit's install stage, which mutates persisted state and prevents a true installed-site warm boot. The boot-timing workload therefore instantiates `WP_Markdown_Loader` against an isolated shared-state markdown/index directory. This still exercises the real `load_all()` / `sync_incremental()` / lazy content paths, but excludes the surrounding `WP_Markdown_DB::db_connect()` and wp-phpunit install costs. Tracked upstream in [Extra-Chill/homeboy-extensions#267](https://github.com/Extra-Chill/homeboy-extensions/issues/267).
 - **`run-matrix.sh` does not forward `--shared-state` / `--concurrency`** to the cells automatically. Concurrency-shape variants need direct `homeboy bench` invocation today; the matrix driver is single-instance per cell.
 - **No 10k corpus committed result set** ships in the initial PR. Run `BENCH_CORPUS_SIZE=10000 bash tests/bench/run-matrix.sh --iterations 10` locally for the power-user-vault numbers — wall time is single-digit hours.
 - **Iteration noise.** At small iteration counts (<5) and small corpus sizes (<100), substrate ranking can invert run-over-run. Read p99 spread before drawing directionality conclusions; one-shot results are signal-poor.
@@ -140,6 +156,7 @@ The bench harness drove three changes upstream rather than papering over them:
 - [Extra-Chill/homeboy-extensions#248](https://github.com/Extra-Chill/homeboy-extensions/pull/248) — `wp_config_defines` setting for per-component wp-config additions (released as wordpress-v2.17.0). Without it, each substrate would have shipped a custom `db.php` to vary one constant.
 - [Extra-Chill/homeboy-extensions#249](https://github.com/Extra-Chill/homeboy-extensions/pull/249) — `PLUGIN_SLUG` honors `HOMEBOY_COMPONENT_ID` (released as wordpress-v2.17.1). Without it, running `homeboy bench` from a git-worktree directory mounted the plugin at the wrong path and broke MDI's internal class probes.
 - [Extra-Chill/homeboy-extensions#250](https://github.com/Extra-Chill/homeboy-extensions/pull/250) — `bench_env` setting forwards host-shell env vars into Playground PHP-WASM (released as wordpress-v2.18.0). Without it, `BENCH_CORPUS_SIZE=10000` from the parent shell never reached `getenv()` inside workloads — every "10k corpus" run was actually corpus=100. The matrix driver now threads workload knobs through `bench_env` in `HOMEBOY_SETTINGS_JSON`.
+- [Extra-Chill/homeboy-extensions#271](https://github.com/Extra-Chill/homeboy-extensions/pull/271) — workload return values can contribute custom numeric `metrics` and scenario `metadata` to BenchResults. Without it, issue #44 loader stats had to live in sidecar JSONL outside homeboy's baseline/reporting path.
 - [Extra-Chill/homeboy#1532](https://github.com/Extra-Chill/homeboy/issues/1532) — `--output` post-subcommand position silently swallowed by trailing-arg capture. Workaround applied in `run-matrix.sh`: use the documented global position (`homeboy --output ... bench ...`).
 
 The harness also surfaced [Extra-Chill/homeboy#1526](https://github.com/Extra-Chill/homeboy/issues/1526) (workload slug collision in subdirs) — not blocking, harness is structured to avoid the trap (no subdirs in `tests/bench/`).

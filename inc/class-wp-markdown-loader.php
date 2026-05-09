@@ -519,33 +519,30 @@ class WP_Markdown_Loader {
 			throw $e;
 		}
 
-		// 2. Scan all current .md files on disk without parsing post objects.
-		$current_files = $this->storage->get_markdown_file_manifest();
-		$this->stats['markdown_files_scanned'] = count( $current_files );
-
-		// 3. Diff: find changed, new, and deleted files.
+		// 2. Diff current .md files on disk against the persisted index.
 		$changed = array();
 		$new_files = array();
-		$deleted_post_ids = array();
+		$files_scanned = 0;
 
-		// Check existing index entries against current files.
-		foreach ( $index as $rel_path => $cached ) {
-			if ( isset( $current_files[ $rel_path ] ) ) {
-				$current = $current_files[ $rel_path ];
+		foreach ( $this->storage->get_markdown_file_manifest_iterator() as $rel_path => $current ) {
+			$files_scanned++;
+
+			if ( isset( $index[ $rel_path ] ) ) {
+				$cached = $index[ $rel_path ];
 				if ( $current['mtime'] !== $cached['mtime'] || $current['size'] !== $cached['size'] ) {
 					$changed[ $rel_path ] = $current;
 				}
-				// Mark as seen.
-				unset( $current_files[ $rel_path ] );
+
+				unset( $index[ $rel_path ] );
 			} else {
-				// File no longer exists — post was deleted externally.
-				$deleted_post_ids[] = $cached['post_id'];
+				$new_files[ $rel_path ] = $current;
 			}
 		}
 
-		// Remaining current_files are new (not in index).
-		$new_files = $current_files;
+		// Remaining index entries no longer exist on disk.
+		$deleted_post_ids = array_column( $index, 'post_id' );
 
+		$this->stats['markdown_files_scanned'] = $files_scanned;
 		$this->stats['markdown_files_changed'] = count( $changed );
 		$this->stats['markdown_files_new']     = count( $new_files );
 		$this->stats['markdown_files_deleted'] = count( $deleted_post_ids );

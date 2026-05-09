@@ -523,16 +523,23 @@ class WP_Markdown_Storage {
 	 * @return array<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}> Relative path keyed manifest.
 	 */
 	public function get_markdown_file_manifest(): array {
+		return iterator_to_array( $this->get_markdown_file_manifest_iterator() );
+	}
+
+	/**
+	 * Iterate lightweight metadata for every markdown file without retaining it.
+	 *
+	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
+	 */
+	public function get_markdown_file_manifest_iterator(): \Generator {
 		if ( ! is_dir( $this->content_dir ) ) {
-			return array();
+			return;
 		}
 
 		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
 		if ( ! $dirs ) {
-			return array();
+			return;
 		}
-
-		$manifest = array();
 
 		foreach ( $dirs as $type_dir ) {
 			$dirname = basename( $type_dir );
@@ -541,39 +548,64 @@ class WP_Markdown_Storage {
 				continue;
 			}
 
-			$all_files      = $this->scan_directory_recursive( $type_dir );
-			$dir_parent_ids = array();
+			yield from $this->iterate_markdown_directory_manifest( $type_dir, $type_dir, 0 );
+		}
+	}
 
-			foreach ( $all_files as $file ) {
-				if ( basename( $file ) === 'index.md' ) {
-					$id = $this->extract_id_from_file( $file );
-					if ( $id ) {
-						$dir_parent_ids[ dirname( $file ) ] = $id;
-					}
-				}
-			}
-
-			foreach ( $all_files as $file ) {
-				$relative_path = $this->relative_path( $file );
-				$file_dir      = dirname( $file );
-				$parent_id     = null;
-
-				if ( basename( $file ) === 'index.md' ) {
-					$parent_id = $dir_parent_ids[ dirname( $file_dir ) ] ?? 0;
-				} elseif ( $file_dir !== $type_dir ) {
-					$parent_id = $dir_parent_ids[ $file_dir ] ?? 0;
-				}
-
-				$manifest[ $relative_path ] = array(
-					'mtime'     => (int) filemtime( $file ),
-					'size'      => (int) filesize( $file ),
-					'absolute'  => $file,
-					'parent_id' => $parent_id,
-				);
-			}
+	/**
+	 * Iterate one markdown directory, deriving parent IDs from local index.md files.
+	 *
+	 * @param string $dir       Directory to scan.
+	 * @param string $type_dir  Post type root directory.
+	 * @param int    $parent_id Parent directory's index.md post ID.
+	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
+	 */
+	private function iterate_markdown_directory_manifest( string $dir, string $type_dir, int $parent_id ): \Generator {
+		$entries = scandir( $dir );
+		if ( false === $entries ) {
+			return;
 		}
 
-		return $manifest;
+		$current_parent_id = 0;
+		$index_path        = $dir . '/index.md';
+		if ( file_exists( $index_path ) ) {
+			$current_parent_id = $this->extract_id_from_file( $index_path ) ?: 0;
+		}
+
+		foreach ( $entries as $entry ) {
+			if ( '.' === $entry || '..' === $entry ) {
+				continue;
+			}
+
+			$path = $dir . '/' . $entry;
+
+			if ( is_dir( $path ) ) {
+				if ( str_starts_with( $entry, '_' ) ) {
+					continue;
+				}
+
+				yield from $this->iterate_markdown_directory_manifest( $path, $type_dir, $current_parent_id );
+				continue;
+			}
+
+			if ( ! str_ends_with( $entry, '.md' ) ) {
+				continue;
+			}
+
+			$derived_parent_id = null;
+			if ( 'index.md' === $entry ) {
+				$derived_parent_id = $parent_id;
+			} elseif ( $dir !== $type_dir ) {
+				$derived_parent_id = $current_parent_id;
+			}
+
+			yield $this->relative_path( $path ) => array(
+				'mtime'     => (int) filemtime( $path ),
+				'size'      => (int) filesize( $path ),
+				'absolute'  => $path,
+				'parent_id' => $derived_parent_id,
+			);
+		}
 	}
 
 	/**

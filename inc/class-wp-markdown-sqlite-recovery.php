@@ -28,6 +28,24 @@ class WP_Markdown_SQLite_Recovery {
 	 * Register the recovery ability when the Abilities API is present.
 	 */
 	public static function register(): void {
+		$category_callback = static function (): void {
+			if ( ! function_exists( 'wp_register_ability_category' ) ) {
+				return;
+			}
+
+			if ( function_exists( 'wp_has_ability_category' ) && wp_has_ability_category( 'markdown-db' ) ) {
+				return;
+			}
+
+			wp_register_ability_category(
+				'markdown-db',
+				array(
+					'label'       => 'Markdown Database',
+					'description' => 'Markdown Database Integration maintenance abilities.',
+				)
+			);
+		};
+
 		$register_callback = static function (): void {
 			if ( ! function_exists( 'wp_register_ability' ) ) {
 				return;
@@ -35,18 +53,6 @@ class WP_Markdown_SQLite_Recovery {
 
 			if ( function_exists( 'wp_has_ability' ) && wp_has_ability( 'markdown-db/recover-sqlite-posts' ) ) {
 				return;
-			}
-
-			if ( function_exists( 'wp_register_ability_category' ) ) {
-				if ( ! function_exists( 'wp_has_ability_category' ) || ! wp_has_ability_category( 'markdown-db' ) ) {
-					wp_register_ability_category(
-						'markdown-db',
-						array(
-							'label'       => 'Markdown Database',
-							'description' => 'Markdown Database Integration maintenance abilities.',
-						)
-					);
-				}
 			}
 
 			wp_register_ability(
@@ -62,6 +68,14 @@ class WP_Markdown_SQLite_Recovery {
 				)
 			);
 		};
+
+		if ( function_exists( 'doing_action' ) && doing_action( 'wp_abilities_api_categories_init' ) ) {
+			$category_callback();
+		} elseif ( function_exists( 'did_action' ) && did_action( 'wp_abilities_api_categories_init' ) ) {
+			$category_callback();
+		} elseif ( function_exists( 'add_action' ) ) {
+			add_action( 'wp_abilities_api_categories_init', $category_callback );
+		}
 
 		if ( function_exists( 'doing_action' ) && doing_action( 'wp_abilities_api_init' ) ) {
 			$register_callback();

@@ -513,6 +513,87 @@ class WP_Markdown_Storage {
 	}
 
 	/**
+	 * Get lightweight metadata for every markdown file without parsing posts.
+	 *
+	 * Warm sync only needs path, mtime, size, and derived parent hints to diff
+	 * against the persisted file index. Parsing every file into a post object at
+	 * 100k+ corpus sizes exhausts PHP memory before the diff can prove nothing
+	 * changed.
+	 *
+	 * @return array<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}> Relative path keyed manifest.
+	 */
+	public function get_markdown_file_manifest(): array {
+		if ( ! is_dir( $this->content_dir ) ) {
+			return array();
+		}
+
+		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
+		if ( ! $dirs ) {
+			return array();
+		}
+
+		$manifest = array();
+
+		foreach ( $dirs as $type_dir ) {
+			$dirname = basename( $type_dir );
+
+			if ( str_starts_with( $dirname, '_' ) || in_array( $dirname, $this->excluded_types, true ) ) {
+				continue;
+			}
+
+			$all_files      = $this->scan_directory_recursive( $type_dir );
+			$dir_parent_ids = array();
+
+			foreach ( $all_files as $file ) {
+				if ( basename( $file ) === 'index.md' ) {
+					$id = $this->extract_id_from_file( $file );
+					if ( $id ) {
+						$dir_parent_ids[ dirname( $file ) ] = $id;
+					}
+				}
+			}
+
+			foreach ( $all_files as $file ) {
+				$relative_path = $this->relative_path( $file );
+				$file_dir      = dirname( $file );
+				$parent_id     = null;
+
+				if ( basename( $file ) === 'index.md' ) {
+					$parent_id = $dir_parent_ids[ dirname( $file_dir ) ] ?? 0;
+				} elseif ( $file_dir !== $type_dir ) {
+					$parent_id = $dir_parent_ids[ $file_dir ] ?? 0;
+				}
+
+				$manifest[ $relative_path ] = array(
+					'mtime'     => (int) filemtime( $file ),
+					'size'      => (int) filesize( $file ),
+					'absolute'  => $file,
+					'parent_id' => $parent_id,
+				);
+			}
+		}
+
+		return $manifest;
+	}
+
+	/**
+	 * Parse one markdown file and apply a directory-derived parent hint.
+	 *
+	 * @param string   $file_path     Path to the markdown file.
+	 * @param bool     $metadata_only If true, skip body content.
+	 * @param int|null $parent_id     Directory-derived parent ID, or null to keep frontmatter.
+	 * @return object|null A post-like object, or null on parse failure.
+	 */
+	public function read_file( string $file_path, bool $metadata_only = false, ?int $parent_id = null ): ?object {
+		$post = $this->parse_file( $file_path, $metadata_only );
+		if ( $post && null !== $parent_id ) {
+			$post->post_parent = $parent_id;
+		}
+
+		return $post;
+	}
+
+	/**
 	 * Resolve the parent directory for a post's file.
 	 *
 	 * Walks up the ancestor chain using the post resolver to build

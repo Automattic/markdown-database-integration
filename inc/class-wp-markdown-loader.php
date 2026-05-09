@@ -519,23 +519,9 @@ class WP_Markdown_Loader {
 			throw $e;
 		}
 
-		// 2. Scan all current .md files on disk.
-		$current_files = array(); // relative_path → { mtime, size, absolute_path }
-		$all_posts = $this->storage->get_all_posts( true );
-		$this->stats['markdown_files_scanned'] = count( $all_posts );
-		foreach ( $all_posts as $post ) {
-			$source_file = $post->_source_file ?? '';
-			if ( empty( $source_file ) || ! file_exists( $source_file ) ) {
-				continue;
-			}
-			$relative_path = $this->to_relative_path( $source_file );
-			$current_files[ $relative_path ] = array(
-				'mtime'    => (int) filemtime( $source_file ),
-				'size'     => (int) filesize( $source_file ),
-				'absolute' => $source_file,
-				'post'     => $post,
-			);
-		}
+		// 2. Scan all current .md files on disk without parsing post objects.
+		$current_files = $this->storage->get_markdown_file_manifest();
+		$this->stats['markdown_files_scanned'] = count( $current_files );
 
 		// 3. Diff: find changed, new, and deleted files.
 		$changed = array();
@@ -589,7 +575,10 @@ class WP_Markdown_Loader {
 
 			// 5. Handle changed posts — UPDATE their metadata.
 			foreach ( $changed as $rel_path => $file_info ) {
-				$post = $file_info['post'];
+				$post = $this->storage->read_file( $file_info['absolute'], true, $file_info['parent_id'] );
+				if ( ! $post ) {
+					continue;
+				}
 				$id = (int) $post->ID;
 				if ( $id <= 0 ) {
 					continue;
@@ -612,7 +601,10 @@ class WP_Markdown_Loader {
 
 			// 6. Handle new posts — INSERT them.
 			foreach ( $new_files as $rel_path => $file_info ) {
-				$post = $file_info['post'];
+				$post = $this->storage->read_file( $file_info['absolute'], true, $file_info['parent_id'] );
+				if ( ! $post ) {
+					continue;
+				}
 				$id = (int) $post->ID;
 
 				// Auto-assign a fresh ID if the file was dropped on disk

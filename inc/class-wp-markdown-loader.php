@@ -369,6 +369,9 @@ class WP_Markdown_Loader {
 					if ( isset( $core_lookup[ $basename ] ) ) {
 						continue; // Already handled above.
 					}
+					if ( ! $this->should_load_plugin_table( $basename ) ) {
+						continue;
+					}
 
 					$file_key = '_tables/' . $basename . '.json';
 					$mtime = (int) filemtime( $file );
@@ -2084,6 +2087,9 @@ class WP_Markdown_Loader {
 			if ( isset( $core_lookup[ $basename ] ) ) {
 				continue; // Already loaded.
 			}
+			if ( ! $this->should_load_plugin_table( $basename ) ) {
+				continue;
+			}
 
 			// Check if this table has a corresponding schema file.
 			$schema_file = $this->content_dir . '/_schema/' . $basename . '.sql';
@@ -2165,6 +2171,44 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings['load_plugin_tables'] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Read the site-configured persistence policy for a table.
+	 *
+	 * Policies are keyed by unprefixed table name. Values may be `true`, `false`,
+	 * or an array of site-defined options. MDI treats `false` as an explicit
+	 * opt-out; any other configured value preserves the table.
+	 *
+	 * @param string $table_suffix Table name without prefix.
+	 * @return array|bool|null Configured policy, or null when unset.
+	 */
+	private function table_persistence_policy_for( string $table_suffix ): array|bool|null {
+		if ( ! function_exists( 'apply_filters' ) ) {
+			return null;
+		}
+
+		$policy = apply_filters( 'markdown_db_table_persistence_policy', array() );
+		if ( ! is_array( $policy ) || ! array_key_exists( $table_suffix, $policy ) ) {
+			return null;
+		}
+
+		$table_policy = $policy[ $table_suffix ];
+		return is_array( $table_policy ) || is_bool( $table_policy ) ? $table_policy : null;
+	}
+
+	/**
+	 * Determine whether a JSON-backed plugin table should be loaded.
+	 *
+	 * Existing behavior remains the default: plugin tables with schema/data files
+	 * are loaded unless site-level policy explicitly disables a table.
+	 *
+	 * @param string $table_suffix Table name without prefix.
+	 * @return bool True when the table should be loaded.
+	 */
+	private function should_load_plugin_table( string $table_suffix ): bool {
+		$policy = $this->table_persistence_policy_for( $table_suffix );
+		return false !== $policy;
 	}
 
 	/**

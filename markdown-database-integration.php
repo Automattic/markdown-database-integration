@@ -35,6 +35,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 define( 'MARKDOWN_DB_VERSION', '0.6.0' );
 define( 'MARKDOWN_DB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
+
 /**
  * The content directory where markdown files are stored.
  * Override in wp-config.php: define( 'MARKDOWN_DB_CONTENT_DIR', '/path/to/wiki' );
@@ -64,7 +67,8 @@ if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
 // the post_content bytes WordPress receives; rendering/editor conversion lives
 // in the application/content-format layer above this storage plugin.
 
-if ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && MARKDOWN_DB_INSTALL_FALLBACK ) {
+// @phpstan-ignore-next-line Runtime wp-config.php constants are intentionally dynamic.
+if ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && (bool) constant( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
 	add_action( 'wp_install', 'markdown_database_integration_import_seed_posts_after_install', 20 );
 }
 
@@ -77,10 +81,6 @@ if ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && MARKDOWN_DB_INSTALL_FALLBACK )
  * tables so the fresh environment has content immediately.
  */
 function markdown_database_integration_import_seed_posts_after_install(): void {
-	if ( ! class_exists( 'WP_Markdown_Storage' ) ) {
-		require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
-	}
-
 	$excluded_types = array_filter( array_map( 'trim', explode( ',', MARKDOWN_DB_EXCLUDED_TYPES ) ) );
 	$storage        = new WP_Markdown_Storage( MARKDOWN_DB_CONTENT_DIR, $excluded_types );
 	$posts          = $storage->get_all_posts( false );
@@ -94,27 +94,33 @@ function markdown_database_integration_import_seed_posts_after_install(): void {
 
 		wp_insert_post(
 			array(
-				'import_id'             => (int) ( $post->ID ?? 0 ),
-				'post_author'           => (int) ( $post->post_author ?? 1 ),
-				'post_date'             => (string) ( $post->post_date ?? '' ),
-				'post_date_gmt'         => (string) ( $post->post_date_gmt ?? '' ),
-				'post_content'          => (string) ( $post->post_content ?? '' ),
-				'post_title'            => (string) ( $post->post_title ?? '' ),
-				'post_excerpt'          => (string) ( $post->post_excerpt ?? '' ),
-				'post_status'           => (string) ( $post->post_status ?? 'publish' ),
-				'comment_status'        => (string) ( $post->comment_status ?? 'open' ),
-				'ping_status'           => (string) ( $post->ping_status ?? 'open' ),
-				'post_password'         => (string) ( $post->post_password ?? '' ),
-				'post_name'             => $post_name,
-				'post_modified'         => (string) ( $post->post_modified ?? '' ),
-				'post_modified_gmt'     => (string) ( $post->post_modified_gmt ?? '' ),
-				'post_parent'           => (int) ( $post->post_parent ?? 0 ),
-				'menu_order'            => (int) ( $post->menu_order ?? 0 ),
-				'post_type'             => $post_type,
-				'post_mime_type'        => (string) ( $post->post_mime_type ?? '' ),
-				'comment_count'         => (int) ( $post->comment_count ?? 0 ),
+				'import_id'         => (int) ( $post->ID ?? 0 ),
+				'post_author'       => (int) ( $post->post_author ?? 1 ),
+				'post_date'         => (string) ( $post->post_date ?? '' ),
+				'post_date_gmt'     => (string) ( $post->post_date_gmt ?? '' ),
+				'post_content'      => (string) ( $post->post_content ?? '' ),
+				'post_title'        => (string) ( $post->post_title ?? '' ),
+				'post_excerpt'      => (string) ( $post->post_excerpt ?? '' ),
+				'post_status'       => (string) ( $post->post_status ?? 'publish' ),
+				'comment_status'    => (string) ( $post->comment_status ?? 'open' ),
+				'ping_status'       => (string) ( $post->ping_status ?? 'open' ),
+				'post_password'     => (string) ( $post->post_password ?? '' ),
+				'post_name'         => $post_name,
+				'post_modified'     => (string) ( $post->post_modified ?? '' ),
+				'post_modified_gmt' => (string) ( $post->post_modified_gmt ?? '' ),
+				'post_parent'       => (int) ( $post->post_parent ?? 0 ),
+				'menu_order'        => (int) ( $post->menu_order ?? 0 ),
+				'post_type'         => $post_type,
+				'post_mime_type'    => (string) ( $post->post_mime_type ?? '' ),
+				'comment_count'     => (int) ( $post->comment_count ?? 0 ),
 			),
 			true
 		);
 	}
+}
+
+add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
+
+if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	WP_CLI::add_command( 'markdown-db recover-sqlite-posts', array( 'WP_Markdown_SQLite_Recovery', 'cli' ) );
 }

@@ -88,37 +88,32 @@ return function (): array {
         $content_bytes += strlen((string) ($row->post_content ?? ''));
     }
 
-    $observation = [
-        'phase'                 => (string) $phase,
-        'iteration'             => $iteration,
-        'loader_action'         => $loader_action,
-        'primed'                => $primed,
-        'loader_timings'        => $timings,
-        'loader_stats'          => $loader->get_stats(),
-        'lazy_content_ms'       => round($lazy_elapsed_ms, 6),
-        'lazy_content_rows'     => count($rows),
-        'lazy_content_bytes'    => $content_bytes,
-        'markdown_file_count'   => mdi_bench_count_markdown_files($content_dir),
-        'index_exists'          => $index_path !== '' && file_exists($index_path),
-        'index_size_bytes'      => $index_path !== '' && file_exists($index_path) ? filesize($index_path) : 0,
-        'content_dir'           => $content_dir,
-        'index_path'            => $index_path,
-        'timestamp'             => microtime(true),
-    ];
+    $metrics = $timings;
+    foreach ($loader->get_stats() as $name => $value) {
+        if (is_numeric($value)) {
+            $metrics[$name] = (float) $value;
+        }
+    }
 
-    file_put_contents(
-        $shared . '/boot-timing-observations.jsonl',
-        json_encode($observation, JSON_UNESCAPED_SLASHES) . "\n",
-        FILE_APPEND | LOCK_EX
-    );
+    $metrics['lazy_content_ms'] = round($lazy_elapsed_ms, 6);
+    $metrics['lazy_content_rows'] = count($rows);
+    $metrics['lazy_content_bytes'] = $content_bytes;
+    $metrics['markdown_file_count'] = mdi_bench_count_markdown_files($content_dir);
+    $metrics['index_size_bytes'] = $index_path !== '' && file_exists($index_path) ? filesize($index_path) : 0;
 
     $iteration++;
 
     return [
-        'kind'              => 'boot-timing',
-        'phase'             => $phase,
-        'lazy_content_rows' => count($rows),
-        'observation'       => $observation,
+        'metrics'  => $metrics,
+        'metadata' => [
+            'kind'          => 'boot-timing',
+            'phase'         => (string) $phase,
+            'loader_action' => $loader_action,
+            'primed'        => $primed,
+            'content_dir'   => $content_dir,
+            'index_path'    => $index_path,
+            'index_exists'  => $index_path !== '' && file_exists($index_path),
+        ],
     ];
 };
 

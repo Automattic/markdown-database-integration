@@ -74,7 +74,6 @@ fi
 
 CONTENT_DIR="$STATE_DIR/boot-content"
 INDEX_PATH="$STATE_DIR/boot-markdown-index.sqlite"
-OBSERVATIONS="$STATE_DIR/boot-timing-observations.jsonl"
 SUMMARY_FILE="$DATE_DIR/boot-timing-summary.json"
 
 cleanup() {
@@ -167,11 +166,11 @@ run_phase() {
     echo "  Corpus: $CORPUS_SIZE"
     echo "============================================"
 
+    HOMEBOY_BENCH_SHARED_STATE="$STATE_DIR" \
     homeboy \
         --output "$output" \
         bench markdown-database-integration \
         --iterations "$ITERATIONS" \
-        --shared-state "$STATE_DIR" \
         --setting-json 'bench_workloads=["boot-timing"]' \
         --setting-json "bench_env=$(bench_env_json "$phase")" \
         --ignore-baseline
@@ -179,7 +178,6 @@ run_phase() {
 
 seed_corpus
 delete_index
-rm -f "$OBSERVATIONS"
 
 run_phase cold
 run_phase warm-noop
@@ -193,22 +191,21 @@ jq -s \
         corpus_size: $corpus,
         iterations: $iterations,
         lazy_sample_size: $lazy,
-        phases: group_by(.phase) | map({
-            phase: .[0].phase,
-            observations: length,
-            latest_loader_timings: (.[-1].loader_timings),
-            latest_loader_stats: (.[-1].loader_stats),
-            latest_lazy_content_ms: (.[-1].lazy_content_ms),
-            latest_lazy_content_rows: (.[-1].lazy_content_rows),
-            markdown_file_count: (.[-1].markdown_file_count),
-            index_size_bytes: (.[-1].index_size_bytes)
-        })
-    }' "$OBSERVATIONS" > "$SUMMARY_FILE"
+        phases: map(
+            .data.results.scenarios[] | select(.id == "boot-timing") | {
+                phase: .metadata.phase,
+                observations: .iterations,
+                loader_action: .metadata.loader_action,
+                primed: .metadata.primed,
+                metrics: .metrics,
+                index_exists: .metadata.index_exists
+            }
+        )
+    }' "$DATE_DIR/boot-cold.json" "$DATE_DIR/boot-warm-noop.json" "$DATE_DIR/boot-warm-one-file.json" > "$SUMMARY_FILE"
 
 echo ""
 echo "Boot timing complete."
 echo "Summary:      $SUMMARY_FILE"
-echo "Observations: $OBSERVATIONS"
 if [ "$KEEP_STATE" -eq 1 ]; then
     echo "Shared state:  $STATE_DIR"
 fi

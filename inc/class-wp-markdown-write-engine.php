@@ -204,6 +204,9 @@ class WP_Markdown_Write_Engine {
 
 		try {
 			$table_suffix = $this->strip_prefix( $table );
+			if ( ! $this->should_persist_table( $table_suffix ) ) {
+				return;
+			}
 
 			if ( $table_suffix === 'posts' ) {
 				$this->persist_post_write( $query, $op_type );
@@ -984,6 +987,10 @@ class WP_Markdown_Write_Engine {
 	 * @param string $table_suffix Table name without prefix.
 	 */
 	private function persist_table( string $table_suffix ): void {
+		if ( ! $this->should_persist_table( $table_suffix ) ) {
+			return;
+		}
+
 		$table = $this->prefix() . $table_suffix;
 
 		try {
@@ -1004,8 +1011,65 @@ class WP_Markdown_Write_Engine {
 			$data[] = (array) $row;
 		}
 
+		$policy = $this->table_persistence_policy_for( $table_suffix );
+		if ( function_exists( 'apply_filters' ) ) {
+			/**
+			 * Filters rows before a JSON-backed table is written to disk.
+			 *
+			 * This lets site/storage config keep plugin/runtime tables compact without
+			 * coupling those plugins to Markdown Database Integration.
+			 *
+			 * @param array       $data         Rows about to be written.
+			 * @param string      $table_suffix Table name without WordPress prefix.
+			 * @param string      $table        Full table name.
+			 * @param array|null  $policy       Table persistence policy, if configured.
+			 */
+			$filtered = apply_filters( 'markdown_db_persistent_table_rows', $data, $table_suffix, $table, $policy );
+			if ( is_array( $filtered ) ) {
+				$data = array_values( $filtered );
+			}
+		}
+
 		$this->ensure_tables_dir();
 		$this->write_json( $this->content_dir . '/_tables/' . $table_suffix . '.json', $data );
+	}
+
+	/**
+	 * Read the site-configured persistence policy for a table.
+	 *
+	 * Policies are keyed by unprefixed table name. Values may be `true`, `false`,
+	 * or an array of site-defined options consumed by filters such as
+	 * `markdown_db_persistent_table_rows`.
+	 *
+	 * @param string $table_suffix Table name without prefix.
+	 * @return array|bool|null Configured policy, or null when unset.
+	 */
+	private function table_persistence_policy_for( string $table_suffix ): array|bool|null {
+		if ( ! function_exists( 'apply_filters' ) ) {
+			return null;
+		}
+
+		$policy = apply_filters( 'markdown_db_table_persistence_policy', array() );
+		if ( ! is_array( $policy ) || ! array_key_exists( $table_suffix, $policy ) ) {
+			return null;
+		}
+
+		$table_policy = $policy[ $table_suffix ];
+		return is_array( $table_policy ) || is_bool( $table_policy ) ? $table_policy : null;
+	}
+
+	/**
+	 * Determine whether a table should be mirrored to disk.
+	 *
+	 * Existing behavior remains the default: core tables and plugin tables are
+	 * persistent unless a site-level policy explicitly disables a table.
+	 *
+	 * @param string $table_suffix Table name without prefix.
+	 * @return bool True when the table should be persisted.
+	 */
+	private function should_persist_table( string $table_suffix ): bool {
+		$policy = $this->table_persistence_policy_for( $table_suffix );
+		return false !== $policy;
 	}
 
 	/**
@@ -1028,6 +1092,9 @@ class WP_Markdown_Write_Engine {
 
 		try {
 			$table_suffix = $this->strip_prefix( $table );
+			if ( ! $this->should_persist_table( $table_suffix ) ) {
+				return;
+			}
 			$schema_dir = $this->content_dir . '/_schema';
 
 			if ( ! is_dir( $schema_dir ) ) {

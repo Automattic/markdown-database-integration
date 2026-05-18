@@ -391,9 +391,24 @@ class WP_Markdown_Storage {
 		}
 
 		// Collect all posts, keyed by ID for dedup.
-		$posts_by_id = array();
-		$paths_by_id = array();
-		$conflicts   = array();
+		//
+		// Posts with an explicit `id:` frontmatter value go into $posts_by_id
+		// and $paths_by_id keyed by that integer ID — this lets duplicate-ID
+		// resolution (newest-mtime-wins) work below.
+		//
+		// Posts without an explicit ID (frontmatter omits `id:`) go into a
+		// separate $unkeyed_posts array. Keeping them in their own list
+		// preserves the invariant that every key in $posts_by_id has a
+		// matching entry in $paths_by_id. Mixing PHP's $arr[] auto-increment
+		// into $posts_by_id would silently land zero-ID posts on integer
+		// keys that can collide with explicit IDs from other files —
+		// triggering "Undefined array key" warnings and a fatal TypeError
+		// when the duplicate-resolution branch tries to read a non-existent
+		// $paths_by_id[$auto_incremented_key] later in the scan.
+		$posts_by_id   = array();
+		$paths_by_id   = array();
+		$unkeyed_posts = array();
+		$conflicts     = array();
 
 		foreach ( $dirs as $type_dir ) {
 			$dirname = basename( $type_dir );
@@ -461,9 +476,13 @@ class WP_Markdown_Storage {
 
 				$id = (int) $post->ID;
 
-				// No ID — include it but it won't collide.
+				// No ID — keep this post separate from the ID-keyed array
+				// so PHP's auto-increment behavior cannot land it on a
+				// numeric key that later collides with a real explicit ID
+				// from another file. Zero-ID posts cannot participate in
+				// ID-based deduplication anyway.
 				if ( 0 === $id ) {
-					$posts_by_id[] = $post;
+					$unkeyed_posts[] = $post;
 					continue;
 				}
 
@@ -509,7 +528,10 @@ class WP_Markdown_Storage {
 			}
 		}
 
-		return array_values( $posts_by_id );
+		// Merge ID-keyed posts (deduplicated above) with the unkeyed posts
+		// that opted out of dedup. array_values() flattens the integer keys
+		// so callers receive a clean 0-indexed list.
+		return array_merge( array_values( $posts_by_id ), $unkeyed_posts );
 	}
 
 	/**

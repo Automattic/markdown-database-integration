@@ -10,6 +10,7 @@
  *
  * This file goes in wp-content/db.php (replacing the SQLite drop-in's version).
  *
+ * @studio-keep
  * @package Markdown_Database_Integration
  */
 

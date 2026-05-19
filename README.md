@@ -163,6 +163,9 @@ cp wp-content/db.php wp-content/db.php.backup
 cp wp-content/plugins/markdown-database-integration/db.php wp-content/db.php
 ```
 
+The bundled drop-in includes the `@studio-keep` marker so WordPress Studio
+preserves it during SQLite integration refreshes.
+
 ## Configuration
 
 Add to `wp-config.php`:

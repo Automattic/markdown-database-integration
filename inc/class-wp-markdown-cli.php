@@ -206,6 +206,10 @@ class WP_Markdown_CLI {
 				$postarr['import_id'] = $old_id;
 			}
 
+			$context                 = self::transform_context( 'import', $post, $content_dir, $source_path, $dry_run, $operation );
+			$postarr['post_content'] = self::apply_transform_filter( 'markdown_db_import_post_content', (string) $postarr['post_content'], $context, $postarr, $post );
+			$postarr                 = self::apply_post_data_filter( $postarr, $context, $post );
+
 			if ( count( $sample ) < 10 ) {
 				$sample[] = array(
 					'operation' => $operation,
@@ -301,12 +305,16 @@ class WP_Markdown_CLI {
 				continue;
 			}
 
-			$file = $storage->write_post( $post );
+			$export_post                = clone $post;
+			$context                    = self::transform_context( 'export', $export_post, $content_dir, $expected, $dry_run );
+			$export_post->post_content  = self::apply_transform_filter( 'markdown_db_export_post_content', (string) ( $export_post->post_content ?? '' ), $context, $export_post, $post );
+			$filtered_export_post       = self::apply_export_object_filter( $export_post, $context, $post );
+			$file                       = $storage->write_post( $filtered_export_post );
 			if ( is_string( $file ) ) {
 				$relative = self::relative_path( $file, $content_dir );
-				$written[] = array( 'id' => (int) ( $post->ID ?? 0 ), 'path' => $relative );
-				update_post_meta( (int) $post->ID, self::SOURCE_PATH_META, $relative );
-				update_post_meta( (int) $post->ID, self::SOURCE_HASH_META, self::source_hash( $file ) );
+				$written[] = array( 'id' => (int) ( $filtered_export_post->ID ?? 0 ), 'path' => $relative );
+				update_post_meta( (int) $filtered_export_post->ID, self::SOURCE_PATH_META, $relative );
+				update_post_meta( (int) $filtered_export_post->ID, self::SOURCE_HASH_META, self::source_hash( $file ) );
 			}
 		}
 
@@ -470,6 +478,52 @@ class WP_Markdown_CLI {
 		}
 
 		return $postarr;
+	}
+
+	private static function transform_context( string $operation, object $post, string $content_dir, string $source_path, bool $dry_run, string $write_operation = '' ): array {
+		$context = array(
+			'operation'     => $operation,
+			'post_type'     => (string) ( $post->post_type ?? 'post' ),
+			'source_path'   => $source_path,
+			'content_dir'   => $content_dir,
+			'source_format' => 'import' === $operation ? 'markdown_file_body' : 'wordpress_post_content',
+			'stored_format' => 'import' === $operation ? 'wordpress_post_content' : 'markdown_file_body',
+			'dry_run'       => $dry_run,
+			'frontmatter'   => (array) ( $post->_frontmatter ?? array() ),
+		);
+
+		if ( '' !== $write_operation ) {
+			$context['write_operation'] = $write_operation;
+		}
+
+		return $context;
+	}
+
+	private static function apply_transform_filter( string $filter, string $content, array $context, $post_data, object $source_post ): string {
+		if ( ! function_exists( 'apply_filters' ) ) {
+			return $content;
+		}
+
+		$filtered = apply_filters( $filter, $content, $context, $post_data, $source_post );
+		return is_string( $filtered ) ? $filtered : $content;
+	}
+
+	private static function apply_post_data_filter( array $postarr, array $context, object $source_post ): array {
+		if ( ! function_exists( 'apply_filters' ) ) {
+			return $postarr;
+		}
+
+		$filtered = apply_filters( 'markdown_db_import_post_data', $postarr, $context, $source_post );
+		return is_array( $filtered ) ? $filtered : $postarr;
+	}
+
+	private static function apply_export_object_filter( object $post, array $context, object $source_post ): object {
+		if ( ! function_exists( 'apply_filters' ) ) {
+			return $post;
+		}
+
+		$filtered = apply_filters( 'markdown_db_export_post_object', $post, $context, $source_post );
+		return is_object( $filtered ) ? $filtered : $post;
 	}
 
 	private static function sync_meta( int $post_id, array $meta ): void {

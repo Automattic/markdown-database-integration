@@ -61,14 +61,20 @@ define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,auto-draft' );
 $GLOBALS['mdi_test_actions']    = array();
 $GLOBALS['mdi_test_categories'] = array();
 $GLOBALS['mdi_test_abilities']  = array();
+$GLOBALS['mdi_test_filters']    = array();
 $GLOBALS['mdi_test_posts']      = array();
 $GLOBALS['mdi_test_meta']       = array();
 $GLOBALS['mdi_test_terms']      = array();
+$GLOBALS['mdi_test_contexts']   = array();
 $GLOBALS['mdi_next_post_id']    = 100;
 $GLOBALS['mdi_test_did_action'] = array();
 
 function add_action( string $hook_name, callable $callback, int $priority = 10 ): void {
 	$GLOBALS['mdi_test_actions'][ $hook_name ][] = array( $callback, $priority );
+}
+
+function add_filter( string $hook_name, callable $callback, int $priority = 10, int $accepted_args = 1 ): void {
+	$GLOBALS['mdi_test_filters'][ $hook_name ][] = array( $callback, $priority, $accepted_args );
 }
 
 function did_action( string $hook_name ): int {
@@ -99,7 +105,18 @@ function current_user_can( string $capability ): bool {
 	return 'manage_options' === $capability;
 }
 
-function apply_filters( string $hook_name, $value ) {
+function apply_filters( string $hook_name, $value, ...$args ) {
+	$callbacks = $GLOBALS['mdi_test_filters'][ $hook_name ] ?? array();
+	usort(
+		$callbacks,
+		static fn( array $a, array $b ): int => $a[1] <=> $b[1]
+	);
+
+	foreach ( $callbacks as $callback ) {
+		$accepted = max( 1, (int) $callback[2] );
+		$value    = call_user_func_array( $callback[0], array_slice( array_merge( array( $value ), $args ), 0, $accepted ) );
+	}
+
 	return $value;
 }
 
@@ -243,9 +260,38 @@ if ( ! call_user_func( $GLOBALS['mdi_test_abilities']['markdown-db/import']['per
 	$failures[] = 'import ability permission callback did not allow manage_options';
 }
 
+add_filter(
+	'markdown_db_import_post_content',
+	static function ( string $content, array $context ): string {
+		$GLOBALS['mdi_test_contexts']['import_content'] = $context;
+		return $content . "\n\nImported transform.";
+	},
+	10,
+	2
+);
+
+add_filter(
+	'markdown_db_export_post_content',
+	static function ( string $content, array $context ): string {
+		$GLOBALS['mdi_test_contexts']['export_content'] = $context;
+		return str_replace( 'Imported transform.', 'Exported transform.', $content );
+	},
+	10,
+	2
+);
+
 $import = call_user_func( $GLOBALS['mdi_test_abilities']['markdown-db/import']['execute_callback'], array( 'path' => $content_dir ) );
 if ( 1 !== ( $import['create_count'] ?? 0 ) || 1 !== count( $GLOBALS['mdi_test_posts'] ) || ! isset( $GLOBALS['mdi_test_posts'][17] ) ) {
 	$failures[] = 'import ability did not create the markdown post with its source ID';
+}
+
+if ( ! str_contains( (string) ( $GLOBALS['mdi_test_posts'][17]->post_content ?? '' ), 'Imported transform.' ) ) {
+	$failures[] = 'import content transform filter did not modify post_content before insert';
+}
+
+$import_context = $GLOBALS['mdi_test_contexts']['import_content'] ?? array();
+if ( 'import' !== ( $import_context['operation'] ?? '' ) || 'page' !== ( $import_context['post_type'] ?? '' ) || 'page/home.md' !== ( $import_context['source_path'] ?? '' ) || ! isset( $import_context['frontmatter']['title'] ) ) {
+	$failures[] = 'import content transform filter did not receive expected context';
 }
 
 if ( 'page/home.md' !== ( $GLOBALS['mdi_test_meta'][17]['_markdown_source_path'] ?? '' ) ) {
@@ -274,6 +320,14 @@ if ( 1 !== ( $export['written_count'] ?? 0 ) || ! is_file( $export_dir . '/page/
 }
 if ( is_file( $export_dir . '/page/home.md' ) && false === strpos( file_get_contents( $export_dir . '/page/home.md' ), 'Updated body.' ) ) {
 	$failures[] = 'export ability did not preserve post_content bytes';
+}
+if ( is_file( $export_dir . '/page/home.md' ) && false === strpos( file_get_contents( $export_dir . '/page/home.md' ), 'Exported transform.' ) ) {
+	$failures[] = 'export content transform filter did not modify markdown body before write';
+}
+
+$export_context = $GLOBALS['mdi_test_contexts']['export_content'] ?? array();
+if ( 'export' !== ( $export_context['operation'] ?? '' ) || 'page' !== ( $export_context['post_type'] ?? '' ) || 'page/home.md' !== ( $export_context['source_path'] ?? '' ) ) {
+	$failures[] = 'export content transform filter did not receive expected context';
 }
 
 mdi_mysql_import_export_rm_rf( $tmp_root );

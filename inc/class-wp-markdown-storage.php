@@ -1127,6 +1127,7 @@ class WP_Markdown_Storage {
 		// Store the source file path on the post object.
 		// Used by the loader to populate the _markdown_file_index table.
 		$post->_source_file = $file_path;
+		$post->_frontmatter = $frontmatter;
 
 		// Extract meta from frontmatter (key-value pairs).
 		// These will be INSERTed into wp_postmeta by the loader.

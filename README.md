@@ -243,6 +243,58 @@ post hierarchy, slugs, post type, status, dates, content bytes, frontmatter
 meta, and frontmatter terms. It does not convert markdown, block markup, or
 HTML between formats.
 
+### Import/export content transforms
+
+MDI stays storage-only, but import/export exposes filter seams so downstream
+plugins can decide how file bodies map to WordPress `post_content` and back.
+When no filters are registered, content is imported and exported unchanged.
+
+Available filters:
+
+- `markdown_db_import_post_content`: filters the parsed file body before `wp_insert_post()` receives `post_content`.
+- `markdown_db_import_post_data`: filters the complete `wp_insert_post()` array before insert/update.
+- `markdown_db_export_post_content`: filters a post object's `post_content` before MDI writes the markdown body.
+- `markdown_db_export_post_object`: filters the post-like object before storage writes it.
+
+Each filter receives a context array with fields such as `operation`,
+`post_type`, `source_path`, `content_dir`, `source_format`, `stored_format`,
+`dry_run`, and parsed `frontmatter` when import has it available. Import
+contexts also include `write_operation` with `create` or `update`.
+
+Example downstream policy:
+
+```php
+add_filter(
+    'markdown_db_import_post_content',
+    function ( string $content, array $context ): string {
+        if ( 'wiki' !== $context['post_type'] ) {
+            return $content;
+        }
+
+        return my_site_convert_markdown_to_editor_content( $content );
+    },
+    10,
+    2
+);
+
+add_filter(
+    'markdown_db_export_post_content',
+    function ( string $content, array $context ): string {
+        if ( 'wiki' !== $context['post_type'] ) {
+            return $content;
+        }
+
+        return my_site_convert_editor_content_to_markdown( $content );
+    },
+    10,
+    2
+);
+```
+
+Those conversion functions are intentionally application-owned. MDI provides
+the storage and context; downstream plugins provide format conversion policy
+and dependencies.
+
 ## Extension Points
 
 ### `markdown_db_frontmatter` filter

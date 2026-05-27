@@ -74,9 +74,7 @@ class WP_Markdown_CLI {
 
 		if ( function_exists( 'doing_action' ) && doing_action( 'wp_abilities_api_categories_init' ) ) {
 			$category_callback();
-		} elseif ( function_exists( 'did_action' ) && did_action( 'wp_abilities_api_categories_init' ) ) {
-			$category_callback();
-		} elseif ( function_exists( 'add_action' ) ) {
+		} elseif ( ( ! function_exists( 'did_action' ) || ! did_action( 'wp_abilities_api_categories_init' ) ) && function_exists( 'add_action' ) ) {
 			add_action( 'wp_abilities_api_categories_init', $category_callback );
 		}
 
@@ -85,12 +83,7 @@ class WP_Markdown_CLI {
 			return;
 		}
 
-		if ( function_exists( 'did_action' ) && did_action( 'wp_abilities_api_init' ) ) {
-			$register_callback();
-			return;
-		}
-
-		if ( function_exists( 'add_action' ) ) {
+		if ( ( ! function_exists( 'did_action' ) || ! did_action( 'wp_abilities_api_init' ) ) && function_exists( 'add_action' ) ) {
 			add_action( 'wp_abilities_api_init', $register_callback );
 		}
 	}

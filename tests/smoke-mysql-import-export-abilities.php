@@ -65,13 +65,14 @@ $GLOBALS['mdi_test_posts']      = array();
 $GLOBALS['mdi_test_meta']       = array();
 $GLOBALS['mdi_test_terms']      = array();
 $GLOBALS['mdi_next_post_id']    = 100;
+$GLOBALS['mdi_test_did_action'] = array();
 
 function add_action( string $hook_name, callable $callback, int $priority = 10 ): void {
 	$GLOBALS['mdi_test_actions'][ $hook_name ][] = array( $callback, $priority );
 }
 
 function did_action( string $hook_name ): int {
-	return in_array( $hook_name, array( 'wp_abilities_api_categories_init', 'wp_abilities_api_init' ), true ) ? 1 : 0;
+	return (int) ( $GLOBALS['mdi_test_did_action'][ $hook_name ] ?? 0 );
 }
 
 function doing_action( string $hook_name ): bool {
@@ -100,6 +101,13 @@ function current_user_can( string $capability ): bool {
 
 function apply_filters( string $hook_name, $value ) {
 	return $value;
+}
+
+function mdi_mysql_import_export_do_action( string $hook_name ): void {
+	$GLOBALS['mdi_test_did_action'][ $hook_name ] = (int) ( $GLOBALS['mdi_test_did_action'][ $hook_name ] ?? 0 ) + 1;
+	foreach ( $GLOBALS['mdi_test_actions'][ $hook_name ] ?? array() as $action ) {
+		call_user_func( $action[0] );
+	}
 }
 
 function get_posts( array $args = array() ): array {
@@ -222,6 +230,8 @@ require dirname( __DIR__ ) . '/inc/class-wp-markdown-cli.php';
 $failures = array();
 
 WP_Markdown_CLI::register();
+mdi_mysql_import_export_do_action( 'wp_abilities_api_categories_init' );
+mdi_mysql_import_export_do_action( 'wp_abilities_api_init' );
 
 if ( ! isset( $GLOBALS['mdi_test_abilities']['markdown-db/import'] ) ) {
 	$failures[] = 'markdown-db/import ability was not registered';

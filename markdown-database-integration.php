@@ -37,6 +37,7 @@ define( 'MARKDOWN_DB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
 /**
  * The content directory where markdown files are stored.
@@ -120,7 +121,10 @@ function markdown_database_integration_import_seed_posts_after_install(): void {
 }
 
 add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
+add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	WP_CLI::add_command( 'markdown-db import', array( 'WP_Markdown_CLI', 'import_cli' ) );
+	WP_CLI::add_command( 'markdown-db export', array( 'WP_Markdown_CLI', 'export_cli' ) );
 	WP_CLI::add_command( 'markdown-db recover-sqlite-posts', array( 'WP_Markdown_SQLite_Recovery', 'cli' ) );
 }

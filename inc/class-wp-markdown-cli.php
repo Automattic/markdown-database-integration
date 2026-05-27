@@ -501,11 +501,108 @@ class WP_Markdown_CLI {
 
 	private static function apply_transform_filter( string $filter, string $content, array $context, $post_data, object $source_post ): string {
 		if ( ! function_exists( 'apply_filters' ) ) {
-			return $content;
+			return self::apply_content_format_conversion( $filter, $content, $context, $post_data, $source_post );
 		}
 
 		$filtered = apply_filters( $filter, $content, $context, $post_data, $source_post );
-		return is_string( $filtered ) ? $filtered : $content;
+		$filtered = is_string( $filtered ) ? $filtered : $content;
+
+		return self::apply_content_format_conversion( $filter, $filtered, $context, $post_data, $source_post );
+	}
+
+	/**
+	 * Apply optional content-format conversion after MDI transform filters run.
+	 *
+	 * @param string       $filter      Current transform filter name.
+	 * @param string       $content     Filtered content.
+	 * @param array        $context     Transform context.
+	 * @param array|object $post_data   Post payload for the current transform.
+	 * @param object       $source_post Source post object.
+	 * @return string Converted content or original content.
+	 */
+	private static function apply_content_format_conversion( string $filter, string $content, array $context, $post_data, object $source_post ): string {
+		$operation = (string) ( $context['operation'] ?? '' );
+		if ( 'markdown_db_import_post_content' === $filter || 'import' === $operation ) {
+			$conversion = array(
+				'enabled' => function_exists( 'bfb_convert' ),
+				'from'    => 'markdown',
+				'to'      => 'blocks',
+			);
+		} elseif ( 'markdown_db_export_post_content' === $filter || 'export' === $operation ) {
+			$conversion = array(
+				'enabled' => function_exists( 'bfb_convert' ),
+				'from'    => 'blocks',
+				'to'      => 'markdown',
+			);
+		} else {
+			return $content;
+		}
+
+		if ( function_exists( 'apply_filters' ) ) {
+			$conversion = apply_filters( 'markdown_db_content_format_conversion', $conversion, $context, $post_data, $source_post );
+		}
+
+		if ( ! is_array( $conversion ) || empty( $conversion['enabled'] ) ) {
+			return $content;
+		}
+
+		$from = sanitize_key( (string) ( $conversion['from'] ?? '' ) );
+		$to   = sanitize_key( (string) ( $conversion['to'] ?? '' ) );
+		if ( '' === $from || '' === $to || $from === $to ) {
+			return $content;
+		}
+
+		return self::convert_content_format( $content, $from, $to, $context, $source_post );
+	}
+
+	/**
+	 * Convert content with Block Format Bridge when it is available.
+	 *
+	 * @param string $content     Source content.
+	 * @param string $from        Source format.
+	 * @param string $to          Target format.
+	 * @param array  $context     Transform context for diagnostics.
+	 * @param object $source_post Source post object for diagnostics.
+	 * @return string Converted content or original content.
+	 */
+	private static function convert_content_format( string $content, string $from, string $to, array $context, object $source_post ): string {
+		if ( function_exists( 'bfb_normalize' ) ) {
+			$normalized = bfb_normalize( $content, $from );
+			if ( self::is_error( $normalized ) ) {
+				self::content_format_conversion_failed( $normalized, $context, $source_post );
+				return $content;
+			}
+
+			if ( is_string( $normalized ) ) {
+				$content = $normalized;
+			}
+		}
+
+		if ( ! function_exists( 'bfb_convert' ) ) {
+			return $content;
+		}
+
+		$converted = bfb_convert( $content, $from, $to );
+		if ( self::is_error( $converted ) ) {
+			self::content_format_conversion_failed( $converted, $context, $source_post );
+			return $content;
+		}
+
+		return is_string( $converted ) ? $converted : $content;
+	}
+
+	/**
+	 * Emit a diagnostic action for optional BFB conversion failures.
+	 *
+	 * @param mixed  $error       Conversion error object.
+	 * @param array  $context     Transform context.
+	 * @param object $source_post Source post object.
+	 * @return void
+	 */
+	private static function content_format_conversion_failed( $error, array $context, object $source_post ): void {
+		if ( function_exists( 'do_action' ) ) {
+			do_action( 'markdown_db_content_format_conversion_failed', $error, $context, $source_post );
+		}
 	}
 
 	private static function apply_post_data_filter( array $postarr, array $context, object $source_post ): array {

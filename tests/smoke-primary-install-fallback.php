@@ -61,8 +61,11 @@ function plugin_dir_path( string $file ): string {
 	return rtrim( dirname( $file ), '/\\' ) . '/';
 }
 
-function add_action( string $hook_name, string $callback, int $priority = 10 ): void {
+function add_action( string $hook_name, $callback, int $priority = 10 ): void {
 	global $captured_hook;
+	if ( 'wp_install' !== $hook_name ) {
+		return;
+	}
 	$captured_hook = array( $hook_name, $callback, $priority );
 }
 

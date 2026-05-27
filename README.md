@@ -141,7 +141,7 @@ If a site wants wiki posts stored as markdown and rendered as HTML, the site/app
 ## Requirements
 
 - WordPress 6.9+
-- [SQLite Database Integration](https://github.com/WordPress/sqlite-database-integration) plugin (installed as mu-plugin)
+- A normal WordPress database. MySQL/MariaDB works for import/export commands; the bundled `db.php` drop-in additionally supports SQLite-backed mirror/primary modes.
 - PHP 7.4+
 - Composer
 
@@ -165,6 +165,10 @@ cp wp-content/plugins/markdown-database-integration/db.php wp-content/db.php
 
 The bundled drop-in includes the `@studio-keep` marker so WordPress Studio
 preserves it during SQLite integration refreshes.
+
+On a normal MySQL/MariaDB WordPress site, activate the plugin without copying
+the `db.php` drop-in. Use the import/export commands or abilities to move
+content between the active database and `MARKDOWN_DB_CONTENT_DIR`.
 
 ## Configuration
 
@@ -200,6 +204,44 @@ The examples above use the default `wp-content/markdown/` root. When
 `MARKDOWN_DB_CONTENT_DIR` points somewhere else, MDI stores the same layout
 under that directory: post type directories such as `post/` and `page/`, plus
 internal snapshots under `_tables/` and `_options/`.
+
+## MySQL/MariaDB Import and Export
+
+MDI exposes generic import/export operations through both WP-CLI and the
+WordPress Abilities API. These operations use the same service path and work
+against the current WordPress database, whether that database is MySQL,
+MariaDB, or SQLite.
+
+Import markdown files into the current database:
+
+```bash
+wp markdown-db import --dry-run
+wp markdown-db import
+```
+
+Export current posts, pages, and custom post types to markdown:
+
+```bash
+wp markdown-db export --dry-run
+wp markdown-db export
+```
+
+Both commands default to `MARKDOWN_DB_CONTENT_DIR`. Pass `--path=/path/to/markdown`
+to read from or write to a different root. Export accepts `--post-type=post,page,wiki`
+to limit the post types.
+
+The same operations are available to agents through abilities:
+
+- `markdown-db/import`
+- `markdown-db/export`
+
+The import path upserts posts instead of duplicating them. It records
+`_markdown_source_path` and `_markdown_source_hash` post meta so repeat imports
+can update the same database rows even when the runtime is not using the SQLite
+drop-in. MDI imports the fields already represented by its storage parser:
+post hierarchy, slugs, post type, status, dates, content bytes, frontmatter
+meta, and frontmatter terms. It does not convert markdown, block markup, or
+HTML between formats.
 
 ## Extension Points
 

@@ -9,7 +9,7 @@
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: markdown-database-integration
  * Requires at least: 6.9
- * Requires PHP: 7.4
+ * Requires PHP: 8.1
  *
  * Requires the SQLite Database Integration plugin (sqlite-database-integration).
  *
@@ -34,6 +34,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 define( 'MARKDOWN_DB_VERSION', '0.8.0' );
 define( 'MARKDOWN_DB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+
+$markdown_database_integration_autoload = MARKDOWN_DB_PLUGIN_DIR . 'vendor/autoload.php';
+if ( function_exists( 'did_action' ) && file_exists( $markdown_database_integration_autoload ) ) {
+	require_once $markdown_database_integration_autoload;
+}
 
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';

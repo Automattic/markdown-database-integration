@@ -2,10 +2,9 @@
 /**
  * Smoke test for MDI's storage-only content boundary.
  *
- * MDI persists WordPress DB rows to markdown/JSON files. Content conversion
- * belongs to the caller/content-format layer, so this smoke asserts MDI has
- * no BFB dependency, registers no render/REST/write conversion hooks, and
- * writes post_content bytes unchanged.
+ * MDI persists WordPress DB rows to markdown/JSON files. Live storage stays
+ * byte-preserving; import/export may use BFB explicitly without adding render,
+ * REST, write-engine, or drop-in conversion hooks.
  *
  * Usage: php tests/smoke-storage-only-boundary.php
  *
@@ -73,8 +72,7 @@ $composer_lock = file_exists( $plugin_dir . '/composer.lock' )
 	: array( 'packages' => array() );
 
 $require = is_array( $composer ) ? ( $composer['require'] ?? array() ) : array();
-mdi_storage_only_assert( ! isset( $require['chubes4/block-format-bridge'] ), 'composer.json does not require chubes4/block-format-bridge' );
-mdi_storage_only_assert( empty( $composer['repositories'] ?? array() ), 'composer.json has no BFB-specific repositories' );
+mdi_storage_only_assert( isset( $require['chubes4/block-format-bridge'] ), 'composer.json requires chubes4/block-format-bridge for import/export' );
 
 $locked_packages = array_map(
 	static function ( array $package ): string {
@@ -82,8 +80,10 @@ $locked_packages = array_map(
 	},
 	is_array( $composer_lock['packages'] ?? null ) ? $composer_lock['packages'] : array()
 );
-mdi_storage_only_assert( ! in_array( 'chubes4/block-format-bridge', $locked_packages, true ), 'composer.lock does not include chubes4/block-format-bridge' );
-mdi_storage_only_assert( ! in_array( 'chubes4/html-to-blocks-converter', $locked_packages, true ), 'composer.lock does not include chubes4/html-to-blocks-converter' );
+if ( file_exists( $plugin_dir . '/composer.lock' ) ) {
+	mdi_storage_only_assert( in_array( 'chubes4/block-format-bridge', $locked_packages, true ), 'composer.lock includes chubes4/block-format-bridge' );
+}
+mdi_storage_only_assert( ! in_array( 'chubes4/html-to-blocks-converter', $locked_packages, true ), 'composer.lock does not include chubes4/html-to-blocks-converter as a runtime dependency' );
 
 $production_php = array(
 	$plugin_dir . '/markdown-database-integration.php',

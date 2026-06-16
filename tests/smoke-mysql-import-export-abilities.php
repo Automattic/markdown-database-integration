@@ -223,6 +223,10 @@ function maybe_serialize( $value ) {
 	return $value;
 }
 
+function bfb_convert( string $content, string $from, string $to ) {
+	return "[{$from}:{$to}]{$content}";
+}
+
 function mdi_mysql_import_export_rm_rf( string $dir ): void {
 	if ( ! is_dir( $dir ) ) {
 		return;

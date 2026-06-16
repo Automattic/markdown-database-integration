@@ -4,7 +4,8 @@
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "require": {
-        "php": ">=7.4"
+        "php": ">=8.1",
+        "chubes4/block-format-bridge": "^0.8"
     },
     "autoload": {
         "classmap": [
@@ -13,6 +14,13 @@
     },
     "minimum-stability": "dev",
     "prefer-stable": true,
+    "repositories": [
+        {
+            "name": "block-format-bridge",
+            "type": "vcs",
+            "url": "https://github.com/chubes4/block-format-bridge"
+        }
+    ],
     "config": {
         "allow-plugins": {
             "composer/installers": true

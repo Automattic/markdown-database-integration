@@ -205,8 +205,8 @@ class WP_Markdown_CLI {
 			}
 		);
 
-		$source_map = self::existing_source_map();
-		$id_map     = array();
+		$source_map   = self::existing_source_map();
+		$id_map       = array();
 		$created      = array();
 		$updated      = array();
 		$skipped      = array();
@@ -217,7 +217,10 @@ class WP_Markdown_CLI {
 		foreach ( $posts as $post ) {
 			$source_path = self::relative_path( (string) ( $post->_source_file ?? '' ), $content_dir );
 			if ( '' === $source_path ) {
-				$skipped[] = array( 'path' => '', 'reason' => 'missing_source_path' );
+				$skipped[] = array(
+					'path'   => '',
+					'reason' => 'missing_source_path',
+				);
 				continue;
 			}
 
@@ -236,10 +239,13 @@ class WP_Markdown_CLI {
 				$postarr['import_id'] = $old_id;
 			}
 
-			$context                 = self::transform_context( 'import', $post, $content_dir, $source_path, $dry_run, $operation, $conversion );
-			$converted_content       = self::apply_transform_filter( 'markdown_db_import_post_content', (string) $postarr['post_content'], $context, $postarr, $post );
+			$context           = self::transform_context( 'import', $post, $content_dir, $source_path, $dry_run, $operation, $conversion );
+			$converted_content = self::apply_transform_filter( 'markdown_db_import_post_content', (string) $postarr['post_content'], $context, $postarr, $post );
 			if ( self::is_error( $converted_content ) ) {
-				$skipped[] = array( 'path' => $source_path, 'reason' => self::error_message( $converted_content ) );
+				$skipped[] = array(
+					'path'   => $source_path,
+					'reason' => self::error_message( $converted_content ),
+				);
 				continue;
 			}
 			$postarr['post_content'] = $converted_content;
@@ -260,15 +266,22 @@ class WP_Markdown_CLI {
 
 			$result = wp_insert_post( $postarr, true );
 			if ( self::is_error( $result ) ) {
-				$skipped[] = array( 'path' => $source_path, 'reason' => self::error_message( $result ) );
+				$skipped[] = array(
+					'path'   => $source_path,
+					'reason' => self::error_message( $result ),
+				);
 				continue;
 			}
 
-			$new_id = (int) $result;
-			if ( $new_id <= 0 ) {
-				$skipped[] = array( 'path' => $source_path, 'reason' => 'insert_failed' );
+			if ( ! is_int( $result ) ) {
+				$skipped[] = array(
+					'path'   => $source_path,
+					'reason' => 'insert_failed',
+				);
 				continue;
 			}
+
+			$new_id = $result;
 
 			if ( $old_id > 0 ) {
 				$id_map[ $old_id ] = $new_id;
@@ -279,7 +292,10 @@ class WP_Markdown_CLI {
 			update_post_meta( $new_id, self::SOURCE_PATH_META, $source_path );
 			update_post_meta( $new_id, self::SOURCE_HASH_META, $source_hash );
 
-			$row = array( 'id' => $new_id, 'path' => $source_path );
+			$row = array(
+				'id'   => $new_id,
+				'path' => $source_path,
+			);
 			if ( 'update' === $operation ) {
 				$updated[] = $row;
 			} else {
@@ -342,21 +358,32 @@ class WP_Markdown_CLI {
 				continue;
 			}
 
-			$export_post                = clone $post;
-			$context                    = self::transform_context( 'export', $export_post, $content_dir, $expected, $dry_run, '', $conversion );
-			$converted_content          = self::apply_transform_filter( 'markdown_db_export_post_content', (string) ( $export_post->post_content ?? '' ), $context, $export_post, $post );
+			$export_post       = clone $post;
+			$context           = self::transform_context( 'export', $export_post, $content_dir, $expected, $dry_run, '', $conversion );
+			$converted_content = self::apply_transform_filter( 'markdown_db_export_post_content', (string) ( $export_post->post_content ?? '' ), $context, $export_post, $post );
 			if ( self::is_error( $converted_content ) ) {
-				$skipped[] = array( 'id' => (int) ( $post->ID ?? 0 ), 'path' => $expected, 'reason' => self::error_message( $converted_content ) );
+				$skipped[] = array(
+					'id'     => (int) ( $post->ID ?? 0 ),
+					'path'   => $expected,
+					'reason' => self::error_message( $converted_content ),
+				);
 				continue;
 			}
-			$export_post->post_content  = $converted_content;
-			$filtered_export_post       = self::apply_export_object_filter( $export_post, $context, $post );
-			$file                       = $storage->write_post( $filtered_export_post );
+			$export_post_data     = (object) array_merge( (array) $export_post, array( 'post_content' => $converted_content ) );
+			$filtered_export_post = self::apply_export_object_filter( $export_post_data, $context, $post );
+			$file                 = $storage->write_post( $filtered_export_post );
 			if ( is_string( $file ) ) {
-				$relative = self::relative_path( $file, $content_dir );
-				$written[] = array( 'id' => (int) ( $filtered_export_post->ID ?? 0 ), 'path' => $relative );
-				update_post_meta( (int) $filtered_export_post->ID, self::SOURCE_PATH_META, $relative );
-				update_post_meta( (int) $filtered_export_post->ID, self::SOURCE_HASH_META, self::source_hash( $file ) );
+				$filtered_export_post_data = (array) $filtered_export_post;
+				$filtered_export_post_id   = (int) ( $filtered_export_post_data['ID'] ?? 0 );
+				$relative                  = self::relative_path( $file, $content_dir );
+				$written[]                 = array(
+					'id'   => $filtered_export_post_id,
+					'path' => $relative,
+				);
+				if ( $filtered_export_post_id > 0 ) {
+					update_post_meta( $filtered_export_post_id, self::SOURCE_PATH_META, $relative );
+					update_post_meta( $filtered_export_post_id, self::SOURCE_HASH_META, self::source_hash( $file ) );
+				}
 			}
 		}
 
@@ -397,7 +424,7 @@ class WP_Markdown_CLI {
 			}
 		}
 		if ( ! empty( $result['sample'] ) ) {
-			\WP_CLI\Utils\format_items( 'table', $result['sample'], array_keys( $result['sample'][0] ) );
+			\WP_CLI\Utils\format_items( 'table', $result['sample'], array_map( 'strval', array_keys( $result['sample'][0] ) ) );
 		}
 	}
 
@@ -405,19 +432,19 @@ class WP_Markdown_CLI {
 		return array(
 			'type'       => 'object',
 			'properties' => array(
-				'path'    => array(
+				'path'       => array(
 					'type'        => 'string',
 					'description' => 'Markdown content root. Defaults to MARKDOWN_DB_CONTENT_DIR.',
 				),
-				'dry_run' => array(
+				'dry_run'    => array(
 					'type'        => 'boolean',
 					'description' => 'Report changes without writing to the database.',
 				),
-				'from'    => array(
+				'from'       => array(
 					'type'        => 'string',
 					'description' => 'Source content format. Defaults to markdown.',
 				),
-				'to'      => array(
+				'to'         => array(
 					'type'        => 'string',
 					'description' => 'Stored WordPress content format. Defaults to blocks.',
 				),
@@ -519,7 +546,7 @@ class WP_Markdown_CLI {
 		$post_type = (string) ( $post->post_type ?? 'post' );
 		if ( '' !== $post_name && function_exists( 'get_page_by_path' ) ) {
 			$existing = get_page_by_path( $post_name, OBJECT, $post_type );
-			if ( $existing && isset( $existing->ID ) ) {
+			if ( $existing instanceof WP_Post ) {
 				return (int) $existing->ID;
 			}
 		}
@@ -583,6 +610,9 @@ class WP_Markdown_CLI {
 		if ( ! function_exists( 'apply_filters' ) ) {
 			return self::apply_content_format_conversion( $filter, $content, $context, $post_data, $source_post );
 		}
+		if ( '' === $filter ) {
+			return self::apply_content_format_conversion( $filter, $content, $context, $post_data, $source_post );
+		}
 
 		$filtered = apply_filters( $filter, $content, $context, $post_data, $source_post );
 		$filtered = is_string( $filtered ) ? $filtered : $content;
@@ -601,7 +631,7 @@ class WP_Markdown_CLI {
 	 * @return string|mixed Converted content or conversion error.
 	 */
 	private static function apply_content_format_conversion( string $filter, string $content, array $context, $post_data, object $source_post ) {
-		$operation = (string) ( $context['operation'] ?? '' );
+		$operation          = (string) ( $context['operation'] ?? '' );
 		$context_conversion = is_array( $context['conversion'] ?? null ) ? $context['conversion'] : array();
 		if ( 'markdown_db_import_post_content' === $filter || 'import' === $operation ) {
 			$conversion = array(
@@ -759,7 +789,7 @@ class WP_Markdown_CLI {
 			)
 		);
 
-		return is_array( $posts ) ? $posts : array();
+		return $posts;
 	}
 
 	public static function post_meta_rows( int $post_id ): array {
@@ -767,7 +797,10 @@ class WP_Markdown_CLI {
 		$rows     = array();
 		foreach ( $all_meta as $key => $values ) {
 			foreach ( (array) $values as $value ) {
-				$rows[] = (object) array( 'meta_key' => $key, 'meta_value' => function_exists( 'maybe_serialize' ) ? maybe_serialize( $value ) : $value );
+				$rows[] = (object) array(
+					'meta_key'   => $key,
+					'meta_value' => function_exists( 'maybe_serialize' ) ? maybe_serialize( $value ) : $value,
+				);
 			}
 		}
 		return $rows;
@@ -778,7 +811,12 @@ class WP_Markdown_CLI {
 			return array();
 		}
 
-		$taxonomies = function_exists( 'get_object_taxonomies' ) ? get_object_taxonomies( get_post_type( $post_id ) ) : array();
+		$post_type = get_post_type( $post_id );
+		if ( ! is_string( $post_type ) ) {
+			return array();
+		}
+
+		$taxonomies = get_object_taxonomies( $post_type );
 		$rows       = array();
 		foreach ( $taxonomies as $taxonomy ) {
 			$terms = wp_get_object_terms( $post_id, $taxonomy, array( 'fields' => 'all' ) );
@@ -786,7 +824,10 @@ class WP_Markdown_CLI {
 				continue;
 			}
 			foreach ( $terms as $term ) {
-				$rows[] = (object) array( 'taxonomy' => $taxonomy, 'slug' => $term->slug ?? '' );
+				$rows[] = (object) array(
+					'taxonomy' => $taxonomy,
+					'slug'     => (string) $term->slug,
+				);
 			}
 		}
 		return $rows;
@@ -832,6 +873,9 @@ class WP_Markdown_CLI {
 	}
 
 	private static function failure( string $message ): array {
-		return array( 'success' => false, 'message' => $message );
+		return array(
+			'success' => false,
+			'message' => $message,
+		);
 	}
 }

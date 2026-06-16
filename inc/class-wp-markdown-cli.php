@@ -106,11 +106,28 @@ class WP_Markdown_CLI {
 	 * [--dry-run]
 	 * : Report changes without writing to the database.
 	 *
+	 * [--from=<format>]
+	 * : Source content format. Defaults to markdown.
+	 *
+	 * [--to=<format>]
+	 * : Stored WordPress content format. Defaults to blocks.
+	 *
+	 * [--no-convert]
+	 * : Preserve raw file body bytes without BFB conversion.
+	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
 	 */
 	public static function import_cli( array $args, array $assoc_args ): void {
-		$result = self::import( array( 'path' => $assoc_args['path'] ?? '', 'dry_run' => array_key_exists( 'dry-run', $assoc_args ) ) );
+		$result = self::import(
+			array(
+				'path'       => $assoc_args['path'] ?? '',
+				'dry_run'    => array_key_exists( 'dry-run', $assoc_args ),
+				'from'       => $assoc_args['from'] ?? '',
+				'to'         => $assoc_args['to'] ?? '',
+				'no_convert' => array_key_exists( 'no-convert', $assoc_args ),
+			)
+		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Import' );
 	}
 
@@ -128,6 +145,15 @@ class WP_Markdown_CLI {
 	 * [--dry-run]
 	 * : Report changes without writing markdown files.
 	 *
+	 * [--from=<format>]
+	 * : Source WordPress content format. Defaults to blocks.
+	 *
+	 * [--to=<format>]
+	 * : Exported file body format. Defaults to markdown.
+	 *
+	 * [--no-convert]
+	 * : Preserve raw post_content bytes without BFB conversion.
+	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
 	 */
@@ -137,6 +163,9 @@ class WP_Markdown_CLI {
 				'path'       => $assoc_args['path'] ?? '',
 				'post_types' => $assoc_args['post_type'] ?? $assoc_args['post-type'] ?? '',
 				'dry_run'    => array_key_exists( 'dry-run', $assoc_args ),
+				'from'       => $assoc_args['from'] ?? '',
+				'to'         => $assoc_args['to'] ?? '',
+				'no_convert' => array_key_exists( 'no-convert', $assoc_args ),
 			)
 		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Export' );
@@ -159,6 +188,7 @@ class WP_Markdown_CLI {
 		}
 
 		$dry_run        = ! empty( $options['dry_run'] ) || ! empty( $options['dry-run'] );
+		$conversion     = self::conversion_options( $options, 'markdown', 'blocks' );
 		$excluded_types = self::excluded_types();
 		$storage        = new WP_Markdown_Storage( $content_dir, $excluded_types );
 		$posts          = iterator_to_array( $storage->get_all_posts_iterator( false ) );
@@ -206,8 +236,13 @@ class WP_Markdown_CLI {
 				$postarr['import_id'] = $old_id;
 			}
 
-			$context                 = self::transform_context( 'import', $post, $content_dir, $source_path, $dry_run, $operation );
-			$postarr['post_content'] = self::apply_transform_filter( 'markdown_db_import_post_content', (string) $postarr['post_content'], $context, $postarr, $post );
+			$context                 = self::transform_context( 'import', $post, $content_dir, $source_path, $dry_run, $operation, $conversion );
+			$converted_content       = self::apply_transform_filter( 'markdown_db_import_post_content', (string) $postarr['post_content'], $context, $postarr, $post );
+			if ( self::is_error( $converted_content ) ) {
+				$skipped[] = array( 'path' => $source_path, 'reason' => self::error_message( $converted_content ) );
+				continue;
+			}
+			$postarr['post_content'] = $converted_content;
 			$postarr                 = self::apply_post_data_filter( $postarr, $context, $post );
 
 			if ( count( $sample ) < 10 ) {
@@ -280,6 +315,7 @@ class WP_Markdown_CLI {
 
 		$content_dir    = self::content_dir( (string) ( $options['path'] ?? '' ) );
 		$dry_run        = ! empty( $options['dry_run'] ) || ! empty( $options['dry-run'] );
+		$conversion     = self::conversion_options( $options, 'blocks', 'markdown' );
 		$excluded_types = self::excluded_types();
 		$post_types     = self::post_types( (string) ( $options['post_types'] ?? $options['post-type'] ?? '' ), $excluded_types );
 		$posts          = self::export_posts( $post_types );
@@ -290,6 +326,7 @@ class WP_Markdown_CLI {
 		$storage->set_terms_resolver( array( self::class, 'post_term_rows' ) );
 
 		$written = array();
+		$skipped = array();
 		$sample  = array();
 		foreach ( $posts as $post ) {
 			$expected = self::expected_export_path( $post );
@@ -306,8 +343,13 @@ class WP_Markdown_CLI {
 			}
 
 			$export_post                = clone $post;
-			$context                    = self::transform_context( 'export', $export_post, $content_dir, $expected, $dry_run );
-			$export_post->post_content  = self::apply_transform_filter( 'markdown_db_export_post_content', (string) ( $export_post->post_content ?? '' ), $context, $export_post, $post );
+			$context                    = self::transform_context( 'export', $export_post, $content_dir, $expected, $dry_run, '', $conversion );
+			$converted_content          = self::apply_transform_filter( 'markdown_db_export_post_content', (string) ( $export_post->post_content ?? '' ), $context, $export_post, $post );
+			if ( self::is_error( $converted_content ) ) {
+				$skipped[] = array( 'id' => (int) ( $post->ID ?? 0 ), 'path' => $expected, 'reason' => self::error_message( $converted_content ) );
+				continue;
+			}
+			$export_post->post_content  = $converted_content;
 			$filtered_export_post       = self::apply_export_object_filter( $export_post, $context, $post );
 			$file                       = $storage->write_post( $filtered_export_post );
 			if ( is_string( $file ) ) {
@@ -325,7 +367,9 @@ class WP_Markdown_CLI {
 			'post_types'      => $post_types,
 			'candidate_count' => count( $posts ),
 			'written_count'   => count( $written ),
+			'skipped_count'   => count( $skipped ),
 			'written'         => $written,
+			'skipped'         => $skipped,
 			'sample'          => $sample,
 		);
 	}
@@ -369,6 +413,18 @@ class WP_Markdown_CLI {
 					'type'        => 'boolean',
 					'description' => 'Report changes without writing to the database.',
 				),
+				'from'    => array(
+					'type'        => 'string',
+					'description' => 'Source content format. Defaults to markdown.',
+				),
+				'to'      => array(
+					'type'        => 'string',
+					'description' => 'Stored WordPress content format. Defaults to blocks.',
+				),
+				'no_convert' => array(
+					'type'        => 'boolean',
+					'description' => 'Preserve raw file body bytes without BFB conversion.',
+				),
 			),
 		);
 	}
@@ -389,7 +445,30 @@ class WP_Markdown_CLI {
 					'type'        => 'boolean',
 					'description' => 'Report changes without writing markdown files.',
 				),
+				'from'       => array(
+					'type'        => 'string',
+					'description' => 'Source WordPress content format. Defaults to blocks.',
+				),
+				'to'         => array(
+					'type'        => 'string',
+					'description' => 'Exported file body format. Defaults to markdown.',
+				),
+				'no_convert' => array(
+					'type'        => 'boolean',
+					'description' => 'Preserve raw post_content bytes without BFB conversion.',
+				),
 			),
+		);
+	}
+
+	private static function conversion_options( array $options, string $default_from, string $default_to ): array {
+		$from = self::sanitize_format_key( (string) ( $options['from'] ?? '' ) );
+		$to   = self::sanitize_format_key( (string) ( $options['to'] ?? '' ) );
+
+		return array(
+			'enabled' => empty( $options['no_convert'] ) && empty( $options['no-convert'] ),
+			'from'    => '' !== $from ? $from : $default_from,
+			'to'      => '' !== $to ? $to : $default_to,
 		);
 	}
 
@@ -480,7 +559,7 @@ class WP_Markdown_CLI {
 		return $postarr;
 	}
 
-	private static function transform_context( string $operation, object $post, string $content_dir, string $source_path, bool $dry_run, string $write_operation = '' ): array {
+	private static function transform_context( string $operation, object $post, string $content_dir, string $source_path, bool $dry_run, string $write_operation = '', array $conversion = array() ): array {
 		$context = array(
 			'operation'     => $operation,
 			'post_type'     => (string) ( $post->post_type ?? 'post' ),
@@ -490,6 +569,7 @@ class WP_Markdown_CLI {
 			'stored_format' => 'import' === $operation ? 'wordpress_post_content' : 'markdown_file_body',
 			'dry_run'       => $dry_run,
 			'frontmatter'   => (array) ( $post->_frontmatter ?? array() ),
+			'conversion'    => $conversion,
 		);
 
 		if ( '' !== $write_operation ) {
@@ -499,7 +579,7 @@ class WP_Markdown_CLI {
 		return $context;
 	}
 
-	private static function apply_transform_filter( string $filter, string $content, array $context, $post_data, object $source_post ): string {
+	private static function apply_transform_filter( string $filter, string $content, array $context, $post_data, object $source_post ) {
 		if ( ! function_exists( 'apply_filters' ) ) {
 			return self::apply_content_format_conversion( $filter, $content, $context, $post_data, $source_post );
 		}
@@ -518,25 +598,27 @@ class WP_Markdown_CLI {
 	 * @param array        $context     Transform context.
 	 * @param array|object $post_data   Post payload for the current transform.
 	 * @param object       $source_post Source post object.
-	 * @return string Converted content or original content.
+	 * @return string|mixed Converted content or conversion error.
 	 */
-	private static function apply_content_format_conversion( string $filter, string $content, array $context, $post_data, object $source_post ): string {
+	private static function apply_content_format_conversion( string $filter, string $content, array $context, $post_data, object $source_post ) {
 		$operation = (string) ( $context['operation'] ?? '' );
+		$context_conversion = is_array( $context['conversion'] ?? null ) ? $context['conversion'] : array();
 		if ( 'markdown_db_import_post_content' === $filter || 'import' === $operation ) {
 			$conversion = array(
-				'enabled' => function_exists( 'bfb_convert' ),
+				'enabled' => true,
 				'from'    => 'markdown',
 				'to'      => 'blocks',
 			);
 		} elseif ( 'markdown_db_export_post_content' === $filter || 'export' === $operation ) {
 			$conversion = array(
-				'enabled' => function_exists( 'bfb_convert' ),
+				'enabled' => true,
 				'from'    => 'blocks',
 				'to'      => 'markdown',
 			);
 		} else {
 			return $content;
 		}
+		$conversion = array_merge( $conversion, $context_conversion );
 
 		if ( function_exists( 'apply_filters' ) ) {
 			$conversion = apply_filters( 'markdown_db_content_format_conversion', $conversion, $context, $post_data, $source_post );
@@ -546,8 +628,8 @@ class WP_Markdown_CLI {
 			return $content;
 		}
 
-		$from = sanitize_key( (string) ( $conversion['from'] ?? '' ) );
-		$to   = sanitize_key( (string) ( $conversion['to'] ?? '' ) );
+		$from = self::sanitize_format_key( (string) ( $conversion['from'] ?? '' ) );
+		$to   = self::sanitize_format_key( (string) ( $conversion['to'] ?? '' ) );
 		if ( '' === $from || '' === $to || $from === $to ) {
 			return $content;
 		}
@@ -563,14 +645,14 @@ class WP_Markdown_CLI {
 	 * @param string $to          Target format.
 	 * @param array  $context     Transform context for diagnostics.
 	 * @param object $source_post Source post object for diagnostics.
-	 * @return string Converted content or original content.
+	 * @return string|mixed Converted content or conversion error.
 	 */
-	private static function convert_content_format( string $content, string $from, string $to, array $context, object $source_post ): string {
+	private static function convert_content_format( string $content, string $from, string $to, array $context, object $source_post ) {
 		if ( function_exists( 'bfb_normalize' ) ) {
 			$normalized = bfb_normalize( $content, $from );
 			if ( self::is_error( $normalized ) ) {
 				self::content_format_conversion_failed( $normalized, $context, $source_post );
-				return $content;
+				return $normalized;
 			}
 
 			if ( is_string( $normalized ) ) {
@@ -579,13 +661,15 @@ class WP_Markdown_CLI {
 		}
 
 		if ( ! function_exists( 'bfb_convert' ) ) {
-			return $content;
+			$error = class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_bfb_unavailable', 'Block Format Bridge is required for MDI import/export content conversion.' ) : false;
+			self::content_format_conversion_failed( $error, $context, $source_post );
+			return $error;
 		}
 
 		$converted = bfb_convert( $content, $from, $to );
 		if ( self::is_error( $converted ) ) {
 			self::content_format_conversion_failed( $converted, $context, $source_post );
-			return $content;
+			return $converted;
 		}
 
 		return is_string( $converted ) ? $converted : $content;
@@ -729,6 +813,14 @@ class WP_Markdown_CLI {
 		$name = preg_replace( '/[^a-zA-Z0-9_-]/', '-', $name );
 		$name = trim( (string) $name, '-' );
 		return '' !== $name ? $name : 'unnamed';
+	}
+
+	private static function sanitize_format_key( string $key ): string {
+		if ( function_exists( 'sanitize_key' ) ) {
+			return sanitize_key( $key );
+		}
+
+		return strtolower( preg_replace( '/[^a-zA-Z0-9_\-]/', '', $key ) );
 	}
 
 	private static function is_error( $value ): bool {

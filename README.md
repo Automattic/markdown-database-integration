@@ -60,18 +60,28 @@ plain files. Files are:
 
 ## Storage Boundary
 
-MDI is storage/persistence only:
+MDI's live storage path is storage/persistence only:
 
 - It mirrors WordPress DB rows to files.
 - It rebuilds the SQLite index from files in primary mode.
 - It stores `post_content` bytes exactly as received.
 - It does not render markdown to HTML.
-- It does not convert editor block markup to markdown.
-- It does not ship any content-format conversion dependency.
+- It does not convert editor block markup to markdown during normal writes.
+- It does not register render, REST, editor, or write-engine conversion hooks.
 
 Content-format policy belongs to the application layer above MDI. A site can
 choose to store block markup, HTML, markdown, or another format in
 `post_content`; MDI persists those bytes without interpreting them.
+
+Import/export is the explicit content-format boundary. The `markdown-db import`
+and `markdown-db export` commands and abilities use Block Format Bridge to
+round-trip between markdown files and serialized block content by default:
+
+- Import: `markdown` → `blocks`
+- Export: `blocks` → `markdown`
+- Raw byte preservation: pass `--no-convert` or set `no_convert` in the ability input.
+- Custom conversion: pass `--from=<format> --to=<format>`.
+- Policy override: filter `markdown_db_content_format_conversion`.
 
 ```
 WRITE:
@@ -93,6 +103,14 @@ READ (site boots):
   post_content has the same bytes
 
 
+IMPORT / EXPORT:
+
+  .md file body or post_content
+       │
+       ▼  BFB conversion, unless disabled
+  target file body or post_content
+
+
 RENDER / EDITOR / API:
 
   Handled by the application/content-format layer, not MDI.
@@ -100,7 +118,9 @@ RENDER / EDITOR / API:
 
 ### Dependencies
 
-MDI has no runtime content-conversion dependencies. Composer autoloading is kept for MDI classes and future storage-layer code, not for format conversion.
+MDI requires Block Format Bridge for self-contained import/export conversion.
+The drop-in and live write engine remain byte-preserving; BFB is not used by
+the runtime render, REST, editor, or DB write paths.
 
 ## Architecture
 
@@ -125,7 +145,8 @@ WordPress Core ($wpdb)
     transients               wiki/*.md
     plugin tables
 
-    Content conversion lives above MDI.
+    Live content conversion lives above MDI.
+    Import/export conversion lives at the explicit MDI CLI/ability boundary.
 ```
 
 **SQLite** handles: options, users, terms, transients, sessions, plugin tables — the machinery that WordPress hammers thousands of times per page load.
@@ -136,13 +157,13 @@ WordPress Core ($wpdb)
 
 MDI does not make WordPress markdown-native by itself. It makes WordPress content file-backed.
 
-If a site wants wiki posts stored as markdown and rendered as HTML, the site/application layer should declare that policy and handle conversion at write, render, REST, and editor edges. MDI then persists the resulting `post_content` bytes without knowing which layer produced them.
+If a site wants wiki posts stored as markdown and rendered as HTML, the site/application layer should declare that policy and handle conversion at write, render, REST, and editor edges. MDI then persists the resulting `post_content` bytes without knowing which layer produced them. For repository import/export workflows, MDI can convert through BFB at the command/ability boundary without changing live storage behavior.
 
 ## Requirements
 
 - WordPress 6.9+
 - A normal WordPress database. MySQL/MariaDB works for import/export commands; the bundled `db.php` drop-in additionally supports SQLite-backed mirror/primary modes.
-- PHP 7.4+
+- PHP 8.1+
 - Composer
 
 ## Installation

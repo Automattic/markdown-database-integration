@@ -1,6 +1,6 @@
 <?php
 /**
- * Smoke test for optional BFB-backed import/export content conversion.
+ * Smoke test for BFB-backed import/export content conversion.
  *
  * Usage: php tests/smoke-bfb-import-export-conversion.php
  *
@@ -98,6 +98,19 @@ if ( '[blocks:markdown]<!-- wp:paragraph --><p>Hello</p><!-- /wp:paragraph -->' 
 	$failures[] = 'export did not convert blocks to markdown when BFB is available';
 }
 
+$context_disabled = $method->invoke(
+	null,
+	'markdown_db_import_post_content',
+	'# Raw',
+	array( 'operation' => 'import', 'post_type' => 'page', 'conversion' => array( 'enabled' => false ) ),
+	array( 'post_type' => 'page' ),
+	$source_post
+);
+
+if ( '# Raw' !== $context_disabled ) {
+	$failures[] = 'context conversion policy did not disable BFB conversion';
+}
+
 add_filter(
 	'markdown_db_content_format_conversion',
 	static function ( array $conversion ): array {
@@ -130,8 +143,8 @@ $failed_conversion       = $method->invoke(
 	$source_post
 );
 
-if ( '# Original' !== $failed_conversion ) {
-	$failures[] = 'failed BFB conversion did not preserve original content';
+if ( ! is_wp_error( $failed_conversion ) ) {
+	$failures[] = 'failed BFB conversion did not return an error';
 }
 
 if ( 'markdown_db_content_format_conversion_failed' !== ( $GLOBALS['mdi_bfb_actions'][0][0] ?? '' ) ) {
@@ -145,4 +158,4 @@ if ( ! empty( $failures ) ) {
 	exit( 1 );
 }
 
-echo 'PASS: BFB-backed import/export content conversion is optional and policy-controlled' . PHP_EOL;
+echo 'PASS: BFB-backed import/export content conversion is self-contained and policy-controlled' . PHP_EOL;

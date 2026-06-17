@@ -115,6 +115,9 @@ class WP_Markdown_CLI {
 	 * [--no-convert]
 	 * : Preserve raw file body bytes without BFB conversion.
 	 *
+	 * [--profile=<profile>]
+	 * : Frontmatter profile ID. Defaults to the native WordPress profile.
+	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
 	 */
@@ -126,6 +129,7 @@ class WP_Markdown_CLI {
 				'from'       => $assoc_args['from'] ?? '',
 				'to'         => $assoc_args['to'] ?? '',
 				'no_convert' => array_key_exists( 'no-convert', $assoc_args ),
+				'profile'    => $assoc_args['profile'] ?? '',
 			)
 		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Import' );
@@ -154,6 +158,9 @@ class WP_Markdown_CLI {
 	 * [--no-convert]
 	 * : Preserve raw post_content bytes without BFB conversion.
 	 *
+	 * [--profile=<profile>]
+	 * : Frontmatter profile ID. Defaults to the native WordPress profile.
+	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
 	 */
@@ -166,6 +173,7 @@ class WP_Markdown_CLI {
 				'from'       => $assoc_args['from'] ?? '',
 				'to'         => $assoc_args['to'] ?? '',
 				'no_convert' => array_key_exists( 'no-convert', $assoc_args ),
+				'profile'    => $assoc_args['profile'] ?? '',
 			)
 		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Export' );
@@ -191,6 +199,7 @@ class WP_Markdown_CLI {
 		$conversion     = self::conversion_options( $options, 'markdown', 'blocks' );
 		$excluded_types = self::excluded_types();
 		$storage        = new WP_Markdown_Storage( $content_dir, $excluded_types );
+		$storage->set_frontmatter_profile( (string) ( $options['profile'] ?? '' ) );
 		$posts          = iterator_to_array( $storage->get_all_posts_iterator( false ) );
 
 		usort(
@@ -337,6 +346,7 @@ class WP_Markdown_CLI {
 		$posts          = self::export_posts( $post_types );
 
 		$storage = new WP_Markdown_Storage( $content_dir, $excluded_types );
+		$storage->set_frontmatter_profile( (string) ( $options['profile'] ?? '' ) );
 		$storage->set_post_resolver( static fn( int $id ) => get_post( $id ) );
 		$storage->set_meta_resolver( array( self::class, 'post_meta_rows' ) );
 		$storage->set_terms_resolver( array( self::class, 'post_term_rows' ) );
@@ -452,6 +462,10 @@ class WP_Markdown_CLI {
 					'type'        => 'boolean',
 					'description' => 'Preserve raw file body bytes without BFB conversion.',
 				),
+				'profile'    => array(
+					'type'        => 'string',
+					'description' => 'Frontmatter profile ID. Defaults to the native WordPress profile.',
+				),
 			),
 		);
 	}
@@ -483,6 +497,10 @@ class WP_Markdown_CLI {
 				'no_convert' => array(
 					'type'        => 'boolean',
 					'description' => 'Preserve raw post_content bytes without BFB conversion.',
+				),
+				'profile'    => array(
+					'type'        => 'string',
+					'description' => 'Frontmatter profile ID. Defaults to the native WordPress profile.',
 				),
 			),
 		);

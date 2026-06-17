@@ -22,14 +22,20 @@ Each file has YAML frontmatter with metadata and the stored `post_content` bytes
 
 ```markdown
 ---
-id: 7
+type: document
 title: Gutenberg Block Test
-status: publish
-type: post
-author: 1
-date: "2026-04-14 03:14:35"
-modified: "2026-04-14 03:14:49"
-slug: gutenberg-block-test
+description: A Gutenberg block editor smoke page.
+resource: https://example.test/gutenberg-block-test
+tags: [gutenberg, blocks]
+timestamp: "2026-04-14T03:14:35+00:00"
+wordpress:
+  id: 7
+  status: publish
+  type: post
+  author: 1
+  date: "2026-04-14 03:14:35"
+  modified: "2026-04-14 03:14:49"
+  slug: gutenberg-block-test
 ---
 
 ## This is a heading block
@@ -44,35 +50,7 @@ Content goes here with **bold** and *italic* text.
 
 MDI does not decide whether that body is markdown, block markup, or HTML. It stores whatever the caller/content-format layer writes to `post_content`.
 
-### Frontmatter Profiles
-
-MDI writes the WordPress-safe native frontmatter profile by default. Other plugins can register profiles for a post type or an explicit import/export run without changing MDI core semantics:
-
-```php
-markdown_db_register_frontmatter_profile(
-    'my-profile',
-    array(
-        'supports_post' => static fn( object $post ): bool => 'wiki' === ( $post->post_type ?? '' ),
-        'export_frontmatter' => static function ( object $post, array $context ): array {
-            return array_merge(
-                $context['native_frontmatter'],
-                array( 'profile' => 'my-profile' )
-            );
-        },
-        'import_post_data' => static function ( array $frontmatter, string $body, array $context ): array {
-            return array(
-                'ID'           => (int) ( $frontmatter['id'] ?? 0 ),
-                'post_title'   => (string) ( $frontmatter['title'] ?? '' ),
-                'post_type'    => (string) ( $frontmatter['post_type'] ?? 'post' ),
-                'post_status'  => (string) ( $frontmatter['status'] ?? 'draft' ),
-                'post_content' => $body,
-            );
-        },
-    )
-);
-```
-
-Use `--profile=<id>` with `wp markdown-db import` or `wp markdown-db export` to select a profile for that operation. Runtime storage can also resolve registered profiles by `supports_post`, or by filtering `markdown_db_frontmatter_profile_id`.
+MDI manages the frontmatter shape automatically. Markdown files use portable, WordPress-compatible metadata: broadly useful concept fields stay at the top level, while WordPress round-trip fields live under `wordpress`. Existing MDI files are rewritten to the current shape by the one-time frontmatter migration during upgrade.
 
 ## Why
 

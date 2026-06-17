@@ -172,7 +172,7 @@ assert_true( $apply['success'], 'apply succeeds' );
 assert_eq( $apply['written_count'], 2, 'two posts written' );
 assert_true( file_exists( $child_file ), 'child promoted to index.md after grandchild write' );
 assert_true( file_exists( $grandchild_file ), 'grandchild written below child directory' );
-assert_true( str_contains( $child_markdown, '_datamachine_content_hash: abc123' ), 'allowlisted recovery meta is preserved' );
+assert_true( str_contains( $child_markdown, "  meta:\n    _datamachine_content_hash: abc123" ), 'allowlisted recovery meta is preserved under wordpress.meta' );
 assert_eq( str_contains( $child_markdown, '_ignored_internal' ), false, 'unallowlisted internal meta is not preserved' );
 
 @unlink( $source_db );

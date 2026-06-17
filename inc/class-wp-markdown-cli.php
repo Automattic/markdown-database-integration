@@ -115,9 +115,6 @@ class WP_Markdown_CLI {
 	 * [--no-convert]
 	 * : Preserve raw file body bytes without BFB conversion.
 	 *
-	 * [--profile=<profile>]
-	 * : Frontmatter profile ID. Defaults to the native WordPress profile.
-	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
 	 */
@@ -157,9 +154,6 @@ class WP_Markdown_CLI {
 	 *
 	 * [--no-convert]
 	 * : Preserve raw post_content bytes without BFB conversion.
-	 *
-	 * [--profile=<profile>]
-	 * : Frontmatter profile ID. Defaults to the native WordPress profile.
 	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
@@ -462,10 +456,6 @@ class WP_Markdown_CLI {
 					'type'        => 'boolean',
 					'description' => 'Preserve raw file body bytes without BFB conversion.',
 				),
-				'profile'    => array(
-					'type'        => 'string',
-					'description' => 'Frontmatter profile ID. Defaults to the native WordPress profile.',
-				),
 			),
 		);
 	}
@@ -497,10 +487,6 @@ class WP_Markdown_CLI {
 				'no_convert' => array(
 					'type'        => 'boolean',
 					'description' => 'Preserve raw post_content bytes without BFB conversion.',
-				),
-				'profile'    => array(
-					'type'        => 'string',
-					'description' => 'Frontmatter profile ID. Defaults to the native WordPress profile.',
 				),
 			),
 		);

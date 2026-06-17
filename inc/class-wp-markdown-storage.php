@@ -1528,31 +1528,38 @@ class WP_Markdown_Storage {
 		$lines = array();
 
 		foreach ( $data as $key => $value ) {
-			if ( is_array( $value ) ) {
-				$lines[] = $key . ':';
-				if ( $this->is_list_array( $value ) ) {
-					foreach ( $value as $item ) {
-						$lines[] = '  - ' . $this->yaml_scalar( $item );
-					}
-					continue;
-				}
-
-				foreach ( $value as $sub_key => $sub_value ) {
-					if ( is_array( $sub_value ) ) {
-						$lines[] = '  ' . $sub_key . ':';
-						foreach ( $sub_value as $item ) {
-							$lines[] = '    - ' . $this->yaml_scalar( $item );
-						}
-					} else {
-						$lines[] = '  ' . $sub_key . ': ' . $this->yaml_scalar( $sub_value );
-					}
-				}
-			} else {
-				$lines[] = $key . ': ' . $this->yaml_scalar( $value );
-			}
+			$this->encode_yaml_entry( (string) $key, $value, 0, $lines );
 		}
 
 		return implode( "\n", $lines ) . "\n";
+	}
+
+	/**
+	 * Append one YAML key/value pair to a line buffer.
+	 *
+	 * @param string $key    YAML key.
+	 * @param mixed  $value  YAML value.
+	 * @param int    $indent Current indentation depth.
+	 * @param array  $lines  Encoded line buffer.
+	 */
+	private function encode_yaml_entry( string $key, $value, int $indent, array &$lines ): void {
+		$prefix = str_repeat( ' ', $indent );
+		if ( ! is_array( $value ) ) {
+			$lines[] = $prefix . $key . ': ' . $this->yaml_scalar( $value );
+			return;
+		}
+
+		$lines[] = $prefix . $key . ':';
+		if ( $this->is_list_array( $value ) ) {
+			foreach ( $value as $item ) {
+				$lines[] = str_repeat( ' ', $indent + 2 ) . '- ' . $this->yaml_scalar( $item );
+			}
+			return;
+		}
+
+		foreach ( $value as $sub_key => $sub_value ) {
+			$this->encode_yaml_entry( (string) $sub_key, $sub_value, $indent + 2, $lines );
+		}
 	}
 
 	/**
@@ -1613,10 +1620,11 @@ class WP_Markdown_Storage {
 	 * @return array|null Decoded array, or null on failure.
 	 */
 	private function decode_yaml( string $yaml ): ?array {
-		$result  = array();
-		$lines   = explode( "\n", $yaml );
-		$current_key    = null;
-		$current_subkey = null;
+		$result = array();
+		$lines  = explode( "\n", $yaml );
+		$stack  = array(
+			-1 => &$result,
+		);
 
 		foreach ( $lines as $line ) {
 			// Skip empty lines.
@@ -1624,57 +1632,47 @@ class WP_Markdown_Storage {
 				continue;
 			}
 
-			// Array item: "    - value" (nested under a subkey).
-			if ( preg_match( '/^    - (.+)$/', $line, $m ) ) {
-				if ( $current_key && $current_subkey ) {
-					$result[ $current_key ][ $current_subkey ][] = $this->yaml_decode_scalar( $m[1] );
-				}
+			if ( preg_match( '/^(\s*)- (.+)$/', $line, $m ) ) {
+				$indent        = strlen( $m[1] );
+				$parent_indent = $this->yaml_parent_indent( $indent, $stack );
+				$stack[ $parent_indent ][] = $this->yaml_decode_scalar( $m[2] );
 				continue;
 			}
 
-			// Array item: "  - value" (nested directly under a top-level key).
-			if ( preg_match( '/^  - (.+)$/', $line, $m ) ) {
-				if ( $current_key && null === $current_subkey ) {
-					$result[ $current_key ][] = $this->yaml_decode_scalar( $m[1] );
-				}
-				continue;
-			}
+			if ( preg_match( '/^(\s*)([^:]+):\s*(.*)$/', $line, $m ) ) {
+				$indent        = strlen( $m[1] );
+				$key           = trim( $m[2] );
+				$value         = trim( $m[3] );
+				$parent_indent = $this->yaml_parent_indent( $indent, $stack );
 
-			// Subkey: "  key: value" (nested under a top-level key).
-			if ( preg_match( '/^  (\w+):\s*(.*)$/', $line, $m ) ) {
-				$current_subkey = $m[1];
-				$value          = trim( $m[2] );
 				if ( '' === $value ) {
-					// This subkey has array children.
-					if ( $current_key ) {
-						$result[ $current_key ][ $current_subkey ] = array();
-					}
+					$stack[ $parent_indent ][ $key ] = array();
+					$stack[ $indent ]                 = &$stack[ $parent_indent ][ $key ];
 				} else {
-					if ( $current_key ) {
-						$result[ $current_key ][ $current_subkey ] = $this->yaml_decode_scalar( $value );
-					}
+					$stack[ $parent_indent ][ $key ] = $this->yaml_decode_scalar( $value );
 				}
-				continue;
-			}
-
-			// Top-level key with no value (has nested children).
-			if ( preg_match( '/^(\w+):\s*$/', $line, $m ) ) {
-				$current_key    = $m[1];
-				$current_subkey = null;
-				$result[ $current_key ] = array();
-				continue;
-			}
-
-			// Top-level key: value.
-			if ( preg_match( '/^(\w+):\s+(.+)$/', $line, $m ) ) {
-				$current_key    = null;
-				$current_subkey = null;
-				$result[ $m[1] ] = $this->yaml_decode_scalar( $m[2] );
 				continue;
 			}
 		}
 
 		return empty( $result ) ? null : $result;
+	}
+
+	/**
+	 * Find the nearest lower indentation level in the YAML parse stack.
+	 *
+	 * @param int   $indent Current indentation depth.
+	 * @param array $stack  Parse stack keyed by indentation depth.
+	 * @return int Parent indentation depth.
+	 */
+	private function yaml_parent_indent( int $indent, array $stack ): int {
+		$parent_indent = -1;
+		foreach ( array_keys( $stack ) as $level ) {
+			if ( $level < $indent && $level > $parent_indent ) {
+				$parent_indent = $level;
+			}
+		}
+		return $parent_indent;
 	}
 
 	/**

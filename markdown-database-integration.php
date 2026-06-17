@@ -42,6 +42,7 @@ if ( function_exists( 'did_action' ) && file_exists( $markdown_database_integrat
 
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-profiles.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-migration.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
@@ -128,6 +129,7 @@ function markdown_database_integration_import_seed_posts_after_install(): void {
 
 add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
+add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	WP_CLI::add_command( 'markdown-db import', array( 'WP_Markdown_CLI', 'import_cli' ) );

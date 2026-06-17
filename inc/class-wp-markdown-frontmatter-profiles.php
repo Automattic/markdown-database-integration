@@ -89,7 +89,8 @@ class WP_Markdown_Frontmatter_Profiles {
 			}
 		}
 
-		return self::$profiles[ self::NATIVE_PROFILE ];
+
+		return self::$profiles[ self::OKF_PROFILE ];
 	}
 
 	/**
@@ -215,6 +216,12 @@ class WP_Markdown_Frontmatter_Profiles {
 
 				foreach ( array( 'excerpt', 'password', 'mime_type' ) as $key ) {
 					if ( isset( $native[ $key ] ) && array() !== $native[ $key ] && '' !== $native[ $key ] ) {
+						$wordpress[ $key ] = $native[ $key ];
+					}
+				}
+
+				foreach ( array( 'meta', 'terms' ) as $key ) {
+					if ( isset( $native[ $key ] ) && is_array( $native[ $key ] ) && ! empty( $native[ $key ] ) ) {
 						$wordpress[ $key ] = $native[ $key ];
 					}
 				}

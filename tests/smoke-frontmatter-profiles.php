@@ -18,18 +18,12 @@ function sanitize_key( $key ): string {
 }
 
 function apply_filters( $hook_name, $value, ...$args ) {
-	if ( 'markdown_db_frontmatter_profile_id' === $hook_name ) {
-		$post = $args[1] ?? null;
-		if ( is_object( $post ) && 'page' === ( $post->post_type ?? '' ) ) {
-			return 'okf';
-		}
-	}
-
 	return $value;
 }
 
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
+require dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-migration.php';
 
 $failures = array();
 $tmp_root = rtrim( sys_get_temp_dir(), '/' ) . '/mdi-frontmatter-profiles-' . getmypid();
@@ -45,11 +39,11 @@ if ( is_dir( $tmp_root ) ) {
 }
 mkdir( $tmp_root, 0777, true );
 
-$native_storage = new WP_Markdown_Storage( $tmp_root );
-$native_file    = $native_storage->write_post(
+$default_storage = new WP_Markdown_Storage( $tmp_root );
+$default_file    = $default_storage->write_post(
 	(object) array(
 		'ID'                => 11,
-		'post_title'        => 'Native Profile',
+		'post_title'        => 'Default Portable Profile',
 		'post_status'       => 'publish',
 		'post_type'         => 'wiki',
 		'post_author'       => 1,
@@ -57,13 +51,41 @@ $native_file    = $native_storage->write_post(
 		'post_date_gmt'     => '2026-06-17 00:00:00',
 		'post_modified'     => '2026-06-17 00:00:00',
 		'post_modified_gmt' => '2026-06-17 00:00:00',
-		'post_name'         => 'native-profile',
+		'post_name'         => 'default-portable-profile',
+		'post_content'      => "Default body\nwith content",
+	)
+);
+
+if ( ! is_string( $default_file ) || ! str_contains( file_get_contents( $default_file ), "type: document\n" ) || ! str_contains( file_get_contents( $default_file ), "wordpress:\n" ) ) {
+	$failures[] = 'default storage did not write portable WordPress-compatible frontmatter';
+}
+
+$pre_upgrade_storage = new WP_Markdown_Storage( $tmp_root );
+$pre_upgrade_storage->set_frontmatter_profile( 'native' );
+$pre_upgrade_file = $pre_upgrade_storage->write_post(
+	(object) array(
+		'ID'                => 13,
+		'post_title'        => 'Pre Upgrade Native File',
+		'post_status'       => 'publish',
+		'post_type'         => 'wiki',
+		'post_author'       => 1,
+		'post_date'         => '2026-06-17 00:00:00',
+		'post_date_gmt'     => '2026-06-17 00:00:00',
+		'post_modified'     => '2026-06-17 00:00:00',
+		'post_modified_gmt' => '2026-06-17 00:00:00',
+		'post_name'         => 'pre-upgrade-native-file',
 		'post_content'      => "Native body\nwith content",
 	)
 );
 
-if ( ! is_string( $native_file ) || ! str_contains( file_get_contents( $native_file ), "type: wiki\n" ) ) {
-	$failures[] = 'native profile did not preserve the existing WordPress-safe type field';
+if ( ! is_string( $pre_upgrade_file ) || ! str_contains( file_get_contents( $pre_upgrade_file ), "type: wiki\n" ) ) {
+	$failures[] = 'test setup did not create a pre-upgrade native-frontmatter file';
+}
+
+$migration_result = WP_Markdown_Frontmatter_Migration::migrate_content_dir( $tmp_root );
+$migrated_raw     = is_string( $pre_upgrade_file ) ? file_get_contents( $pre_upgrade_file ) : '';
+if ( 1 !== $migration_result['migrated'] || ! str_contains( $migrated_raw, "type: document\n" ) || ! str_contains( $migrated_raw, "wordpress:\n" ) ) {
+	$failures[] = 'frontmatter migration did not rewrite pre-upgrade files to portable frontmatter';
 }
 
 markdown_db_register_frontmatter_profile(
@@ -256,4 +278,4 @@ if ( ! empty( $failures ) ) {
 	exit( 1 );
 }
 
-echo 'PASS: pluggable frontmatter profiles preserve native defaults and support custom mappings' . PHP_EOL;
+echo 'PASS: MDI writes portable frontmatter by default, migrates pre-upgrade files, and supports custom mappings' . PHP_EOL;

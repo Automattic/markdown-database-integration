@@ -42,6 +42,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+if ( ! class_exists( 'WP_Markdown_Frontmatter_Profiles' ) ) {
+	require_once __DIR__ . '/class-wp-markdown-frontmatter-profiles.php';
+}
+
 class WP_Markdown_Storage {
 
 	/**
@@ -115,6 +119,13 @@ class WP_Markdown_Storage {
 	private $index_writer = null;
 
 	/**
+	 * Explicit frontmatter profile ID for this storage instance.
+	 *
+	 * @var string
+	 */
+	private string $frontmatter_profile = '';
+
+	/**
 	 * Constructor.
 	 *
 	 * All post types are stored as markdown by default.
@@ -178,6 +189,15 @@ class WP_Markdown_Storage {
 	 */
 	public function set_index_writer( callable $writer ): void {
 		$this->index_writer = $writer;
+	}
+
+	/**
+	 * Set an explicit frontmatter profile for reads and writes.
+	 *
+	 * @param string $profile Profile ID.
+	 */
+	public function set_frontmatter_profile( string $profile ): void {
+		$this->frontmatter_profile = $profile;
 	}
 
 	/**
@@ -1083,19 +1103,19 @@ class WP_Markdown_Storage {
 			return null;
 		}
 
-		// Map frontmatter back to WordPress column names.
-		$post = new \stdClass();
+		$context = array(
+			'operation' => 'import',
+			'file_path' => $file_path,
+			'profile'   => $this->frontmatter_profile,
+		);
+		$profile = WP_Markdown_Frontmatter_Profiles::resolve_for_import( $frontmatter, $content, $context );
+		$data    = array();
+		if ( ! empty( $profile['import_post_data'] ) && is_callable( $profile['import_post_data'] ) ) {
+			$data = (array) call_user_func( $profile['import_post_data'], $frontmatter, $content, array_merge( $context, array( 'profile_id' => $profile['id'] ?? '' ) ) );
+		}
 
-		$post->ID                    = (int) ( $frontmatter['id'] ?? 0 );
-		$post->post_title            = $frontmatter['title'] ?? '';
-		$post->post_status           = $frontmatter['status'] ?? 'draft';
-		$post->post_type             = $frontmatter['type'] ?? 'post';
-		$post->post_author           = (int) ( $frontmatter['author'] ?? 0 );
-		$post->post_date             = $frontmatter['date'] ?? '0000-00-00 00:00:00';
-		$post->post_date_gmt         = $frontmatter['date_gmt'] ?? $post->post_date;
-		$post->post_modified         = $frontmatter['modified'] ?? $post->post_date;
-		$post->post_modified_gmt     = $frontmatter['modified_gmt'] ?? $post->post_modified;
-		$post->post_name             = $frontmatter['slug'] ?? '';
+		$post = (object) $data;
+		$post->post_content = (string) ( $post->post_content ?? $content );
 		// Derive slug from the filename when the frontmatter has none.
 		// Supports the "just drop a file" workflow — an AI agent or git
 		// pull creating `wiki/my-topic.md` gets `my-topic` as post_name
@@ -1109,39 +1129,43 @@ class WP_Markdown_Storage {
 			}
 			$post->post_name = $stem;
 		}
-		$post->post_parent           = (int) ( $frontmatter['parent'] ?? 0 ); // Frontmatter fallback; overridden by directory structure in get_all_posts().
-		$post->menu_order            = (int) ( $frontmatter['menu_order'] ?? 0 );
-		$post->comment_status        = $frontmatter['comment_status'] ?? 'open';
-		$post->ping_status           = $frontmatter['ping_status'] ?? 'open';
-		$post->post_excerpt          = $frontmatter['excerpt'] ?? '';
-		$post->post_content          = $content;
-		$post->post_content_filtered = '';
-		$post->post_mime_type        = $frontmatter['mime_type'] ?? '';
-		$post->post_password         = $frontmatter['password'] ?? '';
-		$post->to_ping               = '';
-		$post->pinged                = '';
-		$post->guid                  = $frontmatter['guid'] ?? '';
-		$post->comment_count         = (int) ( $frontmatter['comment_count'] ?? 0 );
-		$post->filter                = 'raw';
+		$post->ID                    = (int) ( $post->ID ?? 0 );
+		$post->post_title            = (string) ( $post->post_title ?? '' );
+		$post->post_status           = (string) ( $post->post_status ?? 'draft' );
+		$post->post_type             = (string) ( $post->post_type ?? 'post' );
+		$post->post_author           = (int) ( $post->post_author ?? 0 );
+		$post->post_date             = (string) ( $post->post_date ?? '0000-00-00 00:00:00' );
+		$post->post_date_gmt         = (string) ( $post->post_date_gmt ?? $post->post_date );
+		$post->post_modified         = (string) ( $post->post_modified ?? $post->post_date );
+		$post->post_modified_gmt     = (string) ( $post->post_modified_gmt ?? $post->post_modified );
+		$post->post_name             = (string) ( $post->post_name ?? '' );
+		$post->post_parent           = (int) ( $post->post_parent ?? 0 ); // Frontmatter fallback; overridden by directory structure in get_all_posts().
+		$post->menu_order            = (int) ( $post->menu_order ?? 0 );
+		$post->comment_status        = (string) ( $post->comment_status ?? 'open' );
+		$post->ping_status           = (string) ( $post->ping_status ?? 'open' );
+		$post->post_excerpt          = (string) ( $post->post_excerpt ?? '' );
+		$post->post_content_filtered = (string) ( $post->post_content_filtered ?? '' );
+		$post->post_mime_type        = (string) ( $post->post_mime_type ?? '' );
+		$post->post_password         = (string) ( $post->post_password ?? '' );
+		$post->to_ping               = (string) ( $post->to_ping ?? '' );
+		$post->pinged                = (string) ( $post->pinged ?? '' );
+		$post->guid                  = (string) ( $post->guid ?? '' );
+		$post->comment_count         = (int) ( $post->comment_count ?? 0 );
+		$post->filter                = (string) ( $post->filter ?? 'raw' );
 
 		// Store the source file path on the post object.
 		// Used by the loader to populate the _markdown_file_index table.
 		$post->_source_file = $file_path;
 		$post->_frontmatter = $frontmatter;
+		$post->_frontmatter_profile = (string) ( $profile['id'] ?? '' );
 
 		// Extract meta from frontmatter (key-value pairs).
 		// These will be INSERTed into wp_postmeta by the loader.
-		$post->_frontmatter_meta = array();
-		if ( isset( $frontmatter['meta'] ) && is_array( $frontmatter['meta'] ) ) {
-			$post->_frontmatter_meta = $frontmatter['meta'];
-		}
+		$post->_frontmatter_meta = isset( $post->_frontmatter_meta ) && is_array( $post->_frontmatter_meta ) ? $post->_frontmatter_meta : array();
 
 		// Extract terms from frontmatter (taxonomy → [slugs]).
 		// These will be resolved and INSERTed into wp_term_relationships by the loader.
-		$post->_frontmatter_terms = array();
-		if ( isset( $frontmatter['terms'] ) && is_array( $frontmatter['terms'] ) ) {
-			$post->_frontmatter_terms = $frontmatter['terms'];
-		}
+		$post->_frontmatter_terms = isset( $post->_frontmatter_terms ) && is_array( $post->_frontmatter_terms ) ? $post->_frontmatter_terms : array();
 
 		return $post;
 	}
@@ -1335,6 +1359,34 @@ class WP_Markdown_Storage {
 	 * @return array Frontmatter key-value pairs.
 	 */
 	private function build_frontmatter( object $post ): array {
+		$native_frontmatter = $this->build_native_frontmatter( $post );
+		$context            = array(
+			'operation'          => 'export',
+			'profile'            => $this->frontmatter_profile,
+			'native_frontmatter' => $native_frontmatter,
+		);
+		$profile            = WP_Markdown_Frontmatter_Profiles::resolve_for_export( $post, $context );
+
+		if ( ! empty( $profile['export_frontmatter'] ) && is_callable( $profile['export_frontmatter'] ) ) {
+			$fm = (array) call_user_func( $profile['export_frontmatter'], $post, array_merge( $context, array( 'profile_id' => $profile['id'] ?? '' ) ) );
+		} else {
+			$fm = $native_frontmatter;
+		}
+
+		if ( function_exists( 'apply_filters' ) ) {
+			$fm = apply_filters( 'markdown_db_frontmatter', $fm, $post, (string) ( $profile['id'] ?? '' ) );
+		}
+
+		return $fm;
+	}
+
+	/**
+	 * Build the native WordPress-safe YAML frontmatter array from a post object.
+	 *
+	 * @param object $post A WordPress post row.
+	 * @return array Frontmatter key-value pairs.
+	 */
+	private function build_native_frontmatter( object $post ): array {
 		$fm = array();
 
 		$fm['id']             = (int) ( $post->ID ?? 0 );
@@ -1454,33 +1506,6 @@ class WP_Markdown_Storage {
 					$fm['terms'] = $terms;
 				}
 			}
-		}
-
-		/**
-		 * Filter the frontmatter array before it is written to disk.
-		 *
-		 * Fires after MDI has assembled its core fields (post columns,
-		 * meta, terms). Extensions should add their own fields to the
-		 * returned array — nested under a namespace key is recommended
-		 * to avoid collisions with future MDI additions:
-		 *
-		 *     add_filter( 'markdown_db_frontmatter', function ( $fm, $post ) {
-		 *         if ( 'wiki' === $post->post_type ) {
-		 *             $fm['my_extension'] = array( 'custom' => 'value' );
-		 *         }
-		 *         return $fm;
-		 *     }, 10, 2 );
-		 *
-		 * Removing or mutating MDI's own fields (id, title, status, etc.)
-		 * is unsupported and will corrupt round-trip read/write.
-		 *
-		 * @since next
-		 *
-		 * @param array  $fm   Frontmatter key-value pairs.
-		 * @param object $post The post being written.
-		 */
-		if ( function_exists( 'apply_filters' ) ) {
-			$fm = apply_filters( 'markdown_db_frontmatter', $fm, $post );
 		}
 
 		return $fm;

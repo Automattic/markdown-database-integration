@@ -184,6 +184,7 @@ if ( file_exists( $composer_autoload ) ) {
 }
 
 // Load markdown integration classes.
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-driver.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-search.php';

@@ -44,6 +44,36 @@ Content goes here with **bold** and *italic* text.
 
 MDI does not decide whether that body is markdown, block markup, or HTML. It stores whatever the caller/content-format layer writes to `post_content`.
 
+### Frontmatter Profiles
+
+MDI writes the WordPress-safe native frontmatter profile by default. Other plugins can register profiles for a post type or an explicit import/export run without changing MDI core semantics:
+
+```php
+markdown_db_register_frontmatter_profile(
+    'my-profile',
+    array(
+        'supports_post' => static fn( object $post ): bool => 'wiki' === ( $post->post_type ?? '' ),
+        'export_frontmatter' => static function ( object $post, array $context ): array {
+            return array_merge(
+                $context['native_frontmatter'],
+                array( 'profile' => 'my-profile' )
+            );
+        },
+        'import_post_data' => static function ( array $frontmatter, string $body, array $context ): array {
+            return array(
+                'ID'           => (int) ( $frontmatter['id'] ?? 0 ),
+                'post_title'   => (string) ( $frontmatter['title'] ?? '' ),
+                'post_type'    => (string) ( $frontmatter['post_type'] ?? 'post' ),
+                'post_status'  => (string) ( $frontmatter['status'] ?? 'draft' ),
+                'post_content' => $body,
+            );
+        },
+    )
+);
+```
+
+Use `--profile=<id>` with `wp markdown-db import` or `wp markdown-db export` to select a profile for that operation. Runtime storage can also resolve registered profiles by `supports_post`, or by filtering `markdown_db_frontmatter_profile_id`.
+
 ## Why
 
 WordPress stores content in database rows. That is great for runtime queries,

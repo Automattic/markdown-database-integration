@@ -40,6 +40,7 @@ if ( function_exists( 'did_action' ) && file_exists( $markdown_database_integrat
 	require_once $markdown_database_integration_autoload;
 }
 
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-profiles.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';

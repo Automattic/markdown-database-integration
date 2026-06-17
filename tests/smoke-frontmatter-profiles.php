@@ -17,6 +17,17 @@ function sanitize_key( $key ): string {
 	return strtolower( preg_replace( '/[^a-zA-Z0-9_\-]/', '', (string) $key ) );
 }
 
+function apply_filters( $hook_name, $value, ...$args ) {
+	if ( 'markdown_db_frontmatter_profile_id' === $hook_name ) {
+		$post = $args[1] ?? null;
+		if ( is_object( $post ) && 'page' === ( $post->post_type ?? '' ) ) {
+			return 'okf';
+		}
+	}
+
+	return $value;
+}
+
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
 
@@ -128,6 +139,113 @@ if ( null === $read ) {
 	}
 	if ( 'round-trip me' !== ( $read->_frontmatter['domain_field'] ?? '' ) ) {
 		$failures[] = 'unknown profile field was not retained on _frontmatter';
+	}
+}
+
+$okf_storage = new WP_Markdown_Storage( $tmp_root );
+$okf_storage->set_terms_resolver(
+	static function ( int $post_id ): array {
+		if ( 22 === $post_id ) {
+			return array(
+				(object) array(
+					'taxonomy' => 'post_tag',
+					'slug'     => 'alpha',
+				),
+				(object) array(
+					'taxonomy' => 'post_tag',
+					'slug'     => 'beta',
+				),
+			);
+		}
+
+		return array();
+	}
+);
+
+$okf_parent_file = $okf_storage->write_post(
+	(object) array(
+		'ID'                => 21,
+		'post_title'        => 'OKF Parent',
+		'post_status'       => 'publish',
+		'post_type'         => 'page',
+		'post_author'       => 3,
+		'post_date'         => '2026-06-17 12:34:56',
+		'post_date_gmt'     => '2026-06-17 12:34:56',
+		'post_modified'     => '2026-06-17 13:00:00',
+		'post_modified_gmt' => '2026-06-17 13:00:00',
+		'post_name'         => 'okf-parent',
+		'post_excerpt'      => 'Parent description',
+		'post_content'      => 'Parent body',
+		'guid'              => 'https://example.test/okf-parent',
+	)
+);
+
+$okf_child_file = $okf_storage->write_post(
+	(object) array(
+		'ID'                => 22,
+		'post_title'        => 'OKF Child',
+		'post_status'       => 'private',
+		'post_type'         => 'page',
+		'post_author'       => 4,
+		'post_date'         => '2026-06-17 14:15:16',
+		'post_date_gmt'     => '2026-06-17 14:15:16',
+		'post_modified'     => '2026-06-17 15:00:00',
+		'post_modified_gmt' => '2026-06-17 15:00:00',
+		'post_name'         => 'okf-child',
+		'post_parent'       => 21,
+		'post_excerpt'      => 'Child description',
+		'post_content'      => "Child body\nwith blocks",
+		'guid'              => 'https://example.test/okf-child',
+	)
+);
+
+$okf_raw = is_string( $okf_child_file ) ? file_get_contents( $okf_child_file ) : '';
+if ( ! str_contains( $okf_raw, "type: document\n" ) || ! str_contains( $okf_raw, "wordpress:\n" ) || ! str_contains( $okf_raw, "  type: page\n" ) ) {
+	$failures[] = 'OKF profile did not keep OKF type separate from wordpress.type';
+}
+if ( ! str_contains( $okf_raw, "tags:\n  - alpha\n  - beta\n" ) ) {
+	$failures[] = 'OKF profile did not export post_tag terms as top-level tags';
+}
+if ( ! str_contains( $okf_raw, "timestamp: \"2026-06-17T14:15:16+00:00\"\n" ) ) {
+	$failures[] = 'OKF profile did not export an ISO-like timestamp';
+}
+
+$okf_import_storage = new WP_Markdown_Storage( $tmp_root );
+$okf_posts          = $okf_import_storage->get_all_posts( false );
+$okf_parent         = null;
+$okf_child          = null;
+foreach ( $okf_posts as $post ) {
+	if ( 21 === (int) ( $post->ID ?? 0 ) ) {
+		$okf_parent = $post;
+	}
+	if ( 22 === (int) ( $post->ID ?? 0 ) ) {
+		$okf_child = $post;
+	}
+}
+
+if ( null === $okf_parent || null === $okf_child ) {
+	$failures[] = 'OKF posts were not read back from storage';
+} else {
+	if ( 'okf' !== $okf_child->_frontmatter_profile ) {
+		$failures[] = 'OKF-shaped frontmatter did not auto-select the OKF import profile';
+	}
+	if ( 'page' !== $okf_child->post_type || 'private' !== $okf_child->post_status || 'okf-child' !== $okf_child->post_name ) {
+		$failures[] = 'OKF import did not reconstruct WordPress type/status/slug';
+	}
+	if ( 'OKF Child' !== $okf_child->post_title || 'Child description' !== $okf_child->post_excerpt ) {
+		$failures[] = 'OKF import did not reconstruct title/description fields';
+	}
+	if ( '2026-06-17 14:15:16' !== $okf_child->post_date || '2026-06-17 14:15:16' !== $okf_child->post_date_gmt ) {
+		$failures[] = 'OKF import did not reconstruct date fields from wordpress metadata';
+	}
+	if ( 21 !== (int) $okf_child->post_parent ) {
+		$failures[] = 'OKF import did not preserve hierarchy from nested wordpress.id metadata';
+	}
+	if ( "Child body\nwith blocks" !== $okf_child->post_content ) {
+		$failures[] = 'OKF import did not preserve post_content bytes';
+	}
+	if ( array( 'alpha', 'beta' ) !== ( $okf_child->_frontmatter_terms['post_tag'] ?? array() ) ) {
+		$failures[] = 'OKF import did not map top-level tags back to post_tag terms';
 	}
 }
 

@@ -1059,6 +1059,10 @@ class WP_Markdown_Storage {
 			return (int) $m[1];
 		}
 
+		if ( preg_match( '/^wordpress:\s*$.*?^  id:\s*(\d+)\s*$/ms', $header, $m ) ) {
+			return (int) $m[1];
+		}
+
 		return null;
 	}
 
@@ -1526,6 +1530,13 @@ class WP_Markdown_Storage {
 		foreach ( $data as $key => $value ) {
 			if ( is_array( $value ) ) {
 				$lines[] = $key . ':';
+				if ( $this->is_list_array( $value ) ) {
+					foreach ( $value as $item ) {
+						$lines[] = '  - ' . $this->yaml_scalar( $item );
+					}
+					continue;
+				}
+
 				foreach ( $value as $sub_key => $sub_value ) {
 					if ( is_array( $sub_value ) ) {
 						$lines[] = '  ' . $sub_key . ':';
@@ -1542,6 +1553,16 @@ class WP_Markdown_Storage {
 		}
 
 		return implode( "\n", $lines ) . "\n";
+	}
+
+	/**
+	 * Determine whether an array should be encoded as a YAML list.
+	 *
+	 * @param array $value Array value.
+	 * @return bool Whether the array is list-shaped.
+	 */
+	private function is_list_array( array $value ): bool {
+		return array_keys( $value ) === range( 0, count( $value ) - 1 );
 	}
 
 	/**
@@ -1607,6 +1628,14 @@ class WP_Markdown_Storage {
 			if ( preg_match( '/^    - (.+)$/', $line, $m ) ) {
 				if ( $current_key && $current_subkey ) {
 					$result[ $current_key ][ $current_subkey ][] = $this->yaml_decode_scalar( $m[1] );
+				}
+				continue;
+			}
+
+			// Array item: "  - value" (nested directly under a top-level key).
+			if ( preg_match( '/^  - (.+)$/', $line, $m ) ) {
+				if ( $current_key && null === $current_subkey ) {
+					$result[ $current_key ][] = $this->yaml_decode_scalar( $m[1] );
 				}
 				continue;
 			}

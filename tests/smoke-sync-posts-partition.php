@@ -18,6 +18,11 @@
 
 declare( strict_types=1 );
 
+if ( ! extension_loaded( 'pdo_sqlite' ) ) {
+	echo "SKIP: pdo_sqlite extension is not available.\n";
+	exit( 0 );
+}
+
 if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );
 }

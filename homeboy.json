@@ -6,6 +6,14 @@
   },
   "id": "markdown-database-integration",
   "remote_path": "wp-content/plugins/markdown-database-integration",
+  "scripts": {
+    "lint": [
+      "php -l markdown-database-integration.php && for file in inc/*.php tests/*.php; do php -l \"$file\" || exit 1; done"
+    ],
+    "test": [
+      "for test_file in tests/smoke-*.php; do php \"$test_file\" || exit 1; done"
+    ]
+  },
   "version_targets": [
     {
       "file": "markdown-database-integration.php",

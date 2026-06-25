@@ -672,7 +672,7 @@ class WP_Markdown_CLI {
 	}
 
 	/**
-	 * Convert content with Block Format Bridge when it is available.
+	 * Convert content with the active Blocks Engine PHP Transformer runtime.
 	 *
 	 * @param string $content     Source content.
 	 * @param string $from        Source format.
@@ -682,25 +682,15 @@ class WP_Markdown_CLI {
 	 * @return string|mixed Converted content or conversion error.
 	 */
 	private static function convert_content_format( string $content, string $from, string $to, array $context, object $source_post ) {
-		if ( function_exists( 'bfb_normalize' ) ) {
-			$normalized = bfb_normalize( $content, $from );
-			if ( self::is_error( $normalized ) ) {
-				self::content_format_conversion_failed( $normalized, $context, $source_post );
-				return $normalized;
-			}
-
-			if ( is_string( $normalized ) ) {
-				$content = $normalized;
-			}
+		$converted = null;
+		if ( function_exists( 'apply_filters' ) ) {
+			$converted = apply_filters( 'datamachine_content_format_convert', null, $content, $from, $to, $context );
 		}
 
-		if ( ! function_exists( 'bfb_convert' ) ) {
-			$error = class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_bfb_unavailable', 'Block Format Bridge is required for MDI import/export content conversion.' ) : false;
-			self::content_format_conversion_failed( $error, $context, $source_post );
-			return $error;
+		if ( null === $converted ) {
+			$converted = self::convert_content_format_with_blocks_engine( $content, $from, $to, $context );
 		}
 
-		$converted = bfb_convert( $content, $from, $to );
 		if ( self::is_error( $converted ) ) {
 			self::content_format_conversion_failed( $converted, $context, $source_post );
 			return $converted;
@@ -710,7 +700,70 @@ class WP_Markdown_CLI {
 	}
 
 	/**
-	 * Emit a diagnostic action for optional BFB conversion failures.
+	 * Convert content directly through Blocks Engine PHP Transformer.
+	 *
+	 * @param string $content Source content.
+	 * @param string $from    Source format.
+	 * @param string $to      Target format.
+	 * @param array  $context Transform context.
+	 * @return string|mixed Converted content or conversion error.
+	 */
+	private static function convert_content_format_with_blocks_engine( string $content, string $from, string $to, array $context ) {
+		try {
+			if ( function_exists( 'blocks_engine_php_transformer_convert_format' ) ) {
+				$result = blocks_engine_php_transformer_convert_format( $content, $from, $to, $context );
+			} else {
+				$format_bridge_class = '\\Automattic\\BlocksEngine\\PhpTransformer\\FormatBridge\\FormatBridge';
+				if ( ! class_exists( $format_bridge_class ) ) {
+					return class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_transformer_unavailable', 'Blocks Engine PHP Transformer is required for MDI import/export content conversion.' ) : false;
+				}
+
+				$result = ( new $format_bridge_class() )->convertResult( $content, $from, $to, $context );
+				if ( is_object( $result ) && method_exists( $result, 'toArray' ) ) {
+					$result = $result->toArray();
+				}
+			}
+		} catch ( Throwable $throwable ) {
+			return class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_transformer_exception', $throwable->getMessage() ) : false;
+		}
+
+		return self::content_from_blocks_engine_result( $result, $from, $to );
+	}
+
+	/**
+	 * Extract converted content from a Blocks Engine result envelope.
+	 *
+	 * @param mixed  $result Result envelope.
+	 * @param string $from   Source format.
+	 * @param string $to     Target format.
+	 * @return string|mixed Converted content or conversion error.
+	 */
+	private static function content_from_blocks_engine_result( $result, string $from, string $to ) {
+		if ( ! is_array( $result ) ) {
+			return class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_transformer_invalid_result', 'Blocks Engine PHP Transformer returned an invalid result.' ) : false;
+		}
+
+		if ( 'success' !== ( $result['status'] ?? '' ) ) {
+			$diagnostic = is_array( $result['diagnostics'][0] ?? null ) ? $result['diagnostics'][0] : array();
+			$message    = (string) ( $diagnostic['message'] ?? sprintf( 'Blocks Engine PHP Transformer failed converting content from %s to %s.', $from, $to ) );
+			return class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_transformer_failed', $message ) : false;
+		}
+
+		if ( 'blocks' === $to && is_string( $result['serialized_blocks'] ?? null ) && '' !== $result['serialized_blocks'] ) {
+			return $result['serialized_blocks'];
+		}
+
+		foreach ( $result['documents'] ?? array() as $document ) {
+			if ( is_array( $document ) && ( $document['format'] ?? null ) === $to && is_string( $document['content'] ?? null ) ) {
+				return $document['content'];
+			}
+		}
+
+		return class_exists( 'WP_Error' ) ? new WP_Error( 'markdown_db_transformer_missing_content', sprintf( 'Blocks Engine PHP Transformer did not return %s content converting from %s.', $to, $from ) ) : false;
+	}
+
+	/**
+	 * Emit a diagnostic action for optional content conversion failures.
 	 *
 	 * @param mixed  $error       Conversion error object.
 	 * @param array  $context     Transform context.

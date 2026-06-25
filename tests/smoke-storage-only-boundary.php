@@ -72,7 +72,7 @@ $composer_lock = file_exists( $plugin_dir . '/composer.lock' )
 	: array( 'packages' => array() );
 
 $require = is_array( $composer ) ? ( $composer['require'] ?? array() ) : array();
-mdi_storage_only_assert( isset( $require['chubes4/block-format-bridge'] ), 'composer.json requires chubes4/block-format-bridge for import/export' );
+mdi_storage_only_assert( isset( $require['automattic/blocks-engine-php-transformer'] ), 'composer.json requires automattic/blocks-engine-php-transformer for import/export' );
 
 $locked_packages = array_map(
 	static function ( array $package ): string {
@@ -81,8 +81,9 @@ $locked_packages = array_map(
 	is_array( $composer_lock['packages'] ?? null ) ? $composer_lock['packages'] : array()
 );
 if ( file_exists( $plugin_dir . '/composer.lock' ) ) {
-	mdi_storage_only_assert( in_array( 'chubes4/block-format-bridge', $locked_packages, true ), 'composer.lock includes chubes4/block-format-bridge' );
+	mdi_storage_only_assert( in_array( 'automattic/blocks-engine-php-transformer', $locked_packages, true ), 'composer.lock includes automattic/blocks-engine-php-transformer' );
 }
+mdi_storage_only_assert( ! in_array( 'chubes4/block-format-bridge', $locked_packages, true ), 'composer.lock does not include chubes4/block-format-bridge as a runtime dependency' );
 mdi_storage_only_assert( ! in_array( 'chubes4/html-to-blocks-converter', $locked_packages, true ), 'composer.lock does not include chubes4/html-to-blocks-converter as a runtime dependency' );
 
 $production_php = array(

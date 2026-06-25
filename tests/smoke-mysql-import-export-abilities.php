@@ -223,10 +223,6 @@ function maybe_serialize( $value ) {
 	return $value;
 }
 
-function bfb_convert( string $content, string $from, string $to ) {
-	return "[{$from}:{$to}]{$content}";
-}
-
 function mdi_mysql_import_export_rm_rf( string $dir ): void {
 	if ( ! is_dir( $dir ) ) {
 		return;
@@ -253,6 +249,13 @@ $failures = array();
 WP_Markdown_CLI::register();
 mdi_mysql_import_export_do_action( 'wp_abilities_api_categories_init' );
 mdi_mysql_import_export_do_action( 'wp_abilities_api_init' );
+
+add_filter(
+	'datamachine_content_format_convert',
+	static fn( $converted, string $content, string $from, string $to ): string => "[{$from}:{$to}]{$content}",
+	10,
+	5
+);
 
 if ( ! isset( $GLOBALS['mdi_test_abilities']['markdown-db/import'] ) ) {
 	$failures[] = 'markdown-db/import ability was not registered';

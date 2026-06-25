@@ -5,7 +5,7 @@
     "license": "GPL-2.0-or-later",
     "require": {
         "php": ">=8.1",
-        "chubes4/block-format-bridge": "^0.8"
+        "automattic/blocks-engine-php-transformer": "0.1.15"
     },
     "autoload": {
         "classmap": [
@@ -16,9 +16,35 @@
     "prefer-stable": true,
     "repositories": [
         {
-            "name": "block-format-bridge",
-            "type": "vcs",
-            "url": "https://github.com/chubes4/block-format-bridge"
+            "type": "package",
+            "package": {
+                "name": "automattic/blocks-engine-php-transformer",
+                "version": "0.1.15",
+                "type": "library",
+                "source": {
+                    "type": "git",
+                    "url": "https://github.com/Automattic/blocks-engine.git",
+                    "reference": "php-transformer-v0.1.15"
+                },
+                "dist": {
+                    "type": "zip",
+                    "url": "https://github.com/Automattic/blocks-engine/archive/refs/tags/php-transformer-v0.1.15.zip",
+                    "reference": "php-transformer-v0.1.15"
+                },
+                "autoload": {
+                    "psr-4": {
+                        "Automattic\\BlocksEngine\\PhpTransformer\\": "php-transformer/src/"
+                    },
+                    "files": [
+                        "php-transformer/php-transformer.php"
+                    ]
+                },
+                "require": {
+                    "php": ">=8.1",
+                    "league/commonmark": "^2.5",
+                    "league/html-to-markdown": "^5.1"
+                }
+            }
         }
     ],
     "config": {

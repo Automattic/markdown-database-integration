@@ -1,6 +1,6 @@
 <?php
 /**
- * Smoke test for BFB-backed import/export content conversion.
+ * Smoke test for content-format import/export conversion.
  *
  * Usage: php tests/smoke-bfb-import-export-conversion.php
  *
@@ -13,16 +13,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 }
 
-$GLOBALS['mdi_bfb_filters'] = array();
-$GLOBALS['mdi_bfb_actions'] = array();
-$GLOBALS['mdi_bfb_fail']    = false;
+$GLOBALS['mdi_format_filters'] = array();
+$GLOBALS['mdi_format_actions'] = array();
+$GLOBALS['mdi_format_fail']    = false;
 
 function add_filter( string $hook_name, callable $callback, int $priority = 10, int $accepted_args = 1 ): void {
-	$GLOBALS['mdi_bfb_filters'][ $hook_name ][] = array( $callback, $priority, $accepted_args );
+	$GLOBALS['mdi_format_filters'][ $hook_name ][] = array( $callback, $priority, $accepted_args );
 }
 
 function apply_filters( string $hook_name, $value, ...$args ) {
-	$callbacks = $GLOBALS['mdi_bfb_filters'][ $hook_name ] ?? array();
+	$callbacks = $GLOBALS['mdi_format_filters'][ $hook_name ] ?? array();
 	usort(
 		$callbacks,
 		static fn( array $a, array $b ): int => $a[1] <=> $b[1]
@@ -37,7 +37,7 @@ function apply_filters( string $hook_name, $value, ...$args ) {
 }
 
 function do_action( string $hook_name, ...$args ): void {
-	$GLOBALS['mdi_bfb_actions'][] = array( $hook_name, $args );
+	$GLOBALS['mdi_format_actions'][] = array( $hook_name, $args );
 }
 
 function sanitize_key( $key ): string {
@@ -46,14 +46,6 @@ function sanitize_key( $key ): string {
 
 function is_wp_error( $thing ): bool {
 	return $thing instanceof WP_Error;
-}
-
-function bfb_convert( string $content, string $from, string $to ) {
-	if ( $GLOBALS['mdi_bfb_fail'] ) {
-		return new WP_Error( 'bfb_failed', 'BFB conversion failed.' );
-	}
-
-	return "[{$from}:{$to}]{$content}";
 }
 
 class WP_Error {
@@ -72,6 +64,19 @@ $source_post = (object) array(
 	'post_type' => 'page',
 );
 
+add_filter(
+	'datamachine_content_format_convert',
+	static function ( $converted, string $content, string $from, string $to ) {
+		if ( $GLOBALS['mdi_format_fail'] ) {
+			return new WP_Error( 'transformer_failed', 'Content format conversion failed.' );
+		}
+
+		return "[{$from}:{$to}]{$content}";
+	},
+	10,
+	5
+);
+
 $imported = $method->invoke(
 	null,
 	'markdown_db_import_post_content',
@@ -82,7 +87,7 @@ $imported = $method->invoke(
 );
 
 if ( '[markdown:blocks]# Hello' !== $imported ) {
-	$failures[] = 'import did not convert markdown to blocks when BFB is available';
+	$failures[] = 'import did not convert markdown to blocks when a content-format converter is available';
 }
 
 $exported = $method->invoke(
@@ -95,7 +100,7 @@ $exported = $method->invoke(
 );
 
 if ( '[blocks:markdown]<!-- wp:paragraph --><p>Hello</p><!-- /wp:paragraph -->' !== $exported ) {
-	$failures[] = 'export did not convert blocks to markdown when BFB is available';
+	$failures[] = 'export did not convert blocks to markdown when a content-format converter is available';
 }
 
 $context_disabled = $method->invoke(
@@ -108,7 +113,7 @@ $context_disabled = $method->invoke(
 );
 
 if ( '# Raw' !== $context_disabled ) {
-	$failures[] = 'context conversion policy did not disable BFB conversion';
+	$failures[] = 'context conversion policy did not disable content-format conversion';
 }
 
 add_filter(
@@ -129,11 +134,11 @@ $disabled = $method->invoke(
 );
 
 if ( '# Unchanged' !== $disabled ) {
-	$failures[] = 'conversion policy filter did not disable BFB conversion';
+	$failures[] = 'conversion policy filter did not disable content-format conversion';
 }
 
-$GLOBALS['mdi_bfb_filters']['markdown_db_content_format_conversion'] = array();
-$GLOBALS['mdi_bfb_fail'] = true;
+$GLOBALS['mdi_format_filters']['markdown_db_content_format_conversion'] = array();
+$GLOBALS['mdi_format_fail'] = true;
 $failed_conversion       = $method->invoke(
 	null,
 	'markdown_db_import_post_content',
@@ -144,11 +149,11 @@ $failed_conversion       = $method->invoke(
 );
 
 if ( ! is_wp_error( $failed_conversion ) ) {
-	$failures[] = 'failed BFB conversion did not return an error';
+	$failures[] = 'failed content-format conversion did not return an error';
 }
 
-if ( 'markdown_db_content_format_conversion_failed' !== ( $GLOBALS['mdi_bfb_actions'][0][0] ?? '' ) ) {
-	$failures[] = 'failed BFB conversion did not emit diagnostic action';
+if ( 'markdown_db_content_format_conversion_failed' !== ( $GLOBALS['mdi_format_actions'][0][0] ?? '' ) ) {
+	$failures[] = 'failed content-format conversion did not emit diagnostic action';
 }
 
 if ( ! empty( $failures ) ) {
@@ -158,4 +163,4 @@ if ( ! empty( $failures ) ) {
 	exit( 1 );
 }
 
-echo 'PASS: BFB-backed import/export content conversion is self-contained and policy-controlled' . PHP_EOL;
+echo 'PASS: import/export content conversion is self-contained and policy-controlled' . PHP_EOL;

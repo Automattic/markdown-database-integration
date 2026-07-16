@@ -862,7 +862,7 @@ class WP_Markdown_Loader {
 		$stmt = $pdo->prepare(
 			"UPDATE `{$table}` SET
 				post_author = ?, post_date = ?, post_date_gmt = ?,
-				post_title = ?, post_excerpt = ?, post_status = ?,
+				post_content = ?, post_title = ?, post_excerpt = ?, post_status = ?,
 				comment_status = ?, ping_status = ?, post_password = ?,
 				post_name = ?, post_modified = ?, post_modified_gmt = ?,
 				post_parent = ?, guid = ?, menu_order = ?,
@@ -873,6 +873,7 @@ class WP_Markdown_Loader {
 			(int) $post->post_author,
 			$post->post_date,
 			$post->post_date_gmt,
+			'',  // post_content — empty, lazy-loaded from .md file
 			$post->post_title ?? '',
 			$post->post_excerpt ?? '',
 			$post->post_status ?? 'publish',

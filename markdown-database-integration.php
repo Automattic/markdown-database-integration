@@ -55,6 +55,15 @@ if ( ! defined( 'MARKDOWN_DB_CONTENT_DIR' ) ) {
 }
 
 /**
+ * The directory where non-post runtime state is stored.
+ * Defaults to the content directory for layout compatibility.
+ * Override in wp-config.php: define( 'MARKDOWN_DB_STATE_DIR', WP_CONTENT_DIR . '/markdown-state' );
+ */
+if ( ! defined( 'MARKDOWN_DB_STATE_DIR' ) ) {
+	define( 'MARKDOWN_DB_STATE_DIR', MARKDOWN_DB_CONTENT_DIR );
+}
+
+/**
  * Operating mode: 'mirror' or 'primary'.
  * Override in wp-config.php: define( 'MARKDOWN_DB_MODE', 'primary' );
  */

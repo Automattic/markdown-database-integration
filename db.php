@@ -17,6 +17,56 @@
 define( 'SQLITE_DB_DROPIN_VERSION', '1.8.0' );
 define( 'MARKDOWN_DB_DROPIN', true );
 
+if ( ! function_exists( 'markdown_database_integration_store_has_siteurl' ) ) {
+	/**
+	 * Whether the state store already contains an installed-site siteurl.
+	 *
+	 * @param string $state_dir Runtime state directory.
+	 * @return bool True when siteurl is persisted in per-option or legacy form.
+	 */
+	function markdown_database_integration_store_has_siteurl( string $state_dir ): bool {
+		$siteurl_file = rtrim( $state_dir, '/\\' ) . '/_options/siteurl.json';
+		if ( file_exists( $siteurl_file ) ) {
+			return true;
+		}
+
+		$legacy_file = rtrim( $state_dir, '/\\' ) . '/options.json';
+		if ( ! file_exists( $legacy_file ) ) {
+			return false;
+		}
+
+		$decoded = json_decode( (string) file_get_contents( $legacy_file ), true );
+		if ( ! is_array( $decoded ) ) {
+			return false;
+		}
+
+		foreach ( $decoded as $row ) {
+			if ( is_array( $row ) && isset( $row['option_name'] ) && 'siteurl' === $row['option_name'] ) {
+				return true;
+			}
+		}
+
+		return false;
+	}
+}
+
+if ( ! function_exists( 'markdown_database_integration_primary_index_path' ) ) {
+	/**
+	 * Resolve the default primary index path for the configured roots.
+	 *
+	 * @param string $content_dir Markdown post content directory.
+	 * @param string $state_dir   Runtime state directory.
+	 * @return string Primary SQLite index path.
+	 */
+	function markdown_database_integration_primary_index_path( string $content_dir, string $state_dir ): string {
+		if ( rtrim( $state_dir, '/\\' ) !== rtrim( $content_dir, '/\\' ) ) {
+			return rtrim( $state_dir, '/\\' ) . '/markdown-index.sqlite';
+		}
+
+		return dirname( rtrim( $content_dir, '/\\' ) ) . '/markdown-index.sqlite';
+	}
+}
+
 // Find the SQLite integration plugin. Probe order:
 //   1. wp-content/mu-plugins/sqlite-database-integration  (typical install)
 //   2. wp-content/plugins/sqlite-database-integration     (regular plugin install)
@@ -57,39 +107,6 @@ if ( ! defined( 'WP_SQLITE_AST_DRIVER' ) ) {
 	define( 'WP_SQLITE_AST_DRIVER', true );
 }
 
-if ( ! function_exists( 'markdown_database_integration_store_has_siteurl' ) ) {
-	/**
-	 * Whether the markdown store already contains an installed-site siteurl.
-	 *
-	 * @param string $content_dir Markdown content directory.
-	 * @return bool True when siteurl is persisted in per-option or legacy form.
-	 */
-	function markdown_database_integration_store_has_siteurl( string $content_dir ): bool {
-		$siteurl_file = rtrim( $content_dir, '/\\' ) . '/_options/siteurl.json';
-		if ( file_exists( $siteurl_file ) ) {
-			return true;
-		}
-
-		$legacy_file = rtrim( $content_dir, '/\\' ) . '/options.json';
-		if ( ! file_exists( $legacy_file ) ) {
-			return false;
-		}
-
-		$decoded = json_decode( (string) file_get_contents( $legacy_file ), true );
-		if ( ! is_array( $decoded ) ) {
-			return false;
-		}
-
-		foreach ( $decoded as $row ) {
-			if ( is_array( $row ) && isset( $row['option_name'] ) && 'siteurl' === $row['option_name'] ) {
-				return true;
-			}
-		}
-
-		return false;
-	}
-}
-
 // Primary mode uses markdown-index.sqlite as the active query engine. The
 // SQLite Integration install shim opens FQDB directly during wp_install(). Only
 // point FQDB at the markdown index when the markdown store already represents an
@@ -99,8 +116,11 @@ if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 		? MARKDOWN_DB_CONTENT_DIR
 		: WP_CONTENT_DIR . '/markdown';
-	if ( markdown_database_integration_store_has_siteurl( $markdown_db_content_dir ) ) {
-		$markdown_db_index_path = dirname( rtrim( $markdown_db_content_dir, '/\\' ) ) . '/markdown-index.sqlite';
+	$markdown_db_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
+		? MARKDOWN_DB_STATE_DIR
+		: $markdown_db_content_dir;
+	if ( markdown_database_integration_store_has_siteurl( $markdown_db_state_dir ) ) {
+		$markdown_db_index_path = markdown_database_integration_primary_index_path( $markdown_db_content_dir, $markdown_db_state_dir );
 		if ( file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' ) ) {
 			$markdown_db_index_path = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-index-' . substr( md5( $markdown_db_index_path ), 0, 12 ) . '.sqlite';
 		}
@@ -137,8 +157,11 @@ if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 		? MARKDOWN_DB_CONTENT_DIR
 		: WP_CONTENT_DIR . '/markdown';
+	$markdown_db_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
+		? MARKDOWN_DB_STATE_DIR
+		: $markdown_db_content_dir;
 
-	if ( ! markdown_database_integration_store_has_siteurl( $markdown_db_content_dir ) ) {
+	if ( ! markdown_database_integration_store_has_siteurl( $markdown_db_state_dir ) ) {
 		if ( ! defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
 			define( 'MARKDOWN_DB_INSTALL_FALLBACK', true );
 		}

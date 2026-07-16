@@ -8,7 +8,7 @@
  *
  * Table-specific strategies:
  *   - wp_posts     → individual .md files (via WP_Markdown_Storage)
- *   - wp_options   → single options.json
+ *   - wp_options   → individual _options/*.json files
  *   - wp_users     → _tables/users.json
  *   - wp_usermeta  → _tables/usermeta.json
  *   - wp_terms     → _tables/terms.json
@@ -27,11 +27,11 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WP_Markdown_Write_Engine {
 
 	/**
-	 * The base content directory.
+	 * The base directory for non-post runtime state.
 	 *
 	 * @var string
 	 */
-	private $content_dir;
+	private $state_dir;
 
 	/**
 	 * The markdown storage engine (for posts).
@@ -159,14 +159,16 @@ class WP_Markdown_Write_Engine {
 	 *                                               String is wrapped in a closure
 	 *                                               internally so call sites stay
 	 *                                               uniform.
+	 * @param string|null           $state_dir       Runtime state directory. Defaults to content directory.
 	 */
 	public function __construct(
 		string $content_dir,
 		WP_Markdown_Storage $storage,
 		WP_SQLite_Driver $driver,
-		$prefix_resolver = 'wp_'
+		$prefix_resolver = 'wp_',
+		?string $state_dir = null
 	) {
-		$this->content_dir     = rtrim( $content_dir, '/' );
+		$this->state_dir       = rtrim( $state_dir ?? $content_dir, '/' );
 		$this->storage         = $storage;
 		$this->driver          = $driver;
 		$this->prefix_resolver = is_callable( $prefix_resolver )
@@ -402,7 +404,7 @@ class WP_Markdown_Write_Engine {
 	 * Persist wp_options changes to disk as one file per option.
 	 *
 	 * Layout:
-	 *   wp-content/markdown/_options/{sanitized_name}.json
+	 *   {state_dir}/_options/{sanitized_name}.json
 	 *
 	 * Each file contains a single JSON object:
 	 *   { "option_id": ..., "option_name": ..., "option_value": ..., "autoload": ... }
@@ -433,7 +435,7 @@ class WP_Markdown_Write_Engine {
 		}
 
 		// Ensure the _options directory exists.
-		$options_dir = $this->content_dir . '/_options';
+		$options_dir = $this->state_dir . '/_options';
 		if ( ! is_dir( $options_dir ) ) {
 			if ( ! @mkdir( $options_dir, 0755, true ) && ! is_dir( $options_dir ) ) {
 				error_log( 'Markdown DB: Failed to create _options directory.' );
@@ -469,7 +471,7 @@ class WP_Markdown_Write_Engine {
 				continue;
 			}
 
-			$abs = $this->content_dir . '/' . $path;
+			$abs = $this->state_dir . '/' . $path;
 			$index_updates[] = array(
 				'option_name' => $name,
 				'file_path'   => $path,
@@ -584,12 +586,12 @@ class WP_Markdown_Write_Engine {
 	 *
 	 * @param string $name Option name.
 	 * @param array  $row  Row data (option_id, option_name, option_value, autoload).
-	 * @return string|null Relative path under content_dir on success, null on failure.
+	 * @return string|null Relative path under state_dir on success, null on failure.
 	 */
 	private function write_option_file( string $name, array $row ): ?string {
 		$filename = self::option_filename( $name );
 		$relative = '_options/' . $filename;
-		$abs      = $this->content_dir . '/' . $relative;
+		$abs      = $this->state_dir . '/' . $relative;
 
 		$payload = array(
 			'option_id'    => (int) $row['option_id'],
@@ -629,7 +631,7 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function delete_option_file( string $name, array &$index_deletes ): void {
 		$filename = self::option_filename( $name );
-		$abs      = $this->content_dir . '/_options/' . $filename;
+		$abs      = $this->state_dir . '/_options/' . $filename;
 		if ( file_exists( $abs ) ) {
 			@unlink( $abs );
 		}
@@ -879,7 +881,7 @@ class WP_Markdown_Write_Engine {
 		}
 
 		$this->ensure_tables_dir();
-		$this->write_json( $this->content_dir . '/_tables/' . $table_suffix . '.json', $data );
+		$this->write_json( $this->state_dir . '/_tables/' . $table_suffix . '.json', $data );
 	}
 
 	/**
@@ -978,7 +980,7 @@ class WP_Markdown_Write_Engine {
 		}
 
 		$this->ensure_tables_dir();
-		$this->write_json( $this->content_dir . '/_tables/posts.json', $non_markdown );
+		$this->write_json( $this->state_dir . '/_tables/posts.json', $non_markdown );
 	}
 
 	/**
@@ -1031,7 +1033,7 @@ class WP_Markdown_Write_Engine {
 		}
 
 		$this->ensure_tables_dir();
-		$this->write_json( $this->content_dir . '/_tables/' . $table_suffix . '.json', $data );
+		$this->write_json( $this->state_dir . '/_tables/' . $table_suffix . '.json', $data );
 	}
 
 	/**
@@ -1095,7 +1097,7 @@ class WP_Markdown_Write_Engine {
 			if ( ! $this->should_persist_table( $table_suffix ) ) {
 				return;
 			}
-			$schema_dir = $this->content_dir . '/_schema';
+			$schema_dir = $this->state_dir . '/_schema';
 
 			if ( ! is_dir( $schema_dir ) ) {
 				mkdir( $schema_dir, 0755, true );
@@ -1106,7 +1108,7 @@ class WP_Markdown_Write_Engine {
 			if ( 'DROP' === $ddl_type ) {
 				// Remove schema and data files.
 				@unlink( $schema_path );
-				@unlink( $this->content_dir . '/_tables/' . $table_suffix . '.json' );
+				@unlink( $this->state_dir . '/_tables/' . $table_suffix . '.json' );
 			} else {
 				// CREATE or ALTER — snapshot the current table state.
 				// SHOW CREATE TABLE returns a clean MySQL CREATE TABLE
@@ -1259,7 +1261,7 @@ class WP_Markdown_Write_Engine {
 	 * Ensure the _tables directory exists.
 	 */
 	private function ensure_tables_dir(): void {
-		$dir = $this->content_dir . '/_tables';
+		$dir = $this->state_dir . '/_tables';
 		if ( ! is_dir( $dir ) ) {
 			mkdir( $dir, 0755, true );
 		}

@@ -78,9 +78,16 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$content_dir_for_path = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 				? MARKDOWN_DB_CONTENT_DIR
 				: WP_CONTENT_DIR . '/markdown';
+			$state_dir_for_path = defined( 'MARKDOWN_DB_STATE_DIR' )
+				? MARKDOWN_DB_STATE_DIR
+				: $content_dir_for_path;
 			$db_path = defined( 'MARKDOWN_DB_INDEX_PATH' )
 				? MARKDOWN_DB_INDEX_PATH
-				: dirname( rtrim( $content_dir_for_path, '/\\' ) ) . '/markdown-index.sqlite';
+				: ( function_exists( 'markdown_database_integration_primary_index_path' )
+					? markdown_database_integration_primary_index_path( $content_dir_for_path, $state_dir_for_path )
+					: ( rtrim( $state_dir_for_path, '/\\' ) !== rtrim( $content_dir_for_path, '/\\' )
+						? rtrim( $state_dir_for_path, '/\\' ) . '/markdown-index.sqlite'
+						: dirname( rtrim( $content_dir_for_path, '/\\' ) ) . '/markdown-index.sqlite' ) );
 			$db_path = $this->resolve_primary_database_path( $db_path );
 			$this->ensure_directory_exists( dirname( $db_path ) );
 			// Don't reuse any existing PDO — we need our own connection.
@@ -95,6 +102,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 			? MARKDOWN_DB_CONTENT_DIR
 			: WP_CONTENT_DIR . '/markdown';
+		$state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
+			? MARKDOWN_DB_STATE_DIR
+			: $content_dir;
 
 		// Excluded post types — everything else is stored as markdown.
 		$excluded_types_raw = defined( 'MARKDOWN_DB_EXCLUDED_TYPES' )
@@ -113,10 +123,10 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		// Other workers either see the complete file (warm boot) or no
 		// file (wait for build to finish, then warm boot).
 		if ( 'primary' === $mode ) {
-			$this->boot_primary( $db_path, $content_dir, $storage );
+			$this->boot_primary( $db_path, $content_dir, $state_dir, $storage );
 		} else {
 			try {
-				$this->boot_connection( $db_path, $pdo, $mode, false, $content_dir, $storage );
+				$this->boot_connection( $db_path, $pdo, $mode, false, $content_dir, $state_dir, $storage );
 			} catch ( \Throwable $e ) {
 				$this->last_error = $e->getMessage();
 				error_log( 'Markdown DB connect error: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
@@ -142,6 +152,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 * @param string              $mode          Operating mode ('primary' or 'mirror').
 	 * @param bool                $is_warm_boot  Whether the SQLite file already exists.
 	 * @param string              $content_dir   Path to the markdown content directory.
+	 * @param string              $state_dir     Path to the runtime state directory.
 	 * @param WP_Markdown_Storage $storage       The markdown storage engine.
 	 */
 	private function boot_connection(
@@ -150,6 +161,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		string $mode,
 		bool $is_warm_boot,
 		string $content_dir,
+		string $state_dir,
 		WP_Markdown_Storage $storage
 	): void {
 		$connection = new WP_SQLite_Connection(
@@ -197,7 +209,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$content_dir,
 			$storage,
 			$this->dbh,
-			$prefix_resolver
+			$prefix_resolver,
+			$state_dir
 		);
 		$this->dbh->set_write_engine( $write_engine );
 
@@ -273,7 +286,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$content_dir,
 				$this->dbh,
 				$storage,
-				$prefix_resolver
+				$prefix_resolver,
+				$state_dir
 			);
 
 			$loader_action = $is_warm_boot ? 'sync_incremental' : 'load_all';
@@ -367,17 +381,19 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 *
 	 * @param string              $db_path     Path to the final SQLite index file.
 	 * @param string              $content_dir Path to the markdown content directory.
+	 * @param string              $state_dir   Path to the runtime state directory.
 	 * @param WP_Markdown_Storage $storage     The markdown storage engine.
 	 */
 	private function boot_primary(
 		string $db_path,
 		string $content_dir,
+		string $state_dir,
 		WP_Markdown_Storage $storage
 	): void {
 		// --- Warm boot: index exists ---
 		if ( file_exists( $db_path ) ) {
 			try {
-				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $storage );
+				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $state_dir, $storage );
 				return;
 			} catch ( \Throwable $e ) {
 				// Index exists but is unusable (corrupted, incomplete from
@@ -397,7 +413,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$tmp_path = $db_path . '.tmp.' . getmypid() . '.' . substr( md5( uniqid( '', true ) ), 0, 8 );
 
 		try {
-			$this->boot_connection( $tmp_path, null, 'primary', false, $content_dir, $storage );
+			$this->boot_connection( $tmp_path, null, 'primary', false, $content_dir, $state_dir, $storage );
 
 			// Checkpoint WAL so the temp file is self-contained.
 			$pdo = $this->dbh->get_connection()->get_pdo();
@@ -412,7 +428,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$this->cleanup_index_files( $tmp_path );
 
 				try {
-					$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $storage );
+					$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $state_dir, $storage );
 					return;
 				} catch ( \Throwable $e ) {
 					// Their file is bad too? Delete it, fall through to our rename.
@@ -422,7 +438,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 					$this->last_error = '';
 					$this->loader     = null;
 					// Re-build connection to our temp file for the rename below.
-					$this->boot_connection( $tmp_path, null, 'primary', true, $content_dir, $storage );
+					$this->boot_connection( $tmp_path, null, 'primary', true, $content_dir, $state_dir, $storage );
 				}
 			}
 
@@ -447,7 +463,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$this->loader     = null;
 				$this->cleanup_index_files( $tmp_path );
 
-				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $storage );
+				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $state_dir, $storage );
 			}
 			// If rename succeeded, we keep our existing connection — it's
 			// already fully loaded from the cold boot above.

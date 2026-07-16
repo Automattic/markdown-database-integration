@@ -57,6 +57,13 @@ class WP_Markdown_Loader {
 	private $content_dir;
 
 	/**
+	 * The base directory for non-post runtime state.
+	 *
+	 * @var string
+	 */
+	private $state_dir;
+
+	/**
 	 * The driver to execute SQL queries on.
 	 *
 	 * @var WP_SQLite_Driver
@@ -143,14 +150,17 @@ class WP_Markdown_Loader {
 	 * @param WP_SQLite_Driver    $driver      The SQLite driver.
 	 * @param WP_Markdown_Storage $storage     The markdown storage engine.
 	 * @param callable|string     $prefix      Table prefix or resolver.
+	 * @param string|null         $state_dir   Runtime state directory. Defaults to content directory.
 	 */
 	public function __construct(
 		string $content_dir,
 		WP_SQLite_Driver $driver,
 		WP_Markdown_Storage $storage,
-		$prefix = 'wp_'
+		$prefix = 'wp_',
+		?string $state_dir = null
 	) {
 		$this->content_dir     = rtrim( $content_dir, '/' );
+		$this->state_dir       = rtrim( $state_dir ?? $content_dir, '/' );
 		$this->driver          = $driver;
 		$this->storage         = $storage;
 		$this->prefix_resolver = is_callable( $prefix )
@@ -309,7 +319,7 @@ class WP_Markdown_Loader {
 		// See #55.
 
 		// Check all JSON files in _tables/.
-		$tables_dir = $this->content_dir . '/_tables';
+		$tables_dir = $this->state_dir . '/_tables';
 
 		foreach ( self::CORE_TABLE_SUFFIXES as $table_suffix ) {
 			// Options are handled separately above (different file location).
@@ -1019,7 +1029,7 @@ class WP_Markdown_Loader {
 		// tracked in _options_file_index. See #55.
 
 		// Track all JSON files in _tables/.
-		$tables_dir = $this->content_dir . '/_tables';
+		$tables_dir = $this->state_dir . '/_tables';
 		if ( is_dir( $tables_dir ) ) {
 			$files = glob( $tables_dir . '/*.json' );
 			if ( $files ) {
@@ -1042,7 +1052,7 @@ class WP_Markdown_Loader {
 		$prefix = $this->prefix();
 
 		// Check if we have a schema cache file.
-		$schema_file = $this->content_dir . '/_schema/create_tables.sql';
+		$schema_file = $this->state_dir . '/_schema/create_tables.sql';
 		if ( file_exists( $schema_file ) ) {
 			$sql = file_get_contents( $schema_file );
 			$statements = $this->split_sql( $sql );
@@ -1247,7 +1257,7 @@ class WP_Markdown_Loader {
 	/**
 	 * Load wp_options from disk on cold boot.
 	 *
-	 * Reads every option file under {content_dir}/_options/ and inserts
+	 * Reads every option file under {state_dir}/_options/ and inserts
 	 * into wp_options. Also populates _options_file_index so incremental
 	 * sync works on subsequent warm boots.
 	 *
@@ -1262,8 +1272,8 @@ class WP_Markdown_Loader {
 	private function load_options(): void {
 		$start = microtime( true );
 
-		$options_dir = $this->content_dir . '/_options';
-		$legacy_file = $this->content_dir . '/options.json';
+		$options_dir = $this->state_dir . '/_options';
+		$legacy_file = $this->state_dir . '/options.json';
 
 		// Migrate legacy options.json → _options/*.json on first boot.
 		if ( ! is_dir( $options_dir ) && file_exists( $legacy_file ) ) {
@@ -1416,8 +1426,8 @@ class WP_Markdown_Loader {
 	private function sync_options(): void {
 		$start = microtime( true );
 
-		$options_dir = $this->content_dir . '/_options';
-		$legacy_file = $this->content_dir . '/options.json';
+		$options_dir = $this->state_dir . '/_options';
+		$legacy_file = $this->state_dir . '/options.json';
 
 		// Migrate legacy options.json if needed (first warm boot after upgrade).
 		if ( ! is_dir( $options_dir ) && file_exists( $legacy_file ) ) {
@@ -1591,14 +1601,14 @@ class WP_Markdown_Loader {
 	 * Load a table from a JSON file.
 	 *
 	 * Generic loader for tables like users, usermeta, terms, etc.
-	 * File is at {content_dir}/_tables/{table_name}.json
+	 * File is at {state_dir}/_tables/{table_name}.json
 	 *
 	 * @param string $table_suffix Table name without prefix (e.g. 'users').
 	 */
 	private function load_table_from_json( string $table_suffix ): void {
 		$start = microtime( true );
 		$table = $this->prefix() . $table_suffix;
-		$file  = $this->content_dir . '/_tables/' . $table_suffix . '.json';
+		$file  = $this->state_dir . '/_tables/' . $table_suffix . '.json';
 
 		if ( ! file_exists( $file ) ) {
 			$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
@@ -1667,7 +1677,7 @@ class WP_Markdown_Loader {
 		$posts = $this->storage->get_all_posts_iterator( true );
 
 		// Also load any non-markdown posts from the JSON fallback.
-		$json_file = $this->content_dir . '/_tables/posts.json';
+		$json_file = $this->state_dir . '/_tables/posts.json';
 		$json_posts = array();
 		if ( file_exists( $json_file ) ) {
 			$json = file_get_contents( $json_file );
@@ -1867,7 +1877,7 @@ class WP_Markdown_Loader {
 		// Also consult the JSON fallback: during cold boot, non-markdown
 		// posts are loaded from _tables/posts.json AFTER markdown posts,
 		// so their IDs are not yet in wp_posts when assign_next_id fires.
-		$json_file = $this->content_dir . '/_tables/posts.json';
+		$json_file = $this->state_dir . '/_tables/posts.json';
 		if ( file_exists( $json_file ) ) {
 			$json = @file_get_contents( $json_file );
 			if ( false !== $json ) {
@@ -2049,7 +2059,7 @@ class WP_Markdown_Loader {
 	/**
 	 * Load plugin tables from their JSON files.
 	 *
-	 * Scans {content_dir}/_tables/ for any .json files that correspond
+	 * Scans {state_dir}/_tables/ for any .json files that correspond
 	 * to tables NOT in the core set (those are loaded explicitly above).
 	 *
 	 * Schema files may contain CREATE TABLE and ALTER TABLE statements.
@@ -2065,7 +2075,7 @@ class WP_Markdown_Loader {
 	 */
 	private function load_plugin_tables(): void {
 		$start = microtime( true );
-		$dir   = $this->content_dir . '/_tables';
+		$dir   = $this->state_dir . '/_tables';
 
 		if ( ! is_dir( $dir ) ) {
 			$this->timings['load_plugin_tables'] = microtime( true ) - $start;
@@ -2092,7 +2102,7 @@ class WP_Markdown_Loader {
 			}
 
 			// Check if this table has a corresponding schema file.
-			$schema_file = $this->content_dir . '/_schema/' . $basename . '.sql';
+			$schema_file = $this->state_dir . '/_schema/' . $basename . '.sql';
 			if ( ! file_exists( $schema_file ) ) {
 				// No schema file — skip this table (data without schema is useless).
 				continue;

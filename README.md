@@ -204,12 +204,16 @@ content between the active database and `MARKDOWN_DB_CONTENT_DIR`.
 Add to `wp-config.php`:
 
 ```php
-// Where markdown and JSON table snapshots are stored.
+// Where Markdown-backed posts and post-type hierarchy are stored.
 // Default: wp-content/markdown/
 define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/markdown' );
 
 // Or customize the storage root for a plugin or repo-backed app:
 define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/plugins/my-world/content' );
+
+// Optional local root for non-post runtime state. When omitted, this defaults
+// to MARKDOWN_DB_CONTENT_DIR and preserves the existing single-root layout.
+define( 'MARKDOWN_DB_STATE_DIR', WP_CONTENT_DIR . '/markdown-state' );
 
 // Post types to exclude from markdown storage (comma-separated).
 // Default: all types stored as markdown. Override if you want certain
@@ -223,16 +227,53 @@ define( 'MARKDOWN_DB_MODE', 'mirror' );
 ### Modes
 
 - **`mirror`** (default): SQLite on disk is authoritative. Markdown files are mirrored on every write. WordPress reads from SQLite. AI agents read from markdown. Safe, conservative — SQLite on disk survives even if a `.md` file is lost.
-- **`primary`**: Markdown files are the sole source of truth. SQLite is rebuilt in-memory from the files on every boot (backed by `wp-content/markdown-index.sqlite`). Writes go to markdown first. Anything without a `.md` file is ephemeral — non-markdown tables (options, users, transients, etc.) are snapshot to `wp-content/markdown/_tables/*.json` and reloaded on boot.
+- **`primary`**: Markdown files are the sole source of truth for posts. SQLite is rebuilt from the files on cold boot and incrementally synchronized on warm boot (backed by `wp-content/markdown-index.sqlite` in the default layout). Writes go to markdown first. Non-markdown tables (options, users, plugin tables, etc.) are snapshotted as JSON and reloaded on boot.
 
 `primary` mode trades a minor boot cost (rebuild from markdown) for a much
 stronger guarantee: your content is files, not database rows. `git clone` the
 markdown tree and a fresh WordPress install can reconstruct the same content.
 
-The examples above use the default `wp-content/markdown/` root. When
-`MARKDOWN_DB_CONTENT_DIR` points somewhere else, MDI stores the same layout
-under that directory: post type directories such as `post/` and `page/`, plus
-internal snapshots under `_tables/` and `_options/`.
+With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
+single-root layout:
+
+```
+wp-content/
+  markdown-index.sqlite
+  markdown/
+    post/*.md
+    page/*.md
+    _options/*.json
+    _tables/*.json
+    _schema/*.sql
+```
+
+For a Git-backed post-only repository, configure a separate local state root:
+
+```php
+define( 'MARKDOWN_DB_MODE', 'primary' );
+define( 'MARKDOWN_DB_CONTENT_DIR', '/path/to/git/content' );
+define( 'MARKDOWN_DB_STATE_DIR', WP_CONTENT_DIR . '/markdown-state' );
+```
+
+This routes storage by ownership:
+
+```
+/path/to/git/content/              # safe to version as post content
+  post/*.md
+  page/*.md
+  wiki/*.md
+
+wp-content/markdown-state/         # local WordPress runtime state
+  markdown-index.sqlite
+  _options/*.json
+  _tables/*.json
+  _schema/*.sql
+```
+
+Installed-site detection reads `siteurl` from the state root, so the content
+repository does not need machine-specific options. Cold and warm primary boots
+load Markdown posts from the content root and all non-post state from the state
+root. `MARKDOWN_DB_INDEX_PATH` can still override the primary index path.
 
 ## MySQL/MariaDB Import and Export
 

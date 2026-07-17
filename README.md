@@ -1,10 +1,20 @@
 # Markdown Database Integration
 
-WordPress database integration that persists WordPress database rows as markdown and JSON files. SQLite for machinery, files for knowledge.
+File-backed, reconstructable WordPress database state: Markdown for content,
+JSON for WordPress and plugin table rows, SQL for plugin schemas, and SQLite
+as a rebuildable query engine and index.
 
 ## What This Does
 
-Every time you create, update, or delete a post in WordPress, the post row is mirrored to a `.md` file on disk:
+MDI has two SQLite-backed operating modes:
+
+- **`mirror`** (the default) keeps the SQLite database authoritative and mirrors
+  Markdown-backed post writes to files.
+- **`primary`** persists the state needed to reconstruct WordPress to ordinary
+  files. SQLite remains the runtime query engine and index, but a cold boot can
+  recreate it from the content and state trees.
+
+In primary mode, a typical single-root store looks like this:
 
 ```
 wp-content/markdown/
@@ -14,11 +24,21 @@ wp-content/markdown/
   page/
     about.md
     contact.md
-  wiki/
+  wiki/                         # Custom post type.
     woocommerce-pricing.md
+  _options/
+    siteurl.json
+  _tables/
+    users.json
+    comments.json
+    my_plugin_jobs.json
+  _schema/
+    my_plugin_jobs.sql
 ```
 
-Each file has YAML frontmatter with metadata and the stored `post_content` bytes as the body:
+Post types get their own directories. Each Markdown-backed post file has YAML
+frontmatter for its row data, post meta, and terms, with stored `post_content`
+bytes as its body:
 
 ```markdown
 ---
@@ -48,38 +68,44 @@ Content goes here with **bold** and *italic* text.
 > A blockquote for good measure.
 ```
 
-MDI does not decide whether that body is markdown, block markup, or HTML. It stores whatever the caller/content-format layer writes to `post_content`.
+MDI does not decide whether that body is Markdown, block markup, or HTML. It
+stores whatever the caller or content-format layer writes to `post_content`.
 
 MDI manages the frontmatter shape automatically. Markdown files use portable, WordPress-compatible metadata: broadly useful concept fields stay at the top level, while WordPress round-trip fields live under `wordpress`. Existing MDI files are rewritten to the current shape by the one-time frontmatter migration during upgrade.
 
-## Why
+### Primary-Mode Persistence
 
-WordPress stores content in database rows. That is great for runtime queries,
-but awkward for source control, local editing, AI agents, backups, and review.
+Primary mode persists the following state so SQLite can be reconstructed:
 
-MDI keeps WordPress running on SQLite while making durable content available as
-plain files. Files are:
+- Post rows and content in `post/*.md`, `page/*.md`, and custom-post-type
+  directories; their post meta and terms are in frontmatter.
+- Options as individual `_options/*.json` files.
+- Users and usermeta, taxonomy tables, comments and commentmeta, links, and
+  non-Markdown posts as `_tables/*.json` snapshots.
+- Arbitrary plugin-table rows as `_tables/*.json` snapshots and their schemas
+  as `_schema/*.sql` files.
 
-- **AI-native** — any agent reads them directly. No API, no auth, just `grep`.
-- **Git-syncable** — `git push` to share knowledge across machines and people.
-- **Instant search** — `grep -r "woocommerce" wp-content/markdown/` is faster than any API.
-- **Human-readable** — open in any text editor or IDE.
-- **Agent/wiki ready** — content can be read directly by local tools and agents.
+The driver persists every detected `INSERT`, `UPDATE`, `DELETE`, and `REPLACE`
+unless its table is explicitly excluded through `MARKDOWN_DB_EPHEMERAL_TABLES`
+or the `markdown_db_ephemeral_tables` filter. The write engine also honors an
+explicit `markdown_db_table_persistence_policy` exclusion. Do not assume that
+caches, sessions, or other plugin tables are ephemeral by default; configure
+the exclusion for tables a site does not want persisted.
 
 ## Storage Boundary
 
-MDI's live storage path is storage/persistence only:
+MDI is a storage and persistence layer:
 
-- It mirrors WordPress DB rows to files.
-- It rebuilds the SQLite index from files in primary mode.
+- It persists database state to files and rebuilds or synchronizes the SQLite
+  index from those files in primary mode.
 - It stores `post_content` bytes exactly as received.
 - It does not render markdown to HTML.
 - It does not convert editor block markup to markdown during normal writes.
 - It does not register render, REST, editor, or write-engine conversion hooks.
 
 Content-format policy belongs to the application layer above MDI. A site can
-choose to store block markup, HTML, markdown, or another format in
-`post_content`; MDI persists those bytes without interpreting them.
+choose block markup, HTML, Markdown, or another format for `post_content`; MDI
+persists those bytes and database state without interpreting them.
 
 Import/export is the explicit content-format boundary. The `markdown-db import`
 and `markdown-db export` commands and abilities use Block Format Bridge to
@@ -130,42 +156,52 @@ MDI requires Block Format Bridge for self-contained import/export conversion.
 The drop-in and live write engine remain byte-preserving; BFB is not used by
 the runtime render, REST, editor, or DB write paths.
 
+## Why
+
+File-backed primary state makes a WordPress site reconstructable instead of
+depending solely on one SQLite file. That supports:
+
+- Portability between machines or fresh WordPress installations.
+- Git review, history, and replication for content and any state roots a site
+  chooses to version.
+- Direct inspection and editing of content by people, local tools, and AI
+  agents.
+- Backups and recovery by rebuilding a disposable SQLite runtime from the
+  persisted files.
+- Disposable local or test runtimes that can be recreated from the same trees.
+
 ## Architecture
 
 ```
 WordPress Core ($wpdb)
         │
-    WP_Markdown_DB (extends WP_SQLite_DB)
+        v
+WP_Markdown_Driver -------------------- runtime queries ----> SQLite index
+        │                                                        ^
+        │ successful writes                                      │ rebuild/sync
+        v                                                        │
+Persisted files ---------------------- cold/warm boot --> MDI loader
         │
-    WP_Markdown_Driver (extends WP_SQLite_Driver)
+        ├── MARKDOWN_DB_CONTENT_DIR
+        │     post/*.md, page/*.md, {type}/*.md
         │
-    ┌───────────────────────────────────────┐
-    │  query() override:                    │
-    │    1. Execute via SQLite (parent)      │
-    │    2. If wp_posts write:               │
-    │       write row bytes to .md file      │
-    └───────────────────────────────────────┘
-        │                    │
-    SQLite (all tables)    Markdown files
-    wp_options             wp-content/markdown/
-    wp_users                 post/*.md
-    wp_terms                 page/*.md
-    transients               wiki/*.md
-    plugin tables
-
-    Live content conversion lives above MDI.
-    Import/export conversion lives at the explicit MDI CLI/ability boundary.
+        └── MARKDOWN_DB_STATE_DIR
+              _options/*.json, _tables/*.json, _schema/*.sql,
+              markdown-index.sqlite
 ```
 
-**SQLite** handles: options, users, terms, transients, sessions, plugin tables — the machinery that WordPress hammers thousands of times per page load.
+With one root, `MARKDOWN_DB_STATE_DIR` defaults to
+`MARKDOWN_DB_CONTENT_DIR`. When they are split, the content root owns
+Markdown-backed posts while the state root owns JSON snapshots, plugin schemas,
+and the SQLite index. On a cold primary boot, MDI creates core tables; loads
+options, users, taxonomy, Markdown posts and their frontmatter meta and terms,
+remaining core rows, and plugin schemas and tables; then saves manifests for
+incremental warm synchronization.
 
-**Markdown files** handle: posts, pages, custom post types — the content rows that humans and AI agents want to read, search, and sync.
-
-## Content Formats
-
-MDI does not make WordPress markdown-native by itself. It makes WordPress content file-backed.
-
-If a site wants wiki posts stored as markdown and rendered as HTML, the site/application layer should declare that policy and handle conversion at write, render, REST, and editor edges. MDI then persists the resulting `post_content` bytes without knowing which layer produced them. For repository import/export workflows, MDI can convert through BFB at the command/ability boundary without changing live storage behavior.
+In mirror mode, SQLite remains authoritative and files are mirrors rather than a
+reconstruction source. In either mode, live content conversion remains above
+MDI, and import/export conversion is limited to the explicit CLI or ability
+boundary.
 
 ## Requirements
 
@@ -229,18 +265,26 @@ define( 'MARKDOWN_DB_STATE_DIR', WP_CONTENT_DIR . '/markdown-state' );
 // types (e.g. attachments) to live only in SQLite.
 define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'attachment,nav_menu_item' );
 
+// Tables to exclude from file persistence (comma-separated table suffixes).
+// No tables are excluded by default.
+define( 'MARKDOWN_DB_EPHEMERAL_TABLES', 'my_session_table' );
+
 // Operating mode. 'mirror' (default) or 'primary' — see Modes below.
 define( 'MARKDOWN_DB_MODE', 'mirror' );
 ```
 
 ### Modes
 
-- **`mirror`** (default): SQLite on disk is authoritative. Markdown files are mirrored on every write. WordPress reads from SQLite. AI agents read from markdown. Safe, conservative — SQLite on disk survives even if a `.md` file is lost.
-- **`primary`**: Markdown files are the sole source of truth for posts. SQLite is rebuilt from the files on cold boot and incrementally synchronized on warm boot (backed by `wp-content/markdown-index.sqlite` in the default layout). Writes go to markdown first. Non-markdown tables (options, users, plugin tables, etc.) are snapshotted as JSON and reloaded on boot.
+- **`mirror`** (default): SQLite on disk is authoritative. MDI mirrors
+  Markdown-backed posts to files, and WordPress reads from SQLite.
+- **`primary`**: MDI persists reconstructable WordPress state to Markdown,
+  JSON, and plugin-schema SQL. SQLite is a runtime index and query engine,
+  rebuilt on cold boot and incrementally synchronized on warm boot. The default
+  index path is `wp-content/markdown-index.sqlite`.
 
-`primary` mode trades a minor boot cost (rebuild from markdown) for a much
-stronger guarantee: your content is files, not database rows. `git clone` the
-markdown tree and a fresh WordPress install can reconstruct the same content.
+Primary mode trades cold-boot work for reconstructable persisted state. To
+reconstruct the complete configured state, retain both the content tree and the
+state tree when they are split.
 
 With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
 single-root layout:
@@ -399,6 +443,9 @@ MDI's own fields (`id`, `title`, `status`, `type`, `slug`, `parent`, etc.) are r
 
 Tested on WordPress 6.9 with SQLite-backed local and Playground-style runtimes:
 
+- **Primary reconstruction** → cold boot creates core tables and reloads
+  Markdown content, frontmatter meta and terms, JSON-backed core state, plugin
+  schemas, and plugin table rows; warm boot synchronizes changed files
 - **Creating posts** via WP-CLI, REST API, or the admin → `.md` file created
 - **Updating posts** → `.md` file updated (title, content, metadata)
 - **Deleting posts** → `.md` file removed
@@ -406,7 +453,10 @@ Tested on WordPress 6.9 with SQLite-backed local and Playground-style runtimes:
 - **Pages** → stored in `page/` subdirectory
 - **Custom post types** → each type gets its own subdirectory
 - **WordPress admin** → works normally, no changes visible
-- **Plugins** → work normally, no compatibility issues observed
+- **JSON state** → options, users, taxonomy, comments, links, non-Markdown
+  posts, and persisted plugin tables are reloaded from state files
+- **Plugin schemas** → non-core table DDL is snapshotted and loaded before its
+  JSON table rows
 - **Round-trip** → file body and `post_content` stay byte-identical for storage-managed post types
 
 ## License

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Markdown Database Integration
  * Plugin URI: https://github.com/chubes4/markdown-database-integration
- * Description: WordPress database integration that stores content as markdown files. SQLite for machinery, markdown for knowledge. AI-native WordPress storage layer.
+ * Description: File-backed WordPress database with Markdown content, JSON state, plugin schemas, and a rebuildable SQLite query engine.
  * Version: 0.8.3
  * Author: Chris Huber
  * License: GPL v2 or later

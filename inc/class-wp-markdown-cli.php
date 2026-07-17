@@ -174,6 +174,47 @@ class WP_Markdown_CLI {
 	}
 
 	/**
+	 * Diagnose or safely repair the MDI db.php drop-in.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--repair]
+	 * : Install the MDI drop-in when absent.
+	 *
+	 * [--force]
+	 * : Back up an unrelated existing drop-in before repair.
+	 *
+	 * [--format=<format>]
+	 * : Output format. Supports table or json. Defaults to table.
+	 */
+	public static function doctor_cli( array $args, array $assoc_args ): void {
+		$result = WP_Markdown_Health::diagnose();
+		if ( array_key_exists( 'repair', $assoc_args ) ) {
+			$result['repair'] = WP_Markdown_Health::repair_dropin(
+				array( 'force' => array_key_exists( 'force', $assoc_args ) )
+			);
+		}
+
+		if ( 'json' === ( $assoc_args['format'] ?? 'table' ) ) {
+			WP_CLI::line( (string) wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			return;
+		}
+
+		WP_CLI::line( sprintf( 'Status: %s', $result['status'] ) );
+		WP_CLI::line( sprintf( 'Mode: %s', $result['mode'] ?: 'none' ) );
+		WP_CLI::line( $result['message'] );
+		if ( isset( $result['repair'] ) ) {
+			WP_CLI::line( $result['repair']['message'] );
+			if ( empty( $result['repair']['success'] ) ) {
+				WP_CLI::error( 'MDI drop-in repair failed.' );
+			}
+		}
+		if ( empty( $result['healthy'] ) ) {
+			WP_CLI::error( 'MDI health check failed.' );
+		}
+	}
+
+	/**
 	 * Import markdown files into WordPress posts.
 	 *
 	 * @param array $options Import options.

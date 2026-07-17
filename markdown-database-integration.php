@@ -44,6 +44,7 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-profile
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-migration.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
 /**
@@ -143,5 +144,6 @@ add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	WP_CLI::add_command( 'markdown-db import', array( 'WP_Markdown_CLI', 'import_cli' ) );
 	WP_CLI::add_command( 'markdown-db export', array( 'WP_Markdown_CLI', 'export_cli' ) );
+	WP_CLI::add_command( 'markdown-db doctor', array( 'WP_Markdown_CLI', 'doctor_cli' ) );
 	WP_CLI::add_command( 'markdown-db recover-sqlite-posts', array( 'WP_Markdown_SQLite_Recovery', 'cli' ) );
 }

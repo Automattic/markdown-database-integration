@@ -185,15 +185,24 @@ git clone https://github.com/Automattic/markdown-database-integration.git \
 cd wp-content/plugins/markdown-database-integration
 composer install --no-dev
 
-# Back up the existing db.php
-cp wp-content/db.php wp-content/db.php.backup
+# Activate the plugin. A MARKDOWN_DB_MODE constant alone does not activate MDI.
+wp plugin activate markdown-database-integration
 
-# Install our db.php drop-in
-cp wp-content/plugins/markdown-database-integration/db.php wp-content/db.php
+# For SQLite-backed mirror or primary mode, inspect and install the MDI drop-in.
+wp markdown-db doctor
+wp markdown-db doctor --repair
 ```
 
 The bundled drop-in includes the `@studio-keep` marker so WordPress Studio
 preserves it during SQLite integration refreshes.
+
+If `wp-content/db.php` belongs to another integration, `--repair` refuses to
+replace it. Inspect that integration first; only use `--repair --force` when
+you approve a deterministic backup at `wp-content/db.php.markdown-db-backup`.
+Restart PHP or WordPress after an install or repair because WordPress loads
+`db.php` before regular plugins. A healthy install reports `healthy`; a fresh
+primary install can report `install_fallback` while WordPress completes its
+first installation.
 
 On a normal MySQL/MariaDB WordPress site, activate the plugin without copying
 the `db.php` drop-in. Use the import/export commands or abilities to move

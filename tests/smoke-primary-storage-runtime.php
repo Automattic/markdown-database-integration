@@ -1,79 +1,115 @@
 <?php
 /**
- * Smoke test for the filesystem-only primary storage runtime.
+ * Smoke coverage for the constrained primary runtime.
  *
  * Usage: php tests/smoke-primary-storage-runtime.php
- *
- * @package Markdown_Database_Integration
  */
 
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-primary-storage-runtime.php';
 
-$passed = 0;
-$failed = 0;
-
-function mdi_primary_runtime_assert( bool $condition, string $label ): void {
-	global $passed, $failed;
-	echo ( $condition ? 'PASS' : 'FAIL' ) . ': ' . $label . PHP_EOL;
-	$condition ? $passed++ : $failed++;
+class WP_SQLite_Connection {
+	public function __construct( private PDO $pdo ) {}
+	public function get_pdo(): PDO { return $this->pdo; }
 }
 
-function mdi_primary_runtime_remove( string $path ): void {
-	if ( ! is_dir( $path ) ) {
-		return;
+class WP_SQLite_Driver {
+	public function __construct( private WP_SQLite_Connection $connection, string $database ) { unset( $database ); }
+	public function get_connection(): WP_SQLite_Connection { return $this->connection; }
+	public function get_insert_id(): int { return (int) $this->connection->get_pdo()->lastInsertId(); }
+	public function query( string $sql, $fetch_mode = PDO::FETCH_OBJ, ...$args ) {
+		unset( $args );
+		$statement = $this->connection->get_pdo()->query( $sql );
+		return false === $statement ? array() : $statement->fetchAll( $fetch_mode );
 	}
+}
+
+function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed { unset( $hook, $args ); return $value; }
+
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-search.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-write-engine.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-driver.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-loader.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-primary-storage-runtime.php';
+
+$failed = 0;
+function mdi_runtime_assert( bool $condition, string $label ): void {
+	global $failed;
+	echo ( $condition ? 'PASS' : 'FAIL' ) . ': ' . $label . PHP_EOL;
+	if ( ! $condition ) { $failed++; }
+}
+function mdi_runtime_rm( string $path ): void {
+	if ( ! is_dir( $path ) ) { return; }
 	foreach ( scandir( $path ) ?: array() as $entry ) {
 		if ( '.' !== $entry && '..' !== $entry ) {
 			$child = $path . '/' . $entry;
-			is_dir( $child ) ? mdi_primary_runtime_remove( $child ) : unlink( $child );
+			is_dir( $child ) ? mdi_runtime_rm( $child ) : unlink( $child );
 		}
 	}
 	rmdir( $path );
 }
 
-$root    = sys_get_temp_dir() . '/mdi-primary-runtime-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
-$content = $root . '/content';
-$state   = $root . '/state';
-$runtime = new WP_Markdown_Primary_Storage_Runtime( array( 'content_root' => $content, 'state_root' => $state ) );
-$index   = array(
-	'posts'   => array(
-		(object) array(
-			'ID' => 12, 'post_title' => 'Cold post', 'post_status' => 'publish', 'post_type' => 'post',
-			'post_name' => 'cold-post', 'post_content' => 'Canonical body', 'post_date' => '2026-07-18 00:00:00',
-			'post_modified' => '2026-07-18 00:00:00', 'post_author' => 1,
-		),
-	),
-	'options' => array(
-		array( 'option_id' => 7, 'option_name' => 'siteurl', 'option_value' => 'https://example.test', 'autoload' => 'yes' ),
-	),
+$root = sys_get_temp_dir() . '/mdi-primary-runtime-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
+mkdir( $root, 0755, true );
+$cache = $root . '/index.sqlite';
+$pdo = new PDO( 'sqlite:' . $cache );
+$pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
+$pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_author INTEGER, post_date TEXT, post_date_gmt TEXT, post_content TEXT, post_title TEXT, post_excerpt TEXT, post_status TEXT, comment_status TEXT, ping_status TEXT, post_password TEXT, post_name TEXT, to_ping TEXT, pinged TEXT, post_modified TEXT, post_modified_gmt TEXT, post_content_filtered TEXT, post_parent INTEGER, guid TEXT, menu_order INTEGER, post_type TEXT, post_mime_type TEXT, comment_count INTEGER)' );
+$pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
+$pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
+$pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
+$pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
+$pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
+$pdo->exec( "INSERT INTO wp_posts (ID, post_date, post_date_gmt, post_modified, post_modified_gmt, post_title, post_status, comment_status, ping_status, post_name, post_type) VALUES (12, '2026-07-18 00:00:00', '2026-07-18 00:00:00', '2026-07-18 00:00:00', '2026-07-18 00:00:00', 'Cold post', 'publish', 'open', 'open', 'cold-post', 'post')" );
+$pdo->exec( "INSERT INTO wp_options VALUES (7, 'siteurl', 'https://old.test', 'yes')" );
+$pdo->exec( "INSERT INTO wp_options VALUES (8, 'blogname', 'Old name', 'yes')" );
+
+$runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
+	array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ),
+	new WP_SQLite_Connection( $pdo ),
+	'wordpress',
+	null,
+	false
 );
+$driver = $runtime->get_driver();
+$driver->query( "UPDATE wp_posts SET post_content = 'Canonical body', post_title = 'Written post' WHERE ID = 12" );
+$driver->query( "UPDATE wp_options SET option_value = 'https://example.test' WHERE option_name = 'siteurl'" );
+$driver->query( "UPDATE wp_options SET option_value = 'Canonical name' WHERE option_name = 'blogname'" );
+$first = $runtime->flush();
+mdi_runtime_assert( array( '_options/blogname.json', '_options/siteurl.json', 'post/cold-post.md' ) === $first['created'], 'explicit flush persists normal post and option mutations with relative paths' );
+$identity = $runtime->get_identity();
+mdi_runtime_assert( '' !== $identity['hash'] && isset( $identity['files']['post/cold-post.md'] ), 'cache exposes canonical manifest identity' );
 
-$first = $runtime->flush( $index );
-$post_path = $runtime->get_content_root() . '/post/cold-post.md';
-$option_path = $runtime->get_state_root() . '/_options/siteurl.json';
-mdi_primary_runtime_assert( array( $post_path, $option_path ) === $first['created'], 'flush returns canonical created paths' );
-mdi_primary_runtime_assert( array() === $first['changed'] && array() === $first['deleted'], 'initial flush has no changed or deleted paths' );
+$driver->query( "UPDATE wp_options SET option_value = 'Canonical name two' WHERE option_name = 'blogname'" );
+$changed = $runtime->flush();
+mdi_runtime_assert( array( '_options/blogname.json' ) === $changed['changed'], 'changed canonical option path is reported' );
 
-unset( $index ); // A fresh runtime must recover from canonical files, not an index or SQLite.
-$cold_runtime = new WP_Markdown_Primary_Storage_Runtime( array( 'content_root' => $content, 'state_root' => $state ) );
-$recovered = $cold_runtime->reconstruct();
-mdi_primary_runtime_assert( 1 === count( $recovered['posts'] ) && 12 === $recovered['posts'][0]->ID && 'Canonical body' === $recovered['posts'][0]->post_content, 'fresh runtime reconstructs post from Markdown' );
-mdi_primary_runtime_assert( array( array( 'option_id' => 7, 'option_name' => 'siteurl', 'option_value' => 'https://example.test', 'autoload' => 'yes' ) ) === $recovered['options'], 'fresh runtime reconstructs option from JSON' );
-mdi_primary_runtime_assert( array( 'created' => array(), 'changed' => array(), 'deleted' => array() ) === $cold_runtime->flush( $recovered ), 're-flushing recovered index is deterministic' );
+$driver->query( "UPDATE wp_posts SET post_name = 'moved-post' WHERE ID = 12" );
+$moved = $runtime->flush();
+mdi_runtime_assert( array( 'post/moved-post.md' ) === $moved['created'] && array( 'post/cold-post.md' ) === $moved['deleted'], 'slug movement reports canonical paths without a stale file' );
+$driver->query( 'DELETE FROM wp_options WHERE option_name = \'siteurl\'' );
+$deleted = $runtime->flush();
+mdi_runtime_assert( array( '_options/siteurl.json' ) === $deleted['deleted'], 'deleted canonical option path is reported' );
 
-$recovered['posts'][0]->post_title = 'Changed post';
-$changed = $cold_runtime->flush( $recovered );
-mdi_primary_runtime_assert( array( $post_path ) === $changed['changed'], 'flush returns changed canonical Markdown path' );
+$pdo = null;
+unlink( $cache );
+$cold_pdo = new PDO( 'sqlite:' . $cache );
+$cold_pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
+$cold_pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_author INTEGER, post_date TEXT, post_date_gmt TEXT, post_content TEXT, post_title TEXT, post_excerpt TEXT, post_status TEXT, comment_status TEXT, ping_status TEXT, post_password TEXT, post_name TEXT, to_ping TEXT, pinged TEXT, post_modified TEXT, post_modified_gmt TEXT, post_content_filtered TEXT, post_parent INTEGER, guid TEXT, menu_order INTEGER, post_type TEXT, post_mime_type TEXT, comment_count INTEGER)' );
+$cold_pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
+$cold_pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
+$cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
+$cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
+$cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
+$cold_runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, false );
+$load_options = new ReflectionMethod( $cold_runtime->get_loader(), 'load_options' );
+$load_posts = new ReflectionMethod( $cold_runtime->get_loader(), 'load_posts' );
+$load_options->invoke( $cold_runtime->get_loader() );
+$load_posts->invoke( $cold_runtime->get_loader() );
+mdi_runtime_assert( 'Canonical name two' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
 
-$deleted = $cold_runtime->flush( array( 'posts' => array(), 'options' => array() ) );
-mdi_primary_runtime_assert( array( $post_path, $option_path ) === $deleted['deleted'], 'flush returns deleted canonical paths' );
-
-mdi_primary_runtime_remove( $root );
-if ( $failed ) {
-	exit( 1 );
-}
-echo "All {$passed} assertions passed.\n";
+mdi_runtime_rm( $root );
+exit( $failed ? 1 : 0 );

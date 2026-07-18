@@ -300,6 +300,40 @@ wp-content/
     _schema/*.sql
 ```
 
+### Storage-Only Primary Runtime
+
+Constrained callers that need the same canonical Markdown and JSON files without
+booting WordPress, `db.php`, or SQLite can use the filesystem-only runtime.
+Callers provide both absolute roots and a disposable index snapshot; `flush()`
+is explicit and returns absolute canonical paths grouped as `created`,
+`changed`, and `deleted`.
+
+```php
+$runtime = new WP_Markdown_Primary_Storage_Runtime( array(
+    'content_root' => '/srv/site/content',
+    'state_root'   => '/srv/site/state',
+) );
+
+$changes = $runtime->flush( array(
+    'posts' => array( $post_row ),
+    'options' => array( array(
+        'option_id' => 1,
+        'option_name' => 'siteurl',
+        'option_value' => 'https://example.test',
+        'autoload' => 'yes',
+    ) ),
+) );
+
+// Later, with no SQLite state retained:
+$fresh_index = $runtime->reconstruct();
+```
+
+`posts` accepts post-row objects or arrays with a positive `ID`; `options`
+accepts option-row objects or arrays with `option_name`. These two collections
+are complete snapshots: omitted canonical post or option files are deleted.
+This API is limited to canonical posts and options; WordPress integration,
+Cloudflare, R2, Durable Objects, and WP Codebox are outside MDI.
+
 For a Git-backed post-only repository, configure a separate local state root:
 
 ```php

@@ -330,10 +330,11 @@ $identity = $runtime->get_identity(); // Persist this beside the disposable cach
 ```
 
 For a warm cache, pass its prior `$identity` and `false` as the fourth and fifth
-arguments. MDI verifies the identity before synchronizing the cache. Deleting
-the SQLite cache and bootstrapping with `true` reconstructs it solely from the
-canonical files. The runtime delegates path moves, Markdown serialization,
-option filenames, ephemeral-option filtering, and writes to MDI's existing
+arguments; an identity is required and MDI verifies it before synchronizing the
+cache. Deleting the SQLite cache and bootstrapping with `null, true`
+reconstructs it solely from the canonical files. The runtime delegates path
+moves, Markdown serialization, option filenames, ephemeral-option filtering,
+and writes to MDI's existing
 storage, loader, driver, and write engine. Cloudflare, R2, Durable Objects, and
 WP Codebox remain outside MDI.
 

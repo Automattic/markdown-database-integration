@@ -39,7 +39,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 	 *
 	 * The supplied connection owns the cache lifecycle. Pass false for
 	 * `$cold_boot` only when that cache was previously hydrated from the supplied
-	 * identity; otherwise a complete cold reconstruction is performed.
+	 * identity. Warm boot requires that identity; cold reconstruction does not.
 	 *
 	 * @param array{content_root:string,state_root:string} $roots Canonical storage roots.
 	 * @param WP_SQLite_Connection                          $connection Disposable SQLite cache connection.
@@ -83,8 +83,13 @@ class WP_Markdown_Primary_Storage_Runtime {
 		);
 
 		$current_identity = $runtime->canonical_identity();
-		if ( ! $cold_boot && null !== $identity && $identity['hash'] !== $current_identity['hash'] ) {
-			throw new \RuntimeException( 'The supplied SQLite cache identity does not match the canonical files.' );
+		if ( ! $cold_boot ) {
+			if ( null === $identity ) {
+				throw new \RuntimeException( 'A canonical identity is required for a warm SQLite cache.' );
+			}
+			if ( $identity['hash'] !== $current_identity['hash'] ) {
+				throw new \RuntimeException( 'The supplied SQLite cache identity does not match the canonical files.' );
+			}
 		}
 		if ( $cold_boot ) {
 			$runtime->loader->load_all();

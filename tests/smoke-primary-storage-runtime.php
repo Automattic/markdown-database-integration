@@ -72,7 +72,7 @@ $runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
 	new WP_SQLite_Connection( $pdo ),
 	'wordpress',
 	null,
-	false
+	true
 );
 $driver = $runtime->get_driver();
 $driver->query( "UPDATE wp_posts SET post_content = 'Canonical body', post_title = 'Written post' WHERE ID = 12" );
@@ -94,6 +94,22 @@ $driver->query( 'DELETE FROM wp_options WHERE option_name = \'siteurl\'' );
 $deleted = $runtime->flush();
 mdi_runtime_assert( array( '_options/siteurl.json' ) === $deleted['deleted'], 'deleted canonical option path is reported' );
 
+$missing_identity_rejected = false;
+try {
+	WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $pdo ), 'wordpress', null, false );
+} catch ( RuntimeException $exception ) {
+	$missing_identity_rejected = 'A canonical identity is required for a warm SQLite cache.' === $exception->getMessage();
+}
+mdi_runtime_assert( $missing_identity_rejected, 'warm bootstrap rejects a missing canonical identity' );
+
+$mismatch_rejected = false;
+try {
+	WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $pdo ), 'wordpress', $identity, false );
+} catch ( RuntimeException $exception ) {
+	$mismatch_rejected = 'The supplied SQLite cache identity does not match the canonical files.' === $exception->getMessage();
+}
+mdi_runtime_assert( $mismatch_rejected, 'warm bootstrap rejects a mismatched canonical identity' );
+
 $pdo = null;
 unlink( $cache );
 $cold_pdo = new PDO( 'sqlite:' . $cache );
@@ -104,11 +120,7 @@ $cold_pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta
 $cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
-$cold_runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, false );
-$load_options = new ReflectionMethod( $cold_runtime->get_loader(), 'load_options' );
-$load_posts = new ReflectionMethod( $cold_runtime->get_loader(), 'load_posts' );
-$load_options->invoke( $cold_runtime->get_loader() );
-$load_posts->invoke( $cold_runtime->get_loader() );
+WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
 mdi_runtime_assert( 'Canonical name two' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
 
 mdi_runtime_rm( $root );

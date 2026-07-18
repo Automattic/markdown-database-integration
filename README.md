@@ -300,6 +300,44 @@ wp-content/
     _schema/*.sql
 ```
 
+### Storage-Only Primary Runtime
+
+Constrained callers can bootstrap MDI's primary loader, driver, and write engine
+around a caller-owned disposable SQLite cache. The cache is a query index only:
+canonical Markdown and JSON remain the durable state. `flush()` is explicit and
+returns sorted paths relative to the canonical content or state root, grouped as
+`created`, `changed`, and `deleted`.
+
+```php
+$runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
+    array(
+    'content_root' => '/srv/site/content',
+    'state_root'   => '/srv/site/state',
+    ),
+    $sqlite_connection,
+    'wordpress',
+    null,
+    true, // Cold cache: hydrate it from canonical Markdown/JSON.
+);
+
+// Use normal WordPress/MDI SQL mutations. The existing driver tracks them.
+$driver = $runtime->get_driver();
+$driver->query( "UPDATE `wp_posts` SET post_title = 'Updated' WHERE ID = 12" );
+$driver->query( "UPDATE `wp_options` SET option_value = 'https://example.test' WHERE option_name = 'siteurl'" );
+
+$changes = $runtime->flush(); // Does not require process shutdown.
+$identity = $runtime->get_identity(); // Persist this beside the disposable cache.
+```
+
+For a warm cache, pass its prior `$identity` and `false` as the fourth and fifth
+arguments; an identity is required and MDI verifies it before synchronizing the
+cache. Deleting the SQLite cache and bootstrapping with `null, true`
+reconstructs it solely from the canonical files. The runtime delegates path
+moves, Markdown serialization, option filenames, ephemeral-option filtering,
+and writes to MDI's existing
+storage, loader, driver, and write engine. Cloudflare, R2, Durable Objects, and
+WP Codebox remain outside MDI.
+
 For a Git-backed post-only repository, configure a separate local state root:
 
 ```php

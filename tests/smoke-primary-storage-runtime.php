@@ -26,6 +26,7 @@ class WP_SQLite_Driver {
 }
 
 function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed { unset( $hook, $args ); return $value; }
+function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_runtime_actions'][ $hook ][] = $args; }
 
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
@@ -78,9 +79,24 @@ $existing_driver = $existing->get_driver();
 $existing_driver->query( "UPDATE wp_options SET option_value = 'Attached name' WHERE option_name = 'blogname'" );
 $existing_driver->query( "UPDATE wp_users SET user_login = 'admin-existing' WHERE ID = 1" );
 $existing_driver->query( "UPDATE wp_posts SET post_title = 'Attached post' WHERE ID = 12" );
-$existing->flush();
+$existing_changes = $existing_driver->flush_canonical_writes();
 mdi_runtime_assert( 'Attached name' === $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'admin-existing' === $pdo->query( 'SELECT user_login FROM wp_users WHERE ID = 1' )->fetchColumn() && 'Attached post' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'existing-cache attachment does not hydrate files into or replace populated SQLite rows' );
 mdi_runtime_assert( file_exists( $root . '/existing-state/_options/blogname.json' ) && file_exists( $root . '/existing-state/_tables/users.json' ) && file_exists( $root . '/existing-content/post/cold-post.md' ), 'existing-cache attachment flushes populated options users and posts to canonical files' );
+mdi_runtime_assert( array( '_options/blogname.json', '_tables/users.json', 'post/cold-post.md' ) === $existing_changes['created'], 'driver flush returns deterministic canonical paths for caller-managed durability' );
+mdi_runtime_assert( $existing_changes === $GLOBALS['mdi_runtime_actions']['markdown_database_integration_flushed'][0][0], 'successful flush action exposes the same canonical change set' );
+mdi_runtime_assert( array( 'created' => array(), 'changed' => array(), 'deleted' => array() ) === $existing_driver->flush_canonical_writes(), 'driver flush returns an empty change set at a clean boundary' );
+$users_path = $root . '/existing-state/_tables/users.json';
+unlink( $users_path );
+mkdir( $users_path );
+$existing_driver->query( "UPDATE wp_users SET user_login = 'blocked-write' WHERE ID = 1" );
+$explicit_failure = false;
+try {
+	$existing_driver->flush_canonical_writes();
+} catch ( RuntimeException $exception ) {
+	$explicit_failure = str_contains( $exception->getMessage(), 'Failed to rename JSON file' );
+}
+mdi_runtime_assert( $explicit_failure, 'explicit driver flush propagates canonical persistence failures' );
+rmdir( $users_path );
 
 $runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
 	array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ),

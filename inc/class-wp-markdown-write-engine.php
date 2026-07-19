@@ -26,6 +26,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 class WP_Markdown_Write_Engine {
 
+	/** @var string The canonical Markdown post directory. */
+	private $content_dir;
+
 	/**
 	 * The base directory for non-post runtime state.
 	 *
@@ -147,6 +150,13 @@ class WP_Markdown_Write_Engine {
 	private $writing = false;
 
 	/**
+	 * Canonical file hashes at the previous successful flush boundary.
+	 *
+	 * @var array<string, string>
+	 */
+	private $canonical_files = array();
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string                $content_dir     Content directory.
@@ -168,12 +178,14 @@ class WP_Markdown_Write_Engine {
 		$prefix_resolver = 'wp_',
 		?string $state_dir = null
 	) {
+		$this->content_dir     = rtrim( $content_dir, '/' );
 		$this->state_dir       = rtrim( $state_dir ?? $content_dir, '/' );
 		$this->storage         = $storage;
 		$this->driver          = $driver;
 		$this->prefix_resolver = is_callable( $prefix_resolver )
 			? $prefix_resolver
 			: static function () use ( $prefix_resolver ): string { return (string) $prefix_resolver; };
+		$this->canonical_files = $this->canonical_file_hashes();
 	}
 
 	/**
@@ -297,10 +309,13 @@ class WP_Markdown_Write_Engine {
 	 * table flag before the table-level flush loop runs. Each post is
 	 * rewritten exactly once regardless of how many dirty marks landed
 	 * against it during the request — see `mark_post_dirty`.
+	 *
+	 * @param bool $throw_on_error Whether persistence failures should propagate to the caller.
+	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
-	public function flush_dirty(): void {
+	public function flush_dirty( bool $throw_on_error = false ): array {
 		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) ) {
-			return;
+			return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
 		}
 
 		$this->writing = true;
@@ -335,11 +350,63 @@ class WP_Markdown_Write_Engine {
 			$this->dirty               = array();
 			$this->dirty_option_names  = array();
 			$this->dirty_options_all   = false;
+			$after                     = $this->canonical_file_hashes();
+			$changes                   = $this->canonical_changes( $this->canonical_files, $after );
+			$this->canonical_files     = $after;
+			if ( function_exists( 'do_action' ) ) {
+				do_action( 'markdown_database_integration_flushed', $changes );
+			}
+			return $changes;
 		} catch ( \Throwable $e ) {
+			if ( $throw_on_error ) {
+				throw $e;
+			}
 			error_log( 'Markdown DB flush error: ' . $e->getMessage() );
+			return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
+		} finally {
+			$this->writing = false;
 		}
+	}
 
-		$this->writing = false;
+	/** @return array<string, string> Canonical relative path to SHA-256 hash. */
+	private function canonical_file_hashes(): array {
+		$files = array();
+		$roots = array_values( array_unique( array( rtrim( $this->content_dir, '/' ), rtrim( $this->state_dir, '/' ) ) ) );
+		foreach ( $roots as $root ) {
+			if ( ! is_dir( $root ) ) {
+				continue;
+			}
+			$iterator = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $root, \FilesystemIterator::SKIP_DOTS ) );
+			foreach ( $iterator as $file ) {
+				if ( ! $file->isFile() || ( ! str_ends_with( $file->getFilename(), '.md' ) && ! str_ends_with( $file->getFilename(), '.json' ) ) ) {
+					continue;
+				}
+				$path           = str_replace( DIRECTORY_SEPARATOR, '/', substr( $file->getPathname(), strlen( $root ) + 1 ) );
+				$files[ $path ] = (string) hash_file( 'sha256', $file->getPathname() );
+			}
+		}
+		ksort( $files, SORT_STRING );
+		return $files;
+	}
+
+	/**
+	 * @param array<string, string> $before Previous canonical file hashes.
+	 * @param array<string, string> $after  Current canonical file hashes.
+	 * @return array{created:string[],changed:string[],deleted:string[]}
+	 */
+	private function canonical_changes( array $before, array $after ): array {
+		$created = array_keys( array_diff_key( $after, $before ) );
+		$deleted = array_keys( array_diff_key( $before, $after ) );
+		$changed = array();
+		foreach ( array_intersect_key( $after, $before ) as $path => $hash ) {
+			if ( $hash !== $before[ $path ] ) {
+				$changed[] = $path;
+			}
+		}
+		sort( $created, SORT_STRING );
+		sort( $changed, SORT_STRING );
+		sort( $deleted, SORT_STRING );
+		return array( 'created' => $created, 'changed' => $changed, 'deleted' => $deleted );
 	}
 
 	/**
@@ -438,8 +505,7 @@ class WP_Markdown_Write_Engine {
 		$options_dir = $this->state_dir . '/_options';
 		if ( ! is_dir( $options_dir ) ) {
 			if ( ! @mkdir( $options_dir, 0755, true ) && ! is_dir( $options_dir ) ) {
-				error_log( 'Markdown DB: Failed to create _options directory.' );
-				return;
+				throw new \RuntimeException( 'Markdown DB: Failed to create _options directory.' );
 			}
 		}
 
@@ -523,8 +589,7 @@ class WP_Markdown_Write_Engine {
 				 FROM `{$table}` WHERE option_name IN ({$in_list})"
 			);
 		} catch ( \Throwable $e ) {
-			error_log( 'Markdown DB: Failed to read dirty options: ' . $e->getMessage() );
-			return array();
+			throw new \RuntimeException( 'Markdown DB: Failed to read dirty options: ' . $e->getMessage(), 0, $e );
 		}
 
 		if ( ! is_array( $rows ) ) {
@@ -561,8 +626,7 @@ class WP_Markdown_Write_Engine {
 				"SELECT option_name FROM `{$table}` ORDER BY option_id"
 			);
 		} catch ( \Throwable $e ) {
-			error_log( 'Markdown DB: Failed to list options: ' . $e->getMessage() );
-			return array();
+			throw new \RuntimeException( 'Markdown DB: Failed to list options: ' . $e->getMessage(), 0, $e );
 		}
 
 		if ( ! is_array( $rows ) ) {
@@ -602,20 +666,17 @@ class WP_Markdown_Write_Engine {
 
 		$json = json_encode( $payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 		if ( false === $json ) {
-			error_log( 'Markdown DB: Failed to encode option "' . $name . '".' );
-			return null;
+			throw new \RuntimeException( 'Markdown DB: Failed to encode option "' . $name . '".' );
 		}
 
 		$tmp = $abs . '.tmp.' . getmypid() . '.' . substr( md5( uniqid( '', true ) ), 0, 8 );
 		if ( false === @file_put_contents( $tmp, $json ) ) {
-			error_log( 'Markdown DB: Failed to write option file: ' . $abs );
-			return null;
+			throw new \RuntimeException( 'Markdown DB: Failed to write option file: ' . $abs );
 		}
 
 		if ( ! @rename( $tmp, $abs ) ) {
 			@unlink( $tmp );
-			error_log( 'Markdown DB: Failed to rename option file: ' . $abs );
-			return null;
+			throw new \RuntimeException( 'Markdown DB: Failed to rename option file: ' . $abs );
 		}
 
 		return $relative;
@@ -1225,19 +1286,17 @@ class WP_Markdown_Write_Engine {
 
 		$json = json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 		if ( false === $json ) {
-			error_log( 'Markdown DB: Failed to encode JSON file: ' . $path );
-			return;
+			throw new \RuntimeException( 'Markdown DB: Failed to encode JSON file: ' . $path );
 		}
 
 		$tmp = $this->json_tmp_path( $path );
 		if ( false === @file_put_contents( $tmp, $json, LOCK_EX ) ) {
-			error_log( 'Markdown DB: Failed to write JSON file: ' . $path );
-			return;
+			throw new \RuntimeException( 'Markdown DB: Failed to write JSON file: ' . $path );
 		}
 
 		if ( ! @rename( $tmp, $path ) ) {
 			@unlink( $tmp );
-			error_log( 'Markdown DB: Failed to rename JSON file: ' . $path );
+			throw new \RuntimeException( 'Markdown DB: Failed to rename JSON file: ' . $path );
 		}
 	}
 
@@ -1263,7 +1322,9 @@ class WP_Markdown_Write_Engine {
 	private function ensure_tables_dir(): void {
 		$dir = $this->state_dir . '/_tables';
 		if ( ! is_dir( $dir ) ) {
-			mkdir( $dir, 0755, true );
+			if ( ! mkdir( $dir, 0755, true ) && ! is_dir( $dir ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to create _tables directory.' );
+			}
 		}
 	}
 

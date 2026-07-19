@@ -532,6 +532,13 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		return $this->loader;
 	}
 
+	/** Flush deferred canonical writes at an explicit long-lived request boundary. */
+	public function flush_canonical_writes(): void {
+		if ( $this->dbh instanceof WP_Markdown_Driver ) {
+			$this->dbh->flush_canonical_writes();
+		}
+	}
+
 	/**
 	 * Ensure a directory exists.
 	 *

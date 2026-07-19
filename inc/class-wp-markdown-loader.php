@@ -291,6 +291,18 @@ class WP_Markdown_Loader {
 	}
 
 	/**
+	 * Create only MDI bookkeeping tables for an existing caller-owned cache.
+	 *
+	 * This intentionally leaves WordPress rows untouched and performs no file
+	 * hydration or synchronization.
+	 */
+	public function prepare_existing_cache(): void {
+		$this->create_file_index_table();
+		$this->create_json_manifest_table();
+		$this->create_options_index_table();
+	}
+
+	/**
 	 * Sync JSON-backed tables.
 	 *
 	 * Checks each JSON file's mtime/size against the stored manifest.

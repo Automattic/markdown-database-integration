@@ -153,7 +153,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 	 */
 	public function flush(): array {
 		$before = $this->canonical_identity()['files'];
-		$this->write_engine->flush_dirty();
+		$this->write_engine->flush_dirty( true );
 		$after = $this->canonical_identity()['files'];
 		$this->identity = array(
 			'files' => $after,

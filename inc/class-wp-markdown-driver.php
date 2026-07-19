@@ -140,11 +140,14 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	 *
 	 * Normal WordPress requests flush at PHP shutdown. Long-lived runtimes need
 	 * an explicit boundary before their durable canonical store is published.
+	 *
+	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
-	public function flush_canonical_writes(): void {
+	public function flush_canonical_writes(): array {
 		if ( null !== $this->write_engine ) {
-			$this->write_engine->flush_dirty();
+			return $this->write_engine->flush_dirty( true );
 		}
+		return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
 	}
 
 	/**

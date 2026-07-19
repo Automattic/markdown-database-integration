@@ -35,6 +35,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WP_Markdown_Loader {
 
 	/**
+	 * JSON Machine retains one item while decoding it. Keep each table row below
+	 * this limit so hydration remains bounded even when a snapshot has one huge row.
+	 */
+	private const MAX_TABLE_JSON_ROW_BYTES = 1048576;
+
+	/**
 	 * Core WordPress table suffixes.
 	 *
 	 * These tables are created and loaded explicitly by the loader —
@@ -376,8 +382,12 @@ class WP_Markdown_Loader {
 				// Other core tables have no frontmatter source — full reload
 				// is safe.
 				$table = $this->prefix() . $table_suffix;
-				$pdo->exec( "DELETE FROM `{$table}`" );
-				$this->load_table_from_json( $table_suffix );
+				$this->load_table_from_json(
+					$table_suffix,
+					static function () use ( $pdo, $table ): void {
+						$pdo->exec( "DELETE FROM `{$table}`" );
+					}
+				);
 			}
 		}
 
@@ -402,8 +412,12 @@ class WP_Markdown_Loader {
 
 					if ( ! $cached || $cached['mtime'] !== $mtime || $cached['size'] !== $size ) {
 						$table = $this->prefix() . $basename;
-						$pdo->exec( "DELETE FROM `{$table}`" );
-						$this->load_table_from_json( $basename );
+						$this->load_table_from_json(
+							$basename,
+							static function () use ( $pdo, $table ): void {
+								$pdo->exec( "DELETE FROM `{$table}`" );
+							}
+						);
 					}
 				}
 			}
@@ -450,14 +464,17 @@ class WP_Markdown_Loader {
 		// rows for markdown-type posts (and rows with no matching wp_posts
 		// entry, which shouldn't exist but are safer to preserve than drop)
 		// untouched.
-		$pdo->exec(
-			"DELETE FROM `{$table}`
-			 WHERE `{$post_id_col}` IN (
-			     SELECT ID FROM `{$posts_table}` WHERE post_type IN ({$type_list})
-			 )"
+		$this->load_table_from_json(
+			$table_suffix,
+			static function () use ( $pdo, $table, $post_id_col, $posts_table, $type_list ): void {
+				$pdo->exec(
+					"DELETE FROM `{$table}`
+					 WHERE `{$post_id_col}` IN (
+					     SELECT ID FROM `{$posts_table}` WHERE post_type IN ({$type_list})
+					 )"
+				);
+			}
 		);
-
-		$this->load_table_from_json( $table_suffix );
 	}
 
 	/**
@@ -492,9 +509,12 @@ class WP_Markdown_Loader {
 
 		// Delete only non-markdown rows. Markdown-type rows (sourced from
 		// .md frontmatter) survive the sync untouched.
-		$pdo->exec( "DELETE FROM `{$table}` WHERE post_type IN ({$type_list})" );
-
-		$this->load_table_from_json( 'posts' );
+		$this->load_table_from_json(
+			'posts',
+			static function () use ( $pdo, $table, $type_list ): void {
+				$pdo->exec( "DELETE FROM `{$table}` WHERE post_type IN ({$type_list})" );
+			}
+		);
 	}
 
 	/**
@@ -1616,9 +1636,10 @@ class WP_Markdown_Loader {
 	 * Generic loader for tables like users, usermeta, terms, etc.
 	 * File is at {state_dir}/_tables/{table_name}.json
 	 *
-	 * @param string $table_suffix Table name without prefix (e.g. 'users').
+	 * @param string        $table_suffix     Table name without prefix (e.g. 'users').
+	 * @param callable|null $before_hydration Optional destructive replacement step, run atomically with hydration.
 	 */
-	private function load_table_from_json( string $table_suffix ): void {
+	private function load_table_from_json( string $table_suffix, ?callable $before_hydration = null ): void {
 		$start = microtime( true );
 		$table = $this->prefix() . $table_suffix;
 		$file  = $this->state_dir . '/_tables/' . $table_suffix . '.json';
@@ -1627,11 +1648,19 @@ class WP_Markdown_Loader {
 			$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
 			return;
 		}
-
-		$json = file_get_contents( $file );
-		$rows = json_decode( $json, true );
-
-		if ( ! is_array( $rows ) || empty( $rows ) ) {
+		clearstatcache( true, $file );
+		if ( 0 === (int) filesize( $file ) ) {
+			if ( null !== $before_hydration ) {
+				$pdo = $this->driver->get_connection()->get_pdo();
+				$pdo->exec( 'BEGIN TRANSACTION' );
+				try {
+					$before_hydration();
+					$pdo->exec( 'COMMIT' );
+				} catch ( \Throwable $e ) {
+					$pdo->exec( 'ROLLBACK' );
+					throw $e;
+				}
+			}
 			$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
 			return;
 		}
@@ -1640,16 +1669,34 @@ class WP_Markdown_Loader {
 		$pdo->exec( 'BEGIN TRANSACTION' );
 
 		try {
-			// Build INSERT from the first row's keys.
-			$columns = array_keys( $rows[0] );
-			$placeholders = implode( ', ', array_fill( 0, count( $columns ), '?' ) );
-			$col_names = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
+			if ( null !== $before_hydration ) {
+				$before_hydration();
+			}
 
-			$stmt = $pdo->prepare(
-				"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
+			$columns = null;
+			$stmt    = null;
+
+			// Items yields one decoded row at a time instead of retaining the snapshot.
+			$rows = \JsonMachine\Items::fromIterable(
+				$this->table_json_chunks( $file ),
+				array( 'decoder' => new \JsonMachine\JsonDecoder\ExtJsonDecoder( true ) )
 			);
 
 			foreach ( $rows as $row ) {
+				if ( ! is_array( $row ) ) {
+					throw new \UnexpectedValueException( 'Table snapshot rows must be JSON objects.' );
+				}
+
+				if ( null === $columns ) {
+					// Build INSERT from the first row's keys.
+					$columns      = array_keys( $row );
+					$placeholders = implode( ', ', array_fill( 0, count( $columns ), '?' ) );
+					$col_names    = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
+					$stmt         = $pdo->prepare(
+						"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
+					);
+				}
+
 				$values = array();
 				foreach ( $columns as $col ) {
 					$values[] = $row[ $col ] ?? null;
@@ -1661,9 +1708,77 @@ class WP_Markdown_Loader {
 		} catch ( \Throwable $e ) {
 			$pdo->exec( 'ROLLBACK' );
 			error_log( "Markdown DB: Failed to load {$table_suffix}: " . $e->getMessage() );
+			throw new \RuntimeException( "Markdown DB: Failed to load table snapshot '{$table_suffix}'.", 0, $e );
 		}
 
 		$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Yield JSON bytes while rejecting a row that exceeds the supported size.
+	 *
+	 * This only tracks JSON strings and nesting so JsonMachine can remain the
+	 * authoritative parser and validator for the snapshot format.
+	 *
+	 * @param string $file JSON snapshot path.
+	 * @return \Generator<string>
+	 */
+	private function table_json_chunks( string $file ): \Generator {
+		$stream = fopen( $file, 'rb' );
+		if ( false === $stream ) {
+			throw new \RuntimeException( "Unable to read table snapshot '{$file}'." );
+		}
+
+		$depth      = 0;
+		$in_item    = false;
+		$in_string  = false;
+		$escaped    = false;
+		$item_bytes = 0;
+
+		try {
+			while ( false !== ( $chunk = fread( $stream, 8192 ) ) && '' !== $chunk ) {
+				$length = strlen( $chunk );
+				for ( $i = 0; $i < $length; $i++ ) {
+					$byte = $chunk[ $i ];
+
+					if ( ! $in_string && $in_item && 1 === $depth && ( ',' === $byte || ']' === $byte ) ) {
+						$in_item    = false;
+						$item_bytes = 0;
+					}
+
+					if ( ! $in_item && ! $in_string && 1 === $depth && ! ctype_space( $byte ) && ',' !== $byte && ']' !== $byte ) {
+						$in_item = true;
+					}
+
+					if ( $in_item ) {
+						$item_bytes++;
+						if ( self::MAX_TABLE_JSON_ROW_BYTES < $item_bytes ) {
+							throw new \LengthException( 'Table snapshot row exceeds the 1 MiB supported size limit.' );
+						}
+					}
+
+					if ( $in_string ) {
+						if ( $escaped ) {
+							$escaped = false;
+						} elseif ( '\\' === $byte ) {
+							$escaped = true;
+						} elseif ( '"' === $byte ) {
+							$in_string = false;
+						}
+					} elseif ( '"' === $byte ) {
+						$in_string = true;
+					} elseif ( '{' === $byte || '[' === $byte ) {
+						$depth++;
+					} elseif ( '}' === $byte || ']' === $byte ) {
+						$depth--;
+					}
+				}
+
+				yield $chunk;
+			}
+		} finally {
+			fclose( $stream );
+		}
 	}
 
 	/**

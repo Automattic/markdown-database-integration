@@ -59,6 +59,7 @@ $pdo = new PDO( 'sqlite:' . $cache );
 $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
 $pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_author INTEGER, post_date TEXT, post_date_gmt TEXT, post_content TEXT, post_title TEXT, post_excerpt TEXT, post_status TEXT, comment_status TEXT, ping_status TEXT, post_password TEXT, post_name TEXT, to_ping TEXT, pinged TEXT, post_modified TEXT, post_modified_gmt TEXT, post_content_filtered TEXT, post_parent INTEGER, guid TEXT, menu_order INTEGER, post_type TEXT, post_mime_type TEXT, comment_count INTEGER)' );
 $pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
+$pdo->exec( 'CREATE TABLE wp_users (ID INTEGER PRIMARY KEY, user_login TEXT, user_pass TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
@@ -66,6 +67,20 @@ $pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonom
 $pdo->exec( "INSERT INTO wp_posts (ID, post_date, post_date_gmt, post_modified, post_modified_gmt, post_title, post_status, comment_status, ping_status, post_name, post_type) VALUES (12, '2026-07-18 00:00:00', '2026-07-18 00:00:00', '2026-07-18 00:00:00', '2026-07-18 00:00:00', 'Cold post', 'publish', 'open', 'open', 'cold-post', 'post')" );
 $pdo->exec( "INSERT INTO wp_options VALUES (7, 'siteurl', 'https://old.test', 'yes')" );
 $pdo->exec( "INSERT INTO wp_options VALUES (8, 'blogname', 'Old name', 'yes')" );
+$pdo->exec( "INSERT INTO wp_users VALUES (1, 'admin', 'hashed-password')" );
+
+$existing = WP_Markdown_Primary_Storage_Runtime::bootstrap_existing_cache(
+	array( 'content_root' => $root . '/existing-content', 'state_root' => $root . '/existing-state' ),
+	new WP_SQLite_Connection( $pdo ),
+	'wordpress'
+);
+$existing_driver = $existing->get_driver();
+$existing_driver->query( "UPDATE wp_options SET option_value = 'Attached name' WHERE option_name = 'blogname'" );
+$existing_driver->query( "UPDATE wp_users SET user_login = 'admin-existing' WHERE ID = 1" );
+$existing_driver->query( "UPDATE wp_posts SET post_title = 'Attached post' WHERE ID = 12" );
+$existing->flush();
+mdi_runtime_assert( 'Attached name' === $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'admin-existing' === $pdo->query( 'SELECT user_login FROM wp_users WHERE ID = 1' )->fetchColumn() && 'Attached post' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'existing-cache attachment does not hydrate files into or replace populated SQLite rows' );
+mdi_runtime_assert( file_exists( $root . '/existing-state/_options/blogname.json' ) && file_exists( $root . '/existing-state/_tables/users.json' ) && file_exists( $root . '/existing-content/post/cold-post.md' ), 'existing-cache attachment flushes populated options users and posts to canonical files' );
 
 $runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
 	array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ),

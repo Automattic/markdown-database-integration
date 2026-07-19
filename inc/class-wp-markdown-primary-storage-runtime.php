@@ -101,6 +101,36 @@ class WP_Markdown_Primary_Storage_Runtime {
 		return $runtime;
 	}
 
+	/**
+	 * Attach primary write machinery to an already-populated caller-owned cache.
+	 *
+	 * This is for one-time imports where SQLite is the input and canonical files
+	 * are the output. It deliberately does not load or synchronize files.
+	 */
+	public static function bootstrap_existing_cache(
+		array $roots,
+		WP_SQLite_Connection $connection,
+		string $database,
+		array $excluded_types = array(),
+		$prefix = 'wp_'
+	): self {
+		if ( ! class_exists( 'WP_Markdown_Driver' ) || ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
+			throw new \LogicException( 'Load the MDI primary driver, write engine, and loader before attaching the storage runtime.' );
+		}
+
+		$runtime = new self( $roots );
+		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
+		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage );
+		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $runtime->driver, $prefix, $runtime->state_root );
+		$runtime->driver->set_write_engine( $runtime->write_engine );
+		$runtime->configure_storage_resolvers( $storage, $prefix );
+		$runtime->loader = new WP_Markdown_Loader( $runtime->content_root, $runtime->driver, $storage, $prefix, $runtime->state_root );
+		$runtime->loader->prepare_existing_cache();
+		$runtime->identity = $runtime->canonical_identity();
+
+		return $runtime;
+	}
+
 	/** @param array{content_root:string,state_root:string} $roots */
 	private function __construct( array $roots ) {
 		$this->content_root = $this->canonical_root( $roots['content_root'] ?? '', 'content_root' );

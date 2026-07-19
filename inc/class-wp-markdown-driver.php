@@ -136,6 +136,18 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	}
 
 	/**
+	 * Flush deferred canonical writes for a caller-managed request boundary.
+	 *
+	 * Normal WordPress requests flush at PHP shutdown. Long-lived runtimes need
+	 * an explicit boundary before their durable canonical store is published.
+	 */
+	public function flush_canonical_writes(): void {
+		if ( null !== $this->write_engine ) {
+			$this->write_engine->flush_dirty();
+		}
+	}
+
+	/**
 	 * Get the markdown storage engine.
 	 *
 	 * @return WP_Markdown_Storage

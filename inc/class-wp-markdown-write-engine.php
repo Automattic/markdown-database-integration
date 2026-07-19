@@ -353,6 +353,9 @@ class WP_Markdown_Write_Engine {
 			$after                     = $this->canonical_file_hashes();
 			$changes                   = $this->canonical_changes( $this->canonical_files, $after );
 			$this->canonical_files     = $after;
+			if ( function_exists( 'do_action' ) ) {
+				do_action( 'markdown_database_integration_flushed', $changes );
+			}
 			return $changes;
 		} catch ( \Throwable $e ) {
 			if ( $throw_on_error ) {

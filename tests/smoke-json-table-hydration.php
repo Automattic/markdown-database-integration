@@ -113,8 +113,7 @@ mdi_json_hydration_assert( $thrown instanceof RuntimeException, 'truncated snaps
 mdi_json_hydration_assert( 1 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_truncated_jobs' )->fetchColumn(), 'truncated snapshots roll back inserted rows' );
 mdi_json_hydration_assert( 'existing' === $pdo->query( 'SELECT payload FROM wp_truncated_jobs WHERE id = 999' )->fetchColumn(), 'rollback preserves existing table state' );
 
-// JSON Machine buffers an individual item while decoding it. The loader rejects
-// rows above its supported 1 MiB limit before the parser can retain the full row.
+// JSON Machine retains one decoded row, so valid rows larger than 1 MiB remain supported.
 $oversized_file = $root . '/_tables/oversized_jobs.json';
 $stream         = fopen( $oversized_file, 'wb' );
 fwrite( $stream, '[{"id":1,"payload":"' );
@@ -123,15 +122,10 @@ for ( $i = 0; $i < 256; $i++ ) {
 }
 fwrite( $stream, '"}]' );
 fclose( $stream );
-$thrown = null;
-try {
-	$load_table->invoke( $loader, 'oversized_jobs' );
-} catch ( RuntimeException $e ) {
-	$thrown = $e;
-}
+$load_table->invoke( $loader, 'oversized_jobs' );
 
-mdi_json_hydration_assert( $thrown instanceof RuntimeException, 'oversized rows fail before hydration exhausts memory' );
-mdi_json_hydration_assert( 1 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_oversized_jobs' )->fetchColumn(), 'oversized rows leave existing table state untouched' );
+mdi_json_hydration_assert( 2 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_oversized_jobs' )->fetchColumn(), 'rows larger than 1 MiB hydrate successfully' );
+mdi_json_hydration_assert( 2097152 === (int) $pdo->query( 'SELECT LENGTH(payload) FROM wp_oversized_jobs WHERE id = 1' )->fetchColumn(), 'large row payload remains intact' );
 
 mdi_json_hydration_remove_dir( $root );
 

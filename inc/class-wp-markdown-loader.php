@@ -35,12 +35,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WP_Markdown_Loader {
 
 	/**
-	 * JSON Machine retains one item while decoding it. Keep each table row below
-	 * this limit so hydration remains bounded even when a snapshot has one huge row.
-	 */
-	private const MAX_TABLE_JSON_ROW_BYTES = 1048576;
-
-	/**
 	 * Core WordPress table suffixes.
 	 *
 	 * These tables are created and loaded explicitly by the loader —
@@ -1677,8 +1671,8 @@ class WP_Markdown_Loader {
 			$stmt    = null;
 
 			// Items yields one decoded row at a time instead of retaining the snapshot.
-			$rows = \JsonMachine\Items::fromIterable(
-				$this->table_json_chunks( $file ),
+			$rows = \JsonMachine\Items::fromFile(
+				$file,
 				array( 'decoder' => new \JsonMachine\JsonDecoder\ExtJsonDecoder( true ) )
 			);
 
@@ -1712,73 +1706,6 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
-	}
-
-	/**
-	 * Yield JSON bytes while rejecting a row that exceeds the supported size.
-	 *
-	 * This only tracks JSON strings and nesting so JsonMachine can remain the
-	 * authoritative parser and validator for the snapshot format.
-	 *
-	 * @param string $file JSON snapshot path.
-	 * @return \Generator<string>
-	 */
-	private function table_json_chunks( string $file ): \Generator {
-		$stream = fopen( $file, 'rb' );
-		if ( false === $stream ) {
-			throw new \RuntimeException( "Unable to read table snapshot '{$file}'." );
-		}
-
-		$depth      = 0;
-		$in_item    = false;
-		$in_string  = false;
-		$escaped    = false;
-		$item_bytes = 0;
-
-		try {
-			while ( false !== ( $chunk = fread( $stream, 8192 ) ) && '' !== $chunk ) {
-				$length = strlen( $chunk );
-				for ( $i = 0; $i < $length; $i++ ) {
-					$byte = $chunk[ $i ];
-
-					if ( ! $in_string && $in_item && 1 === $depth && ( ',' === $byte || ']' === $byte ) ) {
-						$in_item    = false;
-						$item_bytes = 0;
-					}
-
-					if ( ! $in_item && ! $in_string && 1 === $depth && ! ctype_space( $byte ) && ',' !== $byte && ']' !== $byte ) {
-						$in_item = true;
-					}
-
-					if ( $in_item ) {
-						$item_bytes++;
-						if ( self::MAX_TABLE_JSON_ROW_BYTES < $item_bytes ) {
-							throw new \LengthException( 'Table snapshot row exceeds the 1 MiB supported size limit.' );
-						}
-					}
-
-					if ( $in_string ) {
-						if ( $escaped ) {
-							$escaped = false;
-						} elseif ( '\\' === $byte ) {
-							$escaped = true;
-						} elseif ( '"' === $byte ) {
-							$in_string = false;
-						}
-					} elseif ( '"' === $byte ) {
-						$in_string = true;
-					} elseif ( '{' === $byte || '[' === $byte ) {
-						$depth++;
-					} elseif ( '}' === $byte || ']' === $byte ) {
-						$depth--;
-					}
-				}
-
-				yield $chunk;
-			}
-		} finally {
-			fclose( $stream );
-		}
 	}
 
 	/**

@@ -152,26 +152,9 @@ class WP_Markdown_Primary_Storage_Runtime {
 	 * @return array{created:string[],changed:string[],deleted:string[]} Sorted paths relative to their canonical root.
 	 */
 	public function flush(): array {
-		$before = $this->canonical_identity()['files'];
-		$this->write_engine->flush_dirty( true );
-		$after = $this->canonical_identity()['files'];
-		$this->identity = array(
-			'files' => $after,
-			'hash'  => hash( 'sha256', json_encode( $after, JSON_UNESCAPED_SLASHES ) ),
-		);
-
-		$created = array_keys( array_diff_key( $after, $before ) );
-		$deleted = array_keys( array_diff_key( $before, $after ) );
-		$changed = array();
-		foreach ( array_intersect_key( $after, $before ) as $path => $hash ) {
-			if ( $hash !== $before[ $path ] ) {
-				$changed[] = $path;
-			}
-		}
-		sort( $created, SORT_STRING );
-		sort( $changed, SORT_STRING );
-		sort( $deleted, SORT_STRING );
-		return array( 'created' => $created, 'changed' => $changed, 'deleted' => $deleted );
+		$changes         = $this->write_engine->flush_dirty( true );
+		$this->identity  = $this->canonical_identity();
+		return $changes;
 	}
 
 	/** @return array{files:array<string,string>,hash:string} Canonical identity represented by this cache. */
@@ -205,7 +188,15 @@ class WP_Markdown_Primary_Storage_Runtime {
 		} );
 	}
 
-	/** @return array{files:array<string,string>,hash:string} */
+	/**
+	 * Build a metadata identity without reading canonical file contents.
+	 *
+	 * Explicit flushes use the write engine's per-path content hashes. This
+	 * identity instead lets bootstrap reject ordinary external replacements
+	 * without turning every read-only bootstrap into a corpus-wide hash pass.
+	 *
+	 * @return array{files:array<string,string>,hash:string}
+	 */
 	private function canonical_identity(): array {
 		$files = array();
 		foreach ( array( $this->content_root => '', $this->state_root . '/_options' => '_options/' ) as $root => $prefix ) {
@@ -215,7 +206,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 			$iterator = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $root, \FilesystemIterator::SKIP_DOTS ) );
 			foreach ( $iterator as $file ) {
 				if ( $file->isFile() && ( str_ends_with( $file->getFilename(), '.md' ) || str_ends_with( $file->getFilename(), '.json' ) ) ) {
-					$files[ $prefix . substr( $file->getPathname(), strlen( $root ) + 1 ) ] = (string) hash_file( 'sha256', $file->getPathname() );
+					$files[ $prefix . substr( $file->getPathname(), strlen( $root ) + 1 ) ] = $file->getMTime() . ':' . $file->getSize() . ':' . $file->getInode() . ':' . $file->getCTime();
 				}
 			}
 		}

@@ -118,6 +118,9 @@ class WP_Markdown_Storage {
 	 */
 	private $index_writer = null;
 
+	/** @var callable|null Receives a canonical file path before a mutation. */
+	private $file_mutation_observer = null;
+
 	/**
 	 * Explicit frontmatter profile ID for this storage instance.
 	 *
@@ -189,6 +192,17 @@ class WP_Markdown_Storage {
 	 */
 	public function set_index_writer( callable $writer ): void {
 		$this->index_writer = $writer;
+	}
+
+	/** @param callable $observer Receives an absolute path before it is mutated. */
+	public function set_file_mutation_observer( callable $observer ): void {
+		$this->file_mutation_observer = $observer;
+	}
+
+	private function observe_file_mutation( string $path ): void {
+		if ( null !== $this->file_mutation_observer ) {
+			call_user_func( $this->file_mutation_observer, $path );
+		}
 	}
 
 	/**
@@ -266,6 +280,7 @@ class WP_Markdown_Storage {
 		$output .= "---\n\n";
 		$output .= $content . "\n";
 
+		$this->observe_file_mutation( $file_path );
 		$result = file_put_contents( $file_path, $output, LOCK_EX );
 
 		if ( false !== $result ) {
@@ -300,6 +315,7 @@ class WP_Markdown_Storage {
 
 				// Remove old file if path changed (slug change or reparent).
 				if ( null !== $previous_path && $previous_path !== $file_path ) {
+					$this->observe_file_mutation( $previous_path );
 					@unlink( $previous_path );
 					$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
 				}
@@ -343,6 +359,7 @@ class WP_Markdown_Storage {
 			return false;
 		}
 
+		$this->observe_file_mutation( $file_path );
 		$result = @unlink( $file_path );
 
 		if ( $result ) {
@@ -754,11 +771,15 @@ class WP_Markdown_Storage {
 			if ( file_exists( $leaf_file ) && ! is_dir( $target_dir ) ) {
 				// Promote leaf file to directory with index.md.
 				mkdir( $target_dir, 0755, true );
+				$this->observe_file_mutation( $leaf_file );
+				$this->observe_file_mutation( $index_file );
 				rename( $leaf_file, $index_file );
 				$this->record_promoted_file( $index_file );
 			} elseif ( file_exists( $leaf_file ) && is_dir( $target_dir ) && ! file_exists( $index_file ) ) {
 				// Directory exists (has children) but the parent post is still
 				// a sibling leaf file. Move it into the directory as index.md.
+				$this->observe_file_mutation( $leaf_file );
+				$this->observe_file_mutation( $index_file );
 				rename( $leaf_file, $index_file );
 				$this->record_promoted_file( $index_file );
 			} elseif ( ! is_dir( $target_dir ) ) {
@@ -989,6 +1010,7 @@ class WP_Markdown_Storage {
 						continue;
 					}
 					// Competing disk copy — unlink it.
+					$this->observe_file_mutation( $file );
 					@unlink( $file );
 					$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
 					$this->index[ $id ] = $canonical;
@@ -1013,10 +1035,12 @@ class WP_Markdown_Storage {
 					}
 
 					if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
+						$this->observe_file_mutation( $existing );
 						@unlink( $existing );
 						$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
 						$this->index[ $id ] = $file;
 					} else {
+						$this->observe_file_mutation( $file );
 						@unlink( $file );
 						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
 					}

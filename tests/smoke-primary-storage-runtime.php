@@ -70,12 +70,21 @@ $pdo->exec( "INSERT INTO wp_options VALUES (7, 'siteurl', 'https://old.test', 'y
 $pdo->exec( "INSERT INTO wp_options VALUES (8, 'blogname', 'Old name', 'yes')" );
 $pdo->exec( "INSERT INTO wp_users VALUES (1, 'admin', 'hashed-password')" );
 
+mkdir( $root . '/existing-state/_tables', 0755, true );
+$large_snapshot = $root . '/existing-state/_tables/plugin_snapshot.json';
+file_put_contents( $large_snapshot, str_repeat( 'x', 16 * 1024 * 1024 ) );
+$old_atime = time() - 7200;
+touch( $large_snapshot, $old_atime, $old_atime );
+clearstatcache( true, $large_snapshot );
+
 $existing = WP_Markdown_Primary_Storage_Runtime::bootstrap_existing_cache(
 	array( 'content_root' => $root . '/existing-content', 'state_root' => $root . '/existing-state' ),
 	new WP_SQLite_Connection( $pdo ),
 	'wordpress'
 );
 $existing_driver = $existing->get_driver();
+clearstatcache( true, $large_snapshot );
+mdi_runtime_assert( $old_atime === fileatime( $large_snapshot ), 'existing-cache bootstrap does not read or hash a large unchanged JSON snapshot' );
 $existing_driver->query( "UPDATE wp_options SET option_value = 'Attached name' WHERE option_name = 'blogname'" );
 $existing_driver->query( "UPDATE wp_users SET user_login = 'admin-existing' WHERE ID = 1" );
 $existing_driver->query( "UPDATE wp_posts SET post_title = 'Attached post' WHERE ID = 12" );
@@ -118,6 +127,10 @@ $driver->query( "UPDATE wp_options SET option_value = 'Canonical name two' WHERE
 $changed = $runtime->flush();
 mdi_runtime_assert( array( '_options/blogname.json' ) === $changed['changed'], 'changed canonical option path is reported' );
 
+$driver->query( "UPDATE wp_options SET option_value = 'Canonical name six' WHERE option_name = 'blogname'" );
+$same_size_changed = $runtime->flush();
+mdi_runtime_assert( array( '_options/blogname.json' ) === $same_size_changed['changed'], 'same-size canonical option overwrite is reported by content hash' );
+
 $driver->query( "UPDATE wp_posts SET post_name = 'moved-post' WHERE ID = 12" );
 $moved = $runtime->flush();
 mdi_runtime_assert( array( 'post/moved-post.md' ) === $moved['created'] && array( 'post/cold-post.md' ) === $moved['deleted'], 'slug movement reports canonical paths without a stale file' );
@@ -152,7 +165,7 @@ $cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
 WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
-mdi_runtime_assert( 'Canonical name two' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
+mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
 
 mdi_runtime_rm( $root );
 exit( $failed ? 1 : 0 );

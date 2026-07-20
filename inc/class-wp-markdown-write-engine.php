@@ -150,11 +150,14 @@ class WP_Markdown_Write_Engine {
 	private $writing = false;
 
 	/**
-	 * Canonical file hashes at the previous successful flush boundary.
+	 * Canonical paths touched since the previous successful flush, keyed by path.
 	 *
-	 * @var array<string, string>
+	 * Values are pre-mutation hashes, or null for a path that did not exist.
+	 * Content is therefore hashed only for paths MDI actually mutates.
+	 *
+	 * @var array<string, string|null>
 	 */
-	private $canonical_files = array();
+	private $canonical_mutations = array();
 
 	/**
 	 * Constructor.
@@ -185,7 +188,9 @@ class WP_Markdown_Write_Engine {
 		$this->prefix_resolver = is_callable( $prefix_resolver )
 			? $prefix_resolver
 			: static function () use ( $prefix_resolver ): string { return (string) $prefix_resolver; };
-		$this->canonical_files = $this->canonical_file_hashes();
+		if ( method_exists( $this->storage, 'set_file_mutation_observer' ) ) {
+			$this->storage->set_file_mutation_observer( array( $this, 'track_canonical_mutation' ) );
+		}
 	}
 
 	/**
@@ -350,9 +355,8 @@ class WP_Markdown_Write_Engine {
 			$this->dirty               = array();
 			$this->dirty_option_names  = array();
 			$this->dirty_options_all   = false;
-			$after                     = $this->canonical_file_hashes();
-			$changes                   = $this->canonical_changes( $this->canonical_files, $after );
-			$this->canonical_files     = $after;
+			$changes                   = $this->canonical_changes();
+			$this->canonical_mutations = array();
 			if ( function_exists( 'do_action' ) ) {
 				do_action( 'markdown_database_integration_flushed', $changes );
 			}
@@ -368,38 +372,26 @@ class WP_Markdown_Write_Engine {
 		}
 	}
 
-	/** @return array<string, string> Canonical relative path to SHA-256 hash. */
-	private function canonical_file_hashes(): array {
-		$files = array();
-		$roots = array_values( array_unique( array( rtrim( $this->content_dir, '/' ), rtrim( $this->state_dir, '/' ) ) ) );
-		foreach ( $roots as $root ) {
-			if ( ! is_dir( $root ) ) {
-				continue;
-			}
-			$iterator = new \RecursiveIteratorIterator( new \RecursiveDirectoryIterator( $root, \FilesystemIterator::SKIP_DOTS ) );
-			foreach ( $iterator as $file ) {
-				if ( ! $file->isFile() || ( ! str_ends_with( $file->getFilename(), '.md' ) && ! str_ends_with( $file->getFilename(), '.json' ) ) ) {
-					continue;
-				}
-				$path           = str_replace( DIRECTORY_SEPARATOR, '/', substr( $file->getPathname(), strlen( $root ) + 1 ) );
-				$files[ $path ] = (string) hash_file( 'sha256', $file->getPathname() );
-			}
-		}
-		ksort( $files, SORT_STRING );
-		return $files;
-	}
-
 	/**
-	 * @param array<string, string> $before Previous canonical file hashes.
-	 * @param array<string, string> $after  Current canonical file hashes.
 	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
-	private function canonical_changes( array $before, array $after ): array {
-		$created = array_keys( array_diff_key( $after, $before ) );
-		$deleted = array_keys( array_diff_key( $before, $after ) );
+	private function canonical_changes(): array {
+		$created = array();
+		$deleted = array();
 		$changed = array();
-		foreach ( array_intersect_key( $after, $before ) as $path => $hash ) {
-			if ( $hash !== $before[ $path ] ) {
+		foreach ( $this->canonical_mutations as $path => $before ) {
+			$absolute = $this->canonical_absolute_path( $path );
+			if ( ! is_file( $absolute ) ) {
+				if ( null !== $before ) {
+					$deleted[] = $path;
+				}
+				continue;
+			}
+
+			$after = (string) hash_file( 'sha256', $absolute );
+			if ( null === $before ) {
+				$created[] = $path;
+			} elseif ( $after !== $before ) {
 				$changed[] = $path;
 			}
 		}
@@ -407,6 +399,38 @@ class WP_Markdown_Write_Engine {
 		sort( $changed, SORT_STRING );
 		sort( $deleted, SORT_STRING );
 		return array( 'created' => $created, 'changed' => $changed, 'deleted' => $deleted );
+	}
+
+	/** @param string $absolute_path File about to be written, renamed, or deleted. */
+	public function track_canonical_mutation( string $absolute_path ): void {
+		$path = $this->canonical_relative_path( $absolute_path );
+		if ( null === $path || array_key_exists( $path, $this->canonical_mutations ) ) {
+			return;
+		}
+
+		$this->canonical_mutations[ $path ] = is_file( $absolute_path )
+			? (string) hash_file( 'sha256', $absolute_path )
+			: null;
+	}
+
+	private function canonical_relative_path( string $absolute_path ): ?string {
+		$absolute_path = str_replace( DIRECTORY_SEPARATOR, '/', $absolute_path );
+		foreach ( array( $this->content_dir, $this->state_dir ) as $root ) {
+			$root = str_replace( DIRECTORY_SEPARATOR, '/', rtrim( $root, '/' ) );
+			if ( str_starts_with( $absolute_path, $root . '/' ) ) {
+				$path = substr( $absolute_path, strlen( $root ) + 1 );
+				if ( str_ends_with( $path, '.md' ) || str_ends_with( $path, '.json' ) ) {
+					return $path;
+				}
+			}
+		}
+
+		return null;
+	}
+
+	private function canonical_absolute_path( string $path ): string {
+		$state_path = $this->state_dir . '/' . $path;
+		return is_file( $state_path ) || str_starts_with( $path, '_' ) ? $state_path : $this->content_dir . '/' . $path;
 	}
 
 	/**
@@ -656,6 +680,7 @@ class WP_Markdown_Write_Engine {
 		$filename = self::option_filename( $name );
 		$relative = '_options/' . $filename;
 		$abs      = $this->state_dir . '/' . $relative;
+		$this->track_canonical_mutation( $abs );
 
 		$payload = array(
 			'option_id'    => (int) $row['option_id'],
@@ -694,6 +719,7 @@ class WP_Markdown_Write_Engine {
 		$filename = self::option_filename( $name );
 		$abs      = $this->state_dir . '/_options/' . $filename;
 		if ( file_exists( $abs ) ) {
+			$this->track_canonical_mutation( $abs );
 			@unlink( $abs );
 		}
 		$index_deletes[] = $name;
@@ -1284,6 +1310,7 @@ class WP_Markdown_Write_Engine {
 			mkdir( $dir, 0755, true );
 		}
 
+		$this->track_canonical_mutation( $path );
 		$json = json_encode( $data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
 		if ( false === $json ) {
 			throw new \RuntimeException( 'Markdown DB: Failed to encode JSON file: ' . $path );

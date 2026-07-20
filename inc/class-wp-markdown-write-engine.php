@@ -694,7 +694,7 @@ class WP_Markdown_Write_Engine {
 			throw new \RuntimeException( 'Markdown DB: Failed to encode option "' . $name . '".' );
 		}
 
-		$tmp = $abs . '.tmp.' . getmypid() . '.' . substr( md5( uniqid( '', true ) ), 0, 8 );
+		$tmp = $this->json_tmp_path( $abs );
 		if ( false === @file_put_contents( $tmp, $json ) ) {
 			throw new \RuntimeException( 'Markdown DB: Failed to write option file: ' . $abs );
 		}

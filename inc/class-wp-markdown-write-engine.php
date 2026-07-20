@@ -803,7 +803,7 @@ class WP_Markdown_Write_Engine {
 		// in the same request collapses to a single file write. See #21.
 		if ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) {
 			$id = $this->driver->get_insert_id();
-			if ( $id ) {
+			if ( $id && ! $this->is_auto_draft( (int) $id ) ) {
 				$this->mark_post_dirty( (int) $id );
 			}
 		} elseif ( 'UPDATE' === $op_type ) {
@@ -812,6 +812,30 @@ class WP_Markdown_Write_Engine {
 				$this->mark_post_dirty( (int) $id );
 			}
 		}
+	}
+
+	/**
+	 * Determine whether an inserted post is an ephemeral auto-draft.
+	 *
+	 * Status lookup failures retain the post so canonical persistence remains
+	 * fail-safe. The narrow query avoids loading post content for rows that the
+	 * storage layer will discard.
+	 *
+	 * @param int $post_id Post ID.
+	 * @return bool Whether the post is an auto-draft.
+	 */
+	private function is_auto_draft( int $post_id ): bool {
+		$table = $this->prefix() . 'posts';
+
+		try {
+			$rows = $this->driver->query(
+				"SELECT post_status FROM `{$table}` WHERE ID = {$post_id}"
+			);
+		} catch ( \Throwable $e ) {
+			return false;
+		}
+
+		return is_array( $rows ) && ! empty( $rows ) && 'auto-draft' === ( $rows[0]->post_status ?? '' );
 	}
 
 	/**

@@ -15,11 +15,18 @@ class WP_SQLite_Connection {
 }
 
 class WP_SQLite_Driver {
+	/** @var string[] */
+	public array $queries = array();
+	public bool $fail_status_queries = false;
 	public function __construct( private WP_SQLite_Connection $connection, string $database ) { unset( $database ); }
 	public function get_connection(): WP_SQLite_Connection { return $this->connection; }
 	public function get_insert_id(): int { return (int) $this->connection->get_pdo()->lastInsertId(); }
 	public function query( string $sql, $fetch_mode = PDO::FETCH_OBJ, ...$args ) {
 		unset( $args );
+		$this->queries[] = $sql;
+		if ( $this->fail_status_queries && str_contains( $sql, 'SELECT post_status FROM' ) ) {
+			throw new RuntimeException( 'Simulated status lookup failure.' );
+		}
 		$statement = $this->connection->get_pdo()->query( $sql );
 		return false === $statement ? array() : $statement->fetchAll( $fetch_mode );
 	}
@@ -94,6 +101,19 @@ mdi_runtime_assert( file_exists( $root . '/existing-state/_options/blogname.json
 mdi_runtime_assert( array( '_options/blogname.json', '_tables/users.json', 'post/cold-post.md' ) === $existing_changes['created'], 'driver flush returns deterministic canonical paths for caller-managed durability' );
 mdi_runtime_assert( $existing_changes === $GLOBALS['mdi_runtime_actions']['markdown_database_integration_flushed'][0][0], 'successful flush action exposes the same canonical change set' );
 mdi_runtime_assert( array( 'created' => array(), 'changed' => array(), 'deleted' => array() ) === $existing_driver->flush_canonical_writes(), 'driver flush returns an empty change set at a clean boundary' );
+$existing_driver->query( "INSERT INTO wp_posts (ID, post_title, post_status, post_name, post_type) VALUES (13, 'Ephemeral draft', 'auto-draft', '', 'post')" );
+$existing_driver->query( "INSERT INTO wp_posts (ID, post_title, post_status, post_name, post_type) VALUES (14, 'Durable draft', 'draft', 'durable-draft', 'post')" );
+$insert_changes = $existing_driver->flush_canonical_writes();
+$auto_draft_full_reads = array_filter(
+	$existing_driver->queries,
+	static fn ( string $query ): bool => str_contains( $query, 'SELECT * FROM `wp_posts` WHERE ID = 13' )
+);
+mdi_runtime_assert( array( 'post/durable-draft.md' ) === $insert_changes['created'], 'insert persistence keeps normal drafts and omits ephemeral auto-drafts' );
+mdi_runtime_assert( empty( $auto_draft_full_reads ), 'auto-draft inserts do not enter full-row shutdown persistence' );
+$existing_driver->fail_status_queries = true;
+$existing_driver->query( "INSERT INTO wp_posts (ID, post_title, post_status, post_name, post_type) VALUES (15, 'Fail-safe draft', 'draft', 'fail-safe-draft', 'post')" );
+$existing_driver->fail_status_queries = false;
+mdi_runtime_assert( array( 'post/fail-safe-draft.md' ) === $existing_driver->flush_canonical_writes()['created'], 'status lookup failures retain inserted posts for canonical persistence' );
 $users_path = $root . '/existing-state/_tables/users.json';
 unlink( $users_path );
 mkdir( $users_path );

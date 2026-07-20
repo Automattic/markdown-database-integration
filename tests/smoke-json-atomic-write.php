@@ -61,10 +61,12 @@ function build_write_engine( string $content_dir ): WP_Markdown_Write_Engine {
 
 $base = sys_get_temp_dir() . '/mdi-json-atomic-write-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $base . '/_tables', 0755, true );
+mkdir( $base . '/_options', 0755, true );
 
 $engine       = build_write_engine( $base );
 $tmp_method   = new ReflectionMethod( $engine, 'json_tmp_path' );
 $write_method = new ReflectionMethod( $engine, 'write_json' );
+$write_option = new ReflectionMethod( $engine, 'write_option_file' );
 $path         = $base . '/_tables/actionscheduler_actions.json';
 
 // 1. Temp paths must be unique within one PHP process. The previous
@@ -115,10 +117,39 @@ assert_true( is_array( $decoded ), 'final JSON exists and parses' );
 assert_eq( isset( $decoded[0]['action_id'] ) ? (int) $decoded[0]['action_id'] : null, 3, 'final write wins' );
 assert_true( empty( $stale ), 'no stale temp files remain', implode( ', ', $stale ) );
 
+// 3. Option files use the same bounded atomic temp-path primitive as table
+// snapshots and leave no process-local temp artifacts after replacement.
+$source       = (string) file_get_contents( __DIR__ . '/../inc/class-wp-markdown-write-engine.php' );
+$option_start = strpos( $source, 'private function write_option_file' );
+$option_end   = strpos( $source, 'private function delete_option_file', $option_start );
+$option_code  = substr( $source, $option_start, $option_end - $option_start );
+$option_path  = $base . '/_options/siteurl.json';
+$option_row   = array(
+	'option_id'    => 1,
+	'option_name'  => 'siteurl',
+	'option_value' => 'https://first.example',
+	'autoload'     => 'yes',
+);
+
+$write_option->invoke( $engine, 'siteurl', $option_row );
+$option_row['option_value'] = 'https://second.example';
+$write_option->invoke( build_write_engine( $base ), 'siteurl', $option_row );
+
+$option_decoded = json_decode( (string) file_get_contents( $option_path ), true );
+$option_stale   = glob( $option_path . '.tmp.*' ) ?: array();
+
+assert_true( str_contains( $option_code, '$this->json_tmp_path( $abs )' ), 'option writes share the bounded temp-path primitive' );
+assert_eq( $option_decoded['option_value'] ?? null, 'https://second.example', 'final option write wins' );
+assert_true( empty( $option_stale ), 'option writes leave no stale temp files', implode( ', ', $option_stale ) );
+
 foreach ( glob( $base . '/_tables/*' ) ?: array() as $file ) {
 	@unlink( $file );
 }
+foreach ( glob( $base . '/_options/*' ) ?: array() as $file ) {
+	@unlink( $file );
+}
 @rmdir( $base . '/_tables' );
+@rmdir( $base . '/_options' );
 @rmdir( $base );
 
 if ( $failed > 0 ) {

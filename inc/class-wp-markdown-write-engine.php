@@ -1294,9 +1294,51 @@ class WP_Markdown_Write_Engine {
 			throw new \RuntimeException( 'Markdown DB: Failed to write JSON file: ' . $path );
 		}
 
+		clearstatcache( true, $tmp );
+		$mtime = filemtime( $tmp );
+		$size  = filesize( $tmp );
+		if ( false === $mtime || false === $size ) {
+			@unlink( $tmp );
+			throw new \RuntimeException( 'Markdown DB: Failed to stat JSON file: ' . $path );
+		}
+
 		if ( ! @rename( $tmp, $path ) ) {
 			@unlink( $tmp );
 			throw new \RuntimeException( 'Markdown DB: Failed to rename JSON file: ' . $path );
+		}
+
+		$this->update_json_manifest( $path, (int) $mtime, (int) $size );
+	}
+
+	/**
+	 * Record an atomically replaced table snapshot in the warm-sync manifest.
+	 *
+	 * A manifest write can only follow a successful rename. If the manifest is
+	 * unavailable, retaining its previous entry is safe: the next warm sync
+	 * treats the snapshot as changed instead of trusting an unrecorded write.
+	 *
+	 * @param string $path  Replaced JSON file path.
+	 * @param int    $mtime Mtime of the successfully written temp snapshot.
+	 * @param int    $size  Size of the successfully written temp snapshot.
+	 */
+	private function update_json_manifest( string $path, int $mtime, int $size ): void {
+		$tables_dir = rtrim( $this->state_dir, '/' ) . '/_tables';
+		if ( dirname( $path ) !== $tables_dir || ! method_exists( $this->driver, 'get_connection' ) ) {
+			return;
+		}
+
+		try {
+			$connection = $this->driver->get_connection();
+			if ( ! method_exists( $connection, 'get_pdo' ) ) {
+				return;
+			}
+
+			$stmt = $connection->get_pdo()->prepare(
+				'INSERT OR REPLACE INTO `_json_file_manifest` (file_name, file_mtime, file_size) VALUES (?, ?, ?)'
+			);
+			$stmt->execute( array( '_tables/' . basename( $path ), $mtime, $size ) );
+		} catch ( \Throwable $e ) {
+			// Isolated and non-primary callers may not have the manifest table.
 		}
 	}
 

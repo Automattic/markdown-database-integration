@@ -517,8 +517,9 @@ class WP_Markdown_Write_Engine {
 	 * @since 0.4.0 Rewritten as per-file persistence.
 	 */
 	private function persist_options(): void {
+		$ephemeral_names = $this->get_ephemeral_option_names();
 		$names = $this->dirty_options_all
-			? $this->list_all_non_ephemeral_option_names()
+			? $this->list_all_non_ephemeral_option_names( $ephemeral_names )
 			: array_keys( $this->dirty_option_names );
 
 		if ( empty( $names ) ) {
@@ -542,7 +543,7 @@ class WP_Markdown_Write_Engine {
 		$index_deletes = array();
 
 		foreach ( $names as $name ) {
-			if ( $this->is_ephemeral_option( $name ) ) {
+			if ( $this->is_ephemeral_option( $name, $ephemeral_names ) ) {
 				// Ephemerals never hit disk. If one was previously persisted
 				// (legacy migration edge case), remove its file.
 				$this->delete_option_file( $name, $index_deletes );
@@ -640,9 +641,10 @@ class WP_Markdown_Write_Engine {
 	 *
 	 * @since 0.4.0
 	 *
+	 * @param string[] $ephemeral_names Exact ephemeral option names for this flush.
 	 * @return string[]
 	 */
-	private function list_all_non_ephemeral_option_names(): array {
+	private function list_all_non_ephemeral_option_names( array $ephemeral_names ): array {
 		$table = $this->prefix() . 'options';
 
 		try {
@@ -659,7 +661,7 @@ class WP_Markdown_Write_Engine {
 
 		$names = array();
 		foreach ( $rows as $row ) {
-			if ( ! $this->is_ephemeral_option( $row->option_name ) ) {
+			if ( ! $this->is_ephemeral_option( $row->option_name, $ephemeral_names ) ) {
 				$names[] = $row->option_name;
 			}
 		}
@@ -1269,11 +1271,12 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Check if an option name is ephemeral (should not be persisted).
 	 *
-	 * @param string $name Option name.
+	 * @param string   $name            Option name.
+	 * @param string[] $ephemeral_names Exact ephemeral option names for this flush.
 	 * @return bool
 	 */
-	private function is_ephemeral_option( string $name ): bool {
-		if ( in_array( $name, self::EPHEMERAL_OPTION_NAMES, true ) ) {
+	private function is_ephemeral_option( string $name, array $ephemeral_names ): bool {
+		if ( in_array( $name, $ephemeral_names, true ) ) {
 			return true;
 		}
 
@@ -1284,6 +1287,38 @@ class WP_Markdown_Write_Engine {
 		}
 
 		return false;
+	}
+
+	/**
+	 * Get exact option names that should not be persisted.
+	 *
+	 * Durable runtimes with an explicit background scheduler may remove `cron`
+	 * from this list. Prefix-based transient exclusions remain unconditional.
+	 *
+	 * @return string[] Ephemeral option names.
+	 */
+	private function get_ephemeral_option_names(): array {
+		if ( ! function_exists( 'apply_filters' ) ) {
+			return self::EPHEMERAL_OPTION_NAMES;
+		}
+
+		/**
+		 * Filters exact option names excluded from canonical persistence.
+		 *
+		 * @param string[] $names Exact ephemeral option names.
+		 */
+		$names = apply_filters( 'markdown_database_integration_ephemeral_option_names', self::EPHEMERAL_OPTION_NAMES );
+		if ( ! is_array( $names ) ) {
+			return self::EPHEMERAL_OPTION_NAMES;
+		}
+
+		foreach ( $names as $name ) {
+			if ( ! is_string( $name ) || '' === $name ) {
+				return self::EPHEMERAL_OPTION_NAMES;
+			}
+		}
+
+		return array_values( array_unique( $names ) );
 	}
 
 	/**

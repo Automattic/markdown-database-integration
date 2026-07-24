@@ -65,8 +65,10 @@ $pdo->exec( 'CREATE TABLE wp_streamed_jobs (id INTEGER PRIMARY KEY, payload TEXT
 $pdo->exec( 'CREATE TABLE wp_truncated_jobs (id INTEGER PRIMARY KEY, payload TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_empty_jobs (id INTEGER PRIMARY KEY)' );
 $pdo->exec( 'CREATE TABLE wp_oversized_jobs (id INTEGER PRIMARY KEY, payload TEXT)' );
+$pdo->exec( 'CREATE TABLE _json_file_manifest (file_name TEXT PRIMARY KEY, file_mtime INTEGER NOT NULL, file_size INTEGER NOT NULL)' );
 $pdo->exec( "INSERT INTO wp_truncated_jobs (id, payload) VALUES (999, 'existing')" );
 $pdo->exec( "INSERT INTO wp_oversized_jobs (id, payload) VALUES (999, 'existing')" );
+$pdo->exec( "INSERT INTO _json_file_manifest (file_name, file_mtime, file_size) VALUES ('_tables/truncated_jobs.json', 11, 22)" );
 
 $loader = new WP_Markdown_Loader(
 	$root,
@@ -104,7 +106,13 @@ mdi_json_hydration_assert( $memory_delta < 8 * 1024 * 1024, 'peak hydration memo
 file_put_contents( $root . '/_tables/truncated_jobs.json', '[{"id":1,"payload":"first"},{"id":2,"payload":"second"}' );
 $thrown = null;
 try {
-	$load_table->invoke( $loader, 'truncated_jobs' );
+	$load_table->invoke(
+		$loader,
+		'truncated_jobs',
+		static function () use ( $pdo ): void {
+			$pdo->exec( 'DELETE FROM wp_truncated_jobs' );
+		}
+	);
 } catch ( RuntimeException $e ) {
 	$thrown = $e;
 }
@@ -112,6 +120,7 @@ try {
 mdi_json_hydration_assert( $thrown instanceof RuntimeException, 'truncated snapshots fail deterministically' );
 mdi_json_hydration_assert( 1 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_truncated_jobs' )->fetchColumn(), 'truncated snapshots roll back inserted rows' );
 mdi_json_hydration_assert( 'existing' === $pdo->query( 'SELECT payload FROM wp_truncated_jobs WHERE id = 999' )->fetchColumn(), 'rollback preserves existing table state' );
+mdi_json_hydration_assert( '11:22' === $pdo->query( "SELECT file_mtime || ':' || file_size FROM _json_file_manifest WHERE file_name = '_tables/truncated_jobs.json'" )->fetchColumn(), 'truncated snapshot rollback preserves the previous manifest' );
 
 // JSON Machine retains one decoded row, so valid rows larger than 1 MiB remain supported.
 $oversized_file = $root . '/_tables/oversized_jobs.json';

@@ -312,7 +312,8 @@ class WP_Markdown_Loader {
 		$start = microtime( true );
 		$pdo = $this->driver->get_connection()->get_pdo();
 
-		// Load the current manifest.
+		// Load the current manifest for candidate filtering. Hydration revalidates
+		// the per-file entry after acquiring SQLite write ownership.
 		$manifest = array();
 		try {
 			$rows = $pdo->query( 'SELECT file_name, file_mtime, file_size FROM `_json_file_manifest`' )->fetchAll( \PDO::FETCH_OBJ );
@@ -416,9 +417,6 @@ class WP_Markdown_Loader {
 				}
 			}
 		}
-
-		// Save updated manifest.
-		$this->save_json_manifest();
 
 		$this->timings['sync_json'] = microtime( true ) - $start;
 	}
@@ -1631,71 +1629,100 @@ class WP_Markdown_Loader {
 	 * File is at {state_dir}/_tables/{table_name}.json
 	 *
 	 * @param string        $table_suffix     Table name without prefix (e.g. 'users').
-	 * @param callable|null $before_hydration Optional destructive replacement step, run atomically with hydration.
+	 * @param callable|null $before_hydration Optional destructive replacement step. Warm hydration
+	 *                                          revalidates and updates the manifest atomically with this step.
 	 */
 	private function load_table_from_json( string $table_suffix, ?callable $before_hydration = null ): void {
-		$start = microtime( true );
-		$table = $this->prefix() . $table_suffix;
-		$file  = $this->state_dir . '/_tables/' . $table_suffix . '.json';
+		$start    = microtime( true );
+		$table    = $this->prefix() . $table_suffix;
+		$file     = $this->state_dir . '/_tables/' . $table_suffix . '.json';
+		$file_key = '_tables/' . $table_suffix . '.json';
 
 		if ( ! file_exists( $file ) ) {
 			$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
 			return;
 		}
-		clearstatcache( true, $file );
-		if ( 0 === (int) filesize( $file ) ) {
-			if ( null !== $before_hydration ) {
-				$pdo = $this->driver->get_connection()->get_pdo();
-				$pdo->exec( 'BEGIN TRANSACTION' );
-				try {
-					$before_hydration();
-					$pdo->exec( 'COMMIT' );
-				} catch ( \Throwable $e ) {
-					$pdo->exec( 'ROLLBACK' );
-					throw $e;
-				}
-			}
+
+		$manifest_aware = null !== $before_hydration;
+		$cold_identity  = $manifest_aware ? null : $this->get_json_file_identity( $file );
+		if ( ! $manifest_aware && ( null === $cold_identity || 0 === $cold_identity['size'] ) ) {
 			$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
 			return;
 		}
 
 		$pdo = $this->driver->get_connection()->get_pdo();
-		$pdo->exec( 'BEGIN TRANSACTION' );
+		$pdo->exec( $manifest_aware ? 'BEGIN IMMEDIATE' : 'BEGIN TRANSACTION' );
 
 		try {
-			if ( null !== $before_hydration ) {
+			$identity = null;
+			if ( $manifest_aware ) {
+				$identity = $this->get_json_file_identity( $file );
+				if ( null === $identity ) {
+					$pdo->exec( 'COMMIT' );
+					$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
+					return;
+				}
+
+				$manifest_stmt = $pdo->prepare(
+					'SELECT file_mtime, file_size FROM `_json_file_manifest` WHERE file_name = ?'
+				);
+				$manifest_stmt->execute( array( $file_key ) );
+				$manifest = $manifest_stmt->fetch( \PDO::FETCH_ASSOC );
+				if (
+					false !== $manifest
+					&& (int) $manifest['file_mtime'] === $identity['mtime']
+					&& (int) $manifest['file_size'] === $identity['size']
+				) {
+					$pdo->exec( 'COMMIT' );
+					$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
+					return;
+				}
+			}
+
+			if ( $manifest_aware ) {
 				$before_hydration();
 			}
 
 			$columns = null;
 			$stmt    = null;
 
-			// Items yields one decoded row at a time instead of retaining the snapshot.
-			$rows = \JsonMachine\Items::fromFile(
-				$file,
-				array( 'decoder' => new \JsonMachine\JsonDecoder\ExtJsonDecoder( true ) )
-			);
+			if ( ! $manifest_aware || 0 !== $identity['size'] ) {
+				// Items yields one decoded row at a time instead of retaining the snapshot.
+				$rows = \JsonMachine\Items::fromFile(
+					$file,
+					array( 'decoder' => new \JsonMachine\JsonDecoder\ExtJsonDecoder( true ) )
+				);
 
-			foreach ( $rows as $row ) {
-				if ( ! is_array( $row ) ) {
-					throw new \UnexpectedValueException( 'Table snapshot rows must be JSON objects.' );
-				}
+				foreach ( $rows as $row ) {
+					if ( ! is_array( $row ) ) {
+						throw new \UnexpectedValueException( 'Table snapshot rows must be JSON objects.' );
+					}
 
-				if ( null === $columns ) {
-					// Build INSERT from the first row's keys.
-					$columns      = array_keys( $row );
-					$placeholders = implode( ', ', array_fill( 0, count( $columns ), '?' ) );
-					$col_names    = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
-					$stmt         = $pdo->prepare(
-						"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
-					);
-				}
+					if ( null === $columns ) {
+						// Build INSERT from the first row's keys.
+						$columns      = array_keys( $row );
+						$placeholders = implode( ', ', array_fill( 0, count( $columns ), '?' ) );
+						$col_names    = implode( ', ', array_map( fn( $c ) => "`{$c}`", $columns ) );
+						$stmt         = $pdo->prepare(
+							"INSERT OR IGNORE INTO `{$table}` ({$col_names}) VALUES ({$placeholders})"
+						);
+					}
 
-				$values = array();
-				foreach ( $columns as $col ) {
-					$values[] = $row[ $col ] ?? null;
+					$values = array();
+					foreach ( $columns as $col ) {
+						$values[] = $row[ $col ] ?? null;
+					}
+					$stmt->execute( $values );
 				}
-				$stmt->execute( $values );
+			}
+
+			if ( $manifest_aware ) {
+				if ( $identity !== $this->get_json_file_identity( $file ) ) {
+					throw new \RuntimeException( 'Table snapshot changed during hydration.' );
+				}
+				$pdo->prepare(
+					'INSERT OR REPLACE INTO `_json_file_manifest` (file_name, file_mtime, file_size) VALUES (?, ?, ?)'
+				)->execute( array( $file_key, $identity['mtime'], $identity['size'] ) );
 			}
 
 			$pdo->exec( 'COMMIT' );
@@ -1706,6 +1733,23 @@ class WP_Markdown_Loader {
 		}
 
 		$this->timings[ 'load_' . $table_suffix ] = microtime( true ) - $start;
+	}
+
+	/**
+	 * Read the manifest identity for a JSON snapshot without using cached stats.
+	 *
+	 * @return array{mtime: int, size: int}|null
+	 */
+	private function get_json_file_identity( string $file ): ?array {
+		clearstatcache( true, $file );
+		$stat = @stat( $file );
+		if ( false === $stat ) {
+			return null;
+		}
+		return array(
+			'mtime' => (int) $stat['mtime'],
+			'size'  => (int) $stat['size'],
+		);
 	}
 
 	/**

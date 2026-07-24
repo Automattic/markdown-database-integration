@@ -93,6 +93,12 @@ function mdi_warm_sync_run( ReflectionMethod $sync, WP_Markdown_Loader $loader )
 	return false;
 }
 
+function mdi_warm_sync_manifest_is_unchanged( PDO $pdo, string $name ): bool {
+	$stmt = $pdo->prepare( 'SELECT file_mtime, file_size FROM _json_file_manifest WHERE file_name = ?' );
+	$stmt->execute( array( '_tables/' . $name . '.json' ) );
+	return array( 'file_mtime' => 0, 'file_size' => 0 ) === $stmt->fetch( PDO::FETCH_ASSOC );
+}
+
 function mdi_warm_sync_fixture(): array {
 	$root = sys_get_temp_dir() . '/mdi-warm-sync-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 	mkdir( $root . '/_tables', 0755, true );
@@ -109,6 +115,7 @@ $pdo->exec( "INSERT INTO wp_users (id, name) VALUES (1, 'before')" );
 mdi_warm_sync_changed_snapshot( $pdo, $root, 'users' );
 mdi_warm_sync_assert( mdi_warm_sync_run( $sync, $loader ), 'malformed changed core snapshot fails warm sync' );
 mdi_warm_sync_assert( 'before' === $pdo->query( 'SELECT name FROM wp_users WHERE id = 1' )->fetchColumn(), 'core replacement rollback preserves existing rows' );
+mdi_warm_sync_assert( mdi_warm_sync_manifest_is_unchanged( $pdo, 'users' ), 'core replacement rollback preserves the previous manifest' );
 mdi_warm_sync_remove_dir( $root );
 
 // Plugin tables use the same full replacement contract.
@@ -119,6 +126,7 @@ $pdo->exec( "INSERT INTO wp_plugin_jobs (id, name) VALUES (1, 'before')" );
 mdi_warm_sync_changed_snapshot( $pdo, $root, 'plugin_jobs' );
 mdi_warm_sync_assert( mdi_warm_sync_run( $sync, $loader ), 'malformed changed plugin snapshot fails warm sync' );
 mdi_warm_sync_assert( 'before' === $pdo->query( 'SELECT name FROM wp_plugin_jobs WHERE id = 1' )->fetchColumn(), 'plugin replacement rollback preserves existing rows' );
+mdi_warm_sync_assert( mdi_warm_sync_manifest_is_unchanged( $pdo, 'plugin_jobs' ), 'plugin replacement rollback preserves the previous manifest' );
 mdi_warm_sync_remove_dir( $root );
 
 // Posts deletes only non-markdown rows, but that partition must also roll back.
@@ -130,6 +138,7 @@ $pdo->exec( "INSERT INTO wp_posts (ID, post_type, post_title) VALUES (2, 'revisi
 mdi_warm_sync_changed_snapshot( $pdo, $root, 'posts' );
 mdi_warm_sync_assert( mdi_warm_sync_run( $sync, $loader ), 'malformed changed posts partition snapshot fails warm sync' );
 mdi_warm_sync_assert( 2 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_posts' )->fetchColumn(), 'posts partition rollback preserves markdown and non-markdown rows' );
+mdi_warm_sync_assert( mdi_warm_sync_manifest_is_unchanged( $pdo, 'posts' ), 'posts partition rollback preserves the previous manifest' );
 mdi_warm_sync_remove_dir( $root );
 
 // Postmeta deletes rows through the non-markdown wp_posts partition.
@@ -144,6 +153,22 @@ $pdo->prepare( 'INSERT INTO _json_file_manifest (file_name, file_mtime, file_siz
 	->execute( array( '_tables/postmeta.json', 0, 0 ) );
 mdi_warm_sync_assert( mdi_warm_sync_run( $sync, $loader ), 'malformed changed postmeta partition snapshot fails warm sync' );
 mdi_warm_sync_assert( 2 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_postmeta' )->fetchColumn(), 'postmeta partition rollback preserves all existing rows' );
+mdi_warm_sync_assert( mdi_warm_sync_manifest_is_unchanged( $pdo, 'postmeta' ), 'postmeta partition rollback preserves the previous manifest' );
+mdi_warm_sync_remove_dir( $root );
+
+// Term relationships use the same non-markdown wp_posts partition.
+[ $root, $pdo ] = mdi_warm_sync_fixture();
+$pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_type TEXT)' );
+$pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
+$pdo->exec( "INSERT INTO wp_posts (ID, post_type) VALUES (1, 'wiki'), (2, 'revision')" );
+$pdo->exec( 'INSERT INTO wp_term_relationships (object_id, term_taxonomy_id) VALUES (1, 10), (2, 20)' );
+[ $loader, $sync ] = mdi_warm_sync_loader( $pdo, $root );
+file_put_contents( $root . '/_tables/term_relationships.json', '[{"object_id":2,"term_taxonomy_id":30}' );
+$pdo->prepare( 'INSERT INTO _json_file_manifest (file_name, file_mtime, file_size) VALUES (?, ?, ?)' )
+	->execute( array( '_tables/term_relationships.json', 0, 0 ) );
+mdi_warm_sync_assert( mdi_warm_sync_run( $sync, $loader ), 'malformed changed term-relationship partition snapshot fails warm sync' );
+mdi_warm_sync_assert( 2 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_term_relationships' )->fetchColumn(), 'term-relationship partition rollback preserves all existing rows' );
+mdi_warm_sync_assert( mdi_warm_sync_manifest_is_unchanged( $pdo, 'term_relationships' ), 'term-relationship partition rollback preserves the previous manifest' );
 mdi_warm_sync_remove_dir( $root );
 
 if ( ! empty( $failures ) ) {

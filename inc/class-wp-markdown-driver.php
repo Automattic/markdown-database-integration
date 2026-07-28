@@ -547,7 +547,7 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 				return array( 'type' => 'DML', 'op' => 'DELETE', 'table' => $table );
 			}
 		}
-		// DDL operations: CREATE TABLE, ALTER TABLE, DROP TABLE.
+		// DDL operations: CREATE TABLE, ALTER TABLE, DROP TABLE, DROP INDEX ... ON.
 		// Only persist schema for non-core tables (core schemas are in the loader).
 		elseif ( preg_match( '/^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/i', $trimmed, $m ) ) {
 			$table = $m[1];
@@ -558,6 +558,12 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 			return array( 'type' => 'DDL', 'op' => 'ALTER', 'table' => $m[1] );
 		} elseif ( preg_match( '/^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?`?(\w+)`?/i', $trimmed, $m ) ) {
 			return array( 'type' => 'DDL', 'op' => 'DROP', 'table' => $m[1] );
+		} elseif ( preg_match( '/^\s*DROP\s+INDEX\s+`?(\w+)`?\s+ON\s+`?(\w+)`?\s*;?\s*$/i', $trimmed, $m ) ) {
+			// DROP INDEX changes the referenced table but does not remove it, so
+			// use the existing ALTER snapshot path after the parent query succeeds.
+			if ( ! $this->is_core_table( $m[2] ) ) {
+				return array( 'type' => 'DDL', 'op' => 'ALTER', 'table' => $m[2] );
+			}
 		}
 
 		return null;

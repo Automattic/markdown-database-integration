@@ -2,7 +2,8 @@
 /**
  * Markdown Database Driver
  *
- * Extends the SQLite v2 driver to persist all writes to markdown/JSON files.
+ * Extends the canonical MySQL-on-SQLite PDO driver to persist all writes to
+ * markdown/JSON files.
  * In Phase 2 ('primary' mode), the in-memory SQLite is the query engine
  * and markdown files on disk are the source of truth.
  *
@@ -21,7 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-class WP_Markdown_Driver extends WP_SQLite_Driver {
+class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 
 	/**
 	 * The markdown storage engine.
@@ -85,7 +86,16 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 		string $database,
 		WP_Markdown_Storage $storage
 	) {
-		parent::__construct( $connection, $database );
+		parent::__construct(
+			sprintf( 'mysql-on-sqlite:dbname=%s', $database ),
+			null,
+			null,
+			array(
+				'pdo'          => $connection->get_pdo(),
+				'journal_mode' => $connection->get_pdo()->query( 'PRAGMA journal_mode' )->fetchColumn(),
+			)
+		);
+		$connection->get_pdo()->setAttribute( PDO::ATTR_STRINGIFY_FETCHES, true );
 
 		$this->storage = $storage;
 
@@ -205,7 +215,7 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 	 * @param int    $fetch_mode         PDO fetch mode.
 	 * @param array  ...$fetch_mode_args Additional fetch mode args.
 	 *
-	 * @return mixed Query results.
+	 * @return PDOStatement|false Query statement.
 	 * @throws WP_SQLite_Driver_Exception On query failure.
 	 */
 	public function query( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
@@ -222,10 +232,15 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 		// Execute via parent SQLite driver.
 		$result = parent::query( $query, $fetch_mode, ...$fetch_mode_args );
 
-		// Lazy-load post_content from .md files for SELECT queries on wp_posts.
-		// This must run before the write engine check (reads don't trigger writes).
-		if ( is_array( $result ) && ! $this->syncing && $this->is_posts_content_query( $query ) ) {
-			$result = $this->resolve_content( $result );
+		// Wrap content reads so the canonical PDO statement retains lazy markdown
+		// hydration when callers fetch rows.
+		if ( $result instanceof \PDOStatement && ! $this->syncing && $this->is_posts_content_query( $query ) ) {
+			$result = new WP_Markdown_PDO_Statement(
+				$result,
+				function ( array $rows ): array {
+					return $this->resolve_content( $rows );
+				}
+			);
 		}
 
 		// If we're already syncing or no write engine, skip.
@@ -595,5 +610,41 @@ class WP_Markdown_Driver extends WP_SQLite_Driver {
 			}
 		}
 		return false;
+	}
+}
+
+/**
+ * Decorates canonical PDO statements with MDI's lazy post-content hydration.
+ */
+class WP_Markdown_PDO_Statement extends PDOStatement {
+	private PDOStatement $statement;
+	private $hydrate_rows;
+
+	public function __construct( PDOStatement $statement, callable $hydrate_rows ) {
+		$this->statement    = $statement;
+		$this->hydrate_rows = $hydrate_rows;
+	}
+
+	#[\ReturnTypeWillChange]
+	public function fetch( $mode = PDO::FETCH_DEFAULT, $cursor_orientation = PDO::FETCH_ORI_NEXT, $cursor_offset = 0 ) {
+		$row = $this->statement->fetch( $mode, $cursor_orientation, $cursor_offset );
+		if ( false === $row ) {
+			return false;
+		}
+		$rows = ( $this->hydrate_rows )( array( $row ) );
+		return $rows[0];
+	}
+
+	#[\ReturnTypeWillChange]
+	public function fetchAll( $mode = PDO::FETCH_DEFAULT, ...$args ): array {
+		return ( $this->hydrate_rows )( $this->statement->fetchAll( $mode, ...$args ) );
+	}
+
+	public function columnCount(): int {
+		return $this->statement->columnCount();
+	}
+
+	public function rowCount(): int {
+		return $this->statement->rowCount();
 	}
 }

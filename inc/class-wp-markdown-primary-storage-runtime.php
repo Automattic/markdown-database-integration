@@ -171,17 +171,15 @@ class WP_Markdown_Primary_Storage_Runtime {
 		$prefix_resolver = is_callable( $prefix ) ? $prefix : static function () use ( $prefix ): string { return (string) $prefix; };
 		$driver = $this->driver;
 		$storage->set_post_resolver( static function ( int $post_id ) use ( $driver, $prefix_resolver ): ?object {
-			$rows = $driver->query( 'SELECT post_name, post_parent, post_type FROM `' . $prefix_resolver() . 'posts` WHERE ID = ' . $post_id );
-			return is_array( $rows ) && ! empty( $rows ) ? $rows[0] : null;
+			$row = $driver->query( 'SELECT post_name, post_parent, post_type FROM `' . $prefix_resolver() . 'posts` WHERE ID = ' . $post_id )->fetch( \PDO::FETCH_OBJ );
+			return false === $row ? null : $row;
 		} );
 		$storage->set_meta_resolver( static function ( int $post_id ) use ( $driver, $prefix_resolver ): array {
-			$rows = $driver->query( 'SELECT meta_key, meta_value FROM `' . $prefix_resolver() . 'postmeta` WHERE post_id = ' . $post_id );
-			return is_array( $rows ) ? $rows : array();
+			return $driver->query( 'SELECT meta_key, meta_value FROM `' . $prefix_resolver() . 'postmeta` WHERE post_id = ' . $post_id )->fetchAll( \PDO::FETCH_OBJ );
 		} );
 		$storage->set_terms_resolver( static function ( int $post_id ) use ( $driver, $prefix_resolver ): array {
 			$prefix = $prefix_resolver();
-			$rows = $driver->query( "SELECT tt.taxonomy, t.slug FROM `{$prefix}term_relationships` tr JOIN `{$prefix}term_taxonomy` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id JOIN `{$prefix}terms` t ON tt.term_id = t.term_id WHERE tr.object_id = {$post_id}" );
-			return is_array( $rows ) ? $rows : array();
+			return $driver->query( "SELECT tt.taxonomy, t.slug FROM `{$prefix}term_relationships` tr JOIN `{$prefix}term_taxonomy` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id JOIN `{$prefix}terms` t ON tt.term_id = t.term_id WHERE tr.object_id = {$post_id}" )->fetchAll( \PDO::FETCH_OBJ );
 		} );
 		$storage->set_index_writer( static function ( int $post_id, string $path, int $mtime, int $size ) use ( $driver ): void {
 			$driver->update_file_index( $post_id, $path, $mtime, $size );

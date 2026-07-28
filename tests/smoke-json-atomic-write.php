@@ -15,8 +15,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-	class WP_SQLite_Driver {}
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+	class WP_MySQL_On_SQLite {}
 }
 
 require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
@@ -63,7 +63,7 @@ function build_write_engine( string $content_dir ): WP_Markdown_Write_Engine {
 	return new WP_Markdown_Write_Engine(
 		$content_dir,
 		new WP_Markdown_Storage( $content_dir ),
-		new WP_SQLite_Driver(),
+		new WP_MySQL_On_SQLite(),
 		'wp_'
 	);
 }
@@ -128,7 +128,7 @@ assert_true( empty( $stale ), 'no stale temp files remain', implode( ', ', $stal
 
 // 3. Change classification uses the serialized snapshot identity rather than
 // rereading a large replacement after its atomic rename.
-$hash_engine  = new MDI_Hash_Observed_Write_Engine( $base, new WP_Markdown_Storage( $base ), new WP_SQLite_Driver(), 'wp_' );
+$hash_engine  = new MDI_Hash_Observed_Write_Engine( $base, new WP_Markdown_Storage( $base ), new WP_MySQL_On_SQLite(), 'wp_' );
 $hash_path    = $base . '/_tables/hash-observed.json';
 $hash_payload = array_fill( 0, 1000, array( 'history' => str_repeat( 'x', 1024 ) ) );
 file_put_contents( $hash_path, str_repeat( 'old', 1024 * 1024 ) );

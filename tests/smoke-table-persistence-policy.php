@@ -42,32 +42,26 @@ function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-	class WP_SQLite_Driver {
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+	class WP_MySQL_On_SQLite {
+		private PDO $pdo;
 		public array $queries = array();
 		public int $rows_materialized = 0;
 
-		public function query( string $sql ): array {
+		public function __construct() {
+			$this->pdo = new PDO( 'sqlite::memory:' );
+			$this->pdo->exec( 'CREATE TABLE wp_datamachine_jobs (job_id INTEGER, flow_id INTEGER, created_at TEXT)' );
+			$this->pdo->exec( "WITH RECURSIVE jobs(job_id) AS (SELECT 1 UNION ALL SELECT job_id + 1 FROM jobs WHERE job_id < 10000) INSERT INTO wp_datamachine_jobs SELECT job_id, 10, '2026-05-09 21:00:00' FROM jobs" );
+		}
+
+		public function query( string $sql ): PDOStatement {
 			$this->queries[] = $sql;
 			if ( str_contains( $sql, 'SHOW CREATE TABLE' ) ) {
-				return array(
-					(object) array(
-						'Create Table' => 'CREATE TABLE `wp_datamachine_jobs` (`job_id` bigint(20), `flow_id` bigint(20), `created_at` datetime)',
-					),
-				);
+				return $this->pdo->query( "SELECT 'CREATE TABLE `wp_datamachine_jobs` (`job_id` bigint(20), `flow_id` bigint(20), `created_at` datetime)' AS \"Create Table\"" );
 			}
 
-			$rows  = array();
-			$start = str_contains( $sql, 'LIMIT 1' ) ? 10000 : 1;
-			for ( $i = $start; $i <= 10000; $i++ ) {
-				$rows[] = (object) array(
-					'job_id'     => $i,
-					'flow_id'    => 10,
-					'created_at' => '2026-05-09 21:00:00',
-				);
-			}
-			$this->rows_materialized += count( $rows );
-			return $rows;
+			$this->rows_materialized += str_contains( $sql, 'LIMIT 1' ) ? 1 : 10000;
+			return $this->pdo->query( $sql );
 		}
 	}
 }
@@ -128,11 +122,11 @@ function mdi_policy_rm_rf( string $dir ): void {
 	@rmdir( $dir );
 }
 
-function mdi_policy_engine( string $content_dir, ?WP_SQLite_Driver $driver = null ): WP_Markdown_Write_Engine {
+function mdi_policy_engine( string $content_dir, ?WP_MySQL_On_SQLite $driver = null ): WP_Markdown_Write_Engine {
 	return new WP_Markdown_Write_Engine(
 		$content_dir,
 		new WP_Markdown_Storage( $content_dir ),
-		$driver ?? new WP_SQLite_Driver(),
+		$driver ?? new WP_MySQL_On_SQLite(),
 		'wp_'
 	);
 }
@@ -168,7 +162,7 @@ remove_all_filters( 'markdown_db_table_persistence_policy' );
 // 3. A non-persistent dirty table does not issue a table read or rewrite an
 // existing snapshot, regardless of historical fixture size.
 file_put_contents( $json_path, '["canonical"]' );
-$driver = new WP_SQLite_Driver();
+$driver = new WP_MySQL_On_SQLite();
 add_filter(
 	'markdown_db_table_persistence_policy',
 	static function ( array $policy ): array {
@@ -197,7 +191,7 @@ add_filter(
 	static function ( string $query, string $table_suffix, string $table, ?array $policy ): string {
 		unset( $table );
 		return 'datamachine_jobs' === $table_suffix && 'latest' === ( $policy['keep'] ?? null )
-			? $query . ' LIMIT 1'
+			? str_replace( 'ORDER BY 1', 'ORDER BY 1 DESC', $query ) . ' LIMIT 1'
 			: $query;
 	},
 	10,
@@ -216,7 +210,7 @@ add_filter(
 	4
 );
 
-$driver = new WP_SQLite_Driver();
+$driver = new WP_MySQL_On_SQLite();
 $persist_table->invoke( mdi_policy_engine( $base, $driver ), 'datamachine_jobs' );
 $rows = json_decode( (string) file_get_contents( $json_path ), true );
 mdi_policy_assert_true( str_contains( $driver->queries[0] ?? '', 'LIMIT 1' ), 'bounded policy applies LIMIT before query execution' );

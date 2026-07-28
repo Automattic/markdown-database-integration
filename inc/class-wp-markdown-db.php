@@ -220,10 +220,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$storage->set_post_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
 			$table = $prefix_resolver() . 'posts';
 			try {
-				$rows = $driver_ref->query(
+				$statement = $driver_ref->query(
 					"SELECT post_name, post_parent, post_type FROM `{$table}` WHERE ID = {$post_id}"
 				);
-				if ( is_array( $rows ) && ! empty( $rows ) ) {
+				$rows = $statement->fetchAll( \PDO::FETCH_OBJ );
+				if ( ! empty( $rows ) ) {
 					return $rows[0];
 				}
 			} catch ( \Throwable $e ) {
@@ -237,10 +238,10 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
 			$table = $prefix_resolver() . 'postmeta';
 			try {
-				$rows = $driver_ref->query(
+				$statement = $driver_ref->query(
 					"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
 				);
-				return is_array( $rows ) ? $rows : array();
+				return $statement->fetchAll( \PDO::FETCH_OBJ );
 			} catch ( \Throwable $e ) {
 				return array();
 			}
@@ -254,14 +255,14 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$taxonomy_table = $prefix . 'term_taxonomy';
 			$rel_table      = $prefix . 'term_relationships';
 			try {
-				$rows = $driver_ref->query(
+				$statement = $driver_ref->query(
 					"SELECT tt.taxonomy, t.slug
 					 FROM `{$rel_table}` tr
 					 JOIN `{$taxonomy_table}` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
 					 JOIN `{$terms_table}` t ON tt.term_id = t.term_id
 					 WHERE tr.object_id = {$post_id}"
 				);
-				return is_array( $rows ) ? $rows : array();
+				return $statement->fetchAll( \PDO::FETCH_OBJ );
 			} catch ( \Throwable $e ) {
 				return array();
 			}

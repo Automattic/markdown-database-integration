@@ -114,17 +114,23 @@ mdi_storage_only_assert( ! str_contains( $production_blob, "'blocks', 'markdown'
 // Write engine mirrors post_content bytes unchanged.
 // ---------------------------------------------------------------------------
 
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-	class WP_SQLite_Driver {}
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+	class WP_MySQL_On_SQLite {}
 }
 
 require_once $plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $plugin_dir . '/inc/class-wp-markdown-write-engine.php';
 
-class MDI_Storage_Only_Driver extends WP_SQLite_Driver {
+class MDI_Storage_Only_Driver extends WP_MySQL_On_SQLite {
 	/** @var array<int, object> */
 	public array $posts = array();
 	private int $insert_id = 0;
+	private PDO $pdo;
+
+	public function __construct() {
+		$this->pdo = new PDO( 'sqlite::memory:' );
+		$this->pdo->setAttribute( PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_OBJ );
+	}
 
 	public function set_next_insert_id( int $id ): void {
 		$this->insert_id = $id;
@@ -134,12 +140,19 @@ class MDI_Storage_Only_Driver extends WP_SQLite_Driver {
 		return $this->insert_id;
 	}
 
-	public function query( string $sql ): array {
+	public function query( string $sql ): PDOStatement {
 		if ( 1 === preg_match( '/WHERE\s+ID\s*=\s*(\d+)/i', $sql, $m ) ) {
 			$id = (int) $m[1];
-			return isset( $this->posts[ $id ] ) ? array( $this->posts[ $id ] ) : array();
+			$row = $this->posts[ $id ] ?? null;
+			if ( null !== $row ) {
+				$columns = array();
+				foreach ( (array) $row as $name => $value ) {
+					$columns[] = $this->pdo->quote( (string) $value ) . ' AS `' . $name . '`';
+				}
+				return $this->pdo->query( 'SELECT ' . implode( ', ', $columns ) );
+			}
 		}
-		return array();
+		return $this->pdo->query( 'SELECT 1 WHERE 0' );
 	}
 }
 

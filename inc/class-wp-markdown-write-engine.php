@@ -46,7 +46,7 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * The driver for reading back data.
 	 *
-	 * @var WP_SQLite_Driver
+	 * @var WP_MySQL_On_SQLite
 	 */
 	private $driver;
 
@@ -166,7 +166,7 @@ class WP_Markdown_Write_Engine {
 	 *
 	 * @param string                $content_dir     Content directory.
 	 * @param WP_Markdown_Storage   $storage         Markdown storage for posts.
-	 * @param WP_SQLite_Driver      $driver          SQLite driver.
+	 * @param WP_MySQL_On_SQLite    $driver          SQLite driver.
 	 * @param callable|string       $prefix_resolver Either a callable returning the
 	 *                                               current table prefix at call
 	 *                                               time, or a string for the
@@ -179,7 +179,7 @@ class WP_Markdown_Write_Engine {
 	public function __construct(
 		string $content_dir,
 		WP_Markdown_Storage $storage,
-		WP_SQLite_Driver $driver,
+		WP_MySQL_On_SQLite $driver,
 		$prefix_resolver = 'wp_',
 		?string $state_dir = null
 	) {
@@ -627,7 +627,7 @@ class WP_Markdown_Write_Engine {
 		$in_list = implode( ',', $escaped );
 
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT option_id, option_name, option_value, autoload
 				 FROM `{$table}` WHERE option_name IN ({$in_list})"
 			);
@@ -666,7 +666,7 @@ class WP_Markdown_Write_Engine {
 		$table = $this->prefix() . 'options';
 
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT option_name FROM `{$table}` ORDER BY option_id"
 			);
 		} catch ( \Throwable $e ) {
@@ -849,7 +849,7 @@ class WP_Markdown_Write_Engine {
 		$table = $this->prefix() . 'posts';
 
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT post_status FROM `{$table}` WHERE ID = {$post_id}"
 			);
 		} catch ( \Throwable $e ) {
@@ -872,7 +872,7 @@ class WP_Markdown_Write_Engine {
 		$table = $this->prefix() . 'posts';
 
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT * FROM `{$table}` WHERE ID = {$post_id}"
 			);
 		} catch ( \Throwable $e ) {
@@ -985,7 +985,7 @@ class WP_Markdown_Write_Engine {
 
 		try {
 			// Get all rows from the table.
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT * FROM `{$table}` ORDER BY 1"
 			);
 		} catch ( \Throwable $e ) {
@@ -1026,7 +1026,7 @@ class WP_Markdown_Write_Engine {
 		$ids   = array();
 
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT ID, post_type FROM `{$table}`"
 			);
 		} catch ( \Throwable $e ) {
@@ -1065,7 +1065,7 @@ class WP_Markdown_Write_Engine {
 			if ( $meta_id > 0 ) {
 				$meta_table = $this->prefix() . 'postmeta';
 				try {
-					$rows = $this->driver->query(
+					$rows = $this->fetch_rows(
 						"SELECT post_id FROM `{$meta_table}` WHERE meta_id = {$meta_id}"
 					);
 					if ( is_array( $rows ) && ! empty( $rows ) ) {
@@ -1092,7 +1092,7 @@ class WP_Markdown_Write_Engine {
 		$table = $this->prefix() . 'posts';
 
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SELECT * FROM `{$table}` ORDER BY ID"
 			);
 		} catch ( \Throwable $e ) {
@@ -1148,7 +1148,9 @@ class WP_Markdown_Write_Engine {
 		}
 
 		try {
-			$rows = $this->driver->query( $query );
+			$rows = $this->fetch_rows(
+				$query
+			);
 		} catch ( \Throwable $e ) {
 			error_log( "Markdown DB: Failed to read {$table} for persist: " . $e->getMessage() );
 			return;
@@ -1289,7 +1291,7 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function get_create_table_sql( string $table ): ?string {
 		try {
-			$rows = $this->driver->query(
+			$rows = $this->fetch_rows(
 				"SHOW CREATE TABLE `{$table}`"
 			);
 			if ( is_array( $rows ) && ! empty( $rows ) ) {
@@ -1302,6 +1304,17 @@ class WP_Markdown_Write_Engine {
 			error_log( "Markdown DB: SHOW CREATE TABLE failed for {$table}: " . $e->getMessage() );
 		}
 		return null;
+	}
+
+	/**
+	 * Materialize canonical PDO query results for MDI persistence reads.
+	 *
+	 * @param string $query MySQL query.
+	 * @return array<int, object>
+	 */
+	private function fetch_rows( string $query ): array {
+		$result = $this->driver->query( $query );
+		return $result instanceof \PDOStatement ? $result->fetchAll( \PDO::FETCH_OBJ ) : array();
 	}
 
 	/**

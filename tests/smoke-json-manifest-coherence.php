@@ -26,7 +26,7 @@ class MDI_Manifest_Connection {
 	}
 }
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	public function __construct( private MDI_Manifest_Connection $connection ) {}
 
 	public function get_connection(): MDI_Manifest_Connection {
@@ -76,7 +76,7 @@ $pdo->exec( 'CREATE TABLE hydration_audit (count INTEGER NOT NULL)' );
 $pdo->exec( 'INSERT INTO hydration_audit (count) VALUES (0)' );
 $pdo->exec( 'CREATE TRIGGER plugin_jobs_hydrated AFTER DELETE ON wp_plugin_jobs BEGIN UPDATE hydration_audit SET count = count + 1; END' );
 
-$driver  = new WP_SQLite_Driver( new MDI_Manifest_Connection( $pdo ) );
+$driver  = new WP_MySQL_On_SQLite( new MDI_Manifest_Connection( $pdo ) );
 $storage = new WP_Markdown_Storage( $root );
 $engine  = new WP_Markdown_Write_Engine( $root, $storage, $driver, 'wp_' );
 $write   = new ReflectionMethod( $engine, 'write_json' );

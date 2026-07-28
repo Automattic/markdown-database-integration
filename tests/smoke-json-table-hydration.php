@@ -27,7 +27,7 @@ class MDI_Json_Hydration_Connection {
 	}
 }
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	public function __construct( private MDI_Json_Hydration_Connection $connection ) {}
 
 	public function get_connection(): MDI_Json_Hydration_Connection {
@@ -72,7 +72,7 @@ $pdo->exec( "INSERT INTO _json_file_manifest (file_name, file_mtime, file_size) 
 
 $loader = new WP_Markdown_Loader(
 	$root,
-	new WP_SQLite_Driver( new MDI_Json_Hydration_Connection( $pdo ) ),
+	new WP_MySQL_On_SQLite( new MDI_Json_Hydration_Connection( $pdo ) ),
 	new WP_Markdown_Storage( $root )
 );
 $load_table = new ReflectionMethod( $loader, 'load_table_from_json' );

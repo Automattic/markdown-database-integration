@@ -44,7 +44,11 @@ require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
 if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
 	class WP_SQLite_Driver {
+		public array $queries = array();
+		public int $rows_materialized = 0;
+
 		public function query( string $sql ): array {
+			$this->queries[] = $sql;
 			if ( str_contains( $sql, 'SHOW CREATE TABLE' ) ) {
 				return array(
 					(object) array(
@@ -53,18 +57,17 @@ if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
 				);
 			}
 
-			return array(
-				(object) array(
-					'job_id'     => 1,
-					'flow_id'    => 10,
-					'created_at' => '2026-05-09 20:00:00',
-				),
-				(object) array(
-					'job_id'     => 2,
+			$rows  = array();
+			$start = str_contains( $sql, 'LIMIT 1' ) ? 10000 : 1;
+			for ( $i = $start; $i <= 10000; $i++ ) {
+				$rows[] = (object) array(
+					'job_id'     => $i,
 					'flow_id'    => 10,
 					'created_at' => '2026-05-09 21:00:00',
-				),
-			);
+				);
+			}
+			$this->rows_materialized += count( $rows );
+			return $rows;
 		}
 	}
 }
@@ -125,11 +128,11 @@ function mdi_policy_rm_rf( string $dir ): void {
 	@rmdir( $dir );
 }
 
-function mdi_policy_engine( string $content_dir ): WP_Markdown_Write_Engine {
+function mdi_policy_engine( string $content_dir, ?WP_SQLite_Driver $driver = null ): WP_Markdown_Write_Engine {
 	return new WP_Markdown_Write_Engine(
 		$content_dir,
 		new WP_Markdown_Storage( $content_dir ),
-		new WP_SQLite_Driver(),
+		$driver ?? new WP_SQLite_Driver(),
 		'wp_'
 	);
 }
@@ -162,7 +165,23 @@ $persist_schema->invoke( mdi_policy_engine( $base ), 'CREATE TABLE wp_datamachin
 mdi_policy_assert_true( ! file_exists( $schema_path ), 'false policy skips schema persistence' );
 remove_all_filters( 'markdown_db_table_persistence_policy' );
 
-// 3. Site policy can keep a table and compact rows before persistence.
+// 3. A non-persistent dirty table does not issue a table read or rewrite an
+// existing snapshot, regardless of historical fixture size.
+file_put_contents( $json_path, '["canonical"]' );
+$driver = new WP_SQLite_Driver();
+add_filter(
+	'markdown_db_table_persistence_policy',
+	static function ( array $policy ): array {
+		$policy['datamachine_jobs'] = false;
+		return $policy;
+	}
+);
+$persist_table->invoke( mdi_policy_engine( $base, $driver ), 'datamachine_jobs' );
+mdi_policy_assert_eq( $driver->queries, array(), 'false policy performs no table SELECT' );
+mdi_policy_assert_eq( file_get_contents( $json_path ), '["canonical"]', 'false policy performs no JSON rewrite' );
+remove_all_filters( 'markdown_db_table_persistence_policy' );
+
+// 4. A query-level policy bounds rows before PHP materializes the fixture.
 add_filter(
 	'markdown_db_table_persistence_policy',
 	static function ( array $policy ): array {
@@ -174,22 +193,36 @@ add_filter(
 	}
 );
 add_filter(
+	'markdown_db_persistent_table_query',
+	static function ( string $query, string $table_suffix, string $table, ?array $policy ): string {
+		unset( $table );
+		return 'datamachine_jobs' === $table_suffix && 'latest' === ( $policy['keep'] ?? null )
+			? $query . ' LIMIT 1'
+			: $query;
+	},
+	10,
+	4
+);
+add_filter(
 	'markdown_db_persistent_table_rows',
 	static function ( array $rows, string $table_suffix, string $table, ?array $policy ): array {
 		unset( $table );
 		if ( 'datamachine_jobs' !== $table_suffix || 'latest' !== ( $policy['keep'] ?? null ) ) {
 			return $rows;
 		}
-		return array_slice( $rows, -1 );
+		return $rows;
 	},
 	10,
 	4
 );
 
-$persist_table->invoke( mdi_policy_engine( $base ), 'datamachine_jobs' );
+$driver = new WP_SQLite_Driver();
+$persist_table->invoke( mdi_policy_engine( $base, $driver ), 'datamachine_jobs' );
 $rows = json_decode( (string) file_get_contents( $json_path ), true );
-mdi_policy_assert_eq( count( is_array( $rows ) ? $rows : array() ), 1, 'row filter can compact persisted runtime table' );
-mdi_policy_assert_eq( (int) ( $rows[0]['job_id'] ?? 0 ), 2, 'compacted runtime table kept latest row' );
+mdi_policy_assert_true( str_contains( $driver->queries[0] ?? '', 'LIMIT 1' ), 'bounded policy applies LIMIT before query execution' );
+mdi_policy_assert_eq( $driver->rows_materialized, 1, 'bounded policy materializes one row from a 10,000-row fixture' );
+mdi_policy_assert_eq( count( is_array( $rows ) ? $rows : array() ), 1, 'query-level policy compacts persisted runtime table' );
+mdi_policy_assert_eq( (int) ( $rows[0]['job_id'] ?? 0 ), 10000, 'bounded query kept the selected latest row' );
 
 mdi_policy_rm_rf( $base );
 

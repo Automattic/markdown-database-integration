@@ -152,10 +152,12 @@ class WP_Markdown_Write_Engine {
 	/**
 	 * Canonical paths touched since the previous successful flush, keyed by path.
 	 *
-	 * Values are pre-mutation hashes, or null for a path that did not exist.
-	 * Content is therefore hashed only for paths MDI actually mutates.
+	 * Each value carries the pre-mutation hash and, when MDI serializes a
+	 * replacement itself, its known post-mutation hash. Content is therefore
+	 * hashed only for paths MDI actually mutates, without rereading snapshots
+	 * that were just atomically replaced.
 	 *
-	 * @var array<string, string|null>
+	 * @var array<string, array{before:string|null,after:string|null}>
 	 */
 	private $canonical_mutations = array();
 
@@ -379,7 +381,8 @@ class WP_Markdown_Write_Engine {
 		$created = array();
 		$deleted = array();
 		$changed = array();
-		foreach ( $this->canonical_mutations as $path => $before ) {
+		foreach ( $this->canonical_mutations as $path => $mutation ) {
+			$before   = $mutation['before'];
 			$absolute = $this->canonical_absolute_path( $path );
 			if ( ! is_file( $absolute ) ) {
 				if ( null !== $before ) {
@@ -388,7 +391,7 @@ class WP_Markdown_Write_Engine {
 				continue;
 			}
 
-			$after = (string) hash_file( 'sha256', $absolute );
+			$after = $mutation['after'] ?? $this->canonical_file_hash( $absolute );
 			if ( null === $before ) {
 				$created[] = $path;
 			} elseif ( $after !== $before ) {
@@ -408,9 +411,24 @@ class WP_Markdown_Write_Engine {
 			return;
 		}
 
-		$this->canonical_mutations[ $path ] = is_file( $absolute_path )
-			? (string) hash_file( 'sha256', $absolute_path )
-			: null;
+		$this->canonical_mutations[ $path ] = array(
+			'before' => is_file( $absolute_path ) ? $this->canonical_file_hash( $absolute_path ) : null,
+			'after'  => null,
+		);
+	}
+
+	/** Record the known content identity after MDI atomically replaces a canonical file. */
+	private function track_canonical_write( string $absolute_path, string $hash ): void {
+		$this->track_canonical_mutation( $absolute_path );
+		$path = $this->canonical_relative_path( $absolute_path );
+		if ( null !== $path ) {
+			$this->canonical_mutations[ $path ]['after'] = $hash;
+		}
+	}
+
+	/** @return string SHA-256 identity for a canonical file. */
+	protected function canonical_file_hash( string $path ): string {
+		return (string) hash_file( 'sha256', $path );
 	}
 
 	private function canonical_relative_path( string $absolute_path ): ?string {
@@ -705,6 +723,7 @@ class WP_Markdown_Write_Engine {
 			@unlink( $tmp );
 			throw new \RuntimeException( 'Markdown DB: Failed to rename option file: ' . $abs );
 		}
+		$this->track_canonical_write( $abs, hash( 'sha256', $json ) );
 
 		return $relative;
 	}
@@ -1106,12 +1125,30 @@ class WP_Markdown_Write_Engine {
 			return;
 		}
 
-		$table = $this->prefix() . $table_suffix;
+		$table  = $this->prefix() . $table_suffix;
+		$policy = $this->table_persistence_policy_for( $table_suffix );
+		$query  = "SELECT * FROM `{$table}` ORDER BY 1";
+		if ( function_exists( 'apply_filters' ) ) {
+			/**
+			 * Filters a JSON-backed table persistence query before rows are read.
+			 *
+			 * A policy owner can add deterministic retention, a LIMIT, or a more
+			 * selective projection here, preventing historical rows from entering
+			 * PHP memory. Return the supplied query to retain full-table behavior.
+			 *
+			 * @param string     $query        Generated SELECT query.
+			 * @param string     $table_suffix Table name without WordPress prefix.
+			 * @param string     $table        Full table name.
+			 * @param array|bool|null $policy  Table persistence policy, if configured.
+			 */
+			$filtered_query = apply_filters( 'markdown_db_persistent_table_query', $query, $table_suffix, $table, $policy );
+			if ( is_string( $filtered_query ) && '' !== $filtered_query ) {
+				$query = $filtered_query;
+			}
+		}
 
 		try {
-			$rows = $this->driver->query(
-				"SELECT * FROM `{$table}` ORDER BY 1"
-			);
+			$rows = $this->driver->query( $query );
 		} catch ( \Throwable $e ) {
 			error_log( "Markdown DB: Failed to read {$table} for persist: " . $e->getMessage() );
 			return;
@@ -1126,7 +1163,6 @@ class WP_Markdown_Write_Engine {
 			$data[] = (array) $row;
 		}
 
-		$policy = $this->table_persistence_policy_for( $table_suffix );
 		if ( function_exists( 'apply_filters' ) ) {
 			/**
 			 * Filters rows before a JSON-backed table is written to disk.
@@ -1137,7 +1173,7 @@ class WP_Markdown_Write_Engine {
 			 * @param array       $data         Rows about to be written.
 			 * @param string      $table_suffix Table name without WordPress prefix.
 			 * @param string      $table        Full table name.
-			 * @param array|null  $policy       Table persistence policy, if configured.
+			 * @param array|bool|null $policy   Table persistence policy, if configured.
 			 */
 			$filtered = apply_filters( 'markdown_db_persistent_table_rows', $data, $table_suffix, $table, $policy );
 			if ( is_array( $filtered ) ) {
@@ -1393,6 +1429,7 @@ class WP_Markdown_Write_Engine {
 			throw new \RuntimeException( 'Markdown DB: Failed to rename JSON file: ' . $path );
 		}
 
+		$this->track_canonical_write( $path, hash( 'sha256', $json ) );
 		$this->update_json_manifest( $path, (int) $mtime, (int) $size );
 	}
 

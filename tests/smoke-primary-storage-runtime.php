@@ -14,11 +14,15 @@ class WP_SQLite_Connection {
 	public function get_pdo(): PDO { return $this->pdo; }
 }
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	/** @var string[] */
 	public array $queries = array();
 	public bool $fail_status_queries = false;
-	public function __construct( private WP_SQLite_Connection $connection, string $database ) { unset( $database ); }
+	private WP_SQLite_Connection $connection;
+	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
+		unset( $dsn, $username, $password );
+		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
+	}
 	public function get_connection(): WP_SQLite_Connection { return $this->connection; }
 	public function get_insert_id(): int { return (int) $this->connection->get_pdo()->lastInsertId(); }
 	public function query( string $sql, $fetch_mode = PDO::FETCH_OBJ, ...$args ) {
@@ -27,8 +31,7 @@ class WP_SQLite_Driver {
 		if ( $this->fail_status_queries && str_contains( $sql, 'SELECT post_status FROM' ) ) {
 			throw new RuntimeException( 'Simulated status lookup failure.' );
 		}
-		$statement = $this->connection->get_pdo()->query( $sql );
-		return false === $statement ? array() : $statement->fetchAll( $fetch_mode );
+		return $this->connection->get_pdo()->query( $sql );
 	}
 }
 

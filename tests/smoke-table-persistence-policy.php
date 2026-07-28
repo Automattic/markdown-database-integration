@@ -42,29 +42,20 @@ function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-	class WP_SQLite_Driver {
-		public function query( string $sql ): array {
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+	class WP_MySQL_On_SQLite {
+		private PDO $pdo;
+
+		public function __construct() {
+			$this->pdo = new PDO( 'sqlite::memory:' );
+		}
+
+		public function query( string $sql ): PDOStatement {
 			if ( str_contains( $sql, 'SHOW CREATE TABLE' ) ) {
-				return array(
-					(object) array(
-						'Create Table' => 'CREATE TABLE `wp_datamachine_jobs` (`job_id` bigint(20), `flow_id` bigint(20), `created_at` datetime)',
-					),
-				);
+				return $this->pdo->query( "SELECT 'CREATE TABLE `wp_datamachine_jobs` (`job_id` bigint(20), `flow_id` bigint(20), `created_at` datetime)' AS \"Create Table\"" );
 			}
 
-			return array(
-				(object) array(
-					'job_id'     => 1,
-					'flow_id'    => 10,
-					'created_at' => '2026-05-09 20:00:00',
-				),
-				(object) array(
-					'job_id'     => 2,
-					'flow_id'    => 10,
-					'created_at' => '2026-05-09 21:00:00',
-				),
-			);
+			return $this->pdo->query( "SELECT 1 AS job_id, 10 AS flow_id, '2026-05-09 20:00:00' AS created_at UNION ALL SELECT 2, 10, '2026-05-09 21:00:00'" );
 		}
 	}
 }
@@ -129,7 +120,7 @@ function mdi_policy_engine( string $content_dir ): WP_Markdown_Write_Engine {
 	return new WP_Markdown_Write_Engine(
 		$content_dir,
 		new WP_Markdown_Storage( $content_dir ),
-		new WP_SQLite_Driver(),
+		new WP_MySQL_On_SQLite(),
 		'wp_'
 	);
 }

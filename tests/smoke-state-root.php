@@ -34,12 +34,12 @@ class MDI_State_Root_Connection {
 
 class WP_SQLite_Connection extends MDI_State_Root_Connection {}
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	private WP_SQLite_Connection $connection;
 
-	public function __construct( WP_SQLite_Connection $connection, string $database ) {
-		unset( $database );
-		$this->connection = $connection;
+	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
+		unset( $dsn, $username, $password );
+		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
 	}
 
 	public function get_connection(): WP_SQLite_Connection {
@@ -49,10 +49,10 @@ class WP_SQLite_Driver {
 	public function query( string $sql, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
 		unset( $fetch_mode_args );
 		if ( str_starts_with( $sql, 'SHOW CREATE TABLE' ) ) {
-			return array( (object) array( 'Create Table' => 'CREATE TABLE `wp_runtime_jobs` (`id` bigint(20))' ) );
+			return $this->connection->get_pdo()->query( "SELECT 'CREATE TABLE `wp_runtime_jobs` (`id` bigint(20))' AS \"Create Table\"" );
 		}
 		$result = $this->connection->get_pdo()->query( $sql );
-		return false === $result ? array() : $result->fetchAll( $fetch_mode );
+		return $result;
 	}
 
 	public function get_insert_id(): int {
@@ -137,7 +137,7 @@ $pdo = new PDO( 'sqlite::memory:' );
 $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
 mdi_state_schema( $pdo );
 $connection = new WP_SQLite_Connection( $pdo );
-$driver  = new WP_SQLite_Driver( $connection, 'wordpress' );
+$driver  = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $pdo ) );
 $storage = new WP_Markdown_Storage( $content_dir );
 $loader  = new WP_Markdown_Loader( $content_dir, $driver, $storage, 'wp_', $state_dir );
 
@@ -168,8 +168,8 @@ $sync_posts->invoke( $loader );
 mdi_state_assert( 'Updated guide' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 41' )->fetchColumn(), 'warm sync reads changed posts from the content root' );
 mdi_state_assert( '' === $pdo->query( 'SELECT post_content FROM wp_posts WHERE ID = 41' )->fetchColumn(), 'warm sync clears stale indexed content for changed posts' );
 $markdown_driver = new WP_Markdown_Driver( $connection, 'wordpress', $storage );
-$read_post       = $markdown_driver->query( 'SELECT ID, post_content FROM wp_posts WHERE ID = 41' );
-mdi_state_assert( 'Warm content is longer' === ( $read_post[0]->post_content ?? null ), 'driver lazy-loads changed Markdown content after warm sync' );
+$read_post       = $markdown_driver->query( 'SELECT ID, post_content FROM wp_posts WHERE ID = 41' )->fetch( PDO::FETCH_OBJ );
+mdi_state_assert( 'Warm content is longer' === ( $read_post->post_content ?? null ), 'driver lazy-loads changed Markdown content after warm sync' );
 
 $pdo->exec( "UPDATE wp_posts SET post_content = 'Written by WordPress', post_title = 'Written guide' WHERE ID = 41" );
 $pdo->exec( "INSERT INTO wp_runtime_jobs (id) VALUES (7)" );
@@ -181,8 +181,8 @@ mdi_state_assert( str_contains( (string) file_get_contents( $post_file ), 'Writt
 clearstatcache( true, $post_file );
 $sync_posts->invoke( $loader );
 mdi_state_assert( '' === $pdo->query( 'SELECT post_content FROM wp_posts WHERE ID = 41' )->fetchColumn(), 'warm sync clears content after a WordPress-to-file round trip' );
-$read_post = $markdown_driver->query( 'SELECT ID, post_content FROM wp_posts WHERE ID = 41' );
-mdi_state_assert( 'Written by WordPress' === ( $read_post[0]->post_content ?? null ), 'driver reads WordPress-written Markdown after a round trip' );
+$read_post = $markdown_driver->query( 'SELECT ID, post_content FROM wp_posts WHERE ID = 41' )->fetch( PDO::FETCH_OBJ );
+mdi_state_assert( 'Written by WordPress' === ( $read_post->post_content ?? null ), 'driver reads WordPress-written Markdown after a round trip' );
 
 $dirty_options = new ReflectionProperty( $engine, 'dirty_option_names' );
 $dirty_options->setValue( $engine, array( 'siteurl' => true ) );

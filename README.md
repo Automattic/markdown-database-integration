@@ -14,6 +14,15 @@ MDI has two SQLite-backed operating modes:
   files. SQLite remains the runtime query engine and index, but a cold boot can
   recreate it from the content and state trees.
 
+## SQLite Integration API
+
+MDI requires a SQLite Database Integration release that includes the canonical
+PDO-compatible `WP_MySQL_On_SQLite` API, introduced by
+WordPress/sqlite-database-integration#449. MDI no longer uses the deprecated
+`WP_SQLite_Driver` compatibility layer. The runtime constructs the canonical
+driver with its `mysql-on-sqlite:` DSN and consumes query results as
+`PDOStatement` objects.
+
 In primary mode, a typical single-root store looks like this:
 
 ```

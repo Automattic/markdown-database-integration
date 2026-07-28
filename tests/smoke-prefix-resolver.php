@@ -22,15 +22,15 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ . '/' );
 }
 
-// The write engine references WP_Markdown_Storage and WP_SQLite_Driver in
+// The write engine references WP_Markdown_Storage and WP_MySQL_On_SQLite in
 // its constructor signature. Provide minimal stubs so we can instantiate.
 if ( ! class_exists( 'WP_Markdown_Storage' ) ) {
     class WP_Markdown_Storage {
         public function __construct( ...$args ) {}
     }
 }
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-    class WP_SQLite_Driver {
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+    class WP_MySQL_On_SQLite {
         public function __construct( ...$args ) {}
     }
 }
@@ -63,7 +63,7 @@ function build_engine( $prefix_resolver ): WP_Markdown_Write_Engine {
     return new WP_Markdown_Write_Engine(
         sys_get_temp_dir() . '/mdi-bench-prefix-test',
         new WP_Markdown_Storage(),
-        new WP_SQLite_Driver(),
+        new WP_MySQL_On_SQLite(),
         $prefix_resolver
     );
 }
@@ -144,7 +144,7 @@ assert_smoke(
 $current_prefix = 'wp_';
 $loader         = new WP_Markdown_Loader(
     sys_get_temp_dir() . '/mdi-bench-prefix-test',
-    new WP_SQLite_Driver(),
+    new WP_MySQL_On_SQLite(),
     new WP_Markdown_Storage(),
     static function () use ( &$current_prefix ): string { return $current_prefix; }
 );

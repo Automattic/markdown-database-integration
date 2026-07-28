@@ -15,8 +15,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-	class WP_SQLite_Driver {}
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+	class WP_MySQL_On_SQLite {}
 }
 
 require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
@@ -54,7 +54,7 @@ function build_write_engine( string $content_dir ): WP_Markdown_Write_Engine {
 	return new WP_Markdown_Write_Engine(
 		$content_dir,
 		new WP_Markdown_Storage( $content_dir ),
-		new WP_SQLite_Driver(),
+		new WP_MySQL_On_SQLite(),
 		'wp_'
 	);
 }

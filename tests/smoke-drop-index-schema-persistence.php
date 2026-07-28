@@ -29,12 +29,15 @@ class WP_SQLite_Connection {
 	}
 }
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	public bool $fail_drop = false;
 
-	public function __construct( private WP_SQLite_Connection $connection, string $database ) {
-		unset( $database );
+	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
+		unset( $dsn, $username, $password );
+		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
 	}
+
+	private WP_SQLite_Connection $connection;
 
 	public function get_connection(): WP_SQLite_Connection {
 		return $this->connection;
@@ -49,7 +52,7 @@ class WP_SQLite_Driver {
 			foreach ( $indexes as $index ) {
 				$schema .= ";\nCREATE INDEX `{$index['name']}` ON `{$table}` (`payload`)";
 			}
-			return array( (object) array( 'Create Table' => $schema ) );
+			return $this->connection->get_pdo()->query( 'SELECT ' . $this->connection->get_pdo()->quote( $schema ) . ' AS "Create Table"' );
 		}
 
 		if ( preg_match( '/^DROP INDEX `?(\w+)`? ON `?(\w+)`?$/i', $sql, $matches ) ) {
@@ -57,11 +60,11 @@ class WP_SQLite_Driver {
 				throw new RuntimeException( 'Simulated DROP INDEX failure.' );
 			}
 			$this->connection->get_pdo()->exec( "DROP INDEX `{$matches[1]}`" );
-			return array();
+			return $this->connection->get_pdo()->query( 'SELECT 1 WHERE 0' );
 		}
 
 		$statement = $this->connection->get_pdo()->query( $sql );
-		return false === $statement ? array() : $statement->fetchAll( $fetch_mode );
+		return $statement;
 	}
 }
 
@@ -136,7 +139,7 @@ mdi_drop_index_assert( str_contains( $schema_sql, 'retained_payload_idx' ), 'per
 
 $cold_pdo = new PDO( 'sqlite::memory:' );
 $cold_pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$cold_driver = new WP_SQLite_Driver( new WP_SQLite_Connection( $cold_pdo ), 'wordpress' );
+$cold_driver = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $cold_pdo ) );
 $loader = new WP_Markdown_Loader( $root, $cold_driver, new WP_Markdown_Storage( $root ), 'wp_' );
 $load_plugin_tables = new ReflectionMethod( $loader, 'load_plugin_tables' );
 $load_plugin_tables->invoke( $loader );

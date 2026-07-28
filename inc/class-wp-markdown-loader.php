@@ -66,7 +66,7 @@ class WP_Markdown_Loader {
 	/**
 	 * The driver to execute SQL queries on.
 	 *
-	 * @var WP_SQLite_Driver
+	 * @var WP_MySQL_On_SQLite
 	 */
 	private $driver;
 
@@ -147,14 +147,14 @@ class WP_Markdown_Loader {
 	 * Constructor.
 	 *
 	 * @param string              $content_dir The markdown content directory.
-	 * @param WP_SQLite_Driver    $driver      The SQLite driver.
+	 * @param WP_MySQL_On_SQLite  $driver      The SQLite driver.
 	 * @param WP_Markdown_Storage $storage     The markdown storage engine.
 	 * @param callable|string     $prefix      Table prefix or resolver.
 	 * @param string|null         $state_dir   Runtime state directory. Defaults to content directory.
 	 */
 	public function __construct(
 		string $content_dir,
-		WP_SQLite_Driver $driver,
+		WP_MySQL_On_SQLite $driver,
 		WP_Markdown_Storage $storage,
 		$prefix = 'wp_',
 		?string $state_dir = null
@@ -1069,7 +1069,7 @@ class WP_Markdown_Loader {
 	/**
 	 * Create all WordPress core tables using MySQL syntax.
 	 *
-	 * The WP_SQLite_Driver translates these to SQLite automatically.
+	 * WP_MySQL_On_SQLite translates these to SQLite automatically.
 	 * We use CREATE TABLE IF NOT EXISTS so it's idempotent.
 	 */
 	private function create_core_tables(): void {
@@ -2387,7 +2387,7 @@ class WP_Markdown_Loader {
 	private function rebuild_information_schema(): void {
 		if ( ! class_exists( 'WP_SQLite_Information_Schema_Reconstructor' )
 			|| ! class_exists( 'WP_SQLite_Information_Schema_Builder' )
-			|| ! class_exists( 'WP_PDO_MySQL_On_SQLite' )
+			|| ! class_exists( 'WP_MySQL_On_SQLite' )
 		) {
 			return;
 		}
@@ -2399,26 +2399,12 @@ class WP_Markdown_Loader {
 			// reserved prefix.
 			$connection     = $this->driver->get_connection();
 			$schema_builder = new \WP_SQLite_Information_Schema_Builder(
-				\WP_PDO_MySQL_On_SQLite::RESERVED_PREFIX,
+				\WP_MySQL_On_SQLite::RESERVED_PREFIX,
 				$connection
 			);
 
-			// The reconstructor needs the WP_PDO_MySQL_On_SQLite instance
-			// (for execute_sqlite_query and create_parser). Access it via
-			// the Closure binding pattern used by WP_SQLite_Driver itself.
-			// We bind to WP_SQLite_Driver scope explicitly because the
-			// property is private on the parent class.
-			$get_driver   = \Closure::bind(
-				function () {
-					return $this->mysql_on_sqlite_driver;
-				},
-				$this->driver,
-				\WP_SQLite_Driver::class
-			);
-			$mysql_driver = $get_driver();
-
 			$reconstructor = new \WP_SQLite_Information_Schema_Reconstructor(
-				$mysql_driver,
+				$this->driver,
 				$schema_builder
 			);
 			$reconstructor->ensure_correct_information_schema();

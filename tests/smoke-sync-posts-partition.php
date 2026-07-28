@@ -8,7 +8,7 @@
  * (see issue #66).
  *
  * Uses a real in-memory SQLite PDO and hand-built fixtures so the
- * logic under test runs against actual SQLite SQL — no WP_SQLite_Driver
+ * logic under test runs against actual SQLite SQL — no MySQL-on-SQLite driver
  * or MySQL-to-SQLite translator needed.
  *
  * Usage: php tests/smoke-sync-posts-partition.php

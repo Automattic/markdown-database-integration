@@ -30,7 +30,7 @@ class MDI_Warm_Sync_Connection {
 	}
 }
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	public function __construct( private MDI_Warm_Sync_Connection $connection ) {}
 
 	public function get_connection(): MDI_Warm_Sync_Connection {
@@ -70,7 +70,7 @@ function mdi_warm_sync_remove_dir( string $dir ): void {
 function mdi_warm_sync_loader( PDO $pdo, string $root ): array {
 	$loader = new WP_Markdown_Loader(
 		$root,
-		new WP_SQLite_Driver( new MDI_Warm_Sync_Connection( $pdo ) ),
+		new WP_MySQL_On_SQLite( new MDI_Warm_Sync_Connection( $pdo ) ),
 		new WP_Markdown_Storage( array( 'revision' ) )
 	);
 	$create_manifest = new ReflectionMethod( $loader, 'create_json_manifest_table' );

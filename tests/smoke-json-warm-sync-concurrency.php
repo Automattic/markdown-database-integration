@@ -26,7 +26,7 @@ class MDI_Concurrent_Hydration_Connection {
 	}
 }
 
-class WP_SQLite_Driver {
+class WP_MySQL_On_SQLite {
 	public function __construct( private MDI_Concurrent_Hydration_Connection $connection ) {}
 
 	public function get_connection(): MDI_Concurrent_Hydration_Connection {
@@ -48,7 +48,7 @@ function mdi_concurrent_pdo( string $database ): PDO {
 function mdi_concurrent_loader( PDO $pdo, string $root ): array {
 	$loader = new WP_Markdown_Loader(
 		$root,
-		new WP_SQLite_Driver( new MDI_Concurrent_Hydration_Connection( $pdo ) ),
+		new WP_MySQL_On_SQLite( new MDI_Concurrent_Hydration_Connection( $pdo ) ),
 		new WP_Markdown_Storage()
 	);
 	return array( $loader, new ReflectionMethod( $loader, 'load_table_from_json' ) );

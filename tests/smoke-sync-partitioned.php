@@ -7,7 +7,7 @@
  * posts (see issue #64).
  *
  * Uses a real in-memory SQLite PDO plus a hand-built loader harness that
- * bypasses WP_SQLite_Driver entirely — the logic under test is pure SQL
+ * bypasses the MySQL-on-SQLite driver entirely — the logic under test is pure SQL
  * and doesn't need the MySQL-on-SQLite translator.
  *
  * Usage: php tests/smoke-sync-partitioned.php

@@ -37,16 +37,27 @@ if ( ! class_exists( 'WP_SQLite_Connection' ) ) {
 	}
 }
 
-if ( ! class_exists( 'WP_SQLite_Driver' ) ) {
-	class WP_SQLite_Driver {
-		/** @param object[] $rows */
-		public function __construct( private array $rows, private ?WP_SQLite_Connection $connection = null ) {}
-		public function get_connection(): WP_SQLite_Connection { return $this->connection ?? throw new RuntimeException( 'SQLite connection is unavailable.' ); }
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
+	class WP_MySQL_On_SQLite {
+		private WP_SQLite_Connection $connection;
+		private PDO $pdo;
 
-		/** @return object[] */
-		public function query( string $sql ): array {
+		/** @param array{pdo?:PDO,rows?:object[]} $options */
+		public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
+			unset( $dsn, $username, $password );
+			$this->pdo = $options['pdo'] ?? new PDO( 'sqlite::memory:' );
+			$this->connection = new WP_SQLite_Connection( $this->pdo );
+			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS mdi_rows (option_id INTEGER, option_name TEXT, option_value TEXT, autoload TEXT)' );
+			foreach ( $options['rows'] ?? array() as $row ) {
+				$stmt = $this->pdo->prepare( 'INSERT INTO mdi_rows VALUES (?, ?, ?, ?)' );
+				$stmt->execute( array( $row->option_id, $row->option_name, $row->option_value, $row->autoload ) );
+			}
+		}
+		public function get_connection(): WP_SQLite_Connection { return $this->connection; }
+
+		public function query( string $sql ): PDOStatement {
 			unset( $sql );
-			return $this->rows;
+			return $this->pdo->query( 'SELECT option_id, option_name, option_value, autoload FROM mdi_rows' );
 		}
 	}
 }
@@ -98,7 +109,7 @@ $rows      = array(
 );
 $root      = sys_get_temp_dir() . '/mdi-ephemeral-policy-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
-$engine = new WP_Markdown_Write_Engine( $root, new WP_Markdown_Storage( $root ), new WP_SQLite_Driver( $rows ), 'wp_' );
+$engine = new WP_Markdown_Write_Engine( $root, new WP_Markdown_Storage( $root ), new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'rows' => $rows ) ), 'wp_' );
 $dirty  = new ReflectionProperty( WP_Markdown_Write_Engine::class, 'dirty_option_names' );
 $flush  = new ReflectionMethod( WP_Markdown_Write_Engine::class, 'persist_options' );
 $mark_all_dirty = static function () use ( $dirty, $engine ): void {
@@ -130,7 +141,7 @@ mdi_ephemeral_assert( ! file_exists( $root . '/_options/transient_proof.json' ),
 $pdo = new PDO( 'sqlite::memory:' );
 $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
 $pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
-$loader = new WP_Markdown_Loader( $root, new WP_SQLite_Driver( array(), new WP_SQLite_Connection( $pdo ) ), new WP_Markdown_Storage( $root ), 'wp_', $root );
+$loader = new WP_Markdown_Loader( $root, new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $pdo ) ), new WP_Markdown_Storage( $root ), 'wp_', $root );
 $load_options = new ReflectionMethod( WP_Markdown_Loader::class, 'load_options' );
 $load_options->invoke( $loader );
 $loaded_value  = $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'cron'" )->fetchColumn();

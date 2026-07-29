@@ -22,12 +22,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-// Studio's SQLite Integration 3.0.0-rc.6 exposes the canonical PDO driver
-// under its pre-rename class name.
-if ( ! class_exists( 'WP_MySQL_On_SQLite' ) && class_exists( 'WP_PDO_MySQL_On_SQLite' ) ) {
-	class_alias( 'WP_PDO_MySQL_On_SQLite', 'WP_MySQL_On_SQLite' );
-}
-
 class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 
 	/**

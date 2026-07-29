@@ -25,7 +25,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 // Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO
 // API when a previous drop-in loads this driver against the pre-rename class.
 if ( ! class_exists( 'WP_MySQL_On_SQLite' ) && class_exists( 'WP_PDO_MySQL_On_SQLite' ) ) {
+	if ( ! defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) ) {
+		define( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API', true );
+	}
 	class_alias( 'WP_PDO_MySQL_On_SQLite', 'WP_MySQL_On_SQLite' );
+}
+
+// Remove this bounded adapter after MDI requires SQLite Integration 3.0.0+.
+if ( ! defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' )
+	&& defined( 'SQLITE_DRIVER_VERSION' )
+	&& version_compare( SQLITE_DRIVER_VERSION, '3.0.0', '<' )
+) {
+	define( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API', true );
 }
 
 class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
@@ -79,6 +90,13 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	 * @var array<string, bool>
 	 */
 	private $ephemeral_tables = array();
+
+	/**
+	 * Last materialized result for the released SQLite wpdb facade.
+	 *
+	 * @var mixed
+	 */
+	private $last_legacy_result = null;
 
 	/**
 	 * Constructor.
@@ -250,6 +268,15 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 			);
 		}
 
+		if ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) {
+			if ( $result instanceof \PDOStatement ) {
+				$result = $result->columnCount() > 0
+					? $result->fetchAll( $fetch_mode, ...$fetch_mode_args )
+					: $result->rowCount();
+			}
+			$this->last_legacy_result = $result;
+		}
+
 		// If we're already syncing or no write engine, skip.
 		if ( $this->syncing || null === $this->write_engine ) {
 			return $result;
@@ -273,6 +300,24 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 		}
 
 		return $result;
+	}
+
+	/**
+	 * Return the last query result for released WP_SQLite_DB consumers.
+	 *
+	 * @return mixed
+	 */
+	public function get_query_results() {
+		return $this->last_legacy_result;
+	}
+
+	/**
+	 * Return the affected-row value for released WP_SQLite_DB consumers.
+	 *
+	 * @return mixed
+	 */
+	public function get_last_return_value() {
+		return $this->last_legacy_result;
 	}
 
 	/**

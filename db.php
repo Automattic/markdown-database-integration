@@ -149,6 +149,17 @@ if ( ! extension_loaded( 'pdo' ) || ! extension_loaded( 'pdo_sqlite' ) ) {
 // Load the SQLite v2 driver stack (parser, lexer, connection, driver).
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/load.php';
 
+// SQLite Integration renamed the canonical PDO driver after its latest release.
+if ( ! class_exists( 'WP_MySQL_On_SQLite', false ) ) {
+	if ( class_exists( 'WP_PDO_MySQL_On_SQLite', false ) ) {
+		class_alias( 'WP_PDO_MySQL_On_SQLite', 'WP_MySQL_On_SQLite' );
+	} else {
+		throw new RuntimeException(
+			'Markdown Database Integration requires SQLite Integration with the PDO-compatible WP_MySQL_On_SQLite or WP_PDO_MySQL_On_SQLite driver.'
+		);
+	}
+}
+
 // Load the SQLite DB class.
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/class-wp-sqlite-db.php';
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/install-functions.php';

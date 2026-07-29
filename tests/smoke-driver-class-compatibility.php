@@ -40,7 +40,8 @@ if ( 2 === $argc ) {
 		default                           => '',
 	};
 
-	file_put_contents( $sqlite . '/wp-includes/database/version.php', "<?php\n" );
+	$driver_version = str_starts_with( $surface, 'released' ) ? '3.0.0-rc.6' : '3.0.0';
+	file_put_contents( $sqlite . '/wp-includes/database/version.php', "<?php\ndefine( 'SQLITE_DRIVER_VERSION', '{$driver_version}' );\n" );
 	file_put_contents( $sqlite . '/constants.php', "<?php\n" );
 	file_put_contents( $sqlite . '/wp-includes/database/load.php', "<?php\n{$driver_class}\nclass WP_SQLite_Connection {}\n" );
 	file_put_contents( $sqlite . '/wp-includes/sqlite/db.php', "<?php\n" );
@@ -84,6 +85,10 @@ if ( 2 === $argc ) {
 		}
 		if ( ! class_exists( 'WP_MySQL_On_SQLite', false ) || ! isset( $GLOBALS['wpdb'] ) ) {
 			fwrite( STDERR, "FAIL: {$surface} driver surface did not boot\n" );
+			exit( 1 );
+		}
+		if ( str_starts_with( $surface, 'released' ) && ! defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) ) {
+			fwrite( STDERR, "FAIL: {$surface} did not enable the bounded legacy result API\n" );
 			exit( 1 );
 		}
 	} catch ( RuntimeException $error ) {

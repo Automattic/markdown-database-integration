@@ -1314,6 +1314,9 @@ class WP_Markdown_Write_Engine {
 	 */
 	private function fetch_rows( string $query ): array {
 		$result = $this->driver->query( $query );
+		if ( is_array( $result ) ) {
+			return $result;
+		}
 		return $result instanceof \PDOStatement ? $result->fetchAll( \PDO::FETCH_OBJ ) : array();
 	}
 

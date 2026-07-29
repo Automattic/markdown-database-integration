@@ -22,6 +22,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+// Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO
+// API when a previous drop-in loads this driver against the pre-rename class.
+if ( ! class_exists( 'WP_MySQL_On_SQLite' ) && class_exists( 'WP_PDO_MySQL_On_SQLite' ) ) {
+	class_alias( 'WP_PDO_MySQL_On_SQLite', 'WP_MySQL_On_SQLite' );
+}
+
 class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 
 	/**

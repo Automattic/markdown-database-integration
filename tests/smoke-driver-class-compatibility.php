@@ -35,9 +35,9 @@ if ( 2 === $argc ) {
 	}
 
 	$driver_class = match ( $surface ) {
-		'released' => 'class WP_PDO_MySQL_On_SQLite extends PDO {}',
-		'renamed'  => 'class WP_MySQL_On_SQLite extends PDO {}',
-		default    => '',
+		'released', 'released-stale-dropin' => 'class WP_PDO_MySQL_On_SQLite extends PDO {}',
+		'renamed'                         => 'class WP_MySQL_On_SQLite extends PDO {}',
+		default                           => '',
 	};
 
 	file_put_contents( $sqlite . '/wp-includes/database/version.php', "<?php\n" );
@@ -55,7 +55,21 @@ if ( 2 === $argc ) {
 	file_put_contents( $mdi . '/inc/class-wp-markdown-loader.php', "<?php\nclass WP_Markdown_Loader {}\n" );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-db.php', "<?php\nclass WP_Markdown_DB { public function __construct( string \$database ) {} }\n" );
 	file_put_contents( $mdi . '/markdown-database-integration.php', "<?php\n" );
-	copy( dirname( __DIR__ ) . '/db.php', $content . '/db.php' );
+	$dropin = file_get_contents( dirname( __DIR__ ) . '/db.php' );
+	if ( 'released-stale-dropin' === $surface ) {
+		$dropin = preg_replace(
+			'/\/\/ SQLite Integration renamed the canonical PDO driver after its latest release\..*?^}\n\n/ms',
+			'',
+			$dropin,
+			1,
+			$replacements
+		);
+		if ( 1 !== $replacements ) {
+			fwrite( STDERR, "FAIL: could not construct the previous drop-in fixture\n" );
+			exit( 1 );
+		}
+	}
+	file_put_contents( $content . '/db.php', $dropin );
 
 	define( 'ABSPATH', $root . '/' );
 	define( 'WP_CONTENT_DIR', $content );
@@ -83,7 +97,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'released', 'renamed', 'unsupported' ) as $surface ) {
+foreach ( array( 'released', 'released-stale-dropin', 'renamed', 'unsupported' ) as $surface ) {
 	$command = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $surface );
 	passthru( $command, $status );
 	if ( 0 !== $status ) {

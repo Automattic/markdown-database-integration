@@ -218,6 +218,7 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	 * @return PDOStatement|false Query statement.
 	 * @throws WP_SQLite_Driver_Exception On query failure.
 	 */
+	#[ReturnTypeWillChange]
 	public function query( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
 		// Rewrite `post_content LIKE '%needle%'` clauses into `ID IN (...)`
 		// by grepping the source .md files. Skipped during sync so the

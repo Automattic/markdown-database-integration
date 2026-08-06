@@ -152,6 +152,9 @@ require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/
 // SQLite Integration renamed the canonical PDO driver after its latest release.
 if ( ! class_exists( 'WP_MySQL_On_SQLite', false ) ) {
 	if ( class_exists( 'WP_PDO_MySQL_On_SQLite', false ) ) {
+		if ( ! defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) ) {
+			define( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API', true );
+		}
 		class_alias( 'WP_PDO_MySQL_On_SQLite', 'WP_MySQL_On_SQLite' );
 	} else {
 		throw new RuntimeException(

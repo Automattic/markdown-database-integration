@@ -36,11 +36,15 @@ if ( 2 === $argc ) {
 
 	$driver_class = match ( $surface ) {
 		'released', 'released-stale-dropin' => 'class WP_PDO_MySQL_On_SQLite extends PDO {}',
-		'renamed'                         => 'class WP_MySQL_On_SQLite extends PDO {}',
+		'canonical-prerelease', 'renamed' => 'class WP_MySQL_On_SQLite extends PDO {}',
 		default                           => '',
 	};
 
-	$driver_version = str_starts_with( $surface, 'released' ) ? '3.0.0-rc.6' : '3.0.0';
+	$driver_version = match ( $surface ) {
+		'released', 'released-stale-dropin' => '3.0.0-rc.6',
+		'canonical-prerelease'             => '3.0.0-rc.8',
+		default                            => '3.0.0',
+	};
 	file_put_contents( $sqlite . '/wp-includes/database/version.php', "<?php\ndefine( 'SQLITE_DRIVER_VERSION', '{$driver_version}' );\n" );
 	file_put_contents( $sqlite . '/constants.php', "<?php\n" );
 	file_put_contents( $sqlite . '/wp-includes/database/load.php', "<?php\n{$driver_class}\nclass WP_SQLite_Connection {}\n" );
@@ -91,6 +95,10 @@ if ( 2 === $argc ) {
 			fwrite( STDERR, "FAIL: {$surface} did not enable the bounded legacy result API\n" );
 			exit( 1 );
 		}
+		if ( 'canonical-prerelease' === $surface && defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) ) {
+			fwrite( STDERR, "FAIL: {$surface} incorrectly enabled the legacy result API\n" );
+			exit( 1 );
+		}
 	} catch ( RuntimeException $error ) {
 		if ( 'unsupported' !== $surface || ! str_contains( $error->getMessage(), 'WP_PDO_MySQL_On_SQLite' ) ) {
 			throw $error;
@@ -102,7 +110,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'released', 'released-stale-dropin', 'renamed', 'unsupported' ) as $surface ) {
+foreach ( array( 'released', 'released-stale-dropin', 'canonical-prerelease', 'renamed', 'unsupported' ) as $surface ) {
 	$command = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $surface );
 	passthru( $command, $status );
 	if ( 0 !== $status ) {

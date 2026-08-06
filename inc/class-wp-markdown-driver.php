@@ -31,14 +31,6 @@ if ( ! class_exists( 'WP_MySQL_On_SQLite' ) && class_exists( 'WP_PDO_MySQL_On_SQ
 	class_alias( 'WP_PDO_MySQL_On_SQLite', 'WP_MySQL_On_SQLite' );
 }
 
-// Remove this bounded adapter after MDI requires SQLite Integration 3.0.0+.
-if ( ! defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' )
-	&& defined( 'SQLITE_DRIVER_VERSION' )
-	&& version_compare( SQLITE_DRIVER_VERSION, '3.0.0', '<' )
-) {
-	define( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API', true );
-}
-
 class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 
 	/**

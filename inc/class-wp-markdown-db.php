@@ -508,7 +508,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 * @return bool True when running in WordPress Playground.
 	 */
 	private function is_playground_runtime(): bool {
-		return file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' );
+		return defined( 'MARKDOWN_DB_PLAYGROUND_RUNTIME' ) && MARKDOWN_DB_PLAYGROUND_RUNTIME;
 	}
 
 	/**

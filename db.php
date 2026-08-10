@@ -84,9 +84,13 @@ if ( ! $sqlite_plugin_implementation_folder_path || ! file_exists( $sqlite_plugi
 }
 if ( ! $sqlite_plugin_implementation_folder_path || ! file_exists( $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/db.php' ) ) {
 	$playground_sqlite = '/internal/shared/sqlite-database-integration';
-	if ( file_exists( $playground_sqlite . '/wp-includes/sqlite/db.php' ) ) {
+	if ( @file_exists( $playground_sqlite . '/wp-includes/sqlite/db.php' ) ) {
 		$sqlite_plugin_implementation_folder_path = $playground_sqlite;
 	}
+}
+
+if ( ! defined( 'MARKDOWN_DB_PLAYGROUND_RUNTIME' ) ) {
+	define( 'MARKDOWN_DB_PLAYGROUND_RUNTIME', isset( $playground_sqlite ) && $playground_sqlite === $sqlite_plugin_implementation_folder_path );
 }
 
 // Bail if SQLite integration is not installed.
@@ -121,7 +125,7 @@ if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 		: $markdown_db_content_dir;
 	if ( markdown_database_integration_store_has_siteurl( $markdown_db_state_dir ) ) {
 		$markdown_db_index_path = markdown_database_integration_primary_index_path( $markdown_db_content_dir, $markdown_db_state_dir );
-		if ( file_exists( '/internal/shared/sqlite-database-integration/wp-includes/sqlite/db.php' ) ) {
+		if ( MARKDOWN_DB_PLAYGROUND_RUNTIME ) {
 			$markdown_db_index_path = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-index-' . substr( md5( $markdown_db_index_path ), 0, 12 ) . '.sqlite';
 		}
 

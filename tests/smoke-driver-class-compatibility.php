@@ -80,6 +80,11 @@ if ( 2 === $argc ) {
 	define( 'WP_CONTENT_DIR', $content );
 	define( 'DB_NAME', 'wordpress' );
 	define( 'MARKDOWN_DB_VERSION', 'test' );
+	set_error_handler(
+		static function ( int $severity, string $message, string $file, int $line ): never {
+			throw new ErrorException( $message, 0, $severity, $file, $line );
+		}
+	);
 
 	try {
 		require $content . '/db.php';
@@ -111,7 +116,8 @@ if ( 2 === $argc ) {
 
 $failed = 0;
 foreach ( array( 'released', 'released-stale-dropin', 'canonical-prerelease', 'renamed', 'unsupported' ) as $surface ) {
-	$command = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $surface );
+	$open_basedir = dirname( __DIR__ ) . PATH_SEPARATOR . sys_get_temp_dir();
+	$command      = escapeshellarg( PHP_BINARY ) . ' -d ' . escapeshellarg( 'open_basedir=' . $open_basedir ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $surface );
 	passthru( $command, $status );
 	if ( 0 !== $status ) {
 		++$failed;

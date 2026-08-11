@@ -1148,14 +1148,25 @@ class WP_Markdown_Write_Engine {
 		}
 
 		try {
-			$rows = $this->fetch_rows(
-				$query
-			);
+			$result = $this->driver instanceof WP_Markdown_Driver
+				? $this->driver->query_cursor( $query )
+				: $this->driver->query( $query );
 		} catch ( \Throwable $e ) {
 			error_log( "Markdown DB: Failed to read {$table} for persist: " . $e->getMessage() );
 			return;
 		}
 
+		$path = $this->state_dir . '/_tables/' . $table_suffix . '.json';
+		$this->ensure_tables_dir();
+
+		// Row filters receive the complete array by contract. Keep that legacy
+		// path only when one is registered; ordinary snapshots stream to disk.
+		if ( $result instanceof \PDOStatement && ! $this->has_persistent_table_row_filter() ) {
+			$this->write_json_statement( $path, $result );
+			return;
+		}
+
+		$rows = is_array( $result ) ? $result : ( $result instanceof \PDOStatement ? $result->fetchAll( \PDO::FETCH_OBJ ) : array() );
 		if ( ! is_array( $rows ) ) {
 			return;
 		}
@@ -1183,8 +1194,12 @@ class WP_Markdown_Write_Engine {
 			}
 		}
 
-		$this->ensure_tables_dir();
-		$this->write_json( $this->state_dir . '/_tables/' . $table_suffix . '.json', $data );
+		$this->write_json( $path, $data );
+	}
+
+	/** Whether an installed row filter requires the legacy complete-array contract. */
+	private function has_persistent_table_row_filter(): bool {
+		return ! function_exists( 'has_filter' ) || false !== has_filter( 'markdown_db_persistent_table_rows' );
 	}
 
 	/**
@@ -1447,6 +1462,79 @@ class WP_Markdown_Write_Engine {
 
 		$this->track_canonical_write( $path, hash( 'sha256', $json ) );
 		$this->update_json_manifest( $path, (int) $mtime, (int) $size );
+	}
+
+	/**
+	 * Stream a PDO result into an atomic JSON table snapshot.
+	 *
+	 * This deliberately serializes one row at a time: large runtime tables never
+	 * become a PHP array (and are not copied again for JSON encoding).
+	 *
+	 * @param \PDOStatement $statement Table SELECT result.
+	 */
+	private function write_json_statement( string $path, \PDOStatement $statement ): void {
+		$this->track_canonical_mutation( $path );
+		$tmp    = $this->json_tmp_path( $path );
+		$handle = @fopen( $tmp, 'xb' );
+		$hash   = hash_init( 'sha256' );
+
+		if ( false === $handle ) {
+			throw new \RuntimeException( 'Markdown DB: Failed to create JSON temp file: ' . $path );
+		}
+
+		try {
+			$first = true;
+			while ( false !== ( $row = $statement->fetch( \PDO::FETCH_OBJ ) ) ) {
+				$json = json_encode( (array) $row, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES );
+				if ( false === $json ) {
+					throw new \RuntimeException( 'Markdown DB: Failed to encode table row: ' . $path );
+				}
+				$chunk = ( $first ? "[\n" : ",\n" ) . '    ' . str_replace( "\n", "\n    ", $json );
+				$this->write_json_chunk( $handle, $hash, $chunk, $path );
+				$first = false;
+			}
+
+			$this->write_json_chunk( $handle, $hash, $first ? '[]' : "\n]", $path );
+			if ( ! fflush( $handle ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to flush JSON temp file: ' . $path );
+			}
+			fclose( $handle );
+			$handle = null;
+
+			clearstatcache( true, $tmp );
+			$mtime = filemtime( $tmp );
+			$size  = filesize( $tmp );
+			if ( false === $mtime || false === $size ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to stat JSON file: ' . $path );
+			}
+			if ( ! @rename( $tmp, $path ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to rename JSON file: ' . $path );
+			}
+
+			$this->track_canonical_write( $path, hash_final( $hash ) );
+			$this->update_json_manifest( $path, (int) $mtime, (int) $size );
+		} finally {
+			if ( is_resource( $handle ) ) {
+				fclose( $handle );
+			}
+			if ( file_exists( $tmp ) ) {
+				@unlink( $tmp );
+			}
+		}
+	}
+
+	/** @param resource $handle @param resource $hash */
+	private function write_json_chunk( $handle, $hash, string $chunk, string $path ): void {
+		$offset = 0;
+		$length = strlen( $chunk );
+		while ( $offset < $length ) {
+			$written = fwrite( $handle, substr( $chunk, $offset ) );
+			if ( false === $written || 0 === $written ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to write JSON file: ' . $path );
+			}
+			$offset += $written;
+		}
+		hash_update( $hash, $chunk );
 	}
 
 	/**

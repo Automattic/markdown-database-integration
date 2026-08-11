@@ -23,6 +23,10 @@ function remove_all_filters( string $tag ): void {
 	unset( $GLOBALS['mdi_smoke_filters'][ $tag ] );
 }
 
+function has_filter( string $tag ): bool {
+	return ! empty( $GLOBALS['mdi_smoke_filters'][ $tag ] );
+}
+
 function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
 	if ( empty( $GLOBALS['mdi_smoke_filters'][ $tag ] ) ) {
 		return $value;
@@ -197,10 +201,12 @@ add_filter(
 	10,
 	4
 );
+$row_filter_runs = 0;
 add_filter(
 	'markdown_db_persistent_table_rows',
-	static function ( array $rows, string $table_suffix, string $table, ?array $policy ): array {
+	static function ( array $rows, string $table_suffix, string $table, ?array $policy ) use ( &$row_filter_runs ): array {
 		unset( $table );
+		$row_filter_runs++;
 		if ( 'datamachine_jobs' !== $table_suffix || 'latest' !== ( $policy['keep'] ?? null ) ) {
 			return $rows;
 		}
@@ -217,6 +223,7 @@ mdi_policy_assert_true( str_contains( $driver->queries[0] ?? '', 'LIMIT 1' ), 'b
 mdi_policy_assert_eq( $driver->rows_materialized, 1, 'bounded policy materializes one row from a 10,000-row fixture' );
 mdi_policy_assert_eq( count( is_array( $rows ) ? $rows : array() ), 1, 'query-level policy compacts persisted runtime table' );
 mdi_policy_assert_eq( (int) ( $rows[0]['job_id'] ?? 0 ), 10000, 'bounded query kept the selected latest row' );
+mdi_policy_assert_eq( $row_filter_runs, 1, 'row filter retains its complete-array invocation contract' );
 
 mdi_policy_rm_rf( $base );
 

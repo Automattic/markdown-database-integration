@@ -236,29 +236,7 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	 */
 	#[ReturnTypeWillChange]
 	public function query( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
-		// Rewrite `post_content LIKE '%needle%'` clauses into `ID IN (...)`
-		// by grepping the source .md files. Skipped during sync so the
-		// loader's own SELECTs never bounce through the file system.
-		if ( ! $this->syncing ) {
-			$rewritten = $this->get_search()->maybe_rewrite_query( $query );
-			if ( null !== $rewritten ) {
-				$query = $rewritten;
-			}
-		}
-
-		// Execute via parent SQLite driver.
-		$result = parent::query( $query, $fetch_mode, ...$fetch_mode_args );
-
-		// Wrap content reads so the canonical PDO statement retains lazy markdown
-		// hydration when callers fetch rows.
-		if ( $result instanceof \PDOStatement && ! $this->syncing && $this->is_posts_content_query( $query ) ) {
-			$result = new WP_Markdown_PDO_Statement(
-				$result,
-				function ( array $rows ): array {
-					return $this->resolve_content( $rows );
-				}
-			);
-		}
+		$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
 
 		if ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) {
 			if ( $result instanceof \PDOStatement ) {
@@ -289,6 +267,43 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 				error_log( 'Markdown DB persist error: ' . $e->getMessage() );
 			}
 			$this->syncing = false;
+		}
+
+		return $result;
+	}
+
+	/**
+	 * Execute a query and retain its PDO cursor for internal streaming consumers.
+	 *
+	 * Unlike query(), this deliberately bypasses the released SQLite driver's
+	 * legacy result materialization. Public wpdb callers must continue to use
+	 * query() and receive their established array or affected-row result.
+	 *
+	 * @return \PDOStatement|false Query cursor.
+	 */
+	public function query_cursor( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
+		// Rewrite `post_content LIKE '%needle%'` clauses into `ID IN (...)`
+		// by grepping the source .md files. Skipped during sync so the
+		// loader's own SELECTs never bounce through the file system.
+		if ( ! $this->syncing ) {
+			$rewritten = $this->get_search()->maybe_rewrite_query( $query );
+			if ( null !== $rewritten ) {
+				$query = $rewritten;
+			}
+		}
+
+		// Execute via parent SQLite driver.
+		$result = parent::query( $query, $fetch_mode, ...$fetch_mode_args );
+
+		// Wrap content reads so the canonical PDO statement retains lazy markdown
+		// hydration when callers fetch rows.
+		if ( $result instanceof \PDOStatement && ! $this->syncing && $this->is_posts_content_query( $query ) ) {
+			$result = new WP_Markdown_PDO_Statement(
+				$result,
+				function ( array $rows ): array {
+					return $this->resolve_content( $rows );
+				}
+			);
 		}
 
 		return $result;

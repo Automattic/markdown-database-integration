@@ -128,6 +128,9 @@ foreach ( array( 'legacy', 'current' ) as $surface ) {
 	$database = $base . "/{$surface}-large.sqlite";
 	mdi_stream_database( $database );
 	file_put_contents( $path, '["previous"]' );
+	$orphan = $path . '.tmp.999999.deadbeef';
+	file_put_contents( $orphan, 'orphan' );
+	touch( $orphan, time() - 600 );
 	list( $status, $output ) = mdi_stream_child( $surface, $base, $database );
 	$snapshot = file_get_contents( $path );
 	$rows = json_decode( is_string( $snapshot ) ? $snapshot : '', true );
@@ -136,6 +139,7 @@ foreach ( array( 'legacy', 'current' ) as $surface ) {
 	mdi_stream_assert_true( is_array( $rows ) && 700 === count( $rows ), "{$surface} large streamed snapshot is valid and complete" );
 	mdi_stream_assert_true( ( 'legacy' === $surface ? 'array' : 'statement' ) === file_get_contents( $base . '/ordinary-result' ), "{$surface} public query result remains compatible" );
 	mdi_stream_assert_true( empty( glob( $path . '.tmp.*' ) ?: array() ), "{$surface} successful shutdown leaves no temporary snapshot" );
+	mdi_stream_assert_true( ! file_exists( $orphan ), "{$surface} successful streamed snapshot reclaims an interrupted writer temp" );
 
 	$filtered_database = $base . "/{$surface}-filtered.sqlite";
 	mdi_stream_database( $filtered_database, false, 3 );

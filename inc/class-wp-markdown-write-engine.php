@@ -162,6 +162,13 @@ class WP_Markdown_Write_Engine {
 	private $canonical_mutations = array();
 
 	/**
+	 * Next matched temp-file offset to inspect for each canonical JSON path.
+	 *
+	 * @var array<string, int>
+	 */
+	private $json_temp_cleanup_offsets = array();
+
+	/**
 	 * Constructor.
 	 *
 	 * @param string                $content_dir     Content directory.
@@ -715,15 +722,23 @@ class WP_Markdown_Write_Engine {
 		}
 
 		$tmp = $this->json_tmp_path( $abs );
-		if ( false === @file_put_contents( $tmp, $json ) ) {
-			throw new \RuntimeException( 'Markdown DB: Failed to write option file: ' . $abs );
-		}
-
-		if ( ! @rename( $tmp, $abs ) ) {
-			@unlink( $tmp );
-			throw new \RuntimeException( 'Markdown DB: Failed to rename option file: ' . $abs );
+		$handle = $this->open_json_temp_file( $tmp, $abs );
+		try {
+			$this->write_json_contents( $handle, $json, $abs );
+			if ( ! fflush( $handle ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to flush option file: ' . $abs );
+			}
+			if ( ! @rename( $tmp, $abs ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to rename option file: ' . $abs );
+			}
+		} finally {
+			fclose( $handle );
+			if ( file_exists( $tmp ) ) {
+				@unlink( $tmp );
+			}
 		}
 		$this->track_canonical_write( $abs, hash( 'sha256', $json ) );
+		$this->cleanup_json_temp_files( $abs );
 
 		return $relative;
 	}
@@ -1442,26 +1457,32 @@ class WP_Markdown_Write_Engine {
 			throw new \RuntimeException( 'Markdown DB: Failed to encode JSON file: ' . $path );
 		}
 
-		$tmp = $this->json_tmp_path( $path );
-		if ( false === @file_put_contents( $tmp, $json, LOCK_EX ) ) {
-			throw new \RuntimeException( 'Markdown DB: Failed to write JSON file: ' . $path );
-		}
-
-		clearstatcache( true, $tmp );
-		$mtime = filemtime( $tmp );
-		$size  = filesize( $tmp );
-		if ( false === $mtime || false === $size ) {
-			@unlink( $tmp );
-			throw new \RuntimeException( 'Markdown DB: Failed to stat JSON file: ' . $path );
-		}
-
-		if ( ! @rename( $tmp, $path ) ) {
-			@unlink( $tmp );
-			throw new \RuntimeException( 'Markdown DB: Failed to rename JSON file: ' . $path );
+		$tmp    = $this->json_tmp_path( $path );
+		$handle = $this->open_json_temp_file( $tmp, $path );
+		try {
+			$this->write_json_contents( $handle, $json, $path );
+			if ( ! fflush( $handle ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to flush JSON temp file: ' . $path );
+			}
+			clearstatcache( true, $tmp );
+			$mtime = filemtime( $tmp );
+			$size  = filesize( $tmp );
+			if ( false === $mtime || false === $size ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to stat JSON file: ' . $path );
+			}
+			if ( ! @rename( $tmp, $path ) ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to rename JSON file: ' . $path );
+			}
+		} finally {
+			fclose( $handle );
+			if ( file_exists( $tmp ) ) {
+				@unlink( $tmp );
+			}
 		}
 
 		$this->track_canonical_write( $path, hash( 'sha256', $json ) );
 		$this->update_json_manifest( $path, (int) $mtime, (int) $size );
+		$this->cleanup_json_temp_files( $path );
 	}
 
 	/**
@@ -1475,12 +1496,9 @@ class WP_Markdown_Write_Engine {
 	private function write_json_statement( string $path, \PDOStatement $statement ): void {
 		$this->track_canonical_mutation( $path );
 		$tmp    = $this->json_tmp_path( $path );
-		$handle = @fopen( $tmp, 'xb' );
+		$handle = $this->open_json_temp_file( $tmp, $path );
 		$hash   = hash_init( 'sha256' );
-
-		if ( false === $handle ) {
-			throw new \RuntimeException( 'Markdown DB: Failed to create JSON temp file: ' . $path );
-		}
+		$written = false;
 
 		try {
 			$first = true;
@@ -1498,9 +1516,6 @@ class WP_Markdown_Write_Engine {
 			if ( ! fflush( $handle ) ) {
 				throw new \RuntimeException( 'Markdown DB: Failed to flush JSON temp file: ' . $path );
 			}
-			fclose( $handle );
-			$handle = null;
-
 			clearstatcache( true, $tmp );
 			$mtime = filemtime( $tmp );
 			$size  = filesize( $tmp );
@@ -1513,6 +1528,7 @@ class WP_Markdown_Write_Engine {
 
 			$this->track_canonical_write( $path, hash_final( $hash ) );
 			$this->update_json_manifest( $path, (int) $mtime, (int) $size );
+			$written = true;
 		} finally {
 			if ( is_resource( $handle ) ) {
 				fclose( $handle );
@@ -1520,6 +1536,9 @@ class WP_Markdown_Write_Engine {
 			if ( file_exists( $tmp ) ) {
 				@unlink( $tmp );
 			}
+		}
+		if ( $written ) {
+			$this->cleanup_json_temp_files( $path );
 		}
 	}
 
@@ -1535,6 +1554,19 @@ class WP_Markdown_Write_Engine {
 			$offset += $written;
 		}
 		hash_update( $hash, $chunk );
+	}
+
+	/** @param resource $handle */
+	private function write_json_contents( $handle, string $contents, string $path ): void {
+		$offset = 0;
+		$length = strlen( $contents );
+		while ( $offset < $length ) {
+			$written = fwrite( $handle, substr( $contents, $offset ) );
+			if ( false === $written || 0 === $written ) {
+				throw new \RuntimeException( 'Markdown DB: Failed to write JSON file: ' . $path );
+			}
+			$offset += $written;
+		}
 	}
 
 	/**
@@ -1583,6 +1615,128 @@ class WP_Markdown_Write_Engine {
 		}
 
 		return $path . '.tmp.' . getmypid() . '.' . $suffix;
+	}
+
+	/**
+	 * Reclaim interrupted atomic JSON writes without touching live writers.
+	 *
+	 * A temp file is eligible only when it has MDI's exact destination-derived
+	 * name, exceeds the configured age, and is not exclusively locked by a
+	 * writer. The matched-candidate inspection window rotates between scans.
+	 *
+	 * @param string $path Canonical JSON destination.
+	 */
+	private function cleanup_json_temp_files( string $path ): void {
+		$max_age = 300;
+		$limit   = 100;
+		if ( function_exists( 'apply_filters' ) ) {
+			$max_age = apply_filters( 'markdown_database_integration_json_temp_cleanup_max_age', $max_age, $path );
+			$limit   = apply_filters( 'markdown_database_integration_json_temp_cleanup_limit', $limit, $path );
+		}
+		if ( ! is_int( $max_age ) || $max_age < 0 ) {
+			$max_age = 300;
+		}
+		if ( ! is_int( $limit ) || $limit < 1 ) {
+			$limit = 100;
+		}
+
+		$pattern = '/\A' . preg_quote( basename( $path ), '/' ) . '\\.tmp\\.([1-9][0-9]*)\\.([a-f0-9]{8})\z/';
+		$count   = $this->count_json_temp_candidates( dirname( $path ), $pattern );
+		if ( 0 === $count ) {
+			return;
+		}
+
+		$offset = $this->json_temp_cleanup_offsets[ $path ] ?? 0;
+		$offset %= $count;
+		$this->json_temp_cleanup_offsets[ $path ] = ( $offset + $limit ) % $count;
+		$directory = dirname( $path );
+		$handle    = @opendir( $directory );
+		if ( false === $handle ) {
+			error_log( 'Markdown DB: Failed to scan JSON temp files: ' . $directory );
+			return;
+		}
+
+		$matched = 0;
+		$checked = 0;
+		try {
+			while ( false !== ( $entry = readdir( $handle ) ) ) {
+				if ( '.' === $entry || '..' === $entry ) {
+					continue;
+				}
+				if ( ! preg_match( $pattern, $entry, $matches ) ) {
+					continue;
+				}
+				if ( $checked >= $limit || ( ( $matched - $offset + $count ) % $count ) >= $limit ) {
+					$matched++;
+					continue;
+				}
+				$matched++;
+				$checked++;
+				$temp  = $directory . '/' . $entry;
+				$temp_handle = @fopen( $temp, 'rb' );
+				if ( false === $temp_handle || ! @flock( $temp_handle, LOCK_EX | LOCK_NB ) ) {
+					if ( is_resource( $temp_handle ) ) {
+						fclose( $temp_handle );
+					}
+					continue;
+				}
+				$stat = fstat( $temp_handle );
+				if ( ! is_array( $stat ) || $stat['mtime'] > time() - $max_age ) {
+					flock( $temp_handle, LOCK_UN );
+					fclose( $temp_handle );
+					continue;
+				}
+				if ( ! $this->remove_json_temp_file( $temp ) ) {
+					error_log( 'Markdown DB: Failed to reclaim stale JSON temp file: ' . $temp );
+				}
+				flock( $temp_handle, LOCK_UN );
+				fclose( $temp_handle );
+			}
+		} finally {
+			closedir( $handle );
+		}
+	}
+
+	/**
+	 * Create a temp file and keep its exclusive advisory lock through rename.
+	 *
+	 * @return resource
+	 */
+	private function open_json_temp_file( string $tmp, string $path ) {
+		$handle = @fopen( $tmp, 'xb' );
+		if ( false === $handle || ! @flock( $handle, LOCK_EX ) ) {
+			if ( is_resource( $handle ) ) {
+				fclose( $handle );
+				@unlink( $tmp );
+			}
+			throw new \RuntimeException( 'Markdown DB: Failed to create locked JSON temp file: ' . $path );
+		}
+		return $handle;
+	}
+
+	/** Count strict temp-file candidates without consuming the cleanup budget. */
+	private function count_json_temp_candidates( string $directory, string $pattern ): int {
+		$handle = @opendir( $directory );
+		if ( false === $handle ) {
+			error_log( 'Markdown DB: Failed to scan JSON temp files: ' . $directory );
+			return 0;
+		}
+		$count = 0;
+		try {
+			while ( false !== ( $entry = readdir( $handle ) ) ) {
+				if ( preg_match( $pattern, $entry ) ) {
+					$count++;
+				}
+			}
+		} finally {
+			closedir( $handle );
+		}
+		return $count;
+	}
+
+	/** @param string $path Temp file to remove. */
+	protected function remove_json_temp_file( string $path ): bool {
+		return @unlink( $path );
 	}
 
 	/**

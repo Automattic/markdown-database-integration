@@ -70,7 +70,7 @@ class WP_Markdown_Search {
 	/**
 	 * Constructor.
 	 *
-	 * @param WP_Markdown_Driver  $driver  The markdown driver instance.
+	 * @param WP_Markdown_Driver $driver The SQLite runtime adapter.
 	 * @param WP_Markdown_Storage $storage The storage engine.
 	 */
 	public function __construct( WP_Markdown_Driver $driver, WP_Markdown_Storage $storage ) {

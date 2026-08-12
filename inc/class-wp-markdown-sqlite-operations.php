@@ -270,8 +270,11 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 function wp_markdown_backend_operations_from_legacy( $driver, $prefix = 'wp_' ): WP_Markdown_Backend_Operations { return new WP_Markdown_SQLite_Operations( $driver, $prefix ); }
 
 function wp_markdown_runtime_adapter( $connection, string $database, WP_Markdown_Storage $storage, $prefix = 'wp_', ?WP_Markdown_Backend_Capabilities $capabilities = null ): array {
-	$driver = new WP_Markdown_Driver( $connection, $database, $storage, $capabilities );
-	return array( new WP_Markdown_SQLite_Operations( $driver, $prefix ), $driver );
+	if ( ! class_exists( 'WP_Markdown_SQLite_Runtime_Adapter' ) ) {
+		require_once __DIR__ . '/class-wp-markdown-driver.php';
+	}
+	$driver = new WP_Markdown_SQLite_Runtime_Adapter( $connection, $database, $storage, $capabilities );
+	return array( $driver->operations( $prefix ), $driver );
 }
 
 function wp_markdown_runtime_identity_error( bool $mismatch ): string {

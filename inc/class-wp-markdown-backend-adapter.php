@@ -5,4 +5,4 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/class-wp-markdown-' . 'sqlite-operations.php';
+require_once __DIR__ . '/class-wp-markdown-sqlite-operations.php';

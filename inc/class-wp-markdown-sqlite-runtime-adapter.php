@@ -303,7 +303,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 							'resource'  => $mutation['stable_id'],
 							'operation' => $mutation['operation'],
 							'table'     => $mutation['table'],
-							'context'   => array( 'resource_ids' => $mutation['resource_ids'], 'schema' => 'schema' === $mutation['kind'] ),
+							'context'   => array( 'resource_ids' => $mutation['resource_ids'], 'scope' => $mutation['scope'] ?? array(), 'schema' => 'schema' === $mutation['kind'] ),
 						)
 					);
 				}

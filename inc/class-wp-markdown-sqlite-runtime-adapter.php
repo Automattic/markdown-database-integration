@@ -361,7 +361,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 	/** Keep canonical hydration transactions inside the parent adapter's bookkeeping. */
 	public function begin_canonical_transaction(): void {
 		if ( null !== $this->canonical_transaction_scope ) { throw new \RuntimeException( 'Canonical hydration transaction is already active.' ); }
-		$adapter_transactions = ! ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) && method_exists( get_parent_class( $this ), 'inTransaction' );
+		$adapter_transactions = $this->parent_owns_transaction_api();
 		$connection_transaction = $this->get_connection()->get_pdo()->inTransaction();
 		if ( ( $adapter_transactions && parent::inTransaction() ) || ( ! $adapter_transactions && $connection_transaction ) ) {
 			$this->get_connection()->get_pdo()->exec( 'SAVEPOINT mdi_canonical_hydration' );
@@ -374,8 +374,8 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 
 	public function commit_canonical_transaction(): void {
 		if ( 'savepoint' === $this->canonical_transaction_scope ) { $this->get_connection()->get_pdo()->exec( 'RELEASE SAVEPOINT mdi_canonical_hydration' ); }
-		elseif ( 'transaction' === $this->canonical_transaction_scope && ! ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) && method_exists( get_parent_class( $this ), 'commit' ) ) { parent::commit(); }
-		elseif ( 'transaction' === $this->canonical_transaction_scope ) { $this->get_connection()->get_pdo()->commit(); }
+		elseif ( 'transaction' === $this->canonical_transaction_scope && $this->parent_owns_transaction_api() ) { parent::commit(); }
+		elseif ( 'transaction' === $this->canonical_transaction_scope ) { $this->get_connection()->get_pdo()->exec( 'COMMIT' ); }
 		$this->canonical_transaction_scope = null;
 	}
 
@@ -383,9 +383,19 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		if ( 'savepoint' === $this->canonical_transaction_scope ) {
 			$this->get_connection()->get_pdo()->exec( 'ROLLBACK TO SAVEPOINT mdi_canonical_hydration' );
 			$this->get_connection()->get_pdo()->exec( 'RELEASE SAVEPOINT mdi_canonical_hydration' );
-		} elseif ( 'transaction' === $this->canonical_transaction_scope && ! ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) && method_exists( get_parent_class( $this ), 'rollBack' ) ) { parent::rollBack(); }
-		elseif ( 'transaction' === $this->canonical_transaction_scope ) { $this->get_connection()->get_pdo()->rollBack(); }
+		} elseif ( 'transaction' === $this->canonical_transaction_scope && $this->parent_owns_transaction_api() ) { parent::rollBack(); }
+		elseif ( 'transaction' === $this->canonical_transaction_scope ) { $this->get_connection()->get_pdo()->exec( 'ROLLBACK' ); }
 		$this->canonical_transaction_scope = null;
+	}
+
+	private function parent_owns_transaction_api(): bool {
+		$parent = get_parent_class( $this );
+		foreach ( array( 'beginTransaction', 'commit', 'rollBack', 'inTransaction' ) as $method ) {
+			if ( ! method_exists( $parent, $method ) || 'PDO' === ( new \ReflectionMethod( $parent, $method ) )->getDeclaringClass()->getName() ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	public function canonical_transaction_active(): bool {

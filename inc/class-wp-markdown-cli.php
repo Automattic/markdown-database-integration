@@ -181,14 +181,18 @@ class WP_Markdown_CLI {
 	 * [--repair]
 	 * : Install the MDI drop-in when absent.
 	 *
-	 * [--force]
-	 * : Back up an unrelated existing drop-in before repair.
+		 * [--force]
+		 * : Back up an unrelated existing drop-in before repair.
+		 *
+		 * [--require-capability=<capability>]
+		 * : Fail when the active backend does not support a required capability.
 	 *
 	 * [--format=<format>]
 	 * : Output format. Supports table or json. Defaults to table.
 	 */
 	public static function doctor_cli( array $args, array $assoc_args ): void {
-		$result = WP_Markdown_Health::diagnose();
+		$required_capabilities = isset( $assoc_args['require-capability'] ) ? array_filter( array_map( 'trim', explode( ',', (string) $assoc_args['require-capability'] ) ) ) : array();
+		$result = WP_Markdown_Health::diagnose( array( 'required_capabilities' => $required_capabilities ) );
 		if ( array_key_exists( 'repair', $assoc_args ) ) {
 			$result['repair'] = WP_Markdown_Health::repair_dropin(
 				array( 'force' => array_key_exists( 'force', $assoc_args ) )
@@ -202,6 +206,8 @@ class WP_Markdown_CLI {
 
 		WP_CLI::line( sprintf( 'Status: %s', $result['status'] ) );
 		WP_CLI::line( sprintf( 'Mode: %s', $result['mode'] ?: 'none' ) );
+		WP_CLI::line( sprintf( 'Backend: %s', $result['backend']['id'] ) );
+		WP_CLI::line( sprintf( 'Capabilities: %s', implode( ', ', array_keys( array_filter( $result['backend']['capabilities'] ) ) ) ?: 'none' ) );
 		WP_CLI::line( $result['message'] );
 		if ( isset( $result['repair'] ) ) {
 			WP_CLI::line( $result['repair']['message'] );

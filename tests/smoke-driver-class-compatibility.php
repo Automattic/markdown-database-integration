@@ -54,6 +54,7 @@ if ( 2 === $argc ) {
 
 	file_put_contents( $mdi . '/inc/class-wp-markdown-frontmatter-profiles.php', "<?php\n" );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-storage.php', "<?php\nclass WP_Markdown_Storage {}\n" );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-driver.php', $mdi . '/inc/class-wp-markdown-driver.php' );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-search.php', "<?php\n" );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-write-engine.php', "<?php\nclass WP_Markdown_Write_Engine {}\n" );

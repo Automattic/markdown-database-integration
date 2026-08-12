@@ -9,6 +9,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+
 class WP_Markdown_Health {
 
 	/**
@@ -24,22 +26,39 @@ class WP_Markdown_Health {
 		$mode = is_string( $mode ) ? $mode : '';
 
 		$sqlite_runtime = $context['sqlite_runtime'] ?? ( class_exists( 'WP_SQLite_DB' ) && $wpdb instanceof WP_SQLite_DB );
+		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
+		if ( ! $backend instanceof WP_Markdown_Backend_Capabilities ) {
+			throw new InvalidArgumentException( 'backend_capabilities must be a WP_Markdown_Backend_Capabilities instance.' );
+		}
+		foreach ( $context['required_capabilities'] ?? array() as $capability ) {
+			try {
+				$backend->require( (string) $capability );
+			} catch ( WP_Markdown_Unsupported_Backend_Capability $error ) {
+				return self::with_backend( array(
+					'status'     => 'unsupported_backend_capability',
+					'healthy'    => false,
+					'mode'       => $mode,
+					'message'    => $error->getMessage(),
+					'diagnostic' => $error->get_diagnostic(),
+				), $backend );
+			}
+		}
 		if ( ! $sqlite_runtime ) {
-			return array(
+			return self::with_backend( array(
 				'status'  => 'not_applicable',
 				'healthy' => true,
 				'mode'    => $mode,
 				'message' => 'MDI drop-in health is not applicable to this non-SQLite runtime. Import/export remains available.',
-			);
+			), $backend );
 		}
 
 		if ( ! in_array( $mode, array( 'primary', 'mirror' ), true ) ) {
-			return array(
+			return self::with_backend( array(
 				'status'  => 'not_configured',
 				'healthy' => true,
 				'mode'    => $mode,
 				'message' => 'No MDI primary or mirror mode is configured.',
-			);
+			), $backend );
 		}
 
 		$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN );
@@ -54,29 +73,39 @@ class WP_Markdown_Health {
 		$markdown_runtime = $context['markdown_runtime'] ?? ( class_exists( 'WP_Markdown_DB' ) && $wpdb instanceof WP_Markdown_DB );
 
 		if ( 'primary' === $mode && $dropin_loaded && $install_fallback ) {
-			return array(
+			return self::with_backend( array(
 				'status'  => 'install_fallback',
 				'healthy' => true,
 				'mode'    => $mode,
 				'message' => 'MDI primary install fallback is active until WordPress installation completes.',
-			);
+			), $backend );
 		}
 
 		if ( $dropin_loaded && $runtime_loaded && $markdown_runtime ) {
-			return array(
+			return self::with_backend( array(
 				'status'  => 'healthy',
 				'healthy' => true,
 				'mode'    => $mode,
 				'message' => 'MDI drop-in and runtime classes are active.',
-			);
+			), $backend );
 		}
 
-		return array(
+		return self::with_backend( array(
 			'status'  => 'dropin_missing_or_replaced',
 			'healthy' => false,
 			'mode'    => $mode,
 			'message' => 'MDI ' . $mode . ' mode is configured, but the MDI db.php drop-in and runtime are not active.',
-		);
+		), $backend );
+	}
+
+	/**
+	 * Add the backend contract without changing existing health fields.
+	 *
+	 * @param array $report Health report.
+	 */
+	private static function with_backend( array $report, WP_Markdown_Backend_Capabilities $backend ): array {
+		$report['backend'] = $backend->report();
+		return $report;
 	}
 
 	/**

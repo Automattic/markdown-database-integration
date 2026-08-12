@@ -14,6 +14,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+
 class WP_Markdown_Primary_Storage_Runtime {
 
 	/** @var string */
@@ -56,15 +58,18 @@ class WP_Markdown_Primary_Storage_Runtime {
 		?array $identity = null,
 		bool $cold_boot = true,
 		array $excluded_types = array(),
-		$prefix = 'wp_'
+		$prefix = 'wp_',
+		?WP_Markdown_Backend_Capabilities $backend_capabilities = null
 	): self {
+		$backend_capabilities = WP_Markdown_Backend_Resolver::resolve( $backend_capabilities );
+		$backend_capabilities->require( 'disposable_index_operation' );
 		if ( ! class_exists( 'WP_Markdown_Driver' ) || ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
 			throw new \LogicException( 'Load the MDI primary driver, write engine, and loader before bootstrapping the storage runtime.' );
 		}
 
 		$runtime = new self( $roots );
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
-		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage );
+		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage, $backend_capabilities );
 		$runtime->write_engine = new WP_Markdown_Write_Engine(
 			$runtime->content_root,
 			$storage,
@@ -92,6 +97,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 			}
 		}
 		if ( $cold_boot ) {
+			$backend_capabilities->require( 'cold_reconstruction' );
 			$runtime->loader->load_all();
 		} else {
 			$runtime->loader->sync_incremental();
@@ -112,15 +118,18 @@ class WP_Markdown_Primary_Storage_Runtime {
 		WP_SQLite_Connection $connection,
 		string $database,
 		array $excluded_types = array(),
-		$prefix = 'wp_'
+		$prefix = 'wp_',
+		?WP_Markdown_Backend_Capabilities $backend_capabilities = null
 	): self {
+		$backend_capabilities = WP_Markdown_Backend_Resolver::resolve( $backend_capabilities );
+		$backend_capabilities->require( 'disposable_index_operation' );
 		if ( ! class_exists( 'WP_Markdown_Driver' ) || ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
 			throw new \LogicException( 'Load the MDI primary driver, write engine, and loader before attaching the storage runtime.' );
 		}
 
 		$runtime = new self( $roots );
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
-		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage );
+		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage, $backend_capabilities );
 		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $runtime->driver, $prefix, $runtime->state_root );
 		$runtime->driver->set_write_engine( $runtime->write_engine );
 		$runtime->configure_storage_resolvers( $storage, $prefix );
@@ -152,7 +161,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 	 * @return array{created:string[],changed:string[],deleted:string[]} Sorted paths relative to their canonical root.
 	 */
 	public function flush(): array {
-		$changes         = $this->write_engine->flush_dirty( true );
+		$changes         = $this->driver->flush_canonical_writes();
 		$this->identity  = $this->canonical_identity();
 		return $changes;
 	}

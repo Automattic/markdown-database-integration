@@ -225,6 +225,12 @@ if ( file_exists( $composer_autoload ) ) {
 }
 
 // Load markdown integration classes.
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
+$markdown_db_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
+WP_Markdown_Backend_Resolver::require_runtime_capabilities(
+	$markdown_db_backend,
+	defined( 'MARKDOWN_DB_MODE' ) ? (string) MARKDOWN_DB_MODE : 'mirror'
+);
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-driver.php';

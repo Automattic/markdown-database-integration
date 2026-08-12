@@ -39,6 +39,7 @@ function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed { un
 function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_runtime_actions'][ $hook ][] = $args; }
 
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php';
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-search.php';
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-write-engine.php';
@@ -189,6 +190,33 @@ $cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_
 $cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
 WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
 mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
+
+$unsupported_cold_boot = false;
+try {
+	WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true, array(), 'wp_', new WP_Markdown_Backend_Capabilities( 'incomplete', array( 'disposable_index_operation' => true ) ) );
+} catch ( WP_Markdown_Unsupported_Backend_Capability $exception ) {
+	$unsupported_cold_boot = 'cold_reconstruction' === $exception->get_diagnostic()['capability'];
+}
+mdi_runtime_assert( $unsupported_cold_boot, 'primary cold reconstruction enforces backend capability with a structured diagnostic' );
+
+$incomplete_backend = new WP_Markdown_Backend_Capabilities( 'incomplete', array( 'disposable_index_operation' => true ) );
+$incomplete_storage = new WP_Markdown_Storage( $root . '/incomplete-content' );
+$incomplete_driver = new WP_Markdown_Driver( new WP_SQLite_Connection( $cold_pdo ), 'wordpress', $incomplete_storage, $incomplete_backend );
+$incomplete_driver->set_write_engine( new WP_Markdown_Write_Engine( $root . '/incomplete-content', $incomplete_storage, $incomplete_driver, 'wp_', $root . '/incomplete-state' ) );
+$enforced = array();
+foreach ( array(
+	'table_mutation_capture' => static fn () => $incomplete_driver->query( "UPDATE wp_options SET option_value = 'blocked' WHERE option_name = 'blogname'" ),
+	'schema_persistence' => static fn () => $incomplete_driver->query( 'CREATE TABLE wp_incomplete (id INTEGER)' ),
+	'lazy_post_content_resolution' => static fn () => $incomplete_driver->query( 'SELECT post_content FROM wp_posts' ),
+	'explicit_flush' => static fn () => $incomplete_driver->flush_canonical_writes(),
+) as $capability => $operation ) {
+	try {
+		$operation();
+	} catch ( WP_Markdown_Unsupported_Backend_Capability $exception ) {
+		$enforced[ $capability ] = $exception->get_diagnostic()['capability'] === $capability;
+	}
+}
+mdi_runtime_assert( ! in_array( false, $enforced, true ) && 4 === count( $enforced ), 'driver mutation, schema, lazy content, and flush boundaries fail closed for an incomplete backend' );
 
 mdi_runtime_rm( $root );
 exit( $failed ? 1 : 0 );

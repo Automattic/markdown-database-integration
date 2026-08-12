@@ -20,6 +20,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+
 class WP_Markdown_DB extends WP_SQLite_DB {
 
 	/**
@@ -28,6 +30,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 * @var WP_Markdown_Loader|null
 	 */
 	private $loader = null;
+
+	/** @var WP_Markdown_Backend_Capabilities */
+	private $backend_capabilities;
 
 	/**
 	 * Deferred primary loader action, if the table prefix is not ready yet.
@@ -171,7 +176,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			)
 		);
 
-		$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
+		$this->backend_capabilities = WP_Markdown_Backend_Resolver::resolve();
+		$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage, $this->backend_capabilities );
 		$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
 
 		// Resolve the table prefix.
@@ -355,10 +361,13 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		}
 
 		if ( 'sync_incremental' === $action ) {
+			$this->backend_capabilities->require( 'disposable_index_operation' );
 			$this->loader->sync_incremental();
 			return;
 		}
 
+		$this->backend_capabilities->require( 'disposable_index_operation' );
+		$this->backend_capabilities->require( 'cold_reconstruction' );
 		$this->loader->load_all();
 	}
 

@@ -22,6 +22,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+
 // Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO
 // API when a previous drop-in loads this driver against the pre-rename class.
 if ( ! class_exists( 'WP_MySQL_On_SQLite' ) && class_exists( 'WP_PDO_MySQL_On_SQLite' ) ) {
@@ -90,6 +92,9 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	 */
 	private $last_legacy_result = null;
 
+	/** @var WP_Markdown_Backend_Capabilities */
+	private $backend_capabilities;
+
 	/**
 	 * Constructor.
 	 *
@@ -100,7 +105,8 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	public function __construct(
 		WP_SQLite_Connection $connection,
 		string $database,
-		WP_Markdown_Storage $storage
+		WP_Markdown_Storage $storage,
+		?WP_Markdown_Backend_Capabilities $backend_capabilities = null
 	) {
 		parent::__construct(
 			sprintf( 'mysql-on-sqlite:dbname=%s', $database ),
@@ -114,6 +120,7 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 		$connection->get_pdo()->setAttribute( PDO::ATTR_STRINGIFY_FETCHES, true );
 
 		$this->storage = $storage;
+		$this->backend_capabilities = WP_Markdown_Backend_Resolver::resolve( $backend_capabilities );
 
 		global $table_prefix;
 		$this->table_prefix = $table_prefix ?? 'wp_';
@@ -170,6 +177,8 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
 	public function flush_canonical_writes(): array {
+		$this->backend_capabilities->require( 'explicit_flush' );
+		$this->backend_capabilities->require( 'changed_path_receipts' );
 		if ( null !== $this->write_engine ) {
 			return $this->write_engine->flush_dirty( true );
 		}
@@ -236,6 +245,10 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 	 */
 	#[ReturnTypeWillChange]
 	public function query( string $query, $fetch_mode = PDO::FETCH_OBJ, ...$fetch_mode_args ) {
+		$op = $this->detect_operation( $query );
+		if ( null !== $op && ! $this->syncing && null !== $this->write_engine ) {
+			$this->require_mutation_capability( $op );
+		}
 		$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
 
 		if ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) {
@@ -253,8 +266,6 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 		}
 
 		// Detect the operation type and affected table.
-		$op = $this->detect_operation( $query );
-
 		if ( null !== $op ) {
 			$this->syncing = true;
 			try {
@@ -298,6 +309,7 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 		// Wrap content reads so the canonical PDO statement retains lazy markdown
 		// hydration when callers fetch rows.
 		if ( $result instanceof \PDOStatement && ! $this->syncing && $this->is_posts_content_query( $query ) ) {
+			$this->backend_capabilities->require( 'lazy_post_content_resolution' );
 			$result = new WP_Markdown_PDO_Statement(
 				$result,
 				function ( array $rows ): array {
@@ -417,6 +429,19 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 		unset( $row );
 
 		return $rows;
+	}
+
+	/** @param array{type:string,op:string,table:string} $op */
+	private function require_mutation_capability( array $op ): void {
+		if ( 'DDL' === $op['type'] ) {
+			$this->backend_capabilities->require( 'schema_persistence' );
+			return;
+		}
+
+		$this->backend_capabilities->require( 'table_mutation_capture' );
+		if ( $op['table'] === $this->table_prefix . 'posts' ) {
+			$this->backend_capabilities->require( 'content_mutation_capture' );
+		}
 	}
 
 	/**

@@ -28,6 +28,13 @@ class WP_SQLite_Connection {
 	}
 }
 
+class Legacy_Transaction_PDO extends PDO {
+	public int $commit_calls = 0;
+	public int $rollback_calls = 0;
+	public function commit(): bool { ++$this->commit_calls; return parent::commit(); }
+	public function rollBack(): bool { ++$this->rollback_calls; return parent::rollBack(); }
+}
+
 class WP_PDO_MySQL_On_SQLite extends PDO {
 	private WP_SQLite_Connection $connection;
 
@@ -71,7 +78,7 @@ register_shutdown_function(
 	}
 );
 
-$pdo = new PDO( 'sqlite::memory:' );
+$pdo = new Legacy_Transaction_PDO( 'sqlite::memory:' );
 $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
 $pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY AUTOINCREMENT, option_name TEXT, option_value TEXT)' );
 $pdo->exec( "INSERT INTO wp_options (option_name, option_value) VALUES ('siteurl', 'https://local.test')" );
@@ -108,6 +115,19 @@ if ( ! is_array( $rows ) || 'https://local.test' !== ( $rows[0]->option_value ??
 $affected = $driver->query( "UPDATE wp_options SET option_value = 'https://updated.test' WHERE option_name = 'siteurl'" );
 if ( 1 !== $affected || 1 !== $driver->get_last_return_value() || 1 !== $driver->get_query_results() ) {
 	fwrite( STDERR, "FAIL: released DML result was not exposed through the wpdb facade.\n" );
+	exit( 1 );
+}
+$commit_calls = $pdo->commit_calls;
+$rollback_calls = $pdo->rollback_calls;
+$driver->begin_canonical_transaction();
+$pdo->exec( "UPDATE wp_options SET option_value = 'https://committed.test' WHERE option_name = 'siteurl'" );
+$driver->commit_canonical_transaction();
+$driver->begin_canonical_transaction();
+$pdo->exec( "UPDATE wp_options SET option_value = 'https://rolled-back-again.test' WHERE option_name = 'siteurl'" );
+$driver->rollback_canonical_transaction();
+$pdo->exec( 'ALTER TABLE wp_options ADD COLUMN autoload TEXT' );
+if ( $commit_calls !== $pdo->commit_calls || $rollback_calls !== $pdo->rollback_calls || 'https://committed.test' !== $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'" )->fetchColumn() ) {
+	fwrite( STDERR, "FAIL: legacy SQL-started canonical transactions did not close before a schema write.\n" );
 	exit( 1 );
 }
 

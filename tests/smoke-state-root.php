@@ -120,8 +120,10 @@ mkdir( $state_dir . '/_tables', 0755, true );
 $post_file = $content_dir . '/wiki/guide.md';
 file_put_contents(
 	$post_file,
-	"---\nid: 41\ntitle: Guide\nstatus: publish\ntype: wiki\nslug: guide\n---\n\nCold content\n"
+	"---\nid: 41\ntitle: Guide\nstatus: publish\ntype: wiki\nslug: guide\nmeta:\n  audience: developers\nterms:\n  category:\n    - guides\n---\n\nCold content\n"
 );
+$idless_file = $content_dir . '/wiki/idless.md';
+file_put_contents( $idless_file, "---\ntitle: ID-less\nstatus: publish\ntype: wiki\nslug: idless\n---\n\nAssigned content\n" );
 file_put_contents(
 	$state_dir . '/_options/siteurl.json',
 	json_encode( array( 'option_id' => 1, 'option_name' => 'siteurl', 'option_value' => 'https://local.test', 'autoload' => 'yes' ) )
@@ -140,6 +142,8 @@ $connection = new WP_SQLite_Connection( $pdo );
 $driver  = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $pdo ) );
 $storage = new WP_Markdown_Storage( $content_dir );
 $loader  = new WP_Markdown_Loader( $content_dir, $driver, $storage, 'wp_', $state_dir );
+$pdo->exec( "INSERT INTO wp_terms (term_id, slug) VALUES (9, 'guides')" );
+$pdo->exec( "INSERT INTO wp_term_taxonomy (term_taxonomy_id, term_id, taxonomy) VALUES (19, 9, 'category')" );
 
 $load_options = new ReflectionMethod( $loader, 'load_options' );
 $load_posts   = new ReflectionMethod( $loader, 'load_posts' );
@@ -157,16 +161,20 @@ mdi_state_assert( 'https://local.test' === $pdo->query( "SELECT option_value FRO
 mdi_state_assert( 5 === (int) $pdo->query( 'SELECT id FROM wp_runtime_jobs' )->fetchColumn(), 'cold load reads table snapshots from the state root' );
 mdi_state_assert( 1 === (int) $pdo->query( "SELECT COUNT(*) FROM _json_file_manifest WHERE file_name = '_tables/runtime_jobs.json'" )->fetchColumn(), 'JSON manifests track files in the state root' );
 mdi_state_assert( 'Guide' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 41' )->fetchColumn(), 'cold load reads posts from the content root' );
+mdi_state_assert( 'developers' === $pdo->query( "SELECT meta_value FROM wp_postmeta WHERE post_id = 41 AND meta_key = 'audience'" )->fetchColumn(), 'cold load restores Markdown frontmatter metadata' );
+mdi_state_assert( 19 === (int) $pdo->query( 'SELECT term_taxonomy_id FROM wp_term_relationships WHERE object_id = 41' )->fetchColumn(), 'cold load restores Markdown frontmatter terms' );
+mdi_state_assert( 'ID-less' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 42' )->fetchColumn() && str_contains( (string) file_get_contents( $idless_file ), 'id: 42' ), 'cold load assigns and persists a collision-free ID for ID-less Markdown' );
 
 $pdo->exec( "UPDATE wp_posts SET post_content = 'Stale indexed content' WHERE ID = 41" );
 file_put_contents(
 	$post_file,
-	"---\nid: 41\ntitle: Updated guide\nstatus: publish\ntype: wiki\nslug: guide\n---\n\nWarm content is longer\n"
+	"---\nid: 41\ntitle: Updated guide\nstatus: publish\ntype: wiki\nslug: guide\nmeta:\n  audience: operators\nterms:\n  category: []\n---\n\nWarm content is longer\n"
 );
 clearstatcache( true, $post_file );
 $sync_posts->invoke( $loader );
 mdi_state_assert( 'Updated guide' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 41' )->fetchColumn(), 'warm sync reads changed posts from the content root' );
 mdi_state_assert( '' === $pdo->query( 'SELECT post_content FROM wp_posts WHERE ID = 41' )->fetchColumn(), 'warm sync clears stale indexed content for changed posts' );
+mdi_state_assert( 'operators' === $pdo->query( "SELECT meta_value FROM wp_postmeta WHERE post_id = 41 AND meta_key = 'audience'" )->fetchColumn() && 0 === (int) $pdo->query( 'SELECT COUNT(*) FROM wp_term_relationships WHERE object_id = 41' )->fetchColumn(), 'warm sync atomically replaces Markdown metadata and terms' );
 $markdown_driver = new WP_Markdown_Driver( $connection, 'wordpress', $storage );
 $read_post       = $markdown_driver->query( 'SELECT ID, post_content FROM wp_posts WHERE ID = 41' )->fetch( PDO::FETCH_OBJ );
 mdi_state_assert( 'Warm content is longer' === ( $read_post->post_content ?? null ), 'driver lazy-loads changed Markdown content after warm sync' );

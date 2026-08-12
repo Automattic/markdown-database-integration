@@ -3,7 +3,7 @@
  * Constrained primary runtime.
  *
  * Boots the same primary-mode storage, driver, loader, and write engine around
- * a caller-owned SQLite connection. SQLite remains a disposable index; the
+ * a caller-owned disposable index. The index remains rebuildable; the
  * canonical Markdown and JSON roots remain the durable state.
  *
  * @package Markdown_Database_Integration
@@ -15,6 +15,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+require_once __DIR__ . '/class-wp-markdown-backend-adapter.php';
 
 class WP_Markdown_Primary_Storage_Runtime {
 
@@ -24,7 +25,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 	/** @var string */
 	private $state_root;
 
-	/** @var WP_Markdown_Driver */
+	/** @var object */
 	private $driver;
 
 	/** @var WP_Markdown_Write_Engine */
@@ -37,15 +38,15 @@ class WP_Markdown_Primary_Storage_Runtime {
 	private $identity;
 
 	/**
-	 * Bootstrap primary-mode machinery around a caller-provided SQLite cache.
+	 * Bootstrap primary-mode machinery around a caller-provided cache.
 	 *
 	 * The supplied connection owns the cache lifecycle. Pass false for
 	 * `$cold_boot` only when that cache was previously hydrated from the supplied
 	 * identity. Warm boot requires that identity; cold reconstruction does not.
 	 *
 	 * @param array{content_root:string,state_root:string} $roots Canonical storage roots.
-	 * @param WP_SQLite_Connection                          $connection Disposable SQLite cache connection.
-	 * @param string                                        $database SQLite database name.
+	 * @param object                                        $connection Disposable cache connection.
+	 * @param string                                        $database Cache database name.
 	 * @param array{files:array<string,string>,hash:string}|null $identity Identity represented by a warm cache.
 	 * @param bool                                          $cold_boot Whether to reconstruct the cache from files.
 	 * @param string[]                                      $excluded_types Post types excluded from Markdown.
@@ -53,7 +54,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 	 */
 	public static function bootstrap(
 		array $roots,
-		WP_SQLite_Connection $connection,
+		$connection,
 		string $database,
 		?array $identity = null,
 		bool $cold_boot = true,
@@ -61,28 +62,35 @@ class WP_Markdown_Primary_Storage_Runtime {
 		$prefix = 'wp_',
 		?WP_Markdown_Backend_Capabilities $backend_capabilities = null
 	): self {
+		$storage = new WP_Markdown_Storage( rtrim( $roots['content_root'], '/' ), $excluded_types );
+		[ $operations, $driver ] = wp_markdown_runtime_adapter( $connection, $database, $storage, $prefix, $backend_capabilities );
+		return self::bootstrap_with_operations( $roots, $operations, $driver, $identity, $cold_boot, $excluded_types, $prefix, $backend_capabilities );
+	}
+
+	/** Backend-neutral primary runtime bootstrap. */
+	public static function bootstrap_with_operations( array $roots, WP_Markdown_Backend_Operations $operations, $runtime_driver, ?array $identity = null, bool $cold_boot = true, array $excluded_types = array(), $prefix = 'wp_', ?WP_Markdown_Backend_Capabilities $backend_capabilities = null ): self {
 		$backend_capabilities = WP_Markdown_Backend_Resolver::resolve( $backend_capabilities );
 		$backend_capabilities->require( 'disposable_index_operation' );
-		if ( ! class_exists( 'WP_Markdown_Driver' ) || ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
+		if ( ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
 			throw new \LogicException( 'Load the MDI primary driver, write engine, and loader before bootstrapping the storage runtime.' );
 		}
 
 		$runtime = new self( $roots );
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
 		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
-		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage, $backend_capabilities );
+		$runtime->driver = $runtime_driver;
 		$runtime->write_engine = new WP_Markdown_Write_Engine(
 			$runtime->content_root,
 			$storage,
-			$runtime->driver,
+			$operations,
 			$prefix,
 			$runtime->state_root
 		);
-		$runtime->driver->set_write_engine( $runtime->write_engine );
-		$runtime->configure_storage_resolvers( $storage, $prefix );
+		if ( method_exists( $runtime->driver, 'set_write_engine' ) ) { $runtime->driver->set_write_engine( $runtime->write_engine ); }
+		$runtime->configure_storage_resolvers( $storage, $operations );
 		$runtime->loader = new WP_Markdown_Loader(
 			$runtime->content_root,
-			$runtime->driver,
+			$operations,
 			$storage,
 			$prefix,
 			$runtime->state_root
@@ -91,10 +99,10 @@ class WP_Markdown_Primary_Storage_Runtime {
 		$current_identity = $runtime->canonical_identity();
 		if ( ! $cold_boot ) {
 			if ( null === $identity ) {
-				throw new \RuntimeException( 'A canonical identity is required for a warm SQLite cache.' );
+				throw new \RuntimeException( wp_markdown_runtime_identity_error( false ) );
 			}
 			if ( $identity['hash'] !== $current_identity['hash'] ) {
-				throw new \RuntimeException( 'The supplied SQLite cache identity does not match the canonical files.' );
+				throw new \RuntimeException( wp_markdown_runtime_identity_error( true ) );
 			}
 		}
 		if ( $cold_boot ) {
@@ -111,31 +119,38 @@ class WP_Markdown_Primary_Storage_Runtime {
 	/**
 	 * Attach primary write machinery to an already-populated caller-owned cache.
 	 *
-	 * This is for one-time imports where SQLite is the input and canonical files
+	 * This is for one-time imports where the backend is the input and canonical files
 	 * are the output. It deliberately does not load or synchronize files.
 	 */
 	public static function bootstrap_existing_cache(
 		array $roots,
-		WP_SQLite_Connection $connection,
+		$connection,
 		string $database,
 		array $excluded_types = array(),
 		$prefix = 'wp_',
 		?WP_Markdown_Backend_Capabilities $backend_capabilities = null
 	): self {
+		$storage = new WP_Markdown_Storage( rtrim( $roots['content_root'], '/' ), $excluded_types );
+		[ $operations, $driver ] = wp_markdown_runtime_adapter( $connection, $database, $storage, $prefix, $backend_capabilities );
+		return self::bootstrap_existing_cache_with_operations( $roots, $operations, $driver, $excluded_types, $prefix, $backend_capabilities );
+	}
+
+	/** Attach neutral persistence to an existing caller-owned cache. */
+	public static function bootstrap_existing_cache_with_operations( array $roots, WP_Markdown_Backend_Operations $operations, $runtime_driver, array $excluded_types = array(), $prefix = 'wp_', ?WP_Markdown_Backend_Capabilities $backend_capabilities = null ): self {
 		$backend_capabilities = WP_Markdown_Backend_Resolver::resolve( $backend_capabilities );
 		$backend_capabilities->require( 'disposable_index_operation' );
-		if ( ! class_exists( 'WP_Markdown_Driver' ) || ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
+		if ( ! class_exists( 'WP_Markdown_Write_Engine' ) || ! class_exists( 'WP_Markdown_Loader' ) ) {
 			throw new \LogicException( 'Load the MDI primary driver, write engine, and loader before attaching the storage runtime.' );
 		}
 
 		$runtime = new self( $roots );
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
 		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
-		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage, $backend_capabilities );
-		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $runtime->driver, $prefix, $runtime->state_root );
-		$runtime->driver->set_write_engine( $runtime->write_engine );
-		$runtime->configure_storage_resolvers( $storage, $prefix );
-		$runtime->loader = new WP_Markdown_Loader( $runtime->content_root, $runtime->driver, $storage, $prefix, $runtime->state_root );
+		$runtime->driver = $runtime_driver;
+		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $operations, $prefix, $runtime->state_root );
+		if ( method_exists( $runtime->driver, 'set_write_engine' ) ) { $runtime->driver->set_write_engine( $runtime->write_engine ); }
+		$runtime->configure_storage_resolvers( $storage, $operations );
+		$runtime->loader = new WP_Markdown_Loader( $runtime->content_root, $operations, $storage, $prefix, $runtime->state_root );
 		$runtime->loader->prepare_existing_cache();
 		$runtime->identity = $runtime->canonical_identity();
 
@@ -153,7 +168,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 	 * Return the public driver for normal WordPress post and option mutations.
 	 * Queries made through this driver use the ordinary MDI write interception.
 	 */
-	public function get_driver(): WP_Markdown_Driver {
+	public function get_driver() {
 		return $this->driver;
 	}
 
@@ -178,25 +193,19 @@ class WP_Markdown_Primary_Storage_Runtime {
 		return $this->loader;
 	}
 
-	private function configure_storage_resolvers( WP_Markdown_Storage $storage, $prefix ): void {
-		$prefix_resolver = is_callable( $prefix ) ? $prefix : static function () use ( $prefix ): string { return (string) $prefix; };
-		$driver = $this->driver;
-		$storage->set_post_resolver( static function ( int $post_id ) use ( $driver, $prefix_resolver ): ?object {
-			$result = $driver->query( 'SELECT post_name, post_parent, post_type FROM `' . $prefix_resolver() . 'posts` WHERE ID = ' . $post_id );
-			$row = is_array( $result ) ? ( $result[0] ?? false ) : $result->fetch( \PDO::FETCH_OBJ );
-			return false === $row ? null : $row;
+	private function configure_storage_resolvers( WP_Markdown_Storage $storage, WP_Markdown_Backend_Operations $operations ): void {
+		$storage->set_post_resolver( static function ( int $post_id ) use ( $operations ): ?object {
+			$rows = $operations->post_rows( array( $post_id ) );
+			return empty( $rows ) ? null : (object) $rows[0];
 		} );
-		$storage->set_meta_resolver( static function ( int $post_id ) use ( $driver, $prefix_resolver ): array {
-			$result = $driver->query( 'SELECT meta_key, meta_value FROM `' . $prefix_resolver() . 'postmeta` WHERE post_id = ' . $post_id );
-			return is_array( $result ) ? $result : $result->fetchAll( \PDO::FETCH_OBJ );
+		$storage->set_meta_resolver( static function ( int $post_id ) use ( $operations ): array {
+			return $operations->post_meta( $post_id );
 		} );
-		$storage->set_terms_resolver( static function ( int $post_id ) use ( $driver, $prefix_resolver ): array {
-			$prefix = $prefix_resolver();
-			$result = $driver->query( "SELECT tt.taxonomy, t.slug FROM `{$prefix}term_relationships` tr JOIN `{$prefix}term_taxonomy` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id JOIN `{$prefix}terms` t ON tt.term_id = t.term_id WHERE tr.object_id = {$post_id}" );
-			return is_array( $result ) ? $result : $result->fetchAll( \PDO::FETCH_OBJ );
+		$storage->set_terms_resolver( static function ( int $post_id ) use ( $operations ): array {
+			return $operations->post_terms( $post_id );
 		} );
-		$storage->set_index_writer( static function ( int $post_id, string $path, int $mtime, int $size ) use ( $driver ): void {
-			$driver->update_file_index( $post_id, $path, $mtime, $size );
+		$storage->set_index_writer( static function ( int $post_id, string $path, int $mtime, int $size ) use ( $operations ): void {
+			$operations->upsert_file_index( $post_id, $path, $mtime, $size );
 		} );
 	}
 

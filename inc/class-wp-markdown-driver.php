@@ -23,6 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+require_once __DIR__ . '/class-wp-markdown-sqlite-operations.php';
 
 // Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO
 // API when a previous drop-in loads this driver against the pre-rename class.
@@ -269,10 +270,17 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 		if ( null !== $op ) {
 			$this->syncing = true;
 			try {
-				if ( $op['type'] === 'DDL' ) {
-					$this->write_engine->persist_schema( $query, $op['table'], $op['op'] );
-				} else {
-					$this->write_engine->persist_write( $query, $op['table'], $op['op'] );
+				$operations = new WP_Markdown_SQLite_Operations( $this );
+				foreach ( $operations->mutations_for_query( $query, $op ) as $mutation ) {
+					$this->write_engine->persist_mutation(
+						array(
+							'key'       => $mutation['stable_id'],
+							'resource'  => $mutation['stable_id'],
+							'operation' => $mutation['operation'],
+							'table'     => $mutation['table'],
+							'context'   => array( 'resource_ids' => $mutation['resource_ids'], 'schema' => 'schema' === $mutation['kind'] ),
+						)
+					);
 				}
 			} catch ( \Throwable $e ) {
 				error_log( 'Markdown DB persist error: ' . $e->getMessage() );
@@ -282,6 +290,7 @@ class WP_Markdown_Driver extends WP_MySQL_On_SQLite {
 
 		return $result;
 	}
+
 
 	/**
 	 * Execute a query and retain its PDO cursor for internal streaming consumers.

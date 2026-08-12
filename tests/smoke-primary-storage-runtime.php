@@ -8,6 +8,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
+require_once dirname( __DIR__ ) . '/vendor/autoload.php';
 
 class WP_SQLite_Connection {
 	public function __construct( private PDO $pdo ) {}
@@ -75,7 +76,7 @@ $pdo->exec( 'CREATE TABLE wp_users (ID INTEGER PRIMARY KEY, user_login TEXT, use
 $pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
-$pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
+$pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER, term_order INTEGER DEFAULT 0)' );
 $pdo->exec( "INSERT INTO wp_posts (ID, post_date, post_date_gmt, post_modified, post_modified_gmt, post_title, post_status, comment_status, ping_status, post_name, post_type) VALUES (12, '2026-07-18 00:00:00', '2026-07-18 00:00:00', '2026-07-18 00:00:00', '2026-07-18 00:00:00', 'Cold post', 'publish', 'open', 'open', 'cold-post', 'post')" );
 $pdo->exec( "INSERT INTO wp_options VALUES (7, 'siteurl', 'https://old.test', 'yes')" );
 $pdo->exec( "INSERT INTO wp_options VALUES (8, 'blogname', 'Old name', 'yes')" );
@@ -139,11 +140,27 @@ $runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
 	true
 );
 $driver = $runtime->get_driver();
+$operations = new WP_Markdown_SQLite_Operations( $driver, 'wp_' );
+$option_insert_mutation = $operations->mutations_for_query(
+	"INSERT INTO wp_options (option_value, option_name, autoload) VALUES ('value', 'inserted_option', 'yes')",
+	array( 'table' => 'wp_options', 'op' => 'INSERT', 'type' => 'DML' )
+);
+mdi_runtime_assert( array( 'inserted_option' ) === $option_insert_mutation[0]['resource_ids'], 'option INSERT mutation identity uses option_name rather than the numeric insert ID' );
 $driver->query( "UPDATE wp_posts SET post_content = 'Canonical body', post_title = 'Written post' WHERE ID = 12" );
 $driver->query( "UPDATE wp_options SET option_value = 'https://example.test' WHERE option_name = 'siteurl'" );
 $driver->query( "UPDATE wp_options SET option_value = 'Canonical name' WHERE option_name = 'blogname'" );
 $first = $runtime->flush();
 mdi_runtime_assert( array( '_options/blogname.json', '_options/siteurl.json', 'post/cold-post.md' ) === $first['created'], 'explicit flush persists normal post and option mutations with relative paths' );
+$driver->query( "INSERT INTO wp_terms (term_id, slug) VALUES (9, 'guides')" );
+$driver->query( "INSERT INTO wp_term_taxonomy (term_taxonomy_id, term_id, taxonomy) VALUES (19, 9, 'category')" );
+$driver->query( 'INSERT INTO wp_term_relationships (object_id, term_taxonomy_id) VALUES (12, 19)' );
+$term_changes = $runtime->flush();
+mdi_runtime_assert( in_array( 'post/cold-post.md', $term_changes['changed'], true ) && str_contains( (string) file_get_contents( $root . '/content/post/cold-post.md' ), 'guides' ), 'term relationship INSERT rewrites the affected Markdown frontmatter' );
+$driver->query( "INSERT INTO wp_terms (term_id, slug) VALUES (10, 'updated-guides')" );
+$driver->query( "INSERT INTO wp_term_taxonomy (term_taxonomy_id, term_id, taxonomy) VALUES (20, 10, 'category')" );
+$driver->query( 'UPDATE wp_term_relationships SET term_taxonomy_id = 20 WHERE term_taxonomy_id IN (19)' );
+$bulk_term_changes = $runtime->flush();
+mdi_runtime_assert( in_array( 'post/cold-post.md', $bulk_term_changes['changed'], true ) && str_contains( (string) file_get_contents( $root . '/content/post/cold-post.md' ), 'updated-guides' ), 'bulk term relationship UPDATE conservatively rewrites Markdown frontmatter' );
 $identity = $runtime->get_identity();
 mdi_runtime_assert( '' !== $identity['hash'] && isset( $identity['files']['post/cold-post.md'] ), 'cache exposes canonical manifest identity' );
 
@@ -187,7 +204,7 @@ $cold_pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option
 $cold_pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
-$cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
+$cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER, term_order INTEGER DEFAULT 0)' );
 WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
 mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
 

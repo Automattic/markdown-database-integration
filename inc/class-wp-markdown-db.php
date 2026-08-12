@@ -171,16 +171,14 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		string $state_dir,
 		WP_Markdown_Storage $storage
 	): void {
-		$connection = new WP_SQLite_Connection(
-			array(
-				'pdo'          => $pdo,
-				'path'         => $db_path,
-				'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
-			)
-		);
-
 		$this->backend_capabilities = WP_Markdown_Backend_Resolver::resolve();
-		$this->dbh       = new WP_Markdown_Driver( $connection, $this->dbname, $storage, $this->backend_capabilities );
+		if ( class_exists( 'WP_Markdown_SQLite_Runtime_Adapter' ) ) {
+			$this->dbh = WP_Markdown_SQLite_Runtime_Adapter::create_runtime( $db_path, $pdo, $this->dbname, $storage, $this->backend_capabilities );
+		} else {
+			// Isolated bootstrap consumers may inject the historical driver facade.
+			$connection = new WP_SQLite_Connection( array( 'pdo' => $pdo, 'path' => $db_path, 'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null ) );
+			$this->dbh = new WP_Markdown_Driver( $connection, $this->dbname, $storage );
+		}
 		$GLOBALS['@pdo'] = $this->dbh->get_connection()->get_pdo();
 
 		// Resolve the table prefix.
@@ -213,10 +211,12 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		// Set up the write engine. Pass the resolver so the engine
 		// re-reads the prefix on every method call instead of baking
 		// the boot-time value (which may be NULL in test boots).
+		$adapter_runtime = method_exists( $this->dbh, 'operations' );
+		$operations = $adapter_runtime ? $this->dbh->operations( $prefix_resolver ) : $this->dbh;
 		$write_engine = new WP_Markdown_Write_Engine(
 			$content_dir,
 			$storage,
-			$this->dbh,
+			$operations,
 			$prefix_resolver,
 			$state_dir
 		);
@@ -243,38 +243,30 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		// Meta resolver — fetches all post meta for a given post ID.
 		// Used by build_frontmatter() to embed meta in .md files. See issue #6.
-		$storage->set_meta_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
-			$table = $prefix_resolver() . 'postmeta';
-			try {
-				$result = $driver_ref->query(
-					"SELECT meta_key, meta_value FROM `{$table}` WHERE post_id = {$post_id}"
-				);
-				return is_array( $result ) ? $result : $result->fetchAll( \PDO::FETCH_OBJ );
-			} catch ( \Throwable $e ) {
-				return array();
-			}
-		} );
+		if ( $adapter_runtime ) {
+			$storage->set_meta_resolver( static fn( int $post_id ): array => $operations->post_meta( $post_id ) );
+		} else {
+			$storage->set_meta_resolver( static function ( int $post_id ) use ( $driver_ref, $prefix_resolver ): array {
+				try {
+					$result = $driver_ref->query( 'SELECT meta_key, meta_value FROM `' . $prefix_resolver() . 'postmeta` WHERE post_id = ' . $post_id );
+					return is_array( $result ) ? $result : $result->fetchAll( \PDO::FETCH_OBJ );
+				} catch ( \Throwable $e ) { return array(); }
+			} );
+		}
 
 		// Terms resolver — fetches all terms for a given post ID.
 		// Used by build_frontmatter() to embed terms in .md files. See issue #6.
-		$storage->set_terms_resolver( function ( int $post_id ) use ( $driver_ref, $prefix_resolver ) {
-			$prefix         = $prefix_resolver();
-			$terms_table    = $prefix . 'terms';
-			$taxonomy_table = $prefix . 'term_taxonomy';
-			$rel_table      = $prefix . 'term_relationships';
-			try {
-				$result = $driver_ref->query(
-					"SELECT tt.taxonomy, t.slug
-					 FROM `{$rel_table}` tr
-					 JOIN `{$taxonomy_table}` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id
-					 JOIN `{$terms_table}` t ON tt.term_id = t.term_id
-					 WHERE tr.object_id = {$post_id}"
-				);
-				return is_array( $result ) ? $result : $result->fetchAll( \PDO::FETCH_OBJ );
-			} catch ( \Throwable $e ) {
-				return array();
-			}
-		} );
+		if ( $adapter_runtime ) {
+			$storage->set_terms_resolver( static fn( int $post_id ): array => $operations->post_terms( $post_id ) );
+		} else {
+			$storage->set_terms_resolver( static function ( int $post_id ) use ( $driver_ref, $prefix_resolver ): array {
+				try {
+					$prefix = $prefix_resolver();
+					$result = $driver_ref->query( "SELECT tt.taxonomy, t.slug FROM `{$prefix}term_relationships` tr JOIN `{$prefix}term_taxonomy` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id JOIN `{$prefix}terms` t ON tt.term_id = t.term_id WHERE tr.object_id = {$post_id}" );
+					return is_array( $result ) ? $result : $result->fetchAll( \PDO::FETCH_OBJ );
+				} catch ( \Throwable $e ) { return array(); }
+			} );
+		}
 
 		// Index writer — upserts `_markdown_file_index` when storage renames
 		// a file as a side effect of another write. Without this hook,
@@ -282,18 +274,16 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		// leaves the index row pointing at a path that no longer exists,
 		// and warm boot churns the promoted post through a full delete
 		// and reinsert on every sync. See GitHub issue #68.
-		$storage->set_index_writer( function ( int $post_id, string $relative_path, int $mtime, int $size ) use ( $driver_ref ) {
-			if ( $driver_ref instanceof WP_Markdown_Driver ) {
-				$driver_ref->update_file_index( $post_id, $relative_path, $mtime, $size );
-			}
-		} );
+		$storage->set_index_writer( $adapter_runtime
+			? static fn( int $post_id, string $relative_path, int $mtime, int $size ) => $operations->upsert_file_index( $post_id, $relative_path, $mtime, $size )
+			: static fn( int $post_id, string $relative_path, int $mtime, int $size ) => $driver_ref->update_file_index( $post_id, $relative_path, $mtime, $size ) );
 
 		// In primary mode, load or sync data.
 		//
 		if ( 'primary' === $mode ) {
 			$this->loader = new WP_Markdown_Loader(
 				$content_dir,
-				$this->dbh,
+				$operations,
 				$storage,
 				$prefix_resolver,
 				$state_dir
@@ -428,8 +418,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$this->boot_connection( $tmp_path, null, 'primary', false, $content_dir, $state_dir, $storage );
 
 			// Checkpoint WAL so the temp file is self-contained.
-			$pdo = $this->dbh->get_connection()->get_pdo();
-			$pdo->exec( 'PRAGMA wal_checkpoint(TRUNCATE)' );
+			if ( method_exists( $this->dbh, 'checkpoint' ) ) {
+				$this->dbh->checkpoint();
+			} else {
+				$this->dbh->get_connection()->get_pdo()->exec( 'PRAGMA wal_checkpoint(TRUNCATE)' );
+			}
 
 			// Check: did another worker finish first?
 			if ( file_exists( $db_path ) ) {
@@ -546,7 +539,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 	/** @return array{created:string[],changed:string[],deleted:string[]} Canonical paths flushed at an explicit long-lived request boundary. */
 	public function flush_canonical_writes(): array {
-		if ( $this->dbh instanceof WP_Markdown_Driver ) {
+		if ( method_exists( $this->dbh, 'flush_canonical_writes' ) ) {
 			return $this->dbh->flush_canonical_writes();
 		}
 		return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );

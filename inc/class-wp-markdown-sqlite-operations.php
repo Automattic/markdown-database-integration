@@ -110,11 +110,11 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	public function hydrate_table_snapshot( string $table_suffix, callable $rows, ?array $identity = null, ?array $partition = null ): bool {
 		$pdo = $this->driver->get_connection()->get_pdo();
 		$table = $this->table( $table_suffix );
-		$pdo->exec( 'BEGIN IMMEDIATE' );
+		$this->begin_canonical_transaction( $pdo );
 		try {
 			$identity = $this->current_snapshot_identity( $identity );
 			if ( null !== $identity && ( $this->manifest_entries()[ '_tables/' . $table_suffix . '.json' ] ?? null ) === array_intersect_key( $identity, array( 'mtime' => true, 'size' => true ) ) ) {
-				$pdo->commit();
+				$this->commit_canonical_transaction( $pdo );
 				return false;
 			}
 			$this->prepare_snapshot_partition( $pdo, $table, $partition );
@@ -130,10 +130,10 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 				}
 				$this->update_manifest( '_tables/' . $table_suffix . '.json', $identity['mtime'], $identity['size'] );
 			}
-			$pdo->commit();
+			$this->commit_canonical_transaction( $pdo );
 			return true;
 		} catch ( \Throwable $e ) {
-			if ( $pdo->inTransaction() ) { $pdo->rollBack(); }
+			if ( $this->canonical_transaction_active( $pdo ) ) { $this->rollback_canonical_transaction( $pdo ); }
 			throw new \RuntimeException( "Canonical table hydration failed for {$table_suffix}: " . $e->getMessage(), 0, $e );
 		}
 	}
@@ -190,7 +190,7 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	private function hydrate_markdown_post( object $post ): void {
 		$pdo = $this->driver->get_connection()->get_pdo();
 		$id = (int) $post->ID;
-		$pdo->exec( 'BEGIN IMMEDIATE' );
+		$this->begin_canonical_transaction( $pdo );
 		try {
 			$pdo->exec( 'DELETE FROM `' . $this->table( 'postmeta' ) . '` WHERE post_id = ' . $id );
 			$pdo->exec( 'DELETE FROM `' . $this->table( 'term_relationships' ) . '` WHERE object_id = ' . $id );
@@ -210,11 +210,26 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 					if ( isset( $term_map[ $key ] ) ) { $this->insert_row( $pdo, $this->table( 'term_relationships' ), array( 'object_id' => $id, 'term_taxonomy_id' => $term_map[ $key ], 'term_order' => 0 ) ); }
 				}
 			}
-			$pdo->commit();
+			$this->commit_canonical_transaction( $pdo );
 		} catch ( \Throwable $e ) {
-			if ( $pdo->inTransaction() ) { $pdo->rollBack(); }
+			if ( $this->canonical_transaction_active( $pdo ) ) { $this->rollback_canonical_transaction( $pdo ); }
 			throw $e;
 		}
+	}
+	private function begin_canonical_transaction( \PDO $pdo ): void {
+		if ( method_exists( $this->driver, 'begin_canonical_transaction' ) ) { $this->driver->begin_canonical_transaction(); return; }
+		$pdo->exec( 'BEGIN IMMEDIATE' );
+	}
+	private function commit_canonical_transaction( \PDO $pdo ): void {
+		if ( method_exists( $this->driver, 'commit_canonical_transaction' ) ) { $this->driver->commit_canonical_transaction(); return; }
+		$pdo->commit();
+	}
+	private function rollback_canonical_transaction( \PDO $pdo ): void {
+		if ( method_exists( $this->driver, 'rollback_canonical_transaction' ) ) { $this->driver->rollback_canonical_transaction(); return; }
+		$pdo->rollBack();
+	}
+	private function canonical_transaction_active( \PDO $pdo ): bool {
+		return method_exists( $this->driver, 'canonical_transaction_active' ) ? $this->driver->canonical_transaction_active() : $pdo->inTransaction();
 	}
 	private function insert_row( \PDO $pdo, string $table, array $row ): void {
 		$columns = array_keys( $row );

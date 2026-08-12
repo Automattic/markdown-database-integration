@@ -81,6 +81,23 @@ $driver = new WP_Markdown_Driver(
 	'wordpress',
 	new WP_Markdown_Storage( $root )
 );
+$driver->begin_canonical_transaction();
+$pdo->exec( "UPDATE wp_options SET option_value = 'https://rolled-back.test' WHERE option_name = 'siteurl'" );
+$driver->rollback_canonical_transaction();
+if ( 'https://local.test' !== $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'" )->fetchColumn() ) {
+	fwrite( STDERR, "FAIL: legacy canonical transaction did not use the initialized connection.\n" );
+	exit( 1 );
+}
+$pdo->beginTransaction();
+$pdo->exec( "UPDATE wp_options SET option_value = 'https://caller.test' WHERE option_name = 'siteurl'" );
+$driver->begin_canonical_transaction();
+$pdo->exec( "UPDATE wp_options SET option_value = 'https://nested.test' WHERE option_name = 'siteurl'" );
+$driver->rollback_canonical_transaction();
+if ( ! $pdo->inTransaction() || 'https://caller.test' !== $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl'" )->fetchColumn() ) {
+	fwrite( STDERR, "FAIL: legacy canonical rollback did not preserve the caller transaction.\n" );
+	exit( 1 );
+}
+$pdo->rollBack();
 
 $rows = $driver->query( "SELECT option_name, option_value FROM wp_options WHERE option_name = 'siteurl'" );
 if ( ! is_array( $rows ) || 'https://local.test' !== ( $rows[0]->option_value ?? null ) ) {

@@ -1079,9 +1079,10 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create table partition directory.' ); }
 			$policy = $this->table_persistence_policy_for( $table_suffix );
+			if ( is_array( $policy ) ) { unset( $policy['resource_ids'] ); }
 			$marker_data = json_decode( (string) @file_get_contents( $marker ), true );
 			$active_generation = is_array( $marker_data ) ? (string) ( $marker_data['generation'] ?? '' ) : '';
-			$full = '' === $active_generation || 1 !== count( $resource_ids ) || in_array( '*', $resource_ids, true ) || $this->has_persistent_table_row_filter() || $this->has_persistent_table_query_filter() || isset( $policy['query'] ) || isset( $policy['limit'] );
+			$full = '' === $active_generation || 1 !== count( $resource_ids ) || in_array( '*', $resource_ids, true ) || $this->has_persistent_table_row_filter() || isset( $policy['query'] ) || isset( $policy['limit'] );
 			if ( ! $full ) { $policy = array_merge( is_array( $policy ) ? $policy : array(), array( 'partition_by' => $identity_column, 'resource_ids' => $resource_ids ) ); }
 			$rows = $this->operations->table_rows( $table_suffix, is_array( $policy ) ? $policy : null );
 			if ( $this->has_persistent_table_row_filter() ) {
@@ -1147,10 +1148,6 @@ class WP_Markdown_Canonical_Persistence {
 		$policy = $this->table_persistence_policy_for( $table_suffix );
 		$column = is_array( $policy ) ? strtolower( (string) ( $policy['partition_by'] ?? '' ) ) : '';
 		return preg_match( '/^[a-z_][a-z0-9_]*$/', $column ) ? $column : null;
-	}
-
-	private function has_persistent_table_query_filter(): bool {
-		return function_exists( 'has_filter' ) && false !== has_filter( 'markdown_db_persistent_table_query' );
 	}
 
 	private function partition_lock_path( string $table_suffix ): string {

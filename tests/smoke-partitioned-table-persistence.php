@@ -34,7 +34,8 @@ $failed = 0;
 function mdi_partition_assert( bool $condition, string $label ): void { global $failed; echo ( $condition ? 'PASS' : 'FAIL' ) . ': ' . $label . PHP_EOL; if ( ! $condition ) { $failed++; } }
 function mdi_partition_rm( string $path ): void { if ( ! is_dir( $path ) ) { return; } foreach ( scandir( $path ) ?: array() as $entry ) { if ( '.' === $entry || '..' === $entry ) { continue; } $child = $path . '/' . $entry; is_dir( $child ) ? mdi_partition_rm( $child ) : unlink( $child ); } rmdir( $path ); }
 
-add_filter( 'markdown_db_table_persistence_policy', static function ( array $policy ): array { $policy['runtime_events'] = array( 'partition_by' => 'event_id' ); return $policy; } );
+add_filter( 'markdown_db_table_persistence_policy', static function ( array $policy ): array { $policy['runtime_events'] = array( 'partition_by' => 'event_id', 'resource_ids' => array( '999' ) ); return $policy; } );
+add_filter( 'markdown_db_persistent_table_query', static fn( string $query, string $table_suffix ): string => 'other_runtime_table' === $table_suffix ? $query . ' LIMIT 1' : $query );
 
 $root = sys_get_temp_dir() . '/mdi-partition-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
@@ -53,6 +54,7 @@ $paths = array(
 	3 => $generation_directory . '/' . hash( 'sha256', '3' ) . '.json',
 );
 mdi_partition_assert( is_file( $directory . '/.mdi-partition.json' ) && is_file( $paths[1] ) && is_file( $paths[2] ) && is_file( $paths[3] ), 'first mutation creates a complete partitioned table' );
+mdi_partition_assert( str_contains( $driver->queries[0], 'SELECT * FROM `wp_runtime_events` ORDER BY 1' ) && ! str_contains( $driver->queries[0], "IN ('999')" ), 'external resource IDs cannot truncate a full partition generation' );
 
 $before = array_map( 'hash_file', array_fill( 0, 3, 'sha256' ), array_values( $paths ) );
 $driver->queries = array();
@@ -61,6 +63,7 @@ $engine->persist_write( "UPDATE wp_runtime_events SET payload = 'changed' WHERE 
 $engine->flush_dirty( true );
 $after = array_map( 'hash_file', array_fill( 0, 3, 'sha256' ), array_values( $paths ) );
 mdi_partition_assert( 1 === count( $driver->queries ) && str_contains( $driver->queries[0], "WHERE `event_id` IN ('2')" ), 'one-row mutation reads only its declared identity' );
+mdi_partition_assert( ! str_contains( $driver->queries[0], 'LIMIT 1' ), 'unrelated full-snapshot query filter does not alter scoped partition reads' );
 mdi_partition_assert( $before[0] === $after[0] && $before[1] !== $after[1] && $before[2] === $after[2], 'one-row mutation rewrites no unrelated partition' );
 
 $driver->queries = array();

@@ -195,6 +195,7 @@ class WP_Markdown_SQLite_Recovery {
 
 		$excluded_types = array_filter( array_map( 'trim', explode( ',', MARKDOWN_DB_EXCLUDED_TYPES ) ) );
 		$storage        = new WP_Markdown_Storage( MARKDOWN_DB_CONTENT_DIR, $excluded_types );
+		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
 		$existing_posts = $storage->get_all_posts( true );
 		$existing_by_id = array();
 		$resolver_posts = array();

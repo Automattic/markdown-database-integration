@@ -125,6 +125,19 @@ round-trip between markdown files and serialized block content by default:
 - Raw byte preservation: pass `--no-convert` or set `no_convert` in the ability input.
 - Custom conversion: pass `--from=<format> --to=<format>`.
 - Policy override: filter `markdown_db_content_format_conversion`.
+- Layout selection: pass `--layout-profile=<id>` or configure
+  `MARKDOWN_DB_CONTENT_LAYOUT_PROFILE`. External layouts register their complete
+  `enumerate`, `map_source`, and `path_for_post` contract from the bootstrap
+  file named by `MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP`, which is loaded
+  before the `db.php` primary runtime starts.
+
+Custom layout writes stage a temporary file in a verified destination directory.
+MDI rejects symlinked path segments and compares the directory device/inode before
+and after staging and immediately before rename. A detected directory replacement
+aborts and removes the staged file. This is PHP's strongest portable filesystem
+guarantee without an `openat(2)` descriptor API; deployments that permit an
+attacker to replace directories between the final identity check and `rename()`
+must protect the content root with filesystem ownership and permissions.
 
 ```
 WRITE:

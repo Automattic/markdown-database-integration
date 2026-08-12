@@ -69,6 +69,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 
 		$runtime = new self( $roots );
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
+		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
 		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage, $backend_capabilities );
 		$runtime->write_engine = new WP_Markdown_Write_Engine(
 			$runtime->content_root,
@@ -129,6 +130,7 @@ class WP_Markdown_Primary_Storage_Runtime {
 
 		$runtime = new self( $roots );
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
+		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
 		$runtime->driver = new WP_Markdown_Driver( $connection, $database, $storage, $backend_capabilities );
 		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $runtime->driver, $prefix, $runtime->state_root );
 		$runtime->driver->set_write_engine( $runtime->write_engine );

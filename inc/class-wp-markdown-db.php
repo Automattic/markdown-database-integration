@@ -119,6 +119,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$excluded_types = array_filter( array_map( 'trim', explode( ',', $excluded_types_raw ) ) );
 
 		$storage = new WP_Markdown_Storage( $content_dir, $excluded_types );
+		if ( method_exists( $storage, 'set_content_layout_profile' ) ) {
+			$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
+		}
 
 		// Primary mode: atomic index build to prevent concurrent boot races.
 		// See GitHub issue #50.

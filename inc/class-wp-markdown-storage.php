@@ -45,6 +45,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! class_exists( 'WP_Markdown_Frontmatter_Profiles' ) ) {
 	require_once __DIR__ . '/class-wp-markdown-frontmatter-profiles.php';
 }
+if ( ! class_exists( 'WP_Markdown_Content_Layout_Profiles' ) ) {
+	require_once __DIR__ . '/class-wp-markdown-content-layout-profiles.php';
+}
 
 class WP_Markdown_Storage {
 
@@ -127,6 +130,9 @@ class WP_Markdown_Storage {
 	 * @var string
 	 */
 	private string $frontmatter_profile = '';
+
+	/** Explicit content-layout profile ID for this storage instance. */
+	private string $content_layout_profile = '';
 
 	/**
 	 * Constructor.
@@ -214,6 +220,20 @@ class WP_Markdown_Storage {
 		$this->frontmatter_profile = $profile;
 	}
 
+	/** Set the content-layout profile used for enumeration and path mapping. */
+	public function set_content_layout_profile( string $profile ): void {
+		$this->content_layout_profile = $profile;
+	}
+
+	/** @return array<string,mixed> */
+	private function content_layout(): array {
+		return WP_Markdown_Content_Layout_Profiles::resolve( $this->content_layout_profile, array( 'content_dir' => $this->content_dir ) );
+	}
+
+	private function uses_legacy_layout(): bool {
+		return ! empty( $this->content_layout()['legacy'] );
+	}
+
 	/**
 	 * Write a post to a markdown file.
 	 *
@@ -248,6 +268,10 @@ class WP_Markdown_Storage {
 		}
 
 		$parent_id = (int) ( $post->post_parent ?? 0 );
+
+		if ( ! $this->uses_legacy_layout() ) {
+			return $this->write_profile_post( $post );
+		}
 
 		// Build the hierarchical directory path.
 		$type_dir = $this->content_dir . '/' . $this->sanitize_path( $post_type );
@@ -417,6 +441,9 @@ class WP_Markdown_Storage {
 	 * @return object[] Array of post-like objects (unique by ID).
 	 */
 	public function get_all_posts( bool $metadata_only = false ): array {
+		if ( ! $this->uses_legacy_layout() ) {
+			return iterator_to_array( $this->get_all_posts_iterator( $metadata_only ) );
+		}
 		if ( ! is_dir( $this->content_dir ) ) {
 			return array();
 		}
@@ -591,6 +618,28 @@ class WP_Markdown_Storage {
 	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
 	 */
 	public function get_markdown_file_manifest_iterator(): \Generator {
+		if ( ! $this->uses_legacy_layout() ) {
+			$identities = array();
+			foreach ( $this->profile_source_paths() as $relative ) {
+				$path = $this->profile_absolute_path( $relative );
+				if ( null === $path ) {
+					continue;
+				}
+				$post = $this->read_file( $path, true );
+				if ( ! $post ) {
+					continue;
+				}
+				$this->apply_layout_mapping( $post, $relative );
+				$identity = (string) ( $post->_source_identity ?? $relative );
+				if ( isset( $identities[ $identity ] ) ) {
+					error_log( sprintf( 'Markdown DB: duplicate source identity %s at %s and %s.', $identity, $identities[ $identity ], $relative ) );
+					continue;
+				}
+				$identities[ $identity ] = $relative;
+				yield $relative => array( 'mtime' => (int) filemtime( $path ), 'size' => (int) filesize( $path ), 'absolute' => $path, 'parent_id' => (int) $post->post_parent );
+			}
+			return;
+		}
 		if ( ! is_dir( $this->content_dir ) ) {
 			return;
 		}
@@ -680,6 +729,9 @@ class WP_Markdown_Storage {
 		if ( $post && null !== $parent_id ) {
 			$post->post_parent = $parent_id;
 		}
+		if ( $post && ! $this->uses_legacy_layout() ) {
+			$this->apply_layout_mapping( $post, $this->relative_path( $file_path ) );
+		}
 
 		return $post;
 	}
@@ -718,6 +770,185 @@ class WP_Markdown_Storage {
 				yield $post;
 			}
 		}
+	}
+
+	/** Write using a non-legacy profile's canonical source path. */
+	private function write_profile_post( object $post ): string|false {
+		$profile = $this->content_layout();
+		if ( empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
+			error_log( 'Markdown DB: content layout profile has no path_for_post callback.' );
+			return false;
+		}
+		$frontmatter = $this->build_frontmatter( $post );
+		$relative = call_user_func( $profile['path_for_post'], $post, $frontmatter, array( 'content_dir' => $this->content_dir, 'profile_id' => $profile['id'] ) );
+		$relative = is_string( $relative ) ? $this->validate_profile_path( $relative ) : null;
+		if ( null === $relative ) {
+			error_log( 'Markdown DB: content layout profile returned an unsafe canonical path.' );
+			return false;
+		}
+		$file_path = $this->profile_absolute_path( $relative, true );
+		if ( null === $file_path ) {
+			return false;
+		}
+		if ( file_exists( $file_path ) && null === $this->profile_absolute_path( $relative ) ) {
+			return false;
+		}
+		$existing_id = file_exists( $file_path ) ? $this->extract_id_from_file( $file_path ) : null;
+		if ( null !== $existing_id && $existing_id !== (int) ( $post->ID ?? 0 ) ) {
+			error_log( sprintf( 'Markdown DB: duplicate content route at %s (IDs %d and %d).', $relative, $existing_id, (int) ( $post->ID ?? 0 ) ) );
+			return false;
+		}
+		if ( ! is_dir( dirname( $file_path ) ) && ! mkdir( dirname( $file_path ), 0755, true ) ) {
+			return false;
+		}
+		if ( null === $this->profile_absolute_path( $relative, true ) ) {
+			return false;
+		}
+		$output = "---\n" . $this->encode_yaml( $frontmatter ) . "---\n\n" . ( $post->post_content ?? '' ) . "\n";
+		$id = (int) ( $post->ID ?? 0 );
+		$old_path = $id > 0 ? $this->find_file_by_id( $id ) : null;
+		$tmp_path = $this->stage_profile_write( $file_path, $output );
+		if ( null === $tmp_path ) {
+			return false;
+		}
+		if ( null !== $old_path && $old_path !== $file_path && file_exists( $old_path ) ) {
+			$this->observe_file_mutation( $old_path );
+			if ( ! @unlink( $old_path ) ) {
+				@unlink( $tmp_path );
+				return false;
+			}
+			$this->cleanup_empty_dirs( dirname( $old_path ), $this->content_dir );
+		}
+		$this->observe_file_mutation( $file_path );
+		if ( ! $this->commit_profile_write( $tmp_path, $file_path ) ) {
+			@unlink( $tmp_path );
+			return false;
+		}
+		if ( $id > 0 ) {
+			$this->index ??= array();
+			$this->index[ $id ] = $file_path;
+			$this->record_profile_index( $id, $file_path );
+		}
+		return $file_path;
+	}
+
+	/** @return string[] */
+	private function profile_source_paths(): array {
+		$profile = $this->content_layout();
+		if ( empty( $profile['enumerate'] ) || ! is_callable( $profile['enumerate'] ) ) {
+			return array();
+		}
+		$paths = call_user_func( $profile['enumerate'], $this->content_dir, array( 'profile_id' => $profile['id'] ) );
+		$paths = is_iterable( $paths ) ? $paths : array();
+		$result = array();
+		foreach ( $paths as $path ) {
+			if ( is_string( $path ) && null !== ( $path = $this->validate_profile_path( $path ) ) && null !== $this->profile_absolute_path( $path ) ) {
+				$result[] = $path;
+			}
+		}
+		sort( $result, SORT_STRING );
+		return array_values( array_unique( $result ) );
+	}
+
+	private function apply_layout_mapping( object $post, string $relative_path ): void {
+		$profile = $this->content_layout();
+		if ( empty( $profile['map_source'] ) || ! is_callable( $profile['map_source'] ) ) {
+			return;
+		}
+		$mapping = call_user_func( $profile['map_source'], $relative_path, (array) ( $post->_frontmatter ?? array() ), array( 'content_dir' => $this->content_dir, 'profile_id' => $profile['id'] ) );
+		if ( ! is_array( $mapping ) ) {
+			return;
+		}
+		foreach ( array( 'post_type', 'post_name', 'post_parent' ) as $field ) {
+			if ( array_key_exists( $field, $mapping ) ) {
+				$post->{$field} = 'post_parent' === $field ? (int) $mapping[ $field ] : (string) $mapping[ $field ];
+			}
+		}
+		$post->_source_identity = (string) ( $mapping['source_identity'] ?? $relative_path );
+		if ( '' === $post->_source_identity || str_contains( $post->_source_identity, '..' ) ) {
+			$post->_source_identity = $relative_path;
+		}
+	}
+
+	private function validate_profile_path( string $path ): ?string {
+		$parts = explode( '/', str_replace( '\\', '/', trim( $path, '/' ) ) );
+		$parts = array_values( array_filter( $parts, static fn( string $part ): bool => '.' !== $part && '' !== $part ) );
+		$path = implode( '/', $parts );
+		if ( '' === $path || in_array( '..', $parts, true ) || str_starts_with( $path, '_' ) || preg_match( '#(^|/)_#', $path ) ) {
+			return null;
+		}
+		return $path;
+	}
+
+	private function profile_absolute_path( string $relative, bool $allow_missing = false ): ?string {
+		$root = realpath( $this->content_dir );
+		if ( false === $root ) {
+			if ( ! $allow_missing || ! mkdir( $this->content_dir, 0755, true ) ) {
+				return null;
+			}
+			$root = realpath( $this->content_dir );
+		}
+		$path = rtrim( $this->content_dir, '/' ) . '/' . $relative;
+		$target = realpath( $allow_missing ? dirname( $path ) : $path );
+		if ( false === $target || ( $target !== $root && ! str_starts_with( $target, $root . '/' ) ) ) {
+			return null;
+		}
+		return $path;
+	}
+
+	private function record_profile_index( int $post_id, string $path ): void {
+		if ( null !== $this->index_writer && false !== ( $mtime = @filemtime( $path ) ) && false !== ( $size = @filesize( $path ) ) ) {
+			call_user_func( $this->index_writer, $post_id, $this->relative_path( $path ), (int) $mtime, (int) $size );
+		}
+	}
+
+	/**
+	 * Stage a profile write in a verified directory. PHP lacks openat(2), so this
+	 * detects symlink and directory-identity changes immediately before and after
+	 * the write and again before rename; any detected race is discarded.
+	 */
+	private function stage_profile_write( string $path, string $content ): ?string {
+		$directory = dirname( $path );
+		$identity = $this->profile_directory_identity( $directory );
+		if ( null === $identity ) {
+			return null;
+		}
+		$tmp = tempnam( $directory, '.markdown-db-' );
+		if ( false === $tmp || false === file_put_contents( $tmp, $content, LOCK_EX ) || $identity !== $this->profile_directory_identity( $directory ) ) {
+			if ( is_string( $tmp ) ) {
+				@unlink( $tmp );
+			}
+			return null;
+		}
+		return $tmp;
+	}
+
+	private function commit_profile_write( string $tmp, string $path ): bool {
+		$directory = dirname( $path );
+		if ( null === $this->profile_directory_identity( $directory ) || ( file_exists( $path ) && is_link( $path ) ) ) {
+			return false;
+		}
+		return @rename( $tmp, $path );
+	}
+
+	private function profile_directory_identity( string $directory ): ?string {
+		$root = realpath( $this->content_dir );
+		$real = realpath( $directory );
+		if ( false === $root || false === $real || ( $real !== $root && ! str_starts_with( $real, $root . '/' ) ) ) {
+			return null;
+		}
+		$current = rtrim( $this->content_dir, '/' );
+		foreach ( explode( '/', ltrim( substr( $directory, strlen( $current ) ), '/' ) ) as $segment ) {
+			if ( '' === $segment ) {
+				continue;
+			}
+			$current .= '/' . $segment;
+			if ( is_link( $current ) ) {
+				return null;
+			}
+		}
+		$stat = @lstat( $directory );
+		return is_array( $stat ) ? $stat['dev'] . ':' . $stat['ino'] : null;
 	}
 
 	/**
@@ -940,6 +1171,10 @@ class WP_Markdown_Storage {
 		if ( str_starts_with( $path, $this->content_dir . '/' ) ) {
 			return substr( $path, strlen( $this->content_dir ) + 1 );
 		}
+		$root = realpath( $this->content_dir );
+		if ( false !== $root && str_starts_with( $path, $root . '/' ) ) {
+			return substr( $path, strlen( $root ) + 1 );
+		}
 		return $path;
 	}
 
@@ -976,6 +1211,25 @@ class WP_Markdown_Storage {
 
 		if ( ! is_dir( $this->content_dir ) ) {
 			$this->index = $claimed;
+			return;
+		}
+
+		if ( ! $this->uses_legacy_layout() ) {
+			foreach ( $this->profile_source_paths() as $relative ) {
+				$file = $this->profile_absolute_path( $relative );
+				if ( null === $file || ! ( $id = $this->extract_id_from_file( $file ) ) ) {
+					continue;
+				}
+				if ( isset( $claimed[ $id ] ) ) {
+					$this->index[ $id ] = $claimed[ $id ];
+					continue;
+				}
+				if ( isset( $this->index[ $id ] ) && $this->index[ $id ] !== $file ) {
+					error_log( sprintf( 'Markdown DB: duplicate source identity for post ID %d at %s and %s.', $id, $this->relative_path( $this->index[ $id ] ), $relative ) );
+					continue;
+				}
+				$this->index[ $id ] = $file;
+			}
 			return;
 		}
 

@@ -24,13 +24,13 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	private function table( string $suffix ): string { return ( $this->prefix )() . $suffix; }
 	public function table_rows( string $table_suffix, ?array $policy = null ): iterable {
 		$query = 'SELECT * FROM `' . $this->table( $table_suffix ) . '` ORDER BY 1';
-		if ( is_array( $policy ) && isset( $policy['partition_by'], $policy['resource_ids'] ) && preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $policy['partition_by'] ) ) {
-			$quoted = array_map( static fn( $id ): string => "'" . str_replace( "'", "''", (string) $id ) . "'", (array) $policy['resource_ids'] );
-			$query = 'SELECT * FROM `' . $this->table( $table_suffix ) . '` WHERE `' . $policy['partition_by'] . '` IN (' . implode( ',', $quoted ) . ') ORDER BY `' . $policy['partition_by'] . '`';
-		}
 		if ( is_array( $policy ) && isset( $policy['query'] ) ) { $query = (string) $policy['query']; }
 		if ( is_array( $policy ) && isset( $policy['limit'] ) ) { $query .= ' LIMIT ' . max( 0, (int) $policy['limit'] ); }
 		if ( function_exists( 'apply_filters' ) ) { $query = apply_filters( 'markdown_db_persistent_table_query', $query, $table_suffix, $this->table( $table_suffix ), $policy ); }
+		if ( is_array( $policy ) && isset( $policy['partition_by'], $policy['resource_ids'] ) && preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/', (string) $policy['partition_by'] ) ) {
+			$quoted = array_map( static fn( $id ): string => "'" . str_replace( "'", "''", (string) $id ) . "'", (array) $policy['resource_ids'] );
+			$query = 'SELECT * FROM ( ' . $query . ' ) AS mdi_partition_source WHERE `' . $policy['partition_by'] . '` IN (' . implode( ',', $quoted ) . ') ORDER BY `' . $policy['partition_by'] . '`';
+		}
 		$result = method_exists( $this->driver, 'query_cursor' ) ? $this->driver->query_cursor( $query ) : ( method_exists( $this->driver, 'query' ) ? $this->driver->query( $query ) : $this->driver->get_connection()->get_pdo()->query( $query ) );
 		if ( $result instanceof \PDOStatement ) { while ( false !== ( $row = $result->fetch( \PDO::FETCH_OBJ ) ) ) { yield $row; } return; }
 		foreach ( (array) $result as $row ) { yield $row; }

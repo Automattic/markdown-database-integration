@@ -127,6 +127,7 @@ class WP_Markdown_CLI {
 				'to'         => $assoc_args['to'] ?? '',
 				'no_convert' => array_key_exists( 'no-convert', $assoc_args ),
 				'profile'    => $assoc_args['profile'] ?? '',
+				'layout_profile' => $assoc_args['layout-profile'] ?? '',
 			)
 		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Import' );
@@ -168,6 +169,7 @@ class WP_Markdown_CLI {
 				'to'         => $assoc_args['to'] ?? '',
 				'no_convert' => array_key_exists( 'no-convert', $assoc_args ),
 				'profile'    => $assoc_args['profile'] ?? '',
+				'layout_profile' => $assoc_args['layout-profile'] ?? '',
 			)
 		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Export' );
@@ -232,6 +234,10 @@ class WP_Markdown_CLI {
 		}
 
 		$content_dir = self::content_dir( (string) ( $options['path'] ?? '' ) );
+		$layout_profile = self::content_layout_profile( $options );
+		if ( ! self::valid_layout_profile( $layout_profile ) ) {
+			return self::failure( 'The selected content-layout profile is not registered and complete.' );
+		}
 		if ( '' === $content_dir || ! is_dir( $content_dir ) || ! is_readable( $content_dir ) ) {
 			return self::failure( 'A readable markdown content directory is required.' );
 		}
@@ -241,6 +247,7 @@ class WP_Markdown_CLI {
 		$excluded_types = self::excluded_types();
 		$storage        = new WP_Markdown_Storage( $content_dir, $excluded_types );
 		$storage->set_frontmatter_profile( (string) ( $options['profile'] ?? '' ) );
+		$storage->set_content_layout_profile( $layout_profile );
 		$posts          = iterator_to_array( $storage->get_all_posts_iterator( false ) );
 
 		usort(
@@ -265,7 +272,7 @@ class WP_Markdown_CLI {
 		$update_count = 0;
 
 		foreach ( $posts as $post ) {
-			$source_path = self::relative_path( (string) ( $post->_source_file ?? '' ), $content_dir );
+			$source_path = (string) ( $post->_source_identity ?? self::relative_path( (string) ( $post->_source_file ?? '' ), $content_dir ) );
 			if ( '' === $source_path ) {
 				$skipped[] = array(
 					'path'   => '',
@@ -380,6 +387,10 @@ class WP_Markdown_CLI {
 		}
 
 		$content_dir    = self::content_dir( (string) ( $options['path'] ?? '' ) );
+		$layout_profile = self::content_layout_profile( $options );
+		if ( ! self::valid_layout_profile( $layout_profile ) ) {
+			return self::failure( 'The selected content-layout profile is not registered and complete.' );
+		}
 		$dry_run        = ! empty( $options['dry_run'] ) || ! empty( $options['dry-run'] );
 		$conversion     = self::conversion_options( $options, 'blocks', 'markdown' );
 		$excluded_types = self::excluded_types();
@@ -388,6 +399,7 @@ class WP_Markdown_CLI {
 
 		$storage = new WP_Markdown_Storage( $content_dir, $excluded_types );
 		$storage->set_frontmatter_profile( (string) ( $options['profile'] ?? '' ) );
+		$storage->set_content_layout_profile( $layout_profile );
 		$storage->set_post_resolver( static fn( int $id ) => get_post( $id ) );
 		$storage->set_meta_resolver( array( self::class, 'post_meta_rows' ) );
 		$storage->set_terms_resolver( array( self::class, 'post_term_rows' ) );
@@ -396,7 +408,7 @@ class WP_Markdown_CLI {
 		$skipped = array();
 		$sample  = array();
 		foreach ( $posts as $post ) {
-			$expected = self::expected_export_path( $post );
+			$expected = self::expected_export_path( $post, $layout_profile );
 			if ( count( $sample ) < 10 ) {
 				$sample[] = array(
 					'id'    => (int) ( $post->ID ?? 0 ),
@@ -503,6 +515,10 @@ class WP_Markdown_CLI {
 					'type'        => 'boolean',
 					'description' => 'Preserve raw file body bytes without BFB conversion.',
 				),
+				'layout_profile' => array(
+					'type'        => 'string',
+					'description' => 'Content-layout profile. Defaults to MARKDOWN_DB_CONTENT_LAYOUT_PROFILE.',
+				),
 			),
 		);
 	}
@@ -535,6 +551,10 @@ class WP_Markdown_CLI {
 					'type'        => 'boolean',
 					'description' => 'Preserve raw post_content bytes without BFB conversion.',
 				),
+				'layout_profile' => array(
+					'type'        => 'string',
+					'description' => 'Content-layout profile. Defaults to MARKDOWN_DB_CONTENT_LAYOUT_PROFILE.',
+				),
 			),
 		);
 	}
@@ -555,6 +575,19 @@ class WP_Markdown_CLI {
 			return rtrim( $path, '/' );
 		}
 		return defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? rtrim( MARKDOWN_DB_CONTENT_DIR, '/' ) : '';
+	}
+
+	private static function content_layout_profile( array $options ): string {
+		return (string) ( $options['layout_profile'] ?? $options['layout-profile'] ?? ( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' ) );
+	}
+
+	private static function valid_layout_profile( string $profile ): bool {
+		try {
+			WP_Markdown_Content_Layout_Profiles::resolve( $profile );
+			return true;
+		} catch ( \InvalidArgumentException $exception ) {
+			return false;
+		}
 	}
 
 	private static function excluded_types(): array {
@@ -937,7 +970,16 @@ class WP_Markdown_CLI {
 		return $rows;
 	}
 
-	private static function expected_export_path( object $post ): string {
+	private static function expected_export_path( object $post, string $layout_profile = '' ): string {
+		if ( class_exists( 'WP_Markdown_Content_Layout_Profiles' ) ) {
+			$profile = WP_Markdown_Content_Layout_Profiles::resolve( $layout_profile );
+			if ( empty( $profile['legacy'] ) && ! empty( $profile['path_for_post'] ) && is_callable( $profile['path_for_post'] ) ) {
+				$path = call_user_func( $profile['path_for_post'], $post, array(), array( 'profile_id' => $profile['id'] ) );
+				if ( is_string( $path ) ) {
+					return ltrim( $path, '/' );
+				}
+			}
+		}
 		$slug = (string) ( $post->post_name ?? (string) ( $post->ID ?? 0 ) );
 		return self::sanitize_path( (string) ( $post->post_type ?? 'post' ) ) . '/' . self::sanitize_path( $slug ) . '.md';
 	}

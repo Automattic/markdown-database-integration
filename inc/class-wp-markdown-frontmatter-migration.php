@@ -32,7 +32,7 @@ class WP_Markdown_Frontmatter_Migration {
 			return;
 		}
 
-		$result = self::migrate_content_dir( $content_dir, $excluded_types );
+		$result = self::migrate_content_dir( $content_dir, $excluded_types, defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
 		if ( empty( $result['errors'] ) ) {
 			update_option( self::OPTION, gmdate( 'c' ), false );
 		}
@@ -45,8 +45,9 @@ class WP_Markdown_Frontmatter_Migration {
 	 * @param string[] $excluded_types Post types excluded from markdown storage.
 	 * @return array{scanned:int,migrated:int,skipped:int,errors:array<int,string>}
 	 */
-	public static function migrate_content_dir( string $content_dir, array $excluded_types = array() ): array {
+	public static function migrate_content_dir( string $content_dir, array $excluded_types = array(), string $layout_profile = '' ): array {
 		$reader = new WP_Markdown_Storage( $content_dir, $excluded_types );
+		$reader->set_content_layout_profile( $layout_profile );
 		$posts  = $reader->get_all_posts( false );
 
 		$result = array(
@@ -65,6 +66,7 @@ class WP_Markdown_Frontmatter_Migration {
 		}
 
 		$writer = new WP_Markdown_Storage( $content_dir, $excluded_types );
+		$writer->set_content_layout_profile( $layout_profile );
 		$writer->set_post_resolver(
 			static function ( int $post_id ) use ( $posts_by_id ): ?object {
 				return $posts_by_id[ $post_id ] ?? null;

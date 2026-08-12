@@ -41,6 +41,10 @@ if ( function_exists( 'did_action' ) && file_exists( $markdown_database_integrat
 }
 
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-profiles.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-content-layout-profiles.php';
+if ( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP' ) && is_file( MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP ) ) {
+	require_once MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP;
+}
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-primary-storage-runtime.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-migration.php';
@@ -83,6 +87,10 @@ if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
 	define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,auto-draft,nav_menu_item,customize_changeset,oembed_cache,wp_navigation,wp_global_styles,wp_template,wp_template_part' );
 }
 
+if ( ! defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ) {
+	define( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE', 'post-type-hierarchy' );
+}
+
 // MDI intentionally registers no content-format conversion hooks. It persists
 // the post_content bytes WordPress receives; rendering/editor conversion lives
 // in the application/content-format layer above this storage plugin.
@@ -103,6 +111,7 @@ if ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && (bool) constant( 'MARKDOWN_DB_
 function markdown_database_integration_import_seed_posts_after_install(): void {
 	$excluded_types = array_filter( array_map( 'trim', explode( ',', MARKDOWN_DB_EXCLUDED_TYPES ) ) );
 	$storage        = new WP_Markdown_Storage( MARKDOWN_DB_CONTENT_DIR, $excluded_types );
+	$storage->set_content_layout_profile( MARKDOWN_DB_CONTENT_LAYOUT_PROFILE );
 	$posts          = $storage->get_all_posts( false );
 
 	foreach ( $posts as $post ) {

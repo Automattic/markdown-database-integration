@@ -30,7 +30,7 @@ if ( 2 === $argc ) {
 	file_put_contents( $sqlite . '/wp-includes/sqlite/db.php', "<?php\n" );
 	file_put_contents( $sqlite . '/wp-includes/sqlite/class-wp-sqlite-db.php', "<?php\nclass WP_SQLite_DB {}\n" );
 	file_put_contents( $sqlite . '/wp-includes/sqlite/install-functions.php', "<?php\n" );
-	foreach ( array( 'class-wp-markdown-frontmatter-profiles.php', 'class-wp-markdown-storage.php', 'class-wp-markdown-search.php', 'class-wp-markdown-write-engine.php', 'class-wp-markdown-loader.php' ) as $file ) {
+	foreach ( array( 'class-wp-markdown-frontmatter-profiles.php', 'class-wp-markdown-content-layout-profiles.php', 'class-wp-markdown-storage.php', 'class-wp-markdown-search.php', 'class-wp-markdown-write-engine.php', 'class-wp-markdown-loader.php' ) as $file ) {
 		file_put_contents( $mdi . '/inc/' . $file, "<?php\n" );
 	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );

@@ -232,6 +232,10 @@ WP_Markdown_Backend_Resolver::require_runtime_capabilities(
 	defined( 'MARKDOWN_DB_MODE' ) ? (string) MARKDOWN_DB_MODE : 'mirror'
 );
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-frontmatter-profiles.php';
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-content-layout-profiles.php';
+if ( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP' ) && is_file( MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP ) ) {
+	require_once MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP;
+}
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-driver.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-search.php';

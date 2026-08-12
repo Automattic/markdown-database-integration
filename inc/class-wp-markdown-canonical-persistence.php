@@ -91,6 +91,8 @@ class WP_Markdown_Canonical_Persistence {
 	 * @var array<string, bool>
 	 */
 	private $dirty = array();
+	/** @var array<string,array<string,bool>> Partitioned table identities dirty in this request. */
+	private $dirty_partition_resources = array();
 
 	/**
 	 * Post IDs whose `.md` files need rewriting at shutdown.
@@ -226,7 +228,7 @@ class WP_Markdown_Canonical_Persistence {
 	public function persist_write( string $query, string $table, string $op_type ): void {
 		$mutations = $this->operations->mutations_for_query( $query, array( 'table' => $table, 'op' => $op_type, 'type' => 'DML' ) );
 		foreach ( $mutations as $mutation ) {
-			$this->apply_normalized_mutation( array( 'key' => $mutation['stable_id'], 'resource' => $mutation['stable_id'], 'operation' => $mutation['operation'], 'table' => $mutation['table'], 'context' => array( 'resource_ids' => $mutation['resource_ids'] ) ) );
+			$this->apply_normalized_mutation( array( 'key' => $mutation['stable_id'], 'resource' => $mutation['stable_id'], 'operation' => $mutation['operation'], 'table' => $mutation['table'], 'context' => array( 'resource_ids' => $mutation['resource_ids'], 'scope' => $mutation['scope'] ?? array() ) ) );
 		}
 	}
 
@@ -271,6 +273,12 @@ class WP_Markdown_Canonical_Persistence {
 				// persistence eliminates whole-file races. See issue #55.
 				$this->mark_dirty( 'options' );
 				$this->track_options_change( $resource_ids );
+			} elseif ( null !== ( $identity_column = $this->partition_identity_column( $table_suffix ) ) ) {
+				$ids = (array) ( $mutation['context']['scope']['resource_ids_by_column'][ $identity_column ] ?? array() );
+				if ( in_array( $identity_column, (array) ( $mutation['context']['scope']['assigned_columns'] ?? array() ), true ) ) { $ids = array(); }
+				if ( empty( $ids ) ) { $ids = array( '*' ); }
+				foreach ( $ids as $id ) { $this->dirty_partition_resources[ $table_suffix ][ (string) $id ] = true; }
+				$this->ensure_shutdown_registered();
 			} else {
 				// Defer users, usermeta, and all other tables to shutdown.
 				$this->mark_dirty( $table_suffix );
@@ -351,7 +359,7 @@ class WP_Markdown_Canonical_Persistence {
 	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
 	public function flush_dirty( bool $throw_on_error = false ): array {
-		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) ) {
+		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) && empty( $this->dirty_partition_resources ) ) {
 			return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
 		}
 
@@ -384,7 +392,11 @@ class WP_Markdown_Canonical_Persistence {
 					$this->persist_table( $table_suffix );
 				}
 			}
+			foreach ( $this->dirty_partition_resources as $table_suffix => $ids ) {
+				$this->persist_partitioned_table( $table_suffix, array_keys( $ids ) );
+			}
 			$this->dirty               = array();
+			$this->dirty_partition_resources = array();
 			$this->dirty_option_names  = array();
 			$this->dirty_options_all   = false;
 			$changes                   = $this->canonical_changes();
@@ -1054,6 +1066,54 @@ class WP_Markdown_Canonical_Persistence {
 		$this->write_json_rows( $path, $rows );
 	}
 
+	/** Persist only affected rows for a table with a declared stable identity. */
+	private function persist_partitioned_table( string $table_suffix, array $resource_ids ): void {
+		$identity_column = $this->partition_identity_column( $table_suffix );
+		if ( null === $identity_column ) { $this->persist_table( $table_suffix ); return; }
+		$resource_ids = array_map( 'strval', $resource_ids );
+		$directory = $this->state_dir . '/_tables/' . $table_suffix;
+		$marker = $directory . '/.mdi-partition.json';
+		$this->ensure_tables_dir();
+		$lock = fopen( $this->partition_lock_path( $table_suffix ), 'c+' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) { throw new \RuntimeException( 'Markdown DB: Failed to lock table partition.' ); }
+		try {
+			if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create table partition directory.' ); }
+			$policy = $this->table_persistence_policy_for( $table_suffix );
+			$marker_data = json_decode( (string) @file_get_contents( $marker ), true );
+			$active_generation = is_array( $marker_data ) ? (string) ( $marker_data['generation'] ?? '' ) : '';
+			$full = '' === $active_generation || 1 !== count( $resource_ids ) || in_array( '*', $resource_ids, true ) || $this->has_persistent_table_row_filter() || $this->has_persistent_table_query_filter() || isset( $policy['query'] ) || isset( $policy['limit'] );
+			if ( ! $full ) { $policy = array_merge( is_array( $policy ) ? $policy : array(), array( 'partition_by' => $identity_column, 'resource_ids' => $resource_ids ) ); }
+			$rows = $this->operations->table_rows( $table_suffix, is_array( $policy ) ? $policy : null );
+			if ( $this->has_persistent_table_row_filter() ) {
+				$data = array(); foreach ( $rows as $row ) { $data[] = (array) $row; }
+				$filtered = apply_filters( 'markdown_db_persistent_table_rows', $data, $table_suffix, $this->prefix() . $table_suffix, $policy );
+				$rows = is_array( $filtered ) ? array_values( $filtered ) : $data;
+			}
+			$generation = $full ? 'generation-' . bin2hex( random_bytes( 12 ) ) : $active_generation;
+			$generation_directory = $directory . '/' . $generation;
+			if ( ! is_dir( $generation_directory ) && ! mkdir( $generation_directory, 0755, true ) && ! is_dir( $generation_directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create table partition generation.' ); }
+			$seen = array();
+			foreach ( $rows as $row ) {
+				$data = (array) $row; $identity = isset( $data[ $identity_column ] ) ? (string) $data[ $identity_column ] : '';
+				if ( '' === $identity ) { throw new \RuntimeException( 'Markdown DB: Partitioned row is missing its identity.' ); }
+				$seen[ $identity ] = true;
+				$this->write_json( $generation_directory . '/' . hash( 'sha256', $identity ) . '.json', array( '_mdi_partition' => array( 'version' => 1, 'identity_column' => $identity_column, 'identity' => $identity ), 'row' => $data ) );
+			}
+			$candidates = $full ? array() : array_combine( $resource_ids, array_map( static fn( $id ): string => $generation_directory . '/' . hash( 'sha256', (string) $id ) . '.json', $resource_ids ) );
+			foreach ( $candidates as $candidate_identity => $path ) {
+				$identity = (string) $candidate_identity;
+				if ( ! isset( $seen[ $identity ] ) ) { $this->track_canonical_mutation( $path ); @unlink( $path ); }
+			}
+			if ( $full ) {
+				$this->write_json( $marker, array( 'version' => 1, 'table' => $table_suffix, 'identity_column' => $identity_column, 'generation' => $generation ) );
+				$this->remove_inactive_partition_generations( $directory, $generation );
+			}
+			@unlink( $this->state_dir . '/_tables/' . $table_suffix . '.json' );
+		} finally {
+			flock( $lock, LOCK_UN ); fclose( $lock );
+		}
+	}
+
 	/** Whether an installed row filter requires the legacy complete-array contract. */
 	private function has_persistent_table_row_filter(): bool {
 		return ! function_exists( 'has_filter' ) || false !== has_filter( 'markdown_db_persistent_table_rows' );
@@ -1081,6 +1141,33 @@ class WP_Markdown_Canonical_Persistence {
 
 		$table_policy = $policy[ $table_suffix ];
 		return is_array( $table_policy ) || is_bool( $table_policy ) ? $table_policy : null;
+	}
+
+	private function partition_identity_column( string $table_suffix ): ?string {
+		$policy = $this->table_persistence_policy_for( $table_suffix );
+		$column = is_array( $policy ) ? strtolower( (string) ( $policy['partition_by'] ?? '' ) ) : '';
+		return preg_match( '/^[a-z_][a-z0-9_]*$/', $column ) ? $column : null;
+	}
+
+	private function has_persistent_table_query_filter(): bool {
+		return function_exists( 'has_filter' ) && false !== has_filter( 'markdown_db_persistent_table_query' );
+	}
+
+	private function partition_lock_path( string $table_suffix ): string {
+		$directory = sys_get_temp_dir() . '/markdown-database-integration-locks';
+		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create lock directory.' ); }
+		return $directory . '/partition-' . hash( 'sha256', $this->state_dir . "\0" . $table_suffix ) . '.lock';
+	}
+
+	private function remove_inactive_partition_generations( string $directory, string $active_generation ): void {
+		foreach ( glob( $directory . '/generation-*', GLOB_ONLYDIR ) ?: array() as $generation_directory ) {
+			if ( basename( $generation_directory ) === $active_generation ) { continue; }
+			foreach ( glob( $generation_directory . '/*.json' ) ?: array() as $path ) {
+				$this->track_canonical_mutation( $path );
+				@unlink( $path );
+			}
+			@rmdir( $generation_directory );
+		}
 	}
 
 	/**

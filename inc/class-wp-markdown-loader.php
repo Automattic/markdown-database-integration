@@ -77,27 +77,51 @@ class WP_Markdown_Loader {
 	private function load_plugin_tables(): void { $this->hydrate_plugins(); }
 
 	private function hydrate_table( string $table, bool $incremental = false, ?callable $before_hydration = null ): void {
-		$path = '_tables/' . $table . '.json';
-		$identity = $this->file_identity( $path );
-		if ( null === $identity ) { return; }
-		$partition = null;
-		if ( in_array( $table, array( 'posts', 'postmeta', 'term_relationships' ), true ) ) {
-			$partition = array(
-				'kind'       => $table,
-				'post_types' => $this->storage->get_excluded_types(),
-			);
+		$lock = $this->partition_lock( $table );
+		try {
+			$partition_marker = $this->partition_marker( $table );
+			if ( null !== $partition_marker ) {
+				$this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->partition_rows( $table, $partition_marker ), null, $incremental ? null : array( 'preserve_existing' => true ) );
+				return;
+			}
+			$path = '_tables/' . $table . '.json';
+			$identity = $this->file_identity( $path );
+			if ( null === $identity ) { return; }
+			$partition = null;
+			if ( in_array( $table, array( 'posts', 'postmeta', 'term_relationships' ), true ) ) {
+				$partition = array( 'kind' => $table, 'post_types' => $this->storage->get_excluded_types() );
+			}
+			if ( null !== $before_hydration ) { $partition = array( 'before_hydration' => $before_hydration ); }
+			if ( ! $incremental && null === $partition ) { $partition = array( 'preserve_existing' => true ); }
+			$this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->json_rows( $table ), $identity, $partition );
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
 		}
-		if ( null !== $before_hydration ) {
-			$partition = array( 'before_hydration' => $before_hydration );
-		}
-		if ( ! $incremental && null === $partition ) { $partition = array( 'preserve_existing' => true ); }
-		$this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->json_rows( $table ), $identity, $partition );
 	}
 	private function hydrate_plugins( bool $incremental = false ): void {
-		foreach ( glob( $this->state_dir . '/_tables/*.json' ) ?: array() as $file ) {
-			$table = basename( $file, '.json' );
+		$tables = array_map( static fn( $file ): string => basename( $file, '.json' ), glob( $this->state_dir . '/_tables/*.json' ) ?: array() );
+		foreach ( glob( $this->state_dir . '/_tables/*/.mdi-partition.json' ) ?: array() as $marker ) { $tables[] = basename( dirname( $marker ) ); }
+		foreach ( array_unique( $tables ) as $table ) {
 			if ( ! in_array( $table, self::CORE_TABLE_SUFFIXES, true ) && 'posts' !== $table ) { $this->operations->ensure_tables( array( $table => (string) @file_get_contents( $this->state_dir . '/_schema/' . $table . '.sql' ) ) ); $this->hydrate_table( $table, $incremental ); }
 		}
+	}
+	private function partition_marker( string $table ): ?array { $data = json_decode( (string) @file_get_contents( $this->state_dir . '/_tables/' . $table . '/.mdi-partition.json' ), true ); return is_array( $data ) && 1 === ( $data['version'] ?? null ) && $table === ( $data['table'] ?? null ) && is_string( $data['identity_column'] ?? null ) && preg_match( '/^generation-[a-f0-9]{24}$/', (string) ( $data['generation'] ?? '' ) ) ? $data : null; }
+	private function partition_rows( string $table, array $marker ): iterable {
+		$directory = $this->state_dir . '/_tables/' . $table . '/' . $marker['generation'];
+		foreach ( glob( $directory . '/*.json' ) ?: array() as $file ) {
+			$data = json_decode( (string) file_get_contents( $file ), true );
+			if ( ! is_array( $data ) || 1 !== ( $data['_mdi_partition']['version'] ?? null ) || $marker['identity_column'] !== ( $data['_mdi_partition']['identity_column'] ?? null ) || ! is_array( $data['row'] ?? null ) ) { throw new \RuntimeException( 'Markdown DB: Invalid table partition row.' ); }
+			yield $data['row'];
+		}
+	}
+	/** @return resource */
+	private function partition_lock( string $table ) {
+		$directory = sys_get_temp_dir() . '/markdown-database-integration-locks';
+		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create lock directory.' ); }
+		$lock = fopen( $directory . '/partition-' . hash( 'sha256', $this->state_dir . "\0" . $table ) . '.lock', 'c+' );
+		if ( false === $lock || ! flock( $lock, LOCK_SH ) ) { throw new \RuntimeException( 'Markdown DB: Failed to lock table partition.' ); }
+		return $lock;
 	}
 	/** @return iterable<array<string,mixed>> */
 	private function json_rows( string $table ): ?iterable {

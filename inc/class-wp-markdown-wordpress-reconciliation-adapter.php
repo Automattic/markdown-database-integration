@@ -6,7 +6,9 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-reconciliation-service.php';
-require_once __DIR__ . '/class-wp-markdown-storage.php';
+if ( ! class_exists( 'WP_Markdown_Storage' ) ) {
+	require_once __DIR__ . '/class-wp-markdown-storage.php';
+}
 
 final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_Reconciliation_Content_Adapter {
 	private const SCHEMA_VERSION = 1;

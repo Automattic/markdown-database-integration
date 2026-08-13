@@ -195,6 +195,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 	 */
 	public function set_write_engine( WP_Markdown_Write_Engine $engine ): void {
 		$this->write_engine = $engine;
+		$engine->recover_pending();
 	}
 
 	/**
@@ -278,7 +279,31 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		if ( null !== $op && ! $this->syncing && null !== $this->write_engine ) {
 			$this->require_mutation_capability( $op );
 		}
-		$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
+		$prepared = array();
+		$pdo = $this->get_connection()->get_pdo();
+		$post_ids = $this->prepared_post_ids( $query, $op );
+		$post_mutation = null !== $op && str_ends_with( strtolower( (string) $op['table'] ), 'posts' );
+		if ( $post_mutation && empty( $post_ids ) && ! in_array( $op['op'], array( 'INSERT', 'REPLACE' ), true ) ) { throw new RuntimeException( 'Post persistence requires a bounded post identity.' ); }
+		if ( $post_mutation && $pdo->inTransaction() ) { throw new RuntimeException( 'Post persistence requires the runtime-owned transaction boundary.' ); }
+		$wordpress_before = empty( $post_ids ) ? array() : $this->write_engine->wordpress_post_identities( $post_ids );
+		$owns_transaction = $post_mutation;
+		if ( $owns_transaction ) { $pdo->beginTransaction(); }
+		try {
+			$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
+			if ( empty( $post_ids ) && null !== $op && in_array( $op['op'], array( 'INSERT', 'REPLACE' ), true ) && str_ends_with( strtolower( (string) $op['table'] ), 'posts' ) ) {
+				$insert_id = (int) $this->get_insert_id();
+				if ( $insert_id > 0 ) { $post_ids = array( $insert_id ); $wordpress_before[ $insert_id ] = null; }
+			}
+			foreach ( $post_ids as $post_id ) {
+				$operation = $this->write_engine->prepare_post_commit( $post_id, $wordpress_before[ $post_id ] ?? null );
+				if ( null !== $operation ) { $prepared[] = $operation; }
+			}
+			if ( $owns_transaction ) { $pdo->commit(); }
+		} catch ( \Throwable $error ) {
+			if ( $owns_transaction && $pdo->inTransaction() ) { $pdo->rollBack(); }
+			throw $error;
+		}
+		foreach ( $prepared as $operation ) { $this->write_engine->continue_post_commit( $operation ); }
 
 		if ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) {
 			if ( $result instanceof \PDOStatement ) {
@@ -295,7 +320,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		}
 
 		// Detect the operation type and affected table.
-		if ( null !== $op ) {
+		if ( null !== $op && empty( $prepared ) ) {
 			$this->syncing = true;
 			try {
 				$operations = new WP_Markdown_SQLite_Operations( $this );
@@ -317,6 +342,14 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		}
 
 		return $result;
+	}
+
+	private function prepared_post_ids( string $query, ?array $operation ): array {
+		if ( null === $operation || null === $this->write_engine || $this->syncing || ! str_ends_with( strtolower( (string) $operation['table'] ), 'posts' ) ) { return array(); }
+		if ( ! preg_match_all( '/\bID\b\s*(?:=\s*([0-9]+)|IN\s*\(([^)]*)\))/i', $query, $matches, PREG_SET_ORDER ) ) { return array(); }
+		$ids = array();
+		foreach ( $matches as $match ) { foreach ( explode( ',', $match[1] ?: $match[2] ) as $id ) { if ( ctype_digit( trim( $id ) ) ) { $ids[ (int) trim( $id ) ] = true; } } }
+		return array_keys( $ids );
 	}
 
 

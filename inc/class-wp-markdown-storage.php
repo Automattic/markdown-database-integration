@@ -366,6 +366,11 @@ class WP_Markdown_Storage {
 		return $this->parse_file( $file_path );
 	}
 
+	/** Return the currently indexed canonical path for a post. */
+	public function path_for_post( int $post_id ): string|false {
+		return $this->find_file_by_id( $post_id ) ?? false;
+	}
+
 	/**
 	 * Delete a post's markdown file.
 	 *

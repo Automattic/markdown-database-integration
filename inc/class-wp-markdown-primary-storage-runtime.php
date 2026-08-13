@@ -16,6 +16,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
 require_once __DIR__ . '/class-wp-markdown-backend-adapter.php';
+require_once __DIR__ . '/class-wp-markdown-reconciliation-adapters.php';
 
 class WP_Markdown_Primary_Storage_Runtime {
 
@@ -79,12 +80,14 @@ class WP_Markdown_Primary_Storage_Runtime {
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
 		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
 		$runtime->driver = $runtime_driver;
+		$reconciliation = wp_markdown_durable_reconciliation_coordinator( array( $runtime->content_root, $runtime->state_root ) );
 		$runtime->write_engine = new WP_Markdown_Write_Engine(
 			$runtime->content_root,
 			$storage,
 			$operations,
 			$prefix,
-			$runtime->state_root
+			$runtime->state_root,
+			$reconciliation
 		);
 		if ( method_exists( $runtime->driver, 'set_write_engine' ) ) { $runtime->driver->set_write_engine( $runtime->write_engine ); }
 		$runtime->configure_storage_resolvers( $storage, $operations );
@@ -93,7 +96,8 @@ class WP_Markdown_Primary_Storage_Runtime {
 			$operations,
 			$storage,
 			$prefix,
-			$runtime->state_root
+			$runtime->state_root,
+			$reconciliation
 		);
 
 		$current_identity = $runtime->canonical_identity();
@@ -147,10 +151,11 @@ class WP_Markdown_Primary_Storage_Runtime {
 		$storage = new WP_Markdown_Storage( $runtime->content_root, $excluded_types );
 		$storage->set_content_layout_profile( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ? MARKDOWN_DB_CONTENT_LAYOUT_PROFILE : '' );
 		$runtime->driver = $runtime_driver;
-		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $operations, $prefix, $runtime->state_root );
+		$reconciliation = wp_markdown_durable_reconciliation_coordinator( array( $runtime->content_root, $runtime->state_root ) );
+		$runtime->write_engine = new WP_Markdown_Write_Engine( $runtime->content_root, $storage, $operations, $prefix, $runtime->state_root, $reconciliation );
 		if ( method_exists( $runtime->driver, 'set_write_engine' ) ) { $runtime->driver->set_write_engine( $runtime->write_engine ); }
 		$runtime->configure_storage_resolvers( $storage, $operations );
-		$runtime->loader = new WP_Markdown_Loader( $runtime->content_root, $operations, $storage, $prefix, $runtime->state_root );
+		$runtime->loader = new WP_Markdown_Loader( $runtime->content_root, $operations, $storage, $prefix, $runtime->state_root, $reconciliation );
 		$runtime->loader->prepare_existing_cache();
 		$runtime->identity = $runtime->canonical_identity();
 

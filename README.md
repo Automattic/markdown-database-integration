@@ -212,6 +212,43 @@ Persisted files ---------------------- cold/warm boot --> MDI loader
               markdown-index.sqlite
 ```
 
+### Durable Reconciliation Operations
+
+Bounded reconciliation can use `WP_Markdown_Durable_Reconciliation_Operations`
+to coordinate mutations that cross the WordPress and canonical-filesystem
+durability domains. Operations bind a plan and continuation, canonical root,
+normalized resource identity, direction and kind, and exact normalized before
+and after identities. The lifecycle is explicit:
+
+```
+planned -> claimed -> effect_observed -> completed
+                  \-> ambiguous -> reconciliation_required
+```
+
+`WP_Markdown_Reconciliation_Adapter` keeps WordPress, SQLite, MySQL, and file
+observation/mutation details behind the owning adapter. Recovery is deliberately
+observation-only: it never replays an adapter mutation, and completes only when
+every named domain exactly proves the intended after identity. Missing,
+indeterminate, or divergent evidence is persisted as a structured
+`reconciliation_required` conflict.
+
+Because only an owning backend can make resource fencing atomic with its effect,
+an adapter installs each claimed fence and must atomically reject any token that
+is no longer current for the normalized resource. The generic store also rejects
+expired-lease transitions; together these prevent a stale worker from publishing
+progress or mutating after a replacement owner has fenced it.
+
+The supplied filesystem operation store uses revision/state/fence
+compare-and-set transitions, expiring ownership leases, and monotonically
+increasing fencing tokens. Its HMAC-authenticated, atomically replaced journal
+has caller-configured record and byte bounds, retains terminal identities to
+prevent stale intent from being planned again, and rejects placement within or
+above a managed canonical root. Operations are accepted only for roots authorized
+when the store is constructed, and at least one root must be declared. Deployments
+should derive its authentication key from server-only secret material and place
+it in a server-owned runtime directory. This journal is runtime coordination
+state, not canonical content; it has no Git or publication requirement.
+
 With one root, `MARKDOWN_DB_STATE_DIR` defaults to
 `MARKDOWN_DB_CONTENT_DIR`. When they are split, the content root owns
 Markdown-backed posts while the state root owns JSON snapshots, plugin schemas,

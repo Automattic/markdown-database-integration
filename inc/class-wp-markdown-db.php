@@ -213,12 +213,14 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		// the boot-time value (which may be NULL in test boots).
 		$adapter_runtime = method_exists( $this->dbh, 'operations' );
 		$operations = $adapter_runtime ? $this->dbh->operations( $prefix_resolver ) : $this->dbh;
+		$reconciliation = function_exists( 'wp_markdown_durable_reconciliation_coordinator' ) ? wp_markdown_durable_reconciliation_coordinator( array( $content_dir, $state_dir ) ) : null;
 		$write_engine = new WP_Markdown_Write_Engine(
 			$content_dir,
 			$storage,
 			$operations,
 			$prefix_resolver,
-			$state_dir
+			$state_dir,
+			$reconciliation
 		);
 		$this->dbh->set_write_engine( $write_engine );
 
@@ -286,7 +288,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$operations,
 				$storage,
 				$prefix_resolver,
-				$state_dir
+				$state_dir,
+				$reconciliation
 			);
 
 			$loader_action = $is_warm_boot ? 'sync_incremental' : 'load_all';

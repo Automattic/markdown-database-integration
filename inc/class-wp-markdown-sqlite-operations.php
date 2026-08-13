@@ -10,10 +10,16 @@ require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
 class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	private $driver;
 	private $prefix;
+	private ?WP_Markdown_Durable_Reconciliation_Coordinator $reconciliation = null;
+	private string $canonical_root = '';
 
 	public function __construct( $driver, $prefix = 'wp_' ) {
 		$this->driver = $driver;
 		$this->prefix = is_callable( $prefix ) ? $prefix : static function () use ( $prefix ): string { return (string) $prefix; };
+	}
+	public function set_reconciliation_coordinator( WP_Markdown_Durable_Reconciliation_Coordinator $coordinator, string $canonical_root ): void {
+		$this->reconciliation = $coordinator;
+		$this->canonical_root = rtrim( $canonical_root, '/' );
 	}
 
 	private function rows( string $query ): array {
@@ -77,6 +83,10 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 		$pdo->prepare( 'UPDATE `' . $this->table( 'posts' ) . '` SET post_content = ? WHERE ID = ?' )->execute( array( '', $post_id ) );
 	}
 	public function delete_file_index( int $post_id ): void { if ( method_exists( $this->driver, 'remove_from_file_index' ) ) { $this->driver->remove_from_file_index( $post_id ); return; } if ( ! method_exists( $this->driver, 'get_connection' ) ) { return; } $this->driver->get_connection()->get_pdo()->prepare( 'DELETE FROM `_markdown_file_index` WHERE post_id = ?' )->execute( array( $post_id ) ); }
+	public function file_index_receipt( int $post_id ): ?array {
+		$rows = $this->rows( 'SELECT post_id FROM `_markdown_file_index` WHERE post_id = ' . $post_id );
+		return empty( $rows ) ? null : array( 'post_id' => (int) $rows[0]->post_id );
+	}
 	public function upsert_options_index( array $rows ): void { try { if ( method_exists( $this->driver, 'upsert_options_index' ) ) { $this->driver->upsert_options_index( $rows ); return; } foreach ( $rows as $row ) { $this->driver->get_connection()->get_pdo()->prepare( 'INSERT OR REPLACE INTO `_options_file_index` VALUES (?, ?, ?, ?, ?, ?)' )->execute( array_values( $row ) ); } } catch ( \Throwable $e ) {} }
 	public function delete_options_index( array $names ): void { try { if ( method_exists( $this->driver, 'remove_from_options_index' ) ) { $this->driver->remove_from_options_index( $names ); return; } foreach ( $names as $name ) { $this->driver->get_connection()->get_pdo()->prepare( 'DELETE FROM `_options_file_index` WHERE option_name = ?' )->execute( array( $name ) ); } } catch ( \Throwable $e ) {} }
 	public function update_manifest( string $path, int $mtime, int $size ): void { try { $this->driver->get_connection()->get_pdo()->prepare( 'INSERT OR REPLACE INTO `_json_file_manifest` (file_name, file_mtime, file_size) VALUES (?, ?, ?)' )->execute( array( $path, $mtime, $size ) ); } catch ( \Throwable $e ) {} }
@@ -88,6 +98,7 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 		$pdo->exec( 'CREATE TABLE IF NOT EXISTS `_json_file_manifest` (`file_name` TEXT PRIMARY KEY, `file_mtime` INTEGER NOT NULL, `file_size` INTEGER NOT NULL)' );
 		$pdo->exec( 'CREATE TABLE IF NOT EXISTS `_markdown_file_index` (`post_id` INTEGER PRIMARY KEY, `file_path` TEXT NOT NULL, `file_mtime` INTEGER NOT NULL, `file_size` INTEGER NOT NULL)' );
 		$pdo->exec( 'CREATE TABLE IF NOT EXISTS `_options_file_index` (`option_name` TEXT PRIMARY KEY, `file_path` TEXT NOT NULL, `file_mtime` INTEGER NOT NULL, `file_size` INTEGER NOT NULL, `option_id` INTEGER NOT NULL, `autoload` TEXT NOT NULL)' );
+		$pdo->exec( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
 	}
 	public function ensure_tables( array $schemas ): void {
 		foreach ( $schemas as $schema ) {
@@ -190,7 +201,8 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	private function hydrate_markdown_post( object $post ): void {
 		$pdo = $this->driver->get_connection()->get_pdo();
 		$id = (int) $post->ID;
-		$this->begin_canonical_transaction( $pdo );
+		$owned = ! $this->canonical_transaction_active( $pdo );
+		if ( $owned ) { $this->begin_canonical_transaction( $pdo ); }
 		try {
 			$pdo->exec( 'DELETE FROM `' . $this->table( 'postmeta' ) . '` WHERE post_id = ' . $id );
 			$pdo->exec( 'DELETE FROM `' . $this->table( 'term_relationships' ) . '` WHERE object_id = ' . $id );
@@ -210,9 +222,9 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 					if ( isset( $term_map[ $key ] ) ) { $this->insert_row( $pdo, $this->table( 'term_relationships' ), array( 'object_id' => $id, 'term_taxonomy_id' => $term_map[ $key ], 'term_order' => 0 ) ); }
 				}
 			}
-			$this->commit_canonical_transaction( $pdo );
+			if ( $owned ) { $this->commit_canonical_transaction( $pdo ); }
 		} catch ( \Throwable $e ) {
-			if ( $this->canonical_transaction_active( $pdo ) ) { $this->rollback_canonical_transaction( $pdo ); }
+			if ( $owned && $this->canonical_transaction_active( $pdo ) ) { $this->rollback_canonical_transaction( $pdo ); }
 			throw $e;
 		}
 	}
@@ -249,13 +261,45 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 			$cached = $index[ $path ] ?? null;
 			if ( $cached && (int) $cached->file_mtime === $file['mtime'] && (int) $cached->file_size === $file['size'] ) { unset( $index[ $path ] ); continue; }
 			$post = $parse_file( $file['absolute'], $file['parent_id'] );
-			if ( $post ) { $this->hydrate_markdown_posts( array( $post ), null ); $this->upsert_file_index( (int) $post->ID, $path, $file['mtime'], $file['size'] ); $cached ? $changed++ : $new++; }
+			if ( $post ) {
+				$this->reconcile_markdown_post( $post, $path, $file, $cached );
+				$cached ? $changed++ : $new++;
+			}
 			unset( $index[ $path ] );
 		}
 		$pdo = $this->driver->get_connection()->get_pdo();
-		foreach ( $index as $row ) { $id = (int) $row->post_id; $pdo->exec( 'DELETE FROM `' . $this->table( 'postmeta' ) . '` WHERE post_id = ' . $id ); $pdo->exec( 'DELETE FROM `' . $this->table( 'term_relationships' ) . '` WHERE object_id = ' . $id ); $pdo->exec( 'DELETE FROM `' . $this->table( 'posts' ) . '` WHERE ID = ' . $id ); $this->delete_file_index( $id ); }
+		foreach ( $index as $path => $row ) { $this->reconcile_markdown_deletion( (int) $row->post_id, (string) $path ); }
 		return array( 'markdown_files_changed' => $changed, 'markdown_files_new' => $new, 'markdown_files_deleted' => count( $index ) );
 	}
+	private function reconcile_markdown_post( object $post, string $path, array $file, $cached ): void {
+		$id = (int) $post->ID;
+		$apply = function () use ( $post, $path, $file, $id ): void { $this->hydrate_markdown_post( $post ); $this->upsert_file_index( $id, $path, $file['mtime'], $file['size'] ); };
+		if ( null === $this->reconciliation ) { $apply(); return; }
+		$target = array_filter( (array) $post, static fn( $value, $key ): bool => 'filter' !== $key && ! str_starts_with( (string) $key, '_' ), ARRAY_FILTER_USE_BOTH );
+		$target['post_content'] = '';
+		$fields = array_keys( $target );
+		$observer = fn(): array => array( 'canonical' => $this->file_receipt( $file['absolute'] ), 'wordpress' => $this->post_receipt( $id, $fields ) );
+		$before = $observer();
+		$after  = array( 'canonical' => $before['canonical'], 'wordpress' => $target );
+		$adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $this->driver->get_connection()->get_pdo(), $observer, $apply );
+		$this->reconciliation->reconcile( array( 'plan_id' => 'loader:' . hash( 'sha256', $path . "\0" . $before['canonical']['hash'] ), 'continuation' => array( 'path' => $path ), 'canonical_root' => $this->canonical_root, 'resource' => array( 'type' => 'post', 'id' => (string) $id ), 'kind' => $cached ? 'update' : 'create', 'direction' => 'canonical_to_wordpress', 'before' => $before, 'after' => $after ), $adapter );
+	}
+	private function reconcile_markdown_deletion( int $id, string $path ): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+		$apply = function () use ( $pdo, $id ): void { $pdo->exec( 'DELETE FROM `' . $this->table( 'postmeta' ) . '` WHERE post_id = ' . $id ); $pdo->exec( 'DELETE FROM `' . $this->table( 'term_relationships' ) . '` WHERE object_id = ' . $id ); $pdo->exec( 'DELETE FROM `' . $this->table( 'posts' ) . '` WHERE ID = ' . $id ); $this->delete_file_index( $id ); };
+		if ( null === $this->reconciliation ) { $apply(); return; }
+		$observer = fn(): array => array( 'canonical' => null, 'wordpress' => $this->post_receipt( $id, array() ) );
+		$before = $observer();
+		$adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $pdo, $observer, $apply );
+		$this->reconciliation->reconcile( array( 'plan_id' => 'loader-delete:' . hash( 'sha256', $path ), 'continuation' => array( 'path' => $path ), 'canonical_root' => $this->canonical_root, 'resource' => array( 'type' => 'post', 'id' => (string) $id ), 'kind' => 'deletion', 'direction' => 'canonical_to_wordpress', 'before' => $before, 'after' => array( 'canonical' => null, 'wordpress' => null ) ), $adapter );
+	}
+	private function post_receipt( int $id, array $fields ): ?array {
+		$rows = $this->rows( 'SELECT * FROM `' . $this->table( 'posts' ) . '` WHERE ID = ' . $id );
+		if ( empty( $rows ) ) { return null; }
+		$row = (array) $rows[0];
+		return empty( $fields ) ? $row : array_intersect_key( $row, array_flip( $fields ) );
+	}
+	private function file_receipt( string $path ): ?array { return is_file( $path ) ? array( 'path' => $path, 'hash' => hash_file( 'sha256', $path ) ) : null; }
 	public function mutations_for_query( string $query, array $operation ): array {
 		$table = $operation['table']; $ids = array(); $ids_by_column = array();
 		$predicate = preg_match( '/\bWHERE\b(.*?)(?:\bORDER\s+BY\b|\bLIMIT\b|$)/is', $query, $where_match ) ? $where_match[1] : '';

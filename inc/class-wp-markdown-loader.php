@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
 require_once __DIR__ . '/class-wp-markdown-backend-adapter.php';
+require_once __DIR__ . '/class-wp-markdown-reconciliation-adapters.php';
 
 class WP_Markdown_Loader {
 	private const CORE_TABLE_SUFFIXES = array( 'users', 'usermeta', 'terms', 'term_taxonomy', 'termmeta', 'postmeta', 'term_relationships', 'comments', 'commentmeta', 'links' );
@@ -20,8 +21,9 @@ class WP_Markdown_Loader {
 	private $stats = array();
 	private $id_cursor;
 	private $pending_id_writes = array();
+	private $reconciliation;
 
-	public function __construct( string $content_dir, $operations, WP_Markdown_Storage $storage, $prefix = 'wp_', ?string $state_dir = null ) {
+	public function __construct( string $content_dir, $operations, WP_Markdown_Storage $storage, $prefix = 'wp_', ?string $state_dir = null, ?WP_Markdown_Durable_Reconciliation_Coordinator $reconciliation = null ) {
 		$this->content_dir = rtrim( $content_dir, '/' );
 		$this->state_dir = rtrim( $state_dir ?? $content_dir, '/' );
 		$this->storage = $storage;
@@ -30,6 +32,10 @@ class WP_Markdown_Loader {
 			$operations = wp_markdown_backend_operations_from_legacy( $operations, $prefix );
 		}
 		$this->operations = $operations;
+		$this->reconciliation = $reconciliation;
+		if ( null !== $reconciliation && method_exists( $this->operations, 'set_reconciliation_coordinator' ) ) {
+			$this->operations->set_reconciliation_coordinator( $reconciliation, $this->content_dir );
+		}
 	}
 
 	public function load_all(): void {
@@ -37,6 +43,7 @@ class WP_Markdown_Loader {
 		$this->stats = array( 'boot_mode' => 'cold' );
 		try {
 			$this->operations->ensure_reconciliation_state();
+			$this->recover_pending_operations();
 			$this->operations->ensure_tables( $this->schema_files() );
 			$this->operations->hydrate_options( $this->option_rows() );
 			foreach ( self::CORE_TABLE_SUFFIXES as $table ) { $this->hydrate_table( $table ); }
@@ -52,6 +59,7 @@ class WP_Markdown_Loader {
 		$this->stats = array( 'boot_mode' => 'warm' );
 		try {
 			$this->operations->ensure_reconciliation_state();
+			$this->recover_pending_operations();
 			$this->operations->hydrate_options( $this->option_rows() );
 			foreach ( self::SNAPSHOT_TABLE_SUFFIXES as $table ) { $this->hydrate_table( $table, true ); }
 			$this->hydrate_plugins( true );
@@ -64,6 +72,30 @@ class WP_Markdown_Loader {
 	}
 
 	public function prepare_existing_cache(): void { $this->operations->ensure_reconciliation_state(); }
+	private function recover_pending_operations(): void {
+		if ( null === $this->reconciliation ) { return; }
+		$this->reconciliation->recover_pending(
+			function ( array $record ): ?WP_Markdown_Reconciliation_Adapter {
+				$binding = $record['binding'];
+				if ( 'canonical_to_wordpress' !== $binding['direction'] || 'post' !== $binding['resource']['type'] ) { return null; }
+				$id = (int) $binding['resource']['id'];
+				$path = (string) ( $binding['continuation']['path'] ?? '' );
+				$absolute = '' === $path ? '' : $this->content_dir . '/' . $path;
+				$observer = fn(): array => array( 'canonical' => is_file( $absolute ) ? array( 'path' => $absolute, 'hash' => hash_file( 'sha256', $absolute ) ) : null, 'wordpress' => $this->loader_post_receipt( $id ) );
+				return new WP_Markdown_PDO_Reconciliation_Adapter( $this->operations_pdo(), $observer, static function (): void { throw new RuntimeException( 'Loader recovery does not replay an unproven database mutation.' ); } );
+			},
+			100
+		);
+	}
+	private function operations_pdo(): PDO {
+		$property = new ReflectionProperty( $this->operations, 'driver' );
+		$driver = $property->getValue( $this->operations );
+		return $driver->get_connection()->get_pdo();
+	}
+	private function loader_post_receipt( int $id ): ?array {
+		$rows = $this->operations->post_rows( array( $id ) );
+		return empty( $rows ) ? null : (array) $rows[0];
+	}
 	public function get_timings(): array { return $this->timings; }
 	public function get_stats(): array { return $this->stats; }
 	// Legacy reflection hook delegates to the neutral hydration path.

@@ -114,12 +114,15 @@ try {
 } finally {
 	if ( isset( $wpdb, $apply_fence_key, $apply_operation_id ) ) {
 		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $apply_fence_key, $apply_operation_id ) );
+		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( 'SELECT operation_id FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $apply_fence_key, $apply_operation_id ) ), 'removed the probe apply fence row owned by this process' );
 	}
 	if ( isset( $wpdb, $recovery_fence_key, $recovered ) ) {
 		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $recovery_fence_key, $recovered['id'] ) );
+		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( 'SELECT operation_id FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $recovery_fence_key, $recovered['id'] ) ), 'removed the probe recovery fence row owned by this process' );
 	}
 	if ( isset( $wpdb, $table, $table_created ) && $table_created ) {
 		$wpdb->query( "DROP TABLE {$table}" );
+		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( 'SHOW TABLES LIKE %s', $table ) ), 'removed the uniquely named probe table created by this process' );
 	}
 	if ( isset( $root ) && is_dir( $root ) ) {
 		foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $root, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::CHILD_FIRST ) as $path ) {

@@ -240,6 +240,7 @@ require_once $markdown_plugin_dir . '/inc/class-wp-markdown-storage.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-driver.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-search.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-write-engine.php';
+require_once $markdown_plugin_dir . '/inc/class-wp-markdown-reconciliation-adapters.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-loader.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-db.php';
 

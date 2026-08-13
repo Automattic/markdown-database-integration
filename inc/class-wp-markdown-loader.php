@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
 require_once __DIR__ . '/class-wp-markdown-backend-adapter.php';
+require_once __DIR__ . '/class-wp-markdown-reconciliation-adapters.php';
 
 class WP_Markdown_Loader {
 	private const CORE_TABLE_SUFFIXES = array( 'users', 'usermeta', 'terms', 'term_taxonomy', 'termmeta', 'postmeta', 'term_relationships', 'comments', 'commentmeta', 'links' );
@@ -20,8 +21,9 @@ class WP_Markdown_Loader {
 	private $stats = array();
 	private $id_cursor;
 	private $pending_id_writes = array();
+	private $reconciliation;
 
-	public function __construct( string $content_dir, $operations, WP_Markdown_Storage $storage, $prefix = 'wp_', ?string $state_dir = null ) {
+	public function __construct( string $content_dir, $operations, WP_Markdown_Storage $storage, $prefix = 'wp_', ?string $state_dir = null, ?WP_Markdown_Durable_Reconciliation_Coordinator $reconciliation = null ) {
 		$this->content_dir = rtrim( $content_dir, '/' );
 		$this->state_dir = rtrim( $state_dir ?? $content_dir, '/' );
 		$this->storage = $storage;
@@ -30,6 +32,10 @@ class WP_Markdown_Loader {
 			$operations = wp_markdown_backend_operations_from_legacy( $operations, $prefix );
 		}
 		$this->operations = $operations;
+		$this->reconciliation = $reconciliation;
+		if ( null !== $reconciliation && method_exists( $this->operations, 'set_reconciliation_coordinator' ) ) {
+			$this->operations->set_reconciliation_coordinator( $reconciliation, $this->content_dir );
+		}
 	}
 
 	public function load_all(): void {

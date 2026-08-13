@@ -25,6 +25,17 @@ final class WP_Markdown_Durable_Reconciliation_Coordinator {
 	 * exact identities; callers may pass identities directly when already known.
 	 */
 	public function reconcile( array $intent, WP_Markdown_Reconciliation_Adapter $adapter, ?callable $boundary = null ): array {
+		$record = $this->plan( $intent );
+		if ( 'completed' === $record['state'] ) {
+			return $record;
+		}
+		if ( 'planned' !== $record['state'] ) {
+			return $this->operations->recover( $record['id'], $this->owner, time(), $this->lease_seconds, $adapter, $boundary );
+		}
+		return $this->operations->execute( $record['id'], $this->owner, time(), $this->lease_seconds, $adapter, $boundary );
+	}
+
+	public function plan( array $intent ): array {
 		foreach ( array( 'plan_id', 'continuation', 'canonical_root', 'resource', 'kind', 'direction', 'before', 'after' ) as $field ) {
 			if ( ! array_key_exists( $field, $intent ) ) {
 				throw new InvalidArgumentException( "Missing reconciliation intent field: $field" );
@@ -37,14 +48,7 @@ final class WP_Markdown_Durable_Reconciliation_Coordinator {
 				}
 		}
 		}
-		$record = $this->operations->plan( $intent );
-		if ( 'completed' === $record['state'] ) {
-			return $record;
-		}
-		if ( 'planned' !== $record['state'] ) {
-			return $this->operations->recover( $record['id'], $this->owner, time(), $this->lease_seconds, $adapter, $boundary );
-		}
-		return $this->operations->execute( $record['id'], $this->owner, time(), $this->lease_seconds, $adapter, $boundary );
+		return $this->operations->plan( $intent );
 	}
 
 	public function recover( string $operation_id, WP_Markdown_Reconciliation_Adapter $adapter, ?callable $boundary = null ): array {
@@ -130,7 +134,6 @@ final class WP_Markdown_PDO_Reconciliation_Adapter implements WP_Markdown_Reconc
 		$this->pdo      = $pdo;
 		$this->observer = $observer;
 		$this->mutation = $mutation;
-		$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
 	}
 
 	public function observe( array $operation ): array {
@@ -207,13 +210,12 @@ final class WP_Markdown_WPDB_Reconciliation_Adapter implements WP_Markdown_Recon
 	private $mutation;
 
 	public function __construct( object $wpdb, callable $observer, callable $mutation ) {
-		if ( ! method_exists( $wpdb, 'query' ) || ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'get_row' ) ) {
+		if ( ! method_exists( $wpdb, 'query' ) || ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'get_row' ) || ! method_exists( $wpdb, 'get_var' ) ) {
 			throw new InvalidArgumentException( 'A MySQL-compatible wpdb connection is required.' );
 		}
 		$this->wpdb     = $wpdb;
 		$this->observer = $observer;
 		$this->mutation = $mutation;
-		$this->query( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
 	}
 
 	public function observe( array $operation ): array {
@@ -252,6 +254,9 @@ final class WP_Markdown_WPDB_Reconciliation_Adapter implements WP_Markdown_Recon
 	}
 
 	private function transaction( callable $callback ): void {
+		if ( 1 === (int) $this->wpdb->get_var( 'SELECT @@session.in_transaction' ) ) {
+			throw new WP_Markdown_Reconciliation_Store_Conflict( 'Reconciliation cannot own a mutation inside an existing database transaction.' );
+		}
 		$this->query( 'START TRANSACTION' );
 		try {
 			$callback();

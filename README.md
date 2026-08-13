@@ -520,11 +520,11 @@ wp markdown-db reconcile \
   --format=json
 ```
 
-For another dry-run page, pass the returned continuation object as JSON with
-`--continuation='<json>'` while retaining the same plan and source identities.
-Apply is page-scoped: if a page changes either source, plan the next page from
-the resulting current state instead of reusing the now-stale source identity.
-Any external source change likewise makes apply refuse the reviewed plan. Set
+For another dry-run or apply page, pass the returned continuation object as JSON
+with `--continuation='<json>'` while retaining the same reviewed plan and source
+identities. Each continuation authenticates the still-unprocessed suffix, so
+mutations completed by earlier pages do not invalidate later pages. Any change
+to an unprocessed resource makes continuation fail closed. Set
 `--deletion-policy=managed` only when deletion propagation is intended. The
 same keys use underscores in the ability/PHP input (`dry_run`,
 `canonical_root`, `managed_scope`, `deletion_policy`, `conflict_policy`,

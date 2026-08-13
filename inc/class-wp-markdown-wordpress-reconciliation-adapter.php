@@ -269,6 +269,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$storage = $this->storage( $context['root'], $context['layout_profile'] );
 		$post_id = $this->locate_post_id( $context['post_id'], $context['current_path'] );
 		if ( 'deleted_from_file' === $context['kind'] ) {
+			$this->authorize_post_mutation( 'delete', $post_id );
 			if ( $post_id > 0 && false === wp_delete_post( $post_id, true ) ) {
 				throw new RuntimeException( 'WordPress post deletion failed.' );
 			}
@@ -282,6 +283,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		if ( null === $source ) {
 			throw new WP_Markdown_Reconciliation_Store_Conflict( 'The canonical source no longer exists.' );
 		}
+		$this->authorize_post_mutation( $post_id > 0 ? 'edit' : 'create', $post_id, (string) ( $source->post_type ?? 'post' ) );
 		$postarr = $this->post_array( $source );
 		if ( $post_id > 0 ) {
 			$postarr['ID'] = $post_id;
@@ -307,7 +309,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		if ( 'deleted_from_wordpress' === $context['kind'] ) {
 			if ( $context['post_id'] > 0 ) {
 				$storage->delete_post( $context['post_id'] );
-			} elseif ( null !== ( $path = $this->absolute_path( $context['root'], $context['current_path'] ) ) && is_file( $path ) && ! unlink( $path ) ) {
+			} elseif ( null !== $context['current_path'] && ! $storage->delete_relative_path( $context['current_path'] ) ) {
 				throw new RuntimeException( 'Canonical deletion failed.' );
 			}
 			$this->delete_baseline( $context['root'], (string) $operation['binding']['resource']['id'] );
@@ -372,14 +374,26 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 
 	private function post_receipt( object $post, array $meta, array $terms ): array {
 		return array(
-			'post_name'    => (string) ( $post->post_name ?? '' ),
-			'post_title'   => (string) ( $post->post_title ?? '' ),
-			'post_content' => (string) ( $post->post_content ?? '' ),
-			'post_status'  => (string) ( $post->post_status ?? 'draft' ),
-			'post_type'    => (string) ( $post->post_type ?? 'post' ),
-			'post_parent'  => (int) ( $post->post_parent ?? 0 ),
-			'meta'         => $this->normalize_meta( $meta ),
-			'terms'        => $this->normalize_terms( $terms ),
+			'post_author'       => (int) ( $post->post_author ?? 0 ),
+			'post_date'         => (string) ( $post->post_date ?? '' ),
+			'post_date_gmt'     => (string) ( $post->post_date_gmt ?? '' ),
+			'post_content'      => (string) ( $post->post_content ?? '' ),
+			'post_title'        => (string) ( $post->post_title ?? '' ),
+			'post_excerpt'      => (string) ( $post->post_excerpt ?? '' ),
+			'post_status'       => (string) ( $post->post_status ?? 'draft' ),
+			'comment_status'    => (string) ( $post->comment_status ?? 'open' ),
+			'ping_status'       => (string) ( $post->ping_status ?? 'open' ),
+			'post_password'     => (string) ( $post->post_password ?? '' ),
+			'post_name'         => (string) ( $post->post_name ?? '' ),
+			'post_parent'       => (int) ( $post->post_parent ?? 0 ),
+			'menu_order'        => (int) ( $post->menu_order ?? 0 ),
+			'post_type'         => (string) ( $post->post_type ?? 'post' ),
+			'post_mime_type'    => (string) ( $post->post_mime_type ?? '' ),
+			'post_content_filtered' => (string) ( $post->post_content_filtered ?? '' ),
+			'to_ping'           => (string) ( $post->to_ping ?? '' ),
+			'pinged'            => (string) ( $post->pinged ?? '' ),
+			'meta'              => $this->normalize_meta( $meta ),
+			'terms'             => $this->normalize_terms( $terms ),
 		);
 	}
 
@@ -524,14 +538,27 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 	}
 
 	private function post_array( object $post ): array {
-		return array(
-			'post_name'    => (string) ( $post->post_name ?? '' ),
-			'post_title'   => (string) ( $post->post_title ?? '' ),
-			'post_content' => (string) ( $post->post_content ?? '' ),
-			'post_status'  => (string) ( $post->post_status ?? 'draft' ),
-			'post_type'    => (string) ( $post->post_type ?? 'post' ),
-			'post_parent'  => (int) ( $post->post_parent ?? 0 ),
-		);
+		$receipt = $this->post_receipt( $post, array(), array() );
+		unset( $receipt['meta'], $receipt['terms'] );
+		return $receipt;
+	}
+
+	private function authorize_post_mutation( string $operation, int $post_id, string $post_type = 'post' ): void {
+		if ( ( defined( 'WP_CLI' ) && WP_CLI ) || ! function_exists( 'current_user_can' ) ) {
+			return;
+		}
+		if ( 'delete' === $operation ) {
+			$allowed = $post_id > 0 && current_user_can( 'delete_post', $post_id );
+		} elseif ( 'edit' === $operation ) {
+			$allowed = $post_id > 0 && current_user_can( 'edit_post', $post_id );
+		} else {
+			$type = function_exists( 'get_post_type_object' ) ? get_post_type_object( $post_type ) : null;
+			$capability = is_object( $type ) && isset( $type->cap->create_posts ) ? (string) $type->cap->create_posts : 'edit_posts';
+			$allowed = current_user_can( $capability );
+		}
+		if ( ! $allowed ) {
+			throw new WP_Markdown_Reconciliation_Store_Conflict( 'The current user cannot mutate this WordPress resource.' );
+		}
 	}
 
 	private function resource_post_id( string $resource_id, array $snapshot ): int {
@@ -596,7 +623,23 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 
 	private function absolute_path( string $root, ?string $relative ): ?string {
 		$relative = null === $relative ? null : $this->relative_path( $relative );
-		return null === $relative ? null : rtrim( $root, '/' ) . '/' . $relative;
+		if ( null === $relative || false === ( $real_root = realpath( $root ) ) ) {
+			return null;
+		}
+		$path = rtrim( $root, '/' ) . '/' . $relative;
+		$probe = file_exists( $path ) ? $path : dirname( $path );
+		$real = realpath( $probe );
+		if ( false === $real || ( $real !== $real_root && ! str_starts_with( $real, $real_root . DIRECTORY_SEPARATOR ) ) ) {
+			return null;
+		}
+		$current = rtrim( $root, '/\\' );
+		foreach ( preg_split( '#[\\\\/]#', $relative ) ?: array() as $segment ) {
+			$current .= DIRECTORY_SEPARATOR . $segment;
+			if ( file_exists( $current ) && is_link( $current ) ) {
+				return null;
+			}
+		}
+		return $path;
 	}
 
 	private function path_from_root( string $path, string $root ): ?string {

@@ -23,9 +23,19 @@ require dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-content-layout-profiles.php';
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
 
-$root = rtrim( sys_get_temp_dir(), '/' ) . '/mdi-content-layout-profiles-' . getmypid();
+$root = rtrim( sys_get_temp_dir(), '/' ) . '/mdi-content-layout-profiles-' . bin2hex( random_bytes( 6 ) );
 mkdir( $root, 0777, true );
 $failures = array();
+register_shutdown_function( static function () use ( $root ): void {
+	$remove = static function ( string $path ) use ( &$remove ): void {
+		if ( is_link( $path ) || is_file( $path ) ) { @unlink( $path ); return; }
+		if ( ! is_dir( $path ) ) { return; }
+		foreach ( scandir( $path ) ?: array() as $entry ) { if ( '.' !== $entry && '..' !== $entry ) { $remove( $path . '/' . $entry ); } }
+		@rmdir( $path );
+	};
+	$remove( $root );
+	$remove( $root . '-outside' );
+} );
 
 markdown_db_register_content_layout_profile(
 	'flat-pages-fixture',
@@ -66,6 +76,19 @@ $posts = $storage->get_all_posts();
 $foo = $posts[0] ?? null;
 if ( ! is_object( $foo ) || 'page' !== $foo->post_type || 'foo' !== $foo->post_name || 'foo.md' !== ( $foo->_source_identity ?? '' ) ) {
 	$failures[] = 'fixture profile did not map content/foo.md to page /foo with its stable source identity';
+}
+
+$outside = $root . '-outside';
+mkdir( $outside, 0777, true );
+file_put_contents( $outside . '/escaped.md', "---\nid: 99\ntitle: Escaped\ntype: post\n---\n\nOutside\n" );
+$legacy_root = $root . '/legacy';
+mkdir( $legacy_root . '/post', 0777, true );
+if ( @symlink( $outside, $legacy_root . '/post/linked' ) ) {
+	$legacy_storage = new WP_Markdown_Storage( $legacy_root );
+	$legacy_paths = array_keys( iterator_to_array( $legacy_storage->get_markdown_file_manifest_iterator() ) );
+	if ( in_array( 'post/linked/escaped.md', $legacy_paths, true ) ) {
+		$failures[] = 'legacy manifest followed a symlink outside the canonical root';
+	}
 }
 
 $written = $storage->write_post( (object) array( 'ID' => 1, 'post_type' => 'page', 'post_name' => 'foo', 'post_status' => 'publish', 'post_title' => 'Foo', 'post_content' => 'Updated body' ) );
@@ -119,7 +142,7 @@ if ( 1 !== count( $identity_storage->get_all_posts() ) ) {
 
 if ( function_exists( 'symlink' ) ) {
 	$outside = $root . '-outside';
-	mkdir( $outside, 0777, true );
+	if ( ! is_dir( $outside ) ) { mkdir( $outside, 0777, true ); }
 	file_put_contents( $outside . '/escape.md', "---\nid: 4\n---\n\nescape\n" );
 	symlink( $outside . '/escape.md', $root . '/linked.md' );
 	markdown_db_register_content_layout_profile(

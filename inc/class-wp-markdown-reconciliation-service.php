@@ -93,9 +93,33 @@ final class WP_Markdown_Reconciliation_Service {
 		if ( $apply && ( ! is_string( $requested_plan_id ) || ! preg_match( '/^[a-f0-9]{64}$/', $requested_plan_id ) || ! is_string( $requested_source ) || ! preg_match( '/^[a-f0-9]{64}$/', $requested_source ) ) ) {
 			throw new InvalidArgumentException( 'Apply mode requires SHA-256 plan_id and source_identity values.' );
 		}
+		if ( $apply ) {
+			$reviewed_plan_id = hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( array( 'schema_version' => self::SCHEMA_VERSION, 'source_identity' => $requested_source, 'options' => $options ) ) );
+			if ( ! hash_equals( $reviewed_plan_id, $requested_plan_id ) ) {
+				throw new WP_Markdown_Reconciliation_Store_Conflict( 'The supplied plan_id is missing or stale.' );
+			}
+			if ( null !== $continuation && ! hash_equals( $this->continuation_identity( $requested_plan_id, $requested_source, $continuation['cursor'] ), $continuation['identity'] ) ) {
+				throw new InvalidArgumentException( 'The continuation identity does not match this plan and source.' );
+			}
+		}
+		$recovered_result = $apply ? $this->empty_result( $requested_plan_id, $requested_source, $options ) : null;
+		$blocked_resources = array();
+		$recovered = $apply ? $this->recover_original_operations( $requested_plan_id, $requested_source, $continuation['cursor'] ?? null, $recovered_result, $blocked_resources, false ) : false;
+		try {
 		$page         = $this->adapter->enumerate( $this->scope( $options ), $continuation['cursor'] ?? null, $options['batch_size'] );
+		} catch ( WP_Markdown_Reconciliation_Store_Conflict $error ) {
+			if ( $recovered ) {
+				$this->recover_original_operations( $requested_plan_id, $requested_source, $continuation['cursor'] ?? null, $recovered_result, $blocked_resources, true );
+				return $this->finalize_result( $recovered_result );
+			}
+			throw $error;
+		}
 		$this->assert_page( $page, $options['batch_size'] );
 		$live_source_identity = trim( $page['source_identity'] );
+		if ( $apply && $recovered && null === $continuation && ! hash_equals( $live_source_identity, $requested_source ) ) {
+			$this->recover_original_operations( $requested_plan_id, $requested_source, null, $recovered_result, $blocked_resources, true );
+			return $this->finalize_result( $recovered_result );
+		}
 		$source_identity = null === $continuation ? $live_source_identity : (string) $requested_source;
 		$plan_id         = hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( array( 'schema_version' => self::SCHEMA_VERSION, 'source_identity' => $source_identity, 'options' => $options ) ) );
 		if ( ! $apply && is_string( $requested_plan_id ) && ! hash_equals( $plan_id, $requested_plan_id ) ) {
@@ -116,15 +140,15 @@ final class WP_Markdown_Reconciliation_Service {
 				throw new WP_Markdown_Reconciliation_Store_Conflict( 'The supplied plan_id is missing or stale.' );
 			}
 			if ( null === $continuation && ! hash_equals( $live_source_identity, $requested_source ) ) {
+				if ( $recovered ) {
+					$this->recover_original_operations( $requested_plan_id, $requested_source, null, $recovered_result, $blocked_resources, true );
+					return $this->finalize_result( $recovered_result );
+				}
 				throw new WP_Markdown_Reconciliation_Store_Conflict( 'The supplied source_identity is missing or stale.' );
 			}
 		}
 
-		$result            = $this->empty_result( $plan_id, $source_identity, $options );
-		$blocked_resources = array();
-		if ( $apply ) {
-			$this->recover_original_operations( $plan_id, $source_identity, $result, $blocked_resources );
-		}
+		$result = $apply ? $recovered_result : $this->empty_result( $plan_id, $source_identity, $options );
 
 		$snapshots = array();
 		foreach ( $page['snapshots'] as $snapshot ) {
@@ -137,8 +161,21 @@ final class WP_Markdown_Reconciliation_Service {
 		}
 		ksort( $snapshots, SORT_STRING );
 
-		foreach ( $snapshots as $snapshot ) {
-			$entry    = $this->classify( $snapshot, $options );
+		$entries = array();
+		foreach ( $snapshots as $resource_id => $snapshot ) {
+			$entries[ $resource_id ] = $this->classify( $snapshot, $options );
+		}
+		if ( $apply ) {
+			foreach ( $snapshots as $resource_id => $snapshot ) {
+				$entry = $entries[ $resource_id ];
+				if ( ! isset( $blocked_resources[ $resource_id ] ) && $this->is_action( $entry['category'] ) ) {
+					$this->coordinator->plan( $this->intent( $entry, $snapshot, $plan_id, $source_identity, $continuation['cursor'] ?? null, $options ) );
+				}
+			}
+		}
+
+		foreach ( $snapshots as $resource_id => $snapshot ) {
+			$entry    = $entries[ $resource_id ];
 			$category = $entry['category'];
 			if ( $apply && isset( $blocked_resources[ $snapshot['resource_id'] ] ) ) {
 				continue;
@@ -419,6 +456,14 @@ final class WP_Markdown_Reconciliation_Service {
 	}
 
 	private function apply_entry( array $entry, array $snapshot, string $plan_id, string $source_identity, ?string $cursor, array $options ): array {
+		$intent = $this->intent( $entry, $snapshot, $plan_id, $source_identity, $cursor, $options );
+		$private_entry = $entry;
+		$private_entry['snapshot'] = $snapshot;
+		$adapter = $this->adapter->adapter_for( $intent, $private_entry );
+		return $this->coordinator->reconcile( $intent, $adapter );
+	}
+
+	private function intent( array $entry, array $snapshot, string $plan_id, string $source_identity, ?string $cursor, array $options ): array {
 		$category  = $entry['category'];
 		$direction = in_array( $category, array( 'created', 'updated_from_file', 'deleted_from_file' ), true ) ? 'canonical_to_wordpress' : ( 'moved' === $category ? $snapshot['move_direction'] : 'wordpress_to_canonical' );
 		$before    = $snapshot['durable_before'] ?? array(
@@ -450,18 +495,17 @@ final class WP_Markdown_Reconciliation_Service {
 			'before'         => $before,
 			'after'          => $after,
 		);
-		$private_entry = $entry;
-		$private_entry['snapshot'] = $snapshot;
-		$adapter = $this->adapter->adapter_for( $intent, $private_entry );
-		return $this->coordinator->reconcile( $intent, $adapter );
+		return $intent;
 	}
 
-	private function recover_original_operations( string $plan_id, string $source_identity, array &$result, array &$blocked_resources ): void {
+	private function recover_original_operations( string $plan_id, string $source_identity, ?string $cursor, array &$result, array &$blocked_resources, bool $include_planned ): bool {
+		$recovered_any = false;
 		foreach ( $this->coordinator->recoverable( 1000 ) as $record ) {
 			$binding = $record['binding'] ?? array();
-			if ( $plan_id !== ( $binding['plan_id'] ?? null ) || $source_identity !== ( $binding['continuation']['source_identity'] ?? null ) ) {
+			if ( $plan_id !== ( $binding['plan_id'] ?? null ) || $source_identity !== ( $binding['continuation']['source_identity'] ?? null ) || $cursor !== ( $binding['continuation']['cursor'] ?? null ) || ( ! $include_planned && 'planned' === ( $record['state'] ?? null ) ) ) {
 				continue;
 			}
+			$recovered_any = true;
 			$resource_id = (string) ( $binding['resource']['id'] ?? '' );
 			try {
 				$durable_adapter = $this->adapter->adapter_for( $record, null );
@@ -480,6 +524,18 @@ final class WP_Markdown_Reconciliation_Service {
 				$result['categories']['conflicts'][] = $this->record_conflict_entry( $record, 'durable_store_conflict', $record['id'] ?? null );
 			}
 		}
+		return $recovered_any;
+	}
+
+	private function finalize_result( array $result ): array {
+		foreach ( self::CATEGORIES as $category ) {
+			usort( $result['categories'][ $category ], array( $this, 'compare_entries' ) );
+			$result['counts'][ $category ] = count( $result['categories'][ $category ] );
+		}
+		$result['operation_ids'] = array_values( array_unique( $result['operation_ids'] ) );
+		sort( $result['operation_ids'], SORT_STRING );
+		$result['continuation'] = null;
+		return $result;
 	}
 
 	private function base_entry( array $snapshot ): array {

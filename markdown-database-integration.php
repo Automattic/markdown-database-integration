@@ -57,6 +57,17 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-wordpress-reconcili
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
+function markdown_database_integration_ensure_mysql_reconciliation_state(): void {
+	global $wpdb;
+	if ( ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) || '1' === (string) get_option( '_markdown_db_mysql_reconciliation_schema', '' ) ) {
+		return;
+	}
+	if ( false === $wpdb->query( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' ) ) {
+		return;
+	}
+	update_option( '_markdown_db_mysql_reconciliation_schema', '1', false );
+}
+
 /**
  * The content directory where markdown files are stored.
  * Override in wp-config.php: define( 'MARKDOWN_DB_CONTENT_DIR', '/path/to/wiki' );
@@ -153,6 +164,7 @@ function markdown_database_integration_import_seed_posts_after_install(): void {
 }
 
 add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
+add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 

@@ -110,13 +110,13 @@ try {
 	$recovered = ( new WP_Markdown_Durable_Reconciliation_Coordinator( $store, 'recovery-probe', 1 ) )->recover( $interrupted['id'], $adapter->adapter_for( $claimed ) );
 	$recovery_fence_key = substr( hash( 'sha256', $root . '/canonical' ), 0, 16 ) . ':post:recovery';
 	$recovery_fence = $wpdb->get_row( $wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s', $recovery_fence_key ), ARRAY_A );
-	mdi_native_probe_check( 'completed' === $recovered['state'] && $mutations_after_effect === $adapter->mutations && 'canonical-value' === $wpdb->get_var( "SELECT value FROM {$table} WHERE resource_id = 'recovery'" ) && is_array( $recovery_fence ) && $claimed['id'] === $recovery_fence['operation_id'] && (int) $claimed['fence'] === (int) $recovery_fence['fence'], 'wpdb adapter recovery recognizes the real fenced MariaDB effect without replay' );
+	mdi_native_probe_check( 'completed' === $recovered['state'] && $mutations_after_effect === $adapter->mutations && 'canonical-value' === $wpdb->get_var( "SELECT value FROM {$table} WHERE resource_id = 'recovery'" ) && is_array( $recovery_fence ) && $recovered['id'] === $recovery_fence['operation_id'] && (int) $recovered['fence'] === (int) $recovery_fence['fence'] && (int) $claimed['fence'] < (int) $recovered['fence'], 'wpdb adapter recovery re-fences and recognizes the real MariaDB effect without replay' );
 } finally {
 	if ( isset( $wpdb, $apply_fence_key, $apply_operation_id ) ) {
 		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $apply_fence_key, $apply_operation_id ) );
 	}
-	if ( isset( $wpdb, $recovery_fence_key, $claimed ) ) {
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $recovery_fence_key, $claimed['id'] ) );
+	if ( isset( $wpdb, $recovery_fence_key, $recovered ) ) {
+		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $recovery_fence_key, $recovered['id'] ) );
 	}
 	if ( isset( $wpdb, $table, $table_created ) && $table_created ) {
 		$wpdb->query( "DROP TABLE {$table}" );

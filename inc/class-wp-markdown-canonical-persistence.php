@@ -250,6 +250,73 @@ class WP_Markdown_Canonical_Persistence {
 		$this->apply_normalized_mutation( $mutation );
 	}
 
+	/** Recover original durable WordPress-to-canonical IDs before new intent is derived. */
+	public function recover_pending( int $limit = 100 ): array {
+		if ( null === $this->reconciliation ) { return array(); }
+		return $this->reconciliation->recover_pending(
+			function ( array $record ): ?WP_Markdown_Reconciliation_Adapter {
+				$binding = $record['binding'];
+				if ( 'wordpress_to_canonical' !== $binding['direction'] || 'post' !== $binding['resource']['type'] ) { return null; }
+				$id = (int) $binding['resource']['id'];
+				$domains = array_keys( $binding['after'] );
+				$observer = function () use ( $id, $domains ): array {
+					$values = array( 'wordpress' => $this->current_post_receipt( $id ), 'canonical' => $this->storage_post_receipt( $id ), 'index' => $this->file_index_receipt( $id ) );
+					return array_intersect_key( $values, array_flip( $domains ) );
+				};
+				$mutation = function () use ( $id ): void {
+					$rows = $this->operations->post_rows( array( $id ) );
+					if ( empty( $rows ) ) { $this->storage->delete_post( $id ); $this->operations->delete_file_index( $id ); return; }
+					$path = $this->storage->write_post( (object) $rows[0] );
+					if ( false === $path ) { throw new RuntimeException( 'Recovered canonical post replacement failed.' ); }
+					$relative = str_starts_with( $path, $this->content_dir . '/' ) ? substr( $path, strlen( $this->content_dir ) + 1 ) : $path;
+					$this->operations->upsert_file_index( $id, $relative, (int) filemtime( $path ), (int) filesize( $path ) );
+				};
+				return new WP_Markdown_Filesystem_Reconciliation_Adapter( $this->reconciliation_fence_directory, $observer, $mutation );
+			},
+			$limit
+		);
+	}
+
+	/** Capture exact WordPress post identities before the owning SQL transaction mutates them. */
+	public function wordpress_post_identities( array $post_ids ): array {
+		$result = array();
+		foreach ( $post_ids as $post_id ) { $result[ (int) $post_id ] = $this->current_post_receipt( (int) $post_id ); }
+		return $result;
+	}
+
+	/** Plan and claim the cross-domain continuation while the WordPress write is still uncommitted. */
+	public function prepare_post_commit( int $post_id, mixed $wordpress_before ): ?array {
+		if ( null === $this->reconciliation ) { return null; }
+		try {
+			if ( 'auto-draft' === $this->operations->post_status( $post_id ) ) { return null; }
+		} catch ( Throwable $error ) {
+			// Status lookup failures retain the post for fail-safe persistence.
+		}
+		$wordpress_after = $this->current_post_receipt( $post_id );
+		$canonical_before = $this->storage_post_receipt( $post_id );
+		$index_before = $this->file_index_receipt( $post_id );
+		$after = array( 'wordpress' => $wordpress_after, 'canonical' => $wordpress_after, 'index' => null === $wordpress_after ? null : array( 'post_id' => $post_id ) );
+		$before = array( 'wordpress' => $wordpress_before, 'canonical' => $canonical_before, 'index' => $index_before );
+		$checkpoint = array( 'wordpress' => $wordpress_after, 'canonical' => $canonical_before, 'index' => $index_before );
+		$observer = fn(): array => array( 'wordpress' => $this->current_post_receipt( $post_id ), 'canonical' => $this->storage_post_receipt( $post_id ), 'index' => $this->file_index_receipt( $post_id ) );
+		$mutation = function () use ( $post_id, $wordpress_after ): void {
+			if ( null === $wordpress_after ) { $this->storage->delete_post( $post_id ); $this->operations->delete_file_index( $post_id ); return; }
+			$rows = $this->operations->post_rows( array( $post_id ) );
+			if ( empty( $rows ) ) { throw new RuntimeException( 'Prepared WordPress post is unavailable.' ); }
+			$path = $this->storage->write_post( (object) $rows[0] );
+			if ( false === $path ) { throw new RuntimeException( 'Prepared canonical post replacement failed.' ); }
+			$relative = str_starts_with( $path, $this->content_dir . '/' ) ? substr( $path, strlen( $this->content_dir ) + 1 ) : $path;
+			$this->operations->upsert_file_index( $post_id, $relative, (int) filemtime( $path ), (int) filesize( $path ) );
+		};
+		$adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $this->reconciliation_fence_directory, $observer, $mutation );
+		$record = $this->reconciliation->prepare( array( 'plan_id' => 'wordpress-commit:' . $post_id . ':' . hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( array( $before, $after ) ) ), 'continuation' => array( 'post_id' => $post_id ), 'canonical_root' => $this->content_dir, 'resource' => array( 'type' => 'post', 'id' => (string) $post_id ), 'kind' => null === $wordpress_after ? 'deletion' : ( null === $wordpress_before ? 'create' : 'update' ), 'direction' => 'wordpress_to_canonical', 'before' => $before, 'checkpoint' => $checkpoint, 'after' => $after ), $adapter );
+		return array( 'id' => $record['id'], 'adapter' => $adapter );
+	}
+
+	public function continue_post_commit( array $prepared ): array {
+		return $this->reconciliation->continue_prepared( $prepared['id'], $prepared['adapter'] );
+	}
+
 	/** @param array{operation:string,table:string,context?:array<string,mixed>} $mutation */
 	private function apply_normalized_mutation( array $mutation ): void {
 		if ( $this->writing ) {
@@ -364,7 +431,7 @@ class WP_Markdown_Canonical_Persistence {
 	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
 	public function flush_dirty( bool $throw_on_error = false ): array {
-		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) && empty( $this->dirty_partition_resources ) ) {
+		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) && empty( $this->dirty_partition_resources ) && empty( $this->canonical_mutations ) ) {
 			return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
 		}
 
@@ -870,7 +937,7 @@ class WP_Markdown_Canonical_Persistence {
 
 		// Update the file index after writing the .md file.
 		// The driver uses this index for lazy-loading content on demand.
-		if ( false !== $file_path && $post_id > 0 ) {
+		if ( null === $this->reconciliation && false !== $file_path && $post_id > 0 ) {
 			$content_dir = $this->storage->get_content_dir();
 			$relative_path = $file_path;
 			if ( str_starts_with( $file_path, $content_dir . '/' ) ) {
@@ -892,13 +959,15 @@ class WP_Markdown_Canonical_Persistence {
 			return $this->storage->write_post( $row );
 		}
 		$id       = (int) $row->ID;
-		$before   = array( 'canonical' => $this->storage_post_receipt( $id ) );
-		$after    = array( 'canonical' => $this->current_post_receipt( $id ) );
+		$before   = array( 'canonical' => $this->storage_post_receipt( $id ), 'index' => $this->file_index_receipt( $id ) );
+		$after    = array( 'canonical' => $this->current_post_receipt( $id ), 'index' => array( 'post_id' => $id ) );
 		$result   = false;
-		$observer = fn(): array => array( 'canonical' => $this->storage_post_receipt( $id ) );
-		$mutation = function () use ( $row, &$result ): void {
+		$observer = fn(): array => array( 'canonical' => $this->storage_post_receipt( $id ), 'index' => $this->file_index_receipt( $id ) );
+		$mutation = function () use ( $row, $id, &$result ): void {
 			$result = $this->storage->write_post( $row );
 			if ( false === $result ) { throw new RuntimeException( 'Canonical post replacement failed.' ); }
+			$relative = str_starts_with( $result, $this->content_dir . '/' ) ? substr( $result, strlen( $this->content_dir ) + 1 ) : $result;
+			$this->operations->upsert_file_index( $id, $relative, (int) filemtime( $result ), (int) filesize( $result ) );
 		};
 		$adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $this->reconciliation_fence_directory, $observer, $mutation );
 		$this->reconciliation->reconcile( array( 'plan_id' => 'persistence:' . $id . ':' . hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( $after ) ), 'continuation' => array( 'post_id' => $id ), 'canonical_root' => $this->content_dir, 'resource' => array( 'type' => 'post', 'id' => (string) $id ), 'kind' => null === $before['canonical'] ? 'create' : ( ( $before['canonical']['post_name'] ?? '' ) === ( $after['canonical']['post_name'] ?? '' ) ? 'update' : 'move' ), 'direction' => 'wordpress_to_canonical', 'before' => $before, 'after' => $after ), $adapter );
@@ -911,11 +980,15 @@ class WP_Markdown_Canonical_Persistence {
 			$this->operations->delete_file_index( $post_id );
 			return;
 		}
-		$before = array( 'canonical' => $this->storage_post_receipt( $post_id ) );
-		$observer = fn(): array => array( 'canonical' => $this->storage_post_receipt( $post_id ) );
+		$before = array( 'canonical' => $this->storage_post_receipt( $post_id ), 'index' => $this->file_index_receipt( $post_id ) );
+		$observer = fn(): array => array( 'canonical' => $this->storage_post_receipt( $post_id ), 'index' => $this->file_index_receipt( $post_id ) );
 		$mutation = function () use ( $post_id ): void { $this->storage->delete_post( $post_id ); $this->operations->delete_file_index( $post_id ); };
 		$adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $this->reconciliation_fence_directory, $observer, $mutation );
-		$this->reconciliation->reconcile( array( 'plan_id' => 'persistence-delete:' . $post_id . ':' . hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( $before ) ), 'continuation' => array( 'post_id' => $post_id ), 'canonical_root' => $this->content_dir, 'resource' => array( 'type' => 'post', 'id' => (string) $post_id ), 'kind' => 'deletion', 'direction' => 'wordpress_to_canonical', 'before' => $before, 'after' => array( 'canonical' => null ) ), $adapter );
+		$this->reconciliation->reconcile( array( 'plan_id' => 'persistence-delete:' . $post_id . ':' . hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( $before ) ), 'continuation' => array( 'post_id' => $post_id ), 'canonical_root' => $this->content_dir, 'resource' => array( 'type' => 'post', 'id' => (string) $post_id ), 'kind' => 'deletion', 'direction' => 'wordpress_to_canonical', 'before' => $before, 'after' => array( 'canonical' => null, 'index' => null ) ), $adapter );
+	}
+
+	private function file_index_receipt( int $post_id ): ?array {
+		return method_exists( $this->operations, 'file_index_receipt' ) ? $this->operations->file_index_receipt( $post_id ) : null;
 	}
 
 	private function storage_post_receipt( int $post_id ): ?array {

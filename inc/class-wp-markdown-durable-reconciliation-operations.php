@@ -209,7 +209,7 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 			static function ( array &$state ) use ( $now, $limit ): array {
 				$records = array_filter(
 					$state['operations'],
-					static fn( array $record ): bool => in_array( $record['state'], array( 'claimed', 'effect_observed', 'ambiguous' ), true ) && (int) $record['lease_expires_at'] <= $now
+					static fn( array $record ): bool => 'planned' === $record['state'] || ( in_array( $record['state'], array( 'claimed', 'effect_observed', 'ambiguous' ), true ) && (int) $record['lease_expires_at'] <= $now )
 				);
 				usort( $records, static fn( array $a, array $b ): int => array( $a['updated_at'], $a['id'] ) <=> array( $b['updated_at'], $b['id'] ) );
 				return array_slice( $records, 0, $limit );
@@ -224,7 +224,7 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 			}
 		}
 		$binding = WP_Markdown_Reconciliation_Identity::normalize(
-			array_intersect_key( $operation, array_flip( array( 'plan_id', 'continuation', 'canonical_root', 'resource', 'kind', 'direction', 'before', 'after' ) ) )
+			array_intersect_key( $operation, array_flip( array( 'plan_id', 'continuation', 'canonical_root', 'resource', 'kind', 'direction', 'before', 'checkpoint', 'after' ) ) )
 		);
 		$binding['canonical_root'] = $this->normalized_root( (string) $binding['canonical_root'] );
 		if ( $this->canonical_roots && ! isset( $this->canonical_roots[ $binding['canonical_root'] ] ) ) {
@@ -257,6 +257,12 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 		if ( array_keys( $binding['before'] ) !== array_keys( $binding['after'] ) ) {
 			throw new InvalidArgumentException( 'Before and after identities must name the same domains.' );
 		}
+		if ( isset( $binding['checkpoint'] ) ) {
+			if ( array_keys( $binding['before'] ) !== array_keys( $binding['checkpoint'] ) ) { throw new InvalidArgumentException( 'Checkpoint proof must cover the same durability domains.' ); }
+			foreach ( $binding['checkpoint'] as $identity ) {
+				if ( ! is_array( $identity ) || 'sha256' !== ( $identity['algorithm'] ?? null ) || ! preg_match( '/^[a-f0-9]{64}$/', (string) ( $identity['digest'] ?? '' ) ) ) { throw new InvalidArgumentException( 'Checkpoint identities must be exact normalized SHA-256 identities.' ); }
+			}
+		}
 		$id  = hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( $binding ) );
 		$now = (int) ( $operation['created_at'] ?? time() );
 		return array(
@@ -286,9 +292,18 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 	}
 
 	private function locked( callable $callback, bool $write = false ): mixed {
-		$lock = fopen( $this->directory . '/operations.lock', 'c+b' );
+		$lock_path = $this->directory . '/operations.lock';
+		$this->assert_regular_path( $lock_path, true );
+		$lock = @fopen( $lock_path, 'x+b' );
+		if ( false === $lock ) {
+			$lock = fopen( $lock_path, 'r+b' );
+		}
 		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
 			throw new RuntimeException( 'Unable to lock the durable operation store.' );
+		}
+		if ( ! chmod( $lock_path, 0600 ) ) {
+			fclose( $lock );
+			throw new RuntimeException( 'Unable to secure the durable operation-store lock.' );
 		}
 		try {
 			$state  = $this->read_state();
@@ -305,7 +320,8 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 
 	private function read_state(): array {
 		$path = $this->directory . '/operations.json';
-		if ( ! is_file( $path ) ) {
+		$this->assert_regular_path( $path, true );
+		if ( ! file_exists( $path ) ) {
 			return array( 'version' => self::VERSION, 'next_fence' => 0, 'operations' => array() );
 		}
 		$handle = fopen( $path, 'rb' );
@@ -355,7 +371,9 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 			} finally {
 				fclose( $handle );
 			}
-			if ( ! chmod( $temp, 0600 ) || ! rename( $temp, $this->directory . '/operations.json' ) ) {
+			$target = $this->directory . '/operations.json';
+			$this->assert_regular_path( $target, true );
+			if ( ! chmod( $temp, 0600 ) || ! rename( $temp, $target ) ) {
 				throw new RuntimeException( 'Unable to atomically publish the durable operation store.' );
 			}
 			$this->sync_directory();
@@ -370,6 +388,7 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 		if ( '' === $directory || ( '/' !== $directory[0] && ! preg_match( '/^[A-Za-z]:[\\\\\/]/', $directory ) ) ) {
 			throw new InvalidArgumentException( 'The operation-store directory must be absolute.' );
 		}
+		$this->assert_path_components_are_not_links( $directory );
 		$created = ! is_dir( $directory );
 		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0700, true ) && ! is_dir( $directory ) ) {
 			throw new RuntimeException( 'Unable to create the operation-store directory.' );
@@ -377,7 +396,7 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 		if ( ! is_dir( $directory ) ) {
 			throw new RuntimeException( 'The operation-store path is not a directory.' );
 		}
-		if ( $created && ! chmod( $directory, 0700 ) ) {
+		if ( ! chmod( $directory, 0700 ) ) {
 			throw new RuntimeException( 'Unable to secure the operation-store directory.' );
 		}
 		clearstatcache( true, $directory );
@@ -412,9 +431,35 @@ final class WP_Markdown_Filesystem_Reconciliation_Operation_Store implements WP_
 			return;
 		}
 		$handle = @fopen( $this->directory, 'rb' );
-		if ( false !== $handle ) {
-			@fsync( $handle );
-			fclose( $handle );
+		if ( false === $handle || ! @fsync( $handle ) ) {
+			if ( false !== $handle ) { fclose( $handle ); }
+			throw new RuntimeException( 'Unable to prove durable operation-store publication.' );
+		}
+		fclose( $handle );
+	}
+
+	private function assert_regular_path( string $path, bool $missing_allowed ): void {
+		clearstatcache( true, $path );
+		$stat = @lstat( $path );
+		if ( false === $stat ) {
+			if ( $missing_allowed ) { return; }
+			throw new RuntimeException( 'A durable operation-store path is missing.' );
+		}
+		if ( ( $stat['mode'] & 0170000 ) !== 0100000 || is_link( $path ) ) {
+			throw new RuntimeException( 'Durable operation-store files must be regular files without symlink traversal.' );
+		}
+		if ( 0 !== ( $stat['mode'] & 0077 ) || ( function_exists( 'posix_geteuid' ) && $stat['uid'] !== posix_geteuid() ) ) {
+			throw new RuntimeException( 'Durable operation-store files must be server-owned and private.' );
+		}
+	}
+
+	private function assert_path_components_are_not_links( string $path ): void {
+		$current = DIRECTORY_SEPARATOR;
+		foreach ( explode( DIRECTORY_SEPARATOR, ltrim( $path, DIRECTORY_SEPARATOR ) ) as $component ) {
+			$current = rtrim( $current, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR . $component;
+			if ( file_exists( $current ) && is_link( $current ) ) {
+				throw new RuntimeException( 'The operation-store path must not traverse symlinks.' );
+			}
 		}
 	}
 
@@ -489,7 +534,27 @@ final class WP_Markdown_Durable_Reconciliation_Operations {
 		return $this->complete( $record, $actual, $now, $boundary );
 	}
 
-	/** Recovery observes and fences; it never calls the mutation adapter's apply method. */
+	public function prepare( string $operation_id, string $owner, int $now, int $lease_seconds, WP_Markdown_Reconciliation_Adapter $adapter ): array {
+		$record = $this->required( $operation_id );
+		if ( 'planned' !== $record['state'] ) { throw new WP_Markdown_Reconciliation_Store_Conflict( 'Only a planned operation may be prepared.' ); }
+		$record = $this->store->claim( $operation_id, $record['revision'], $owner, $now, $lease_seconds );
+		$adapter->fence( $record );
+		return $record;
+	}
+
+	public function continue_prepared( string $operation_id, WP_Markdown_Reconciliation_Adapter $adapter, ?callable $boundary = null ): array {
+		$record = $this->required( $operation_id );
+		$actual = $this->observe( $adapter, $record );
+		if ( ! isset( $record['binding']['checkpoint'] ) || ! $this->matches( $record['binding']['checkpoint'], $actual ) ) {
+			return $this->conflict( $record, $actual, $record['binding']['checkpoint'] ?? $record['binding']['before'], 'commit_checkpoint_not_proven', time(), $boundary );
+		}
+		$adapter->apply( $record );
+		$actual = $this->observe( $adapter, $record );
+		if ( ! $this->matches( $record['binding']['after'], $actual ) ) { return $this->conflict( $record, $actual, $record['binding']['after'], 'after_state_not_proven', time(), $boundary ); }
+		return $this->complete( $record, $actual, time(), $boundary );
+	}
+
+	/** Recovery applies only a prepared continuation whose exact commit checkpoint is proven. */
 	public function recover( string $operation_id, string $owner, int $now, int $lease_seconds, WP_Markdown_Reconciliation_Adapter $adapter, ?callable $boundary = null ): array {
 		$record = $this->required( $operation_id );
 		if ( 'completed' === $record['state'] || 'reconciliation_required' === $record['state'] ) {
@@ -510,6 +575,11 @@ final class WP_Markdown_Durable_Reconciliation_Operations {
 		}
 		if ( $this->matches( $record['binding']['after'], $actual ) ) {
 			return $this->complete( $record, $actual, $now, $boundary );
+		}
+		if ( isset( $record['binding']['checkpoint'] ) && $this->matches( $record['binding']['checkpoint'], $actual ) ) {
+			$adapter->apply( $record );
+			$actual = $this->observe( $adapter, $record );
+			if ( $this->matches( $record['binding']['after'], $actual ) ) { return $this->complete( $record, $actual, $now, $boundary ); }
 		}
 		return $this->conflict( $record, $actual, $record['binding']['after'], 'recovery_after_state_not_proven', $now, $boundary );
 	}

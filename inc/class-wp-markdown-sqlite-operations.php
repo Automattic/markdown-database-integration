@@ -83,6 +83,10 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 		$pdo->prepare( 'UPDATE `' . $this->table( 'posts' ) . '` SET post_content = ? WHERE ID = ?' )->execute( array( '', $post_id ) );
 	}
 	public function delete_file_index( int $post_id ): void { if ( method_exists( $this->driver, 'remove_from_file_index' ) ) { $this->driver->remove_from_file_index( $post_id ); return; } if ( ! method_exists( $this->driver, 'get_connection' ) ) { return; } $this->driver->get_connection()->get_pdo()->prepare( 'DELETE FROM `_markdown_file_index` WHERE post_id = ?' )->execute( array( $post_id ) ); }
+	public function file_index_receipt( int $post_id ): ?array {
+		$rows = $this->rows( 'SELECT post_id FROM `_markdown_file_index` WHERE post_id = ' . $post_id );
+		return empty( $rows ) ? null : array( 'post_id' => (int) $rows[0]->post_id );
+	}
 	public function upsert_options_index( array $rows ): void { try { if ( method_exists( $this->driver, 'upsert_options_index' ) ) { $this->driver->upsert_options_index( $rows ); return; } foreach ( $rows as $row ) { $this->driver->get_connection()->get_pdo()->prepare( 'INSERT OR REPLACE INTO `_options_file_index` VALUES (?, ?, ?, ?, ?, ?)' )->execute( array_values( $row ) ); } } catch ( \Throwable $e ) {} }
 	public function delete_options_index( array $names ): void { try { if ( method_exists( $this->driver, 'remove_from_options_index' ) ) { $this->driver->remove_from_options_index( $names ); return; } foreach ( $names as $name ) { $this->driver->get_connection()->get_pdo()->prepare( 'DELETE FROM `_options_file_index` WHERE option_name = ?' )->execute( array( $name ) ); } } catch ( \Throwable $e ) {} }
 	public function update_manifest( string $path, int $mtime, int $size ): void { try { $this->driver->get_connection()->get_pdo()->prepare( 'INSERT OR REPLACE INTO `_json_file_manifest` (file_name, file_mtime, file_size) VALUES (?, ?, ?)' )->execute( array( $path, $mtime, $size ) ); } catch ( \Throwable $e ) {} }

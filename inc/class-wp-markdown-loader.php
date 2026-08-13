@@ -43,6 +43,7 @@ class WP_Markdown_Loader {
 		$this->stats = array( 'boot_mode' => 'cold' );
 		try {
 			$this->operations->ensure_reconciliation_state();
+			$this->recover_pending_operations();
 			$this->operations->ensure_tables( $this->schema_files() );
 			$this->operations->hydrate_options( $this->option_rows() );
 			foreach ( self::CORE_TABLE_SUFFIXES as $table ) { $this->hydrate_table( $table ); }
@@ -58,6 +59,7 @@ class WP_Markdown_Loader {
 		$this->stats = array( 'boot_mode' => 'warm' );
 		try {
 			$this->operations->ensure_reconciliation_state();
+			$this->recover_pending_operations();
 			$this->operations->hydrate_options( $this->option_rows() );
 			foreach ( self::SNAPSHOT_TABLE_SUFFIXES as $table ) { $this->hydrate_table( $table, true ); }
 			$this->hydrate_plugins( true );
@@ -70,6 +72,30 @@ class WP_Markdown_Loader {
 	}
 
 	public function prepare_existing_cache(): void { $this->operations->ensure_reconciliation_state(); }
+	private function recover_pending_operations(): void {
+		if ( null === $this->reconciliation ) { return; }
+		$this->reconciliation->recover_pending(
+			function ( array $record ): ?WP_Markdown_Reconciliation_Adapter {
+				$binding = $record['binding'];
+				if ( 'canonical_to_wordpress' !== $binding['direction'] || 'post' !== $binding['resource']['type'] ) { return null; }
+				$id = (int) $binding['resource']['id'];
+				$path = (string) ( $binding['continuation']['path'] ?? '' );
+				$absolute = '' === $path ? '' : $this->content_dir . '/' . $path;
+				$observer = fn(): array => array( 'canonical' => is_file( $absolute ) ? array( 'path' => $absolute, 'hash' => hash_file( 'sha256', $absolute ) ) : null, 'wordpress' => $this->loader_post_receipt( $id ) );
+				return new WP_Markdown_PDO_Reconciliation_Adapter( $this->operations_pdo(), $observer, static function (): void { throw new RuntimeException( 'Loader recovery does not replay an unproven database mutation.' ); } );
+			},
+			100
+		);
+	}
+	private function operations_pdo(): PDO {
+		$property = new ReflectionProperty( $this->operations, 'driver' );
+		$driver = $property->getValue( $this->operations );
+		return $driver->get_connection()->get_pdo();
+	}
+	private function loader_post_receipt( int $id ): ?array {
+		$rows = $this->operations->post_rows( array( $id ) );
+		return empty( $rows ) ? null : (array) $rows[0];
+	}
 	public function get_timings(): array { return $this->timings; }
 	public function get_stats(): array { return $this->stats; }
 	// Legacy reflection hook delegates to the neutral hydration path.

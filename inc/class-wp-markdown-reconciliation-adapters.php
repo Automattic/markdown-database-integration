@@ -9,10 +9,12 @@ require_once __DIR__ . '/class-wp-markdown-durable-reconciliation-operations.php
 
 final class WP_Markdown_Durable_Reconciliation_Coordinator {
 	private WP_Markdown_Durable_Reconciliation_Operations $operations;
+	private WP_Markdown_Reconciliation_Operation_Store $store;
 	private string $owner;
 	private int $lease_seconds;
 
 	public function __construct( WP_Markdown_Reconciliation_Operation_Store $store, ?string $owner = null, int $lease_seconds = 30 ) {
+		$this->store          = $store;
 		$this->operations    = new WP_Markdown_Durable_Reconciliation_Operations( $store );
 		$this->owner         = $owner ?? gethostname() . ':' . getmypid() . ':' . bin2hex( random_bytes( 8 ) );
 		$this->lease_seconds = $lease_seconds;
@@ -48,15 +50,60 @@ final class WP_Markdown_Durable_Reconciliation_Coordinator {
 	public function recover( string $operation_id, WP_Markdown_Reconciliation_Adapter $adapter, ?callable $boundary = null ): array {
 		return $this->operations->recover( $operation_id, $this->owner, time(), $this->lease_seconds, $adapter, $boundary );
 	}
+
+	public function prepare( array $intent, WP_Markdown_Reconciliation_Adapter $adapter ): array {
+		foreach ( array( 'before', 'checkpoint', 'after' ) as $side ) {
+			foreach ( $intent[ $side ] as $domain => $value ) {
+				if ( ! is_array( $value ) || 'sha256' !== ( $value['algorithm'] ?? null ) ) { $intent[ $side ][ $domain ] = WP_Markdown_Reconciliation_Identity::exact( $value ); }
+			}
+		}
+		$record = $this->operations->plan( $intent );
+		return $this->operations->prepare( $record['id'], $this->owner, time(), $this->lease_seconds, $adapter );
+	}
+
+	public function continue_prepared( string $operation_id, WP_Markdown_Reconciliation_Adapter $adapter ): array {
+		return $this->operations->continue_prepared( $operation_id, $adapter );
+	}
+
+	/** Enumerate authenticated durable IDs before callers derive any new intent. */
+	public function recoverable( int $limit = 100 ): array {
+		return $this->store->recoverable( time(), max( 1, min( 1000, $limit ) ) );
+	}
+
+	/** @param callable(array):?WP_Markdown_Reconciliation_Adapter $adapter_for */
+	public function recover_pending( callable $adapter_for, int $limit = 100 ): array {
+		$results = array();
+		foreach ( $this->recoverable( $limit ) as $record ) {
+			$adapter = $adapter_for( $record );
+			if ( null !== $adapter ) { $results[ $record['id'] ] = $this->recover( $record['id'], $adapter ); }
+		}
+		return $results;
+	}
 }
 
 /** Build the shared production coordinator outside the managed canonical roots. */
 function wp_markdown_durable_reconciliation_coordinator( array $canonical_roots ): WP_Markdown_Durable_Reconciliation_Coordinator {
 	$roots = array_values( array_unique( array_map( static fn( string $root ): string => rtrim( $root, '/' ), $canonical_roots ) ) );
 	$site  = hash( 'sha256', implode( "\0", $roots ) );
-	$base  = rtrim( sys_get_temp_dir(), '/' ) . '/markdown-database-integration-operations';
+	$temp_root = realpath( sys_get_temp_dir() );
+	if ( false === $temp_root || ! is_dir( $temp_root ) ) {
+		throw new RuntimeException( 'Unable to resolve the durable reconciliation runtime root.' );
+	}
+	$base = rtrim( $temp_root, DIRECTORY_SEPARATOR ) . '/markdown-database-integration-operations';
 	if ( ! is_dir( $base ) && ! mkdir( $base, 0700, true ) && ! is_dir( $base ) ) {
 		throw new RuntimeException( 'Unable to create the durable reconciliation runtime directory.' );
+	}
+	clearstatcache( true, $base );
+	$base_stat = @lstat( $base );
+	if (
+		false === $base_stat
+		|| ( $base_stat['mode'] & 0170000 ) !== 0040000
+		|| is_link( $base )
+		|| ! chmod( $base, 0700 )
+		|| 0 !== ( fileperms( $base ) & 0077 )
+		|| ( function_exists( 'posix_geteuid' ) && $base_stat['uid'] !== posix_geteuid() )
+	) {
+		throw new RuntimeException( 'The durable reconciliation runtime directory must be server-owned and private.' );
 	}
 	$key_path = $base . '/' . $site . '.key';
 	if ( ! is_file( $key_path ) ) {
@@ -163,9 +210,15 @@ final class WP_Markdown_Filesystem_Reconciliation_Adapter implements WP_Markdown
 		$this->fence_directory = rtrim( $fence_directory, '/' );
 		$this->observer         = $observer;
 		$this->mutation         = $mutation;
+		if ( file_exists( $this->fence_directory ) && is_link( $this->fence_directory ) ) {
+			throw new RuntimeException( 'The filesystem fence directory must not be a symlink.' );
+		}
 		if ( ! is_dir( $this->fence_directory ) && ! mkdir( $this->fence_directory, 0700, true ) && ! is_dir( $this->fence_directory ) ) {
 			throw new RuntimeException( 'Unable to create the filesystem fence directory.' );
 		}
+		if ( ! chmod( $this->fence_directory, 0700 ) ) { throw new RuntimeException( 'Unable to secure the filesystem fence directory.' ); }
+		$stat = lstat( $this->fence_directory );
+		if ( false === $stat || 0 !== ( $stat['mode'] & 0077 ) || ( function_exists( 'posix_geteuid' ) && $stat['uid'] !== posix_geteuid() ) ) { throw new RuntimeException( 'The filesystem fence directory must be server-owned and private.' ); }
 	}
 
 	public function observe( array $operation ): array {
@@ -202,10 +255,14 @@ final class WP_Markdown_Filesystem_Reconciliation_Adapter implements WP_Markdown
 
 	private function locked( array $operation, callable $callback ): void {
 		$key  = hash( 'sha256', $operation['binding']['resource']['type'] . "\0" . $operation['binding']['resource']['id'] );
-		$lock = fopen( $this->fence_directory . '/' . $key . '.lock', 'c+b' );
+		$lock_path = $this->fence_directory . '/' . $key . '.lock';
+		if ( is_link( $lock_path ) ) { throw new RuntimeException( 'Filesystem fence locks must not be symlinks.' ); }
+		$lock = @fopen( $lock_path, 'x+b' );
+		if ( false === $lock ) { $lock = fopen( $lock_path, 'r+b' ); }
 		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
 			throw new RuntimeException( 'Unable to lock the filesystem resource fence.' );
 		}
+		if ( ! chmod( $lock_path, 0600 ) ) { fclose( $lock ); throw new RuntimeException( 'Unable to secure the filesystem resource lock.' ); }
 		try {
 			$callback( $this->fence_directory . '/' . $key . '.json' );
 		} finally {
@@ -215,6 +272,7 @@ final class WP_Markdown_Filesystem_Reconciliation_Adapter implements WP_Markdown
 	}
 
 	private function read_fence( string $path ): ?array {
+		if ( is_link( $path ) ) { throw new RuntimeException( 'Filesystem fences must not be symlinks.' ); }
 		if ( ! is_file( $path ) ) {
 			return null;
 		}
@@ -226,12 +284,23 @@ final class WP_Markdown_Filesystem_Reconciliation_Adapter implements WP_Markdown
 	}
 
 	private function write_fence( string $path, array $fence ): void {
+		if ( is_link( $path ) ) { throw new RuntimeException( 'Filesystem fences must not be symlinks.' ); }
 		$temp = tempnam( $this->fence_directory, '.fence-' );
-		if ( false === $temp || false === file_put_contents( $temp, WP_Markdown_Reconciliation_Identity::encode( $fence ), LOCK_EX ) || ! chmod( $temp, 0600 ) || ! rename( $temp, $path ) ) {
+		$handle = false === $temp ? false : fopen( $temp, 'c+b' );
+		$bytes = WP_Markdown_Reconciliation_Identity::encode( $fence );
+		if ( false === $temp || false === $handle || strlen( $bytes ) !== fwrite( $handle, $bytes ) || ! fflush( $handle ) || ( function_exists( 'fsync' ) && ! fsync( $handle ) ) || ! chmod( $temp, 0600 ) ) {
+			if ( is_resource( $handle ) ) { fclose( $handle ); }
 			if ( is_string( $temp ) && is_file( $temp ) ) {
 				unlink( $temp );
 			}
 			throw new RuntimeException( 'Unable to persist the filesystem resource fence.' );
+		}
+		fclose( $handle );
+		if ( ! rename( $temp, $path ) ) { @unlink( $temp ); throw new RuntimeException( 'Unable to atomically publish the filesystem resource fence.' ); }
+		if ( function_exists( 'fsync' ) ) {
+			$directory = @fopen( $this->fence_directory, 'rb' );
+			if ( false === $directory || ! @fsync( $directory ) ) { if ( false !== $directory ) { fclose( $directory ); } throw new RuntimeException( 'Unable to prove durable filesystem fence publication.' ); }
+			fclose( $directory );
 		}
 	}
 }

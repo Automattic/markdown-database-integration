@@ -779,18 +779,11 @@ class WP_Markdown_Storage {
 
 	/** Write using a non-legacy profile's canonical source path. */
 	private function write_profile_post( object $post ): string|false {
-		$profile = $this->content_layout();
-		if ( empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
-			error_log( 'Markdown DB: content layout profile has no path_for_post callback.' );
+		$relative = $this->profile_path_for_post( $post );
+		if ( false === $relative ) {
 			return false;
 		}
 		$frontmatter = $this->build_frontmatter( $post );
-		$relative = call_user_func( $profile['path_for_post'], $post, $frontmatter, array( 'content_dir' => $this->content_dir, 'profile_id' => $profile['id'] ) );
-		$relative = is_string( $relative ) ? $this->validate_profile_path( $relative ) : null;
-		if ( null === $relative ) {
-			error_log( 'Markdown DB: content layout profile returned an unsafe canonical path.' );
-			return false;
-		}
 		$file_path = $this->profile_absolute_path( $relative, true );
 		if ( null === $file_path ) {
 			return false;
@@ -835,6 +828,23 @@ class WP_Markdown_Storage {
 			$this->record_profile_index( $id, $file_path );
 		}
 		return $file_path;
+	}
+
+	/** Return the validated route selected by the active non-legacy profile. */
+	public function profile_path_for_post( object $post ): string|false {
+		$profile = $this->content_layout();
+		if ( ! empty( $profile['legacy'] ) || empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
+			error_log( 'Markdown DB: content layout profile has no path_for_post callback.' );
+			return false;
+		}
+		$frontmatter = $this->build_frontmatter( $post );
+		$relative = call_user_func( $profile['path_for_post'], $post, $frontmatter, array( 'content_dir' => $this->content_dir, 'profile_id' => $profile['id'] ) );
+		$relative = is_string( $relative ) ? $this->validate_profile_path( $relative ) : null;
+		if ( null === $relative ) {
+			error_log( 'Markdown DB: content layout profile returned an unsafe canonical path.' );
+			return false;
+		}
+		return $relative;
 	}
 
 	/** @return string[] */

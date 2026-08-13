@@ -141,11 +141,11 @@ final class WP_Markdown_PDO_Reconciliation_Adapter implements WP_Markdown_Reconc
 		$this->transaction(
 			function () use ( $operation ): void {
 				$key = $this->resource_key( $operation );
-				$row = $this->pdo->prepare( 'SELECT fence FROM `_mdi_resource_fences` WHERE resource_key = ?' );
+				$row = $this->pdo->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = ?' );
 				$row->execute( array( $key ) );
-				$current = $row->fetchColumn();
-				if ( false !== $current && (int) $current >= (int) $operation['fence'] ) {
-					if ( (int) $current === (int) $operation['fence'] ) {
+				$current = $row->fetch( PDO::FETCH_ASSOC );
+				if ( is_array( $current ) && (int) $current['fence'] >= (int) $operation['fence'] ) {
+					if ( (int) $current['fence'] === (int) $operation['fence'] && $current['operation_id'] === $operation['id'] ) {
 						return;
 					}
 					throw new WP_Markdown_Reconciliation_Store_Conflict( 'A newer database owner fenced this mutation.' );
@@ -172,7 +172,7 @@ final class WP_Markdown_PDO_Reconciliation_Adapter implements WP_Markdown_Reconc
 
 	private function resource_key( array $operation ): string {
 		$resource = $operation['binding']['resource'];
-		return $resource['type'] . ':' . $resource['id'];
+		return substr( hash( 'sha256', $operation['binding']['canonical_root'] ), 0, 16 ) . ':' . $resource['type'] . ':' . $resource['id'];
 	}
 
 	private function identities( array $values ): array {
@@ -197,6 +197,73 @@ final class WP_Markdown_PDO_Reconciliation_Adapter implements WP_Markdown_Reconc
 			}
 			throw $error;
 		}
+	}
+}
+
+/** Owns a normal WordPress MySQL/mysqli mutation through the active wpdb connection. */
+final class WP_Markdown_WPDB_Reconciliation_Adapter implements WP_Markdown_Reconciliation_Adapter {
+	private object $wpdb;
+	private $observer;
+	private $mutation;
+
+	public function __construct( object $wpdb, callable $observer, callable $mutation ) {
+		if ( ! method_exists( $wpdb, 'query' ) || ! method_exists( $wpdb, 'prepare' ) || ! method_exists( $wpdb, 'get_row' ) ) {
+			throw new InvalidArgumentException( 'A MySQL-compatible wpdb connection is required.' );
+		}
+		$this->wpdb     = $wpdb;
+		$this->observer = $observer;
+		$this->mutation = $mutation;
+		$this->query( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
+	}
+
+	public function observe( array $operation ): array {
+		$result = array();
+		foreach ( ( $this->observer )( $operation, $this->wpdb ) as $domain => $value ) { $result[ $domain ] = WP_Markdown_Reconciliation_Identity::exact( $value ); }
+		return $result;
+	}
+
+	public function fence( array $operation ): void {
+		$this->transaction( function () use ( $operation ): void {
+			$key = $this->resource_key( $operation );
+			$current = $this->wpdb->get_row( $this->wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s FOR UPDATE', $key ), ARRAY_A );
+			if ( is_array( $current ) && (int) $current['fence'] >= (int) $operation['fence'] ) {
+				if ( (int) $current['fence'] === (int) $operation['fence'] && $current['operation_id'] === $operation['id'] ) { return; }
+				throw new WP_Markdown_Reconciliation_Store_Conflict( 'A newer database owner fenced this mutation.' );
+			}
+			$this->query( $this->wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s', $key ) );
+			$this->query( $this->wpdb->prepare( 'INSERT INTO `_mdi_resource_fences` (resource_key, operation_id, fence) VALUES (%s, %s, %d)', $key, $operation['id'], $operation['fence'] ) );
+		} );
+	}
+
+	public function apply( array $operation ): void {
+		$this->transaction( function () use ( $operation ): void {
+			$key = $this->resource_key( $operation );
+			$owner = $this->wpdb->get_row( $this->wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s FOR UPDATE', $key ), ARRAY_A );
+			if ( ! is_array( $owner ) || $owner['operation_id'] !== $operation['id'] || (int) $owner['fence'] !== (int) $operation['fence'] ) {
+				throw new WP_Markdown_Reconciliation_Store_Conflict( 'The database mutation fence is stale.' );
+			}
+			( $this->mutation )( $operation, $this->wpdb );
+		} );
+	}
+
+	private function resource_key( array $operation ): string {
+		$binding = $operation['binding'];
+		return substr( hash( 'sha256', $binding['canonical_root'] ), 0, 16 ) . ':' . $binding['resource']['type'] . ':' . $binding['resource']['id'];
+	}
+
+	private function transaction( callable $callback ): void {
+		$this->query( 'START TRANSACTION' );
+		try {
+			$callback();
+			$this->query( 'COMMIT' );
+		} catch ( Throwable $error ) {
+			$this->wpdb->query( 'ROLLBACK' );
+			throw $error;
+		}
+	}
+
+	private function query( string $sql ): void {
+		if ( false === $this->wpdb->query( $sql ) ) { throw new RuntimeException( 'The reconciliation database operation failed.' ); }
 	}
 }
 
@@ -232,7 +299,7 @@ final class WP_Markdown_Filesystem_Reconciliation_Adapter implements WP_Markdown
 			$operation,
 			function ( string $path ) use ( $operation ): void {
 				$current = $this->read_fence( $path );
-				if ( null !== $current && (int) $current['fence'] > (int) $operation['fence'] ) {
+				if ( null !== $current && ( (int) $current['fence'] > (int) $operation['fence'] || ( (int) $current['fence'] === (int) $operation['fence'] && $current['operation_id'] !== $operation['id'] ) ) ) {
 					throw new WP_Markdown_Reconciliation_Store_Conflict( 'A newer filesystem owner fenced this mutation.' );
 				}
 				$this->write_fence( $path, array( 'operation_id' => $operation['id'], 'fence' => $operation['fence'] ) );

@@ -70,15 +70,36 @@ class WP_Markdown_CLI {
 					)
 				);
 			}
+
+			if ( ! function_exists( 'wp_has_ability' ) || ! wp_has_ability( 'markdown-db/reconcile' ) ) {
+				wp_register_ability(
+					'markdown-db/reconcile',
+					array(
+						'label'               => 'Reconcile Markdown Content',
+						'description'         => 'Plan or apply bounded three-way reconciliation between canonical Markdown and WordPress.',
+						'category'            => 'markdown-db',
+						'input_schema'        => self::reconcile_input_schema(),
+						'output_schema'       => self::reconcile_output_schema(),
+						'execute_callback'    => array( self::class, 'reconcile' ),
+						'permission_callback' => array( self::class, 'can_manage_markdown_db' ),
+					)
+				);
+			}
 		};
 
 		if ( function_exists( 'doing_action' ) && doing_action( 'wp_abilities_api_categories_init' ) ) {
+			$category_callback();
+		} elseif ( function_exists( 'did_action' ) && did_action( 'wp_abilities_api_categories_init' ) ) {
 			$category_callback();
 		} elseif ( ( ! function_exists( 'did_action' ) || ! did_action( 'wp_abilities_api_categories_init' ) ) && function_exists( 'add_action' ) ) {
 			add_action( 'wp_abilities_api_categories_init', $category_callback );
 		}
 
 		if ( function_exists( 'doing_action' ) && doing_action( 'wp_abilities_api_init' ) ) {
+			$register_callback();
+			return;
+		}
+		if ( function_exists( 'did_action' ) && did_action( 'wp_abilities_api_init' ) ) {
 			$register_callback();
 			return;
 		}
@@ -173,6 +194,101 @@ class WP_Markdown_CLI {
 			)
 		);
 		self::emit_cli_result( $result, $assoc_args['format'] ?? 'table', 'Export' );
+	}
+
+	/**
+	 * Plan or apply a bounded three-way reconciliation page.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--dry-run]
+	 * : Build a non-mutating plan. Omit only when applying reviewed identities.
+	 *
+	 * [--canonical-root=<path>]
+	 * : Managed Markdown root. Defaults to MARKDOWN_DB_CONTENT_DIR.
+	 *
+	 * [--managed-scope=<types>]
+	 * : Comma-separated post types.
+	 *
+	 * [--direction=<direction>]
+	 * : bidirectional, canonical_to_wordpress, or wordpress_to_canonical.
+	 *
+	 * [--deletion-policy=<policy>]
+	 * : none or managed. Defaults to none.
+	 *
+	 * [--conflict-policy=<policy>]
+	 * : none, prefer_canonical, or prefer_wordpress. Defaults to none.
+	 *
+	 * [--batch-size=<size>]
+	 * : Resources in this page, from 1 through 1000.
+	 *
+	 * [--continuation=<json>]
+	 * : Continuation object returned by the preceding page.
+	 *
+	 * [--plan-id=<sha256>]
+	 * : Reviewed plan identity required for apply.
+	 *
+	 * [--source-identity=<sha256>]
+	 * : Reviewed source identity required for apply.
+	 *
+	 * [--layout-profile=<profile>]
+	 * : Content-layout profile used to derive canonical paths.
+	 *
+	 * [--format=<format>]
+	 * : json or table. Defaults to json.
+	 */
+	public static function reconcile_cli( array $args, array $assoc_args ): void {
+		unset( $args );
+		$continuation = null;
+		if ( isset( $assoc_args['continuation'] ) ) {
+			$continuation = json_decode( (string) $assoc_args['continuation'], true );
+			if ( ! is_array( $continuation ) ) {
+				WP_CLI::error( '--continuation must be the JSON object returned by the preceding page.' );
+			}
+		}
+		$result = self::reconcile(
+			array(
+				'dry_run'         => array_key_exists( 'dry-run', $assoc_args ),
+				'canonical_root'  => $assoc_args['canonical-root'] ?? $assoc_args['path'] ?? '',
+				'managed_scope'   => isset( $assoc_args['managed-scope'] ) ? array_values( array_filter( array_map( 'trim', explode( ',', (string) $assoc_args['managed-scope'] ) ) ) ) : null,
+				'direction'       => $assoc_args['direction'] ?? 'bidirectional',
+				'deletion_policy' => $assoc_args['deletion-policy'] ?? 'none',
+				'conflict_policy' => $assoc_args['conflict-policy'] ?? 'none',
+				'batch_size'      => isset( $assoc_args['batch-size'] ) ? (int) $assoc_args['batch-size'] : 100,
+				'continuation'    => $continuation,
+				'plan_id'         => $assoc_args['plan-id'] ?? null,
+				'source_identity' => $assoc_args['source-identity'] ?? null,
+				'layout_profile'  => $assoc_args['layout-profile'] ?? '',
+			)
+		);
+		if ( 'json' === ( $assoc_args['format'] ?? 'json' ) ) {
+			WP_CLI::line( (string) wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			return;
+		}
+		$rows = array();
+		foreach ( $result['counts'] as $category => $count ) {
+			$rows[] = array( 'category' => $category, 'count' => $count );
+		}
+		\WP_CLI\Utils\format_items( 'table', $rows, array( 'category', 'count' ) );
+	}
+
+	/** Shared reconciliation facade for CLI, abilities, and external callers. */
+	public static function reconcile( array $options ): array {
+		$root  = self::content_dir( (string) ( $options['canonical_root'] ?? $options['path'] ?? '' ) );
+		$scope = $options['managed_scope'] ?? null;
+		if ( ! is_array( $scope ) || array() === $scope ) {
+			$scope = self::post_types( '', self::excluded_types() );
+		}
+		$options['canonical_root'] = $root;
+		$options['managed_scope']  = $scope;
+
+		$storage = new WP_Markdown_Storage( $root, self::excluded_types() );
+		$options['layout_profile'] = self::content_layout_profile( $options );
+		$storage->set_content_layout_profile( $options['layout_profile'] );
+		$adapter = new WP_Markdown_WordPress_Reconciliation_Adapter( $storage );
+		$state_root = defined( 'MARKDOWN_DB_STATE_DIR' ) ? rtrim( MARKDOWN_DB_STATE_DIR, '/' ) : $root;
+		$service = new WP_Markdown_Reconciliation_Service( wp_markdown_durable_reconciliation_coordinator( array_values( array_unique( array( $root, $state_root ) ) ) ), $adapter );
+		return $service->reconcile( $options, ! empty( $options['dry_run'] ) || ! empty( $options['dry-run'] ) ? 'plan' : 'apply' );
 	}
 
 	/**
@@ -556,6 +672,68 @@ class WP_Markdown_CLI {
 					'description' => 'Content-layout profile. Defaults to MARKDOWN_DB_CONTENT_LAYOUT_PROFILE.',
 				),
 			),
+		);
+	}
+
+	private static function reconcile_input_schema(): array {
+		return array(
+			'type'       => 'object',
+			'properties' => array(
+				'dry_run'         => array( 'type' => 'boolean' ),
+				'canonical_root'  => array( 'type' => 'string' ),
+				'managed_scope'   => array( 'type' => 'array', 'items' => array( 'type' => 'string' ), 'minItems' => 1 ),
+				'direction'       => array( 'type' => 'string', 'enum' => array( 'bidirectional', 'canonical_to_wordpress', 'wordpress_to_canonical' ) ),
+				'deletion_policy' => array( 'type' => 'string', 'enum' => array( 'none', 'managed' ) ),
+				'conflict_policy' => array( 'type' => 'string', 'enum' => array( 'none', 'prefer_canonical', 'prefer_wordpress' ) ),
+				'batch_size'      => array( 'type' => 'integer', 'minimum' => 1, 'maximum' => 1000 ),
+				'continuation'    => array( 'anyOf' => array( array( 'type' => 'object', 'properties' => array( 'cursor' => array( 'type' => 'string' ), 'identity' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ) ), 'required' => array( 'cursor', 'identity' ) ), array( 'type' => 'null' ) ) ),
+				'plan_id'         => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+				'source_identity' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+				'layout_profile'  => array( 'type' => 'string' ),
+			),
+		);
+	}
+
+	private static function reconcile_output_schema(): array {
+		$identity = array(
+			'type'       => 'object',
+			'properties' => array( 'algorithm' => array( 'type' => 'string', 'const' => 'sha256' ), 'digest' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ) ),
+			'required'   => array( 'algorithm', 'digest' ),
+		);
+		$entry = array(
+			'type'       => 'object',
+			'properties' => array(
+				'canonical_path'          => array( 'type' => array( 'string', 'null' ) ),
+				'expected_canonical_path' => array( 'type' => array( 'string', 'null' ) ),
+				'resource_id'              => array( 'type' => 'string' ),
+				'canonical_identity'       => array( 'anyOf' => array( $identity, array( 'type' => 'null' ) ) ),
+				'wordpress_identity'       => array( 'anyOf' => array( $identity, array( 'type' => 'null' ) ) ),
+				'baseline_identity'        => array( 'anyOf' => array( $identity, array( 'type' => 'null' ) ) ),
+				'reason'                   => array( 'type' => 'string' ),
+				'operation_id'             => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+				'operation_state'          => array( 'type' => 'string', 'enum' => array( 'completed', 'reconciliation_required' ) ),
+			),
+			'required' => array( 'canonical_path', 'expected_canonical_path', 'resource_id', 'canonical_identity', 'wordpress_identity', 'baseline_identity' ),
+		);
+		$categories = array();
+		$counts = array();
+		foreach ( array( 'created', 'updated_from_file', 'written_from_wordpress', 'deleted_from_file', 'deleted_from_wordpress', 'moved', 'unchanged', 'conflicts' ) as $category ) {
+			$categories[ $category ] = array( 'type' => 'array', 'items' => $entry );
+			$counts[ $category ] = array( 'type' => 'integer', 'minimum' => 0 );
+		}
+		return array(
+			'type'       => 'object',
+			'properties' => array(
+				'schema_version'  => array( 'type' => 'integer', 'const' => 1 ),
+				'plan_id'         => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+				'source_identity' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ),
+				'options'         => array( 'type' => 'object' ),
+				'categories'      => array( 'type' => 'object', 'properties' => $categories, 'required' => array_keys( $categories ) ),
+				'counts'          => array( 'type' => 'object', 'properties' => $counts, 'required' => array_keys( $counts ) ),
+				'operation_ids'   => array( 'type' => 'array', 'items' => array( 'type' => 'string' ) ),
+				'continuation'    => array( 'anyOf' => array( array( 'type' => 'object', 'properties' => array( 'cursor' => array( 'type' => 'string' ), 'identity' => array( 'type' => 'string', 'pattern' => '^[a-f0-9]{64}$' ) ), 'required' => array( 'cursor', 'identity' ) ), array( 'type' => 'null' ) ) ),
+			),
+			'required' => array( 'schema_version', 'plan_id', 'source_identity', 'options', 'categories', 'counts', 'operation_ids', 'continuation' ),
 		);
 	}
 

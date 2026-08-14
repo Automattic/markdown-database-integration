@@ -30,6 +30,7 @@ function get_post_meta( int $post_id, string $key = '', bool $single = false ): 
 }
 function get_option( string $key, mixed $default = false ): mixed { return $GLOBALS['mdi_reconcile_options'][ $key ] ?? $default; }
 function get_post( int $post_id ): ?object { return $GLOBALS['mdi_reconcile_posts'][ $post_id ] ?? null; }
+function get_posts( array $query = array() ): array { unset( $query ); return array(); }
 function get_object_taxonomies( string $post_type ): array { unset( $post_type ); return array(); }
 function maybe_unserialize( mixed $value ): mixed {
 	if ( ! is_string( $value ) || ! preg_match( '/^(?:a|O|s|i|b|d|N):/', $value ) ) { return $value; }
@@ -262,6 +263,12 @@ $delete_request = array_replace( mdi_reconcile_request( $canonical ), array( 'di
 $delete_plan = $delete_service->plan( $delete_request );
 $delete_service->apply( $delete_request + array( 'plan_id' => $delete_plan['plan_id'], 'source_identity' => $delete_plan['source_identity'] ) );
 mdi_reconcile_check( array( $reparented_child['resource_id'], $deleted_parent['resource_id'] ) === $delete_adapter->mutation_order, 'reparented descendant moves before its former parent canonical file is deleted: ' . json_encode( $delete_adapter->mutation_order ) );
+
+$path_observer_adapter = new WP_Markdown_WordPress_Reconciliation_Adapter();
+$observe_effect = new ReflectionMethod( $path_observer_adapter, 'observe_effect' );
+$path_change_binding = array( 'binding' => array( 'kind' => 'written_from_wordpress', 'resource' => array( 'id' => $reparented_child['resource_id'] ), 'before' => array( 'canonical' => mdi_reconcile_identity( $child_move_before['canonical'] ) ), 'after' => array( 'canonical' => mdi_reconcile_identity( $child_move_after['canonical'] ) ) ) );
+$path_change_observed = $observe_effect->invoke( $path_observer_adapter, $path_change_binding, array( 'root' => $canonical, 'current_path' => 'page/parent/child.md', 'expected_path' => 'page/child.md', 'post_id' => 0, 'layout_profile' => '' ) );
+mdi_reconcile_check( array_key_exists( 'path', $path_change_observed['canonical'] ), 'production observer preserves path-aware durability for a content write that also moves canonical route' );
 
 $adapter->set_source( 'changed-source' );
 mdi_reconcile_throws( fn() => $service->apply( $apply_request ), WP_Markdown_Reconciliation_Store_Conflict::class, 'stale source plan is rejected before new mutation' );

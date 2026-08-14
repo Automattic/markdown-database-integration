@@ -1,6 +1,6 @@
 <?php
 /**
- * Disposable native MariaDB probe. Run in a WP Codebox with mysql-full enabled:
+ * Disposable native MariaDB probe. Run in a multisite WP Codebox with mysql-full enabled:
  * wp eval-file wp-content/plugins/markdown-database-integration/tests/probe-native-mariadb-mysql-full.php
  */
 
@@ -47,7 +47,8 @@ $stock->set_prefix( $base_prefix );
 $delegate->set_prefix( $base_prefix );
 $stock->set_blog_id( 2 );
 $delegate->set_blog_id( 2 );
-if ( 2 !== $stock->blogid || 2 !== $delegate->blogid || $stock->prefix !== $delegate->prefix || $stock->base_prefix !== $delegate->base_prefix ) {
+$expected_prefix = $base_prefix . '2_';
+if ( 2 !== $stock->blogid || 2 !== $delegate->blogid || $expected_prefix !== $stock->prefix || $stock->prefix !== $delegate->prefix || $stock->base_prefix !== $delegate->base_prefix ) {
 	throw new RuntimeException( 'Multisite prefix state mismatch.' );
 }
 $suffix = substr( hash( 'sha256', getmypid() . ':' . microtime( true ) ), 0, 10 );

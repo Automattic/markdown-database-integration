@@ -37,6 +37,15 @@ foreach ( $expected as $capability ) {
 	$sqlite->require( $capability );
 }
 
+$mysql_content = WP_Markdown_Backend_Capabilities::mysql_content();
+mdi_backend_assert( 'mysql-content' === $mysql_content->get_backend(), 'MySQL content-primary backend identifier is stable' );
+foreach ( array( 'content_mutation_capture', 'cold_reconstruction', 'explicit_flush', 'changed_path_receipts' ) as $capability ) {
+	mdi_backend_assert( $mysql_content->supports( $capability ), 'MySQL content-primary supports ' . $capability );
+}
+foreach ( array( 'table_mutation_capture', 'schema_persistence', 'disposable_index_operation', 'lazy_post_content_resolution' ) as $capability ) {
+	mdi_backend_assert( ! $mysql_content->supports( $capability ), 'MySQL content-primary fails closed for ' . $capability );
+}
+
 $incomplete = new WP_Markdown_Backend_Capabilities( 'test', array( 'content_mutation_capture' => true ) );
 mdi_backend_assert( ! $incomplete->supports( 'explicit_flush' ), 'undeclared capabilities fail closed' );
 try {

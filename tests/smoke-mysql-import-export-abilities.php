@@ -304,6 +304,9 @@ if ( 'import' !== ( $import_context['operation'] ?? '' ) || 'page' !== ( $import
 if ( 'page/home.md' !== ( $GLOBALS['mdi_test_meta'][17]['_markdown_source_path'] ?? '' ) ) {
 	$failures[] = 'import ability did not store stable source path meta';
 }
+if ( 'page/home.md' !== ( $GLOBALS['mdi_test_meta'][17]['_markdown_source_identity'] ?? '' ) ) {
+	$failures[] = 'import ability did not store immutable source identity meta';
+}
 if ( array( 'docs' ) !== ( $GLOBALS['mdi_test_terms'][17]['category'] ?? array() ) ) {
 	$failures[] = 'import ability did not preserve frontmatter terms';
 }
@@ -330,6 +333,9 @@ if ( is_file( $export_dir . '/page/home.md' ) && false === strpos( file_get_cont
 }
 if ( is_file( $export_dir . '/page/home.md' ) && false === strpos( file_get_contents( $export_dir . '/page/home.md' ), 'Exported transform.' ) ) {
 	$failures[] = 'export content transform filter did not modify markdown body before write';
+}
+if ( is_file( $export_dir . '/page/home.md' ) && false === strpos( file_get_contents( $export_dir . '/page/home.md' ), 'source_identity: page/home.md' ) ) {
+	$failures[] = 'export ability did not preserve immutable source identity';
 }
 
 $export_context = $GLOBALS['mdi_test_contexts']['export_content'] ?? array();

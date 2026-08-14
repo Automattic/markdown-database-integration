@@ -1496,6 +1496,9 @@ class WP_Markdown_Storage {
 		// Used by the loader to populate the _markdown_file_index table.
 		$post->_source_file = $file_path;
 		$post->_frontmatter = $frontmatter;
+		if ( is_string( $frontmatter['source_identity'] ?? null ) && '' !== $frontmatter['source_identity'] ) {
+			$post->_source_identity = $frontmatter['source_identity'];
+		}
 		$post->_frontmatter_profile = (string) ( $profile['id'] ?? '' );
 
 		// Extract meta from frontmatter (key-value pairs).
@@ -1729,6 +1732,9 @@ class WP_Markdown_Storage {
 		$fm = array();
 
 		$fm['id']             = (int) ( $post->ID ?? 0 );
+		if ( is_string( $post->_source_identity ?? null ) && '' !== $post->_source_identity ) {
+			$fm['source_identity'] = $post->_source_identity;
+		}
 		$fm['title']          = $post->post_title ?? '';
 		$fm['status']         = $post->post_status ?? 'draft';
 		$fm['type']           = $post->post_type ?? 'post';
@@ -1767,8 +1773,8 @@ class WP_Markdown_Storage {
 
 		// Post meta — fetch from SQLite and include in frontmatter.
 		// Each post's .md file is self-contained. See GitHub issue #6.
-		if ( $id > 0 && null !== $this->meta_resolver ) {
-			$meta_rows = call_user_func( $this->meta_resolver, $id );
+		if ( $id > 0 && ( null !== $this->meta_resolver || isset( $post->_frontmatter_meta ) ) ) {
+			$meta_rows = isset( $post->_frontmatter_meta ) ? $this->frontmatter_meta_rows( (array) $post->_frontmatter_meta ) : call_user_func( $this->meta_resolver, $id );
 			if ( ! empty( $meta_rows ) ) {
 				/**
 				 * Filter the allowlist of internal (underscore-prefixed)
@@ -1830,8 +1836,8 @@ class WP_Markdown_Storage {
 		}
 
 		// Terms — fetch from SQLite and group by taxonomy.
-		if ( $id > 0 && null !== $this->terms_resolver ) {
-			$term_rows = call_user_func( $this->terms_resolver, $id );
+		if ( $id > 0 && ( null !== $this->terms_resolver || isset( $post->_frontmatter_terms ) ) ) {
+			$term_rows = isset( $post->_frontmatter_terms ) ? $this->frontmatter_term_rows( (array) $post->_frontmatter_terms ) : call_user_func( $this->terms_resolver, $id );
 			if ( ! empty( $term_rows ) ) {
 				$terms = array();
 				foreach ( $term_rows as $row ) {
@@ -1848,6 +1854,28 @@ class WP_Markdown_Storage {
 		}
 
 		return $fm;
+	}
+
+	/** Normalize adapter-provided meta into the resolver row contract. */
+	private function frontmatter_meta_rows( array $meta ): array {
+		$rows = array();
+		foreach ( $meta as $key => $values ) {
+			foreach ( is_array( $values ) ? $values : array( $values ) as $value ) {
+				$rows[] = (object) array( 'meta_key' => (string) $key, 'meta_value' => $value );
+			}
+		}
+		return $rows;
+	}
+
+	/** Normalize adapter-provided terms into the resolver row contract. */
+	private function frontmatter_term_rows( array $terms ): array {
+		$rows = array();
+		foreach ( $terms as $taxonomy => $slugs ) {
+			foreach ( is_array( $slugs ) ? $slugs : array( $slugs ) as $slug ) {
+				$rows[] = (object) array( 'taxonomy' => (string) $taxonomy, 'slug' => (string) $slug );
+			}
+		}
+		return $rows;
 	}
 
 	/**

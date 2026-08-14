@@ -93,6 +93,16 @@ class WP_Markdown_Backend_Capabilities {
 		return new self( 'sqlite', array_fill_keys( self::KNOWN, true ) );
 	}
 
+	/** Content-primary MySQL deliberately excludes full-table interception. */
+	public static function mysql_content(): self {
+		return new self( 'mysql-content', array(
+			'content_mutation_capture' => true,
+			'cold_reconstruction'      => true,
+			'explicit_flush'           => true,
+			'changed_path_receipts'    => true,
+		) );
+	}
+
 	public function get_backend(): string {
 		return $this->backend;
 	}
@@ -166,6 +176,9 @@ class WP_Markdown_Backend_Resolver {
 		$id = defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'sqlite';
 		if ( 'sqlite' === $id && ! isset( self::$declarations['sqlite'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::sqlite() );
+		}
+		if ( 'mysql-content' === $id && ! isset( self::$declarations['mysql-content'] ) ) {
+			self::register( WP_Markdown_Backend_Capabilities::mysql_content() );
 		}
 		if ( ! isset( self::$declarations[ $id ] ) ) {
 			throw new WP_Markdown_Unknown_Backend( array(

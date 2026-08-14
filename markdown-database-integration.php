@@ -54,15 +54,17 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-durable-reconciliat
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-adapters.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-service.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-wordpress-reconciliation-adapter.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-content-runtime.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
 function markdown_database_integration_ensure_mysql_reconciliation_state(): void {
 	global $wpdb;
-	if ( ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) || '1' === (string) get_option( '_markdown_db_mysql_reconciliation_schema', '' ) ) {
+	if ( ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
 		return;
 	}
-	if ( false === $wpdb->query( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' ) ) {
+	$table = (string) ( $wpdb->prefix ?? 'wp_' ) . 'mdi_resource_fences';
+	if ( false === $wpdb->query( "CREATE TABLE IF NOT EXISTS `{$table}` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL) ENGINE=InnoDB" ) ) {
 		return;
 	}
 	update_option( '_markdown_db_mysql_reconciliation_schema', '1', false );
@@ -165,6 +167,8 @@ function markdown_database_integration_import_seed_posts_after_install(): void {
 
 add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
 add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
+add_action( 'switch_blog', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
+add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Content_Runtime', 'bootstrap' ), 20 );
 add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 

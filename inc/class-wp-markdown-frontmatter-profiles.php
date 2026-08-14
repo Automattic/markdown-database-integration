@@ -168,6 +168,7 @@ class WP_Markdown_Frontmatter_Profiles {
 					'guid'                  => $frontmatter['guid'] ?? '',
 					'comment_count'         => (int) ( $frontmatter['comment_count'] ?? 0 ),
 					'filter'                => 'raw',
+					'_source_identity'      => is_string( $frontmatter['source_identity'] ?? null ) ? $frontmatter['source_identity'] : '',
 					'_frontmatter_meta'     => isset( $frontmatter['meta'] ) && is_array( $frontmatter['meta'] ) ? $frontmatter['meta'] : array(),
 					'_frontmatter_terms'    => isset( $frontmatter['terms'] ) && is_array( $frontmatter['terms'] ) ? $frontmatter['terms'] : array(),
 				);
@@ -213,6 +214,9 @@ class WP_Markdown_Frontmatter_Profiles {
 					'guid'               => (string) ( $post->guid ?? '' ),
 					'comment_count'      => (int) ( $post->comment_count ?? 0 ),
 				);
+				if ( is_string( $native['source_identity'] ?? null ) && '' !== $native['source_identity'] ) {
+					$wordpress['source_identity'] = $native['source_identity'];
+				}
 
 				foreach ( array( 'excerpt', 'password', 'mime_type' ) as $key ) {
 					if ( isset( $native[ $key ] ) && array() !== $native[ $key ] && '' !== $native[ $key ] ) {
@@ -270,6 +274,7 @@ class WP_Markdown_Frontmatter_Profiles {
 					'guid'                  => (string) ( $wordpress['guid'] ?? ( $frontmatter['resource'] ?? '' ) ),
 					'comment_count'         => (int) ( $wordpress['comment_count'] ?? 0 ),
 					'filter'                => 'raw',
+					'_source_identity'      => is_string( $wordpress['source_identity'] ?? null ) ? $wordpress['source_identity'] : '',
 					'_frontmatter_meta'     => isset( $wordpress['meta'] ) && is_array( $wordpress['meta'] ) ? $wordpress['meta'] : array(),
 					'_frontmatter_terms'    => $terms,
 				);

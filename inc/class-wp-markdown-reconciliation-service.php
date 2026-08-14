@@ -160,6 +160,12 @@ final class WP_Markdown_Reconciliation_Service {
 			$snapshots[ $key ] = $normalized;
 		}
 		ksort( $snapshots, SORT_STRING );
+		if ( $apply ) {
+			$snapshots = $this->hierarchy_order( $snapshots );
+		}
+		if ( ! empty( $options['resource_ids'] ) ) {
+			$snapshots = array_intersect_key( $snapshots, array_flip( $options['resource_ids'] ) );
+		}
 
 		$entries = array();
 		foreach ( $snapshots as $resource_id => $snapshot ) {
@@ -247,6 +253,10 @@ final class WP_Markdown_Reconciliation_Service {
 		if ( ! is_int( $batch_size ) || $batch_size < 1 || $batch_size > 1000 ) {
 			throw new InvalidArgumentException( 'batch_size must be an integer from 1 through 1000.' );
 		}
+		$resource_ids = $request['resource_ids'] ?? array();
+		if ( ! is_array( $resource_ids ) || array_filter( $resource_ids, static fn( mixed $id ): bool => ! is_string( $id ) || ! preg_match( '/^post:[0-9]{20}$/', $id ) ) ) {
+			throw new InvalidArgumentException( 'resource_ids must be canonical post resource identifiers.' );
+		}
 		return array(
 			'direction'       => $direction,
 			'canonical_root'  => $root,
@@ -255,11 +265,12 @@ final class WP_Markdown_Reconciliation_Service {
 			'conflict_policy' => $conflict_policy,
 			'batch_size'      => $batch_size,
 			'layout_profile'  => is_string( $request['layout_profile'] ?? null ) ? $request['layout_profile'] : '',
+			'resource_ids'    => array_values( array_unique( $resource_ids ) ),
 		);
 	}
 
 	private function scope( array $options ): array {
-		return array( 'canonical_root' => $options['canonical_root'], 'managed_scope' => $options['managed_scope'], 'layout_profile' => $options['layout_profile'] );
+		return array( 'canonical_root' => $options['canonical_root'], 'managed_scope' => $options['managed_scope'], 'layout_profile' => $options['layout_profile'], 'resource_ids' => $options['resource_ids'] );
 	}
 
 	private function canonical_root( mixed $root ): string {
@@ -353,6 +364,7 @@ final class WP_Markdown_Reconciliation_Service {
 		$snapshot['resource_type'] = is_string( $snapshot['resource_type'] ?? null ) && preg_match( '/^[a-z][a-z0-9_.-]*$/', $snapshot['resource_type'] ) ? $snapshot['resource_type'] : 'content';
 		$snapshot['baseline']      = $baseline;
 		$snapshot['baseline_identity'] = $baseline['identity'] ?? null;
+		$snapshot['management_uninitialized'] = true === ( $snapshot['management_uninitialized'] ?? false );
 		$snapshot['move_direction'] = $snapshot['move_direction'] ?? 'wordpress_to_canonical';
 		if ( ! in_array( $snapshot['move_direction'], array( 'canonical_to_wordpress', 'wordpress_to_canonical' ), true ) ) {
 			throw new UnexpectedValueException( 'Snapshot move_direction is invalid.' );
@@ -360,6 +372,20 @@ final class WP_Markdown_Reconciliation_Service {
 		foreach ( array( 'durable_before', 'durable_after' ) as $map ) {
 			if ( isset( $snapshot[ $map ] ) ) {
 				$this->assert_identity_map( $snapshot[ $map ] );
+			}
+		}
+		if ( isset( $snapshot['durable_before_extra'] ) ) {
+			$this->assert_identity_map( $snapshot['durable_before_extra'] );
+		}
+		if ( isset( $snapshot['durable_after_extra_by_category'] ) ) {
+			if ( ! is_array( $snapshot['durable_after_extra_by_category'] ) ) {
+				throw new UnexpectedValueException( 'Durable category-specific after domains must be a map.' );
+			}
+			foreach ( $snapshot['durable_after_extra_by_category'] as $category => $map ) {
+				if ( ! in_array( $category, self::CATEGORIES, true ) ) {
+					throw new UnexpectedValueException( 'Durable category-specific after domains name an invalid category.' );
+				}
+				$this->assert_identity_map( $map );
 			}
 		}
 		if ( isset( $snapshot['durable_before'], $snapshot['durable_after'] ) && array_keys( $snapshot['durable_before'] ) !== array_keys( $snapshot['durable_after'] ) ) {
@@ -381,7 +407,7 @@ final class WP_Markdown_Reconciliation_Service {
 		$reason   = 'divergent_without_baseline';
 
 		if ( $this->same_nullable_identity( $c, $w ) ) {
-			$category = $this->is_move( $snapshot ) ? 'moved' : 'unchanged';
+			$category = $this->is_move( $snapshot ) ? 'moved' : ( $snapshot['management_uninitialized'] && 'wordpress_to_canonical' === $options['direction'] ? 'written_from_wordpress' : 'unchanged' );
 			$reason   = null;
 		} elseif ( null === $b ) {
 			if ( null !== $c && null === $w ) {
@@ -463,6 +489,32 @@ final class WP_Markdown_Reconciliation_Service {
 		return $this->coordinator->reconcile( $intent, $adapter );
 	}
 
+	/** Parents are applied before descendants; canonical deletions run children first. */
+	private function hierarchy_order( array $snapshots ): array {
+		$depth = array();
+		$visiting = array();
+		$resolve = function ( string $key ) use ( &$resolve, &$depth, &$visiting, $snapshots ): int {
+			if ( isset( $depth[ $key ] ) ) { return $depth[ $key ]; }
+			if ( isset( $visiting[ $key ] ) ) { throw new WP_Markdown_Reconciliation_Store_Conflict( 'Canonical managed hierarchy contains a cycle.' ); }
+			$visiting[ $key ] = true;
+			$parent = (int) ( $snapshots[ $key ]['canonical']['post_parent'] ?? 0 );
+			$parent_key = sprintf( 'post:%020d', $parent );
+			if ( $parent > 0 && isset( $snapshots[ $parent_key ] ) ) { $value = 1 + $resolve( $parent_key ); }
+			elseif ( $parent > 0 && null !== ( $snapshots[ $key ]['canonical'] ?? null ) ) { throw new WP_Markdown_Reconciliation_Store_Conflict( 'Canonical managed hierarchy references a missing parent.' ); }
+			else { $value = 0; }
+			unset( $visiting[ $key] );
+			return $depth[ $key ] = $value;
+		};
+		foreach ( array_keys( $snapshots ) as $key ) { $resolve( $key ); }
+		uasort( $snapshots, function ( array $a, array $b ) use ( $depth ): int {
+			$delete_a = null === $a['canonical']; $delete_b = null === $b['canonical'];
+			$da = $depth[ $a['resource_id'] ] ?? 0; $db = $depth[ $b['resource_id'] ] ?? 0;
+			if ( $delete_a || $delete_b ) { return $delete_a === $delete_b ? $db <=> $da : ( $delete_a ? -1 : 1 ); }
+			return $da === $db ? $a['resource_id'] <=> $b['resource_id'] : $da <=> $db;
+		} );
+		return $snapshots;
+	}
+
 	private function intent( array $entry, array $snapshot, string $plan_id, string $source_identity, ?string $cursor, array $options ): array {
 		$category  = $entry['category'];
 		$direction = in_array( $category, array( 'created', 'updated_from_file', 'deleted_from_file' ), true ) ? 'canonical_to_wordpress' : ( 'moved' === $category ? $snapshot['move_direction'] : 'wordpress_to_canonical' );
@@ -477,6 +529,13 @@ final class WP_Markdown_Reconciliation_Service {
 			'moved' => $snapshot['canonical_identity'],
 		};
 		$after = $snapshot['durable_after'] ?? array( 'canonical' => $this->durable_identity( $target ), 'wordpress' => $this->durable_identity( $target ) );
+		$before_extra = $snapshot['durable_before_extra'] ?? array();
+		$after_extra  = $snapshot['durable_after_extra_by_category'][ $category ] ?? array();
+		if ( array_intersect_key( $before, $before_extra ) || array_intersect_key( $after, $after_extra ) || array_keys( $before_extra ) !== array_keys( $after_extra ) ) {
+			throw new UnexpectedValueException( 'Extra durability domains must be distinct and identical before and after.' );
+		}
+		$before += $before_extra;
+		$after  += $after_extra;
 		$intent = array(
 			'plan_id'       => $plan_id,
 			'continuation'   => array(

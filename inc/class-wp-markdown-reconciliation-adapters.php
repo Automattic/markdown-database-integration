@@ -111,12 +111,19 @@ function wp_markdown_durable_reconciliation_coordinator( array $canonical_roots 
 	}
 	$key_path = $base . '/' . $site . '.key';
 	if ( ! is_file( $key_path ) ) {
-		$temp = tempnam( $base, '.key-' );
-		if ( false === $temp || false === file_put_contents( $temp, bin2hex( random_bytes( 32 ) ), LOCK_EX ) || ! chmod( $temp, 0600 ) || ( ! @link( $temp, $key_path ) && ! is_file( $key_path ) ) ) {
-			if ( is_string( $temp ) && is_file( $temp ) ) { unlink( $temp ); }
+		$key_handle = @fopen( $key_path, 'x' );
+		if ( false !== $key_handle ) {
+			$key_material = bin2hex( random_bytes( 32 ) );
+			$key_written  = fwrite( $key_handle, $key_material );
+			$key_synced   = ! function_exists( 'fsync' ) || fsync( $key_handle );
+			$key_closed   = fclose( $key_handle );
+			if ( strlen( $key_material ) !== $key_written || ! $key_synced || ! $key_closed || ! chmod( $key_path, 0600 ) ) {
+				@unlink( $key_path );
+				throw new RuntimeException( 'Unable to create the durable reconciliation authentication key.' );
+			}
+		} elseif ( ! is_file( $key_path ) ) {
 			throw new RuntimeException( 'Unable to create the durable reconciliation authentication key.' );
 		}
-		unlink( $temp );
 	}
 	$key_material = (string) file_get_contents( $key_path );
 	if ( strlen( $key_material ) < 32 ) { throw new RuntimeException( 'The durable reconciliation authentication key is invalid.' ); }
@@ -227,20 +234,22 @@ final class WP_Markdown_WPDB_Reconciliation_Adapter implements WP_Markdown_Recon
 	public function fence( array $operation ): void {
 		$this->transaction( function () use ( $operation ): void {
 			$key = $this->resource_key( $operation );
-			$current = $this->wpdb->get_row( $this->wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s FOR UPDATE', $key ), ARRAY_A );
+			$table = $this->fence_table();
+			$current = $this->wpdb->get_row( $this->wpdb->prepare( "SELECT operation_id, fence FROM `{$table}` WHERE resource_key = %s FOR UPDATE", $key ), ARRAY_A );
 			if ( is_array( $current ) && (int) $current['fence'] >= (int) $operation['fence'] ) {
 				if ( (int) $current['fence'] === (int) $operation['fence'] && $current['operation_id'] === $operation['id'] ) { return; }
 				throw new WP_Markdown_Reconciliation_Store_Conflict( 'A newer database owner fenced this mutation.' );
 			}
-			$this->query( $this->wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s', $key ) );
-			$this->query( $this->wpdb->prepare( 'INSERT INTO `_mdi_resource_fences` (resource_key, operation_id, fence) VALUES (%s, %s, %d)', $key, $operation['id'], $operation['fence'] ) );
+			$this->query( $this->wpdb->prepare( "DELETE FROM `{$table}` WHERE resource_key = %s", $key ) );
+			$this->query( $this->wpdb->prepare( "INSERT INTO `{$table}` (resource_key, operation_id, fence) VALUES (%s, %s, %d)", $key, $operation['id'], $operation['fence'] ) );
 		} );
 	}
 
 	public function apply( array $operation ): void {
 		$this->transaction( function () use ( $operation ): void {
 			$key = $this->resource_key( $operation );
-			$owner = $this->wpdb->get_row( $this->wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s FOR UPDATE', $key ), ARRAY_A );
+			$table = $this->fence_table();
+			$owner = $this->wpdb->get_row( $this->wpdb->prepare( "SELECT operation_id, fence FROM `{$table}` WHERE resource_key = %s FOR UPDATE", $key ), ARRAY_A );
 			if ( ! is_array( $owner ) || $owner['operation_id'] !== $operation['id'] || (int) $owner['fence'] !== (int) $operation['fence'] ) {
 				throw new WP_Markdown_Reconciliation_Store_Conflict( 'The database mutation fence is stale.' );
 			}
@@ -251,6 +260,11 @@ final class WP_Markdown_WPDB_Reconciliation_Adapter implements WP_Markdown_Recon
 	private function resource_key( array $operation ): string {
 		$binding = $operation['binding'];
 		return substr( hash( 'sha256', $binding['canonical_root'] ), 0, 16 ) . ':' . $binding['resource']['type'] . ':' . $binding['resource']['id'];
+	}
+
+	private function fence_table(): string {
+		// wpdb owns the active blog prefix, including multisite switched blogs.
+		return (string) ( $this->wpdb->prefix ?? 'wp_' ) . 'mdi_resource_fences';
 	}
 
 	private function transaction( callable $callback ): void {

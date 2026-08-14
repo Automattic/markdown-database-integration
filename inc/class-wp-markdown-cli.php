@@ -12,6 +12,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WP_Markdown_CLI {
 
 	private const SOURCE_PATH_META = '_markdown_source_path';
+	private const SOURCE_IDENTITY_META = '_markdown_source_identity';
 	private const SOURCE_HASH_META = '_markdown_source_hash';
 
 	/**
@@ -285,8 +286,9 @@ class WP_Markdown_CLI {
 		$storage = new WP_Markdown_Storage( $root, self::excluded_types() );
 		$options['layout_profile'] = self::content_layout_profile( $options );
 		$storage->set_content_layout_profile( $options['layout_profile'] );
-		$adapter = new WP_Markdown_WordPress_Reconciliation_Adapter( $storage );
-		$state_root = defined( 'MARKDOWN_DB_STATE_DIR' ) ? rtrim( MARKDOWN_DB_STATE_DIR, '/' ) : $root;
+		$authorizer = isset( $options['wordpress_mutation_authorizer'] ) && is_callable( $options['wordpress_mutation_authorizer'] ) ? $options['wordpress_mutation_authorizer'] : null;
+		$adapter = new WP_Markdown_WordPress_Reconciliation_Adapter( $storage, null, $authorizer );
+		$state_root = isset( $options['state_root'] ) && is_string( $options['state_root'] ) ? rtrim( $options['state_root'], '/' ) : ( defined( 'MARKDOWN_DB_STATE_DIR' ) ? rtrim( MARKDOWN_DB_STATE_DIR, '/' ) : $root );
 		$service = new WP_Markdown_Reconciliation_Service( wp_markdown_durable_reconciliation_coordinator( array_values( array_unique( array( $root, $state_root ) ) ) ), $adapter );
 		return $service->reconcile( $options, ! empty( $options['dry_run'] ) || ! empty( $options['dry-run'] ) ? 'plan' : 'apply' );
 	}
@@ -463,6 +465,7 @@ class WP_Markdown_CLI {
 			self::sync_meta( $new_id, (array) ( $post->_frontmatter_meta ?? array() ) );
 			self::sync_terms( $new_id, (array) ( $post->_frontmatter_terms ?? array() ) );
 			update_post_meta( $new_id, self::SOURCE_PATH_META, $source_path );
+			update_post_meta( $new_id, self::SOURCE_IDENTITY_META, $source_path );
 			update_post_meta( $new_id, self::SOURCE_HASH_META, $source_hash );
 
 			$row = array(
@@ -538,6 +541,8 @@ class WP_Markdown_CLI {
 			}
 
 			$export_post       = clone $post;
+			$export_post->_source_identity = (string) get_post_meta( (int) $post->ID, self::SOURCE_IDENTITY_META, true );
+			if ( '' === $export_post->_source_identity ) { $export_post->_source_identity = $expected; }
 			$context           = self::transform_context( 'export', $export_post, $content_dir, $expected, $dry_run, '', $conversion );
 			$converted_content = self::apply_transform_filter( 'markdown_db_export_post_content', (string) ( $export_post->post_content ?? '' ), $context, $export_post, $post );
 			if ( self::is_error( $converted_content ) ) {
@@ -561,6 +566,7 @@ class WP_Markdown_CLI {
 				);
 				if ( $filtered_export_post_id > 0 ) {
 					update_post_meta( $filtered_export_post_id, self::SOURCE_PATH_META, $relative );
+					update_post_meta( $filtered_export_post_id, self::SOURCE_IDENTITY_META, (string) ( $filtered_export_post->_source_identity ?? $relative ) );
 					update_post_meta( $filtered_export_post_id, self::SOURCE_HASH_META, self::source_hash( $file ) );
 				}
 			}

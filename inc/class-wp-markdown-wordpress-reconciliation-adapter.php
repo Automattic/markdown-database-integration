@@ -13,20 +13,23 @@ if ( ! class_exists( 'WP_Markdown_Storage' ) ) {
 final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_Reconciliation_Content_Adapter {
 	private const SCHEMA_VERSION = 1;
 	private const SOURCE_PATH_META = '_markdown_source_path';
+	private const SOURCE_IDENTITY_META = '_markdown_source_identity';
 	private const SOURCE_HASH_META = '_markdown_source_hash';
 	private const BASELINE_META = '_markdown_reconciliation_baseline';
 	private const BASELINE_OPTION_PREFIX = '_markdown_reconciliation_baselines_';
 
 	private ?WP_Markdown_Storage $storage;
 	private $owning_adapter_factory;
+	private $mutation_authorizer;
 
 	/**
 	 * @param callable|null $owning_adapter_factory Receives direction, operation,
 	 * observer, mutation, and context, and returns an ownership adapter.
 	 */
-	public function __construct( ?WP_Markdown_Storage $storage = null, ?callable $owning_adapter_factory = null ) {
+	public function __construct( ?WP_Markdown_Storage $storage = null, ?callable $owning_adapter_factory = null, ?callable $mutation_authorizer = null ) {
 		$this->storage                = $storage;
 		$this->owning_adapter_factory = $owning_adapter_factory;
+		$this->mutation_authorizer    = $mutation_authorizer;
 	}
 
 	public function enumerate( array $scope, ?string $continuation, int $limit ): array {
@@ -34,6 +37,17 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$types = $this->types( $scope['managed_scope'] ?? null );
 		$layout_profile = is_string( $scope['layout_profile'] ?? null ) ? $scope['layout_profile'] : '';
 		$state = $this->complete_state( $root, $types, $layout_profile );
+		if ( ! empty( $scope['resource_ids'] ) ) {
+			$wanted = array_fill_keys( $scope['resource_ids'], true );
+			$pending = array_keys( $wanted );
+			while ( $pending ) {
+				$key = array_pop( $pending );
+				$parent = (int) ( $state[ $key ]['snapshot']['canonical']['post_parent'] ?? 0 );
+				$parent_key = sprintf( 'post:%020d', $parent );
+				if ( $parent > 0 && isset( $state[ $parent_key ] ) && ! isset( $wanted[ $parent_key ] ) ) { $wanted[ $parent_key ] = true; $pending[] = $parent_key; }
+			}
+			$state = array_intersect_key( $state, $wanted );
+		}
 		$keys  = array_keys( $state );
 		sort( $keys, SORT_STRING );
 
@@ -121,6 +135,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$baselines = $this->baseline_registry( $root );
 		$files   = array();
 		$by_id   = array();
+		$by_source_identity = array();
 		foreach ( $storage->get_markdown_file_manifest_iterator() as $relative => $info ) {
 			$relative = $this->relative_path( (string) $relative );
 			if ( null === $relative ) {
@@ -141,6 +156,9 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 				'hash'    => hash_file( 'sha256', $info['absolute'] ),
 			);
 			$files[ $relative ] = $record;
+			$source_identity = (string) ( $post->_source_identity ?? $relative );
+			if ( isset( $by_source_identity[ $source_identity ] ) ) { throw new UnexpectedValueException( 'Canonical markdown contains duplicate managed source identities.' ); }
+			$by_source_identity[ $source_identity ] = $relative;
 			if ( $id > 0 ) {
 				$by_id[ $id ] = $relative;
 			}
@@ -152,7 +170,8 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		foreach ( $wp_posts as $post ) {
 			$id = (int) $post->ID;
 			$source_path = $this->relative_path( (string) get_post_meta( $id, self::SOURCE_PATH_META, true ) );
-			$file_path = $by_id[ $id ] ?? ( null !== $source_path && isset( $files[ $source_path ] ) ? $source_path : null );
+			$source_identity = $this->relative_path( (string) get_post_meta( $id, self::SOURCE_IDENTITY_META, true ) );
+			$file_path = null !== $source_identity && isset( $by_source_identity[ $source_identity ] ) ? $by_source_identity[ $source_identity ] : ( null !== $source_path && isset( $files[ $source_path ] ) ? $source_path : ( $by_id[ $id ] ?? null ) );
 			$file = null !== $file_path ? $files[ $file_path ] : null;
 			if ( null !== $file_path ) {
 				$used_files[ $file_path ] = true;
@@ -180,6 +199,15 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$wp_receipt = null === $wp_post ? null : $this->wordpress_receipt( (int) $wp_post->ID, $wp_post );
 		$canonical  = $file['receipt'] ?? null;
 		$baseline   = null === $wp_post ? $registered_baseline : ( $this->baseline( (int) $wp_post->ID, $root ) ?? $registered_baseline );
+		$post_id    = null === $wp_post ? (int) ( $file['post']->ID ?? 0 ) : (int) $wp_post->ID;
+		$management_before = $this->management_state( $post_id, $root, $key );
+		$wp_source_identity = $post_id > 0 ? $this->relative_path( (string) get_post_meta( $post_id, self::SOURCE_IDENTITY_META, true ) ) : null;
+		$canonical_source_identity = null === $file ? null : $this->relative_path( (string) ( $file['post']->_source_identity ?? $path ) );
+		$management_after = fn( ?array $receipt, ?string $target_path, ?string $source_identity = null ): array => array(
+			'management' => WP_Markdown_Reconciliation_Identity::exact(
+				null === $receipt || null === $target_path ? null : $this->desired_management_state( $root, $target_path, $receipt, $key, $source_identity )
+			),
+		);
 		$snapshot = array(
 			'resource_id'            => $key,
 			'resource_type'          => 'post',
@@ -189,6 +217,16 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 			'wordpress'              => $wp_receipt,
 			'baseline'               => $baseline,
 			'move_direction'         => 'wordpress_to_canonical',
+			'management_uninitialized' => null !== $canonical && null !== $wp_receipt && null === $management_before,
+			'durable_before_extra'   => array( 'management' => WP_Markdown_Reconciliation_Identity::exact( $management_before ) ),
+			'durable_after_extra_by_category' => array(
+				'created'                => $management_after( $canonical, $path, $canonical_source_identity ),
+				'updated_from_file'      => $management_after( $canonical, $path, $canonical_source_identity ),
+				'written_from_wordpress' => $management_after( $wp_receipt, $expected, $wp_source_identity ),
+				'deleted_from_file'      => $management_after( null, null ),
+				'deleted_from_wordpress' => $management_after( null, null ),
+				'moved'                  => $management_after( $wp_receipt, $expected, $wp_source_identity ),
+			),
 		);
 		if ( null !== $canonical && null !== $wp_receipt && null !== $path && null !== $expected && $path !== $expected ) {
 			$snapshot['durable_before'] = array(
@@ -249,10 +287,13 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 			}
 		}
 		$canonical = null === $file_post ? null : $this->post_receipt( $file_post, (array) ( $file_post->_frontmatter_meta ?? array() ), (array) ( $file_post->_frontmatter_terms ?? array() ) );
-		if ( isset( $binding['before']['canonical'], $binding['after']['canonical'] ) && 'moved' === $binding['kind'] ) {
-			return array( 'canonical' => array( 'path' => $path, 'value' => $canonical ), 'wordpress' => $wp );
+		$result = isset( $binding['before']['canonical'], $binding['after']['canonical'] ) && 'moved' === $binding['kind']
+			? array( 'canonical' => array( 'path' => $path, 'value' => $canonical ), 'wordpress' => $wp )
+			: array( 'canonical' => $canonical, 'wordpress' => $wp );
+		if ( array_key_exists( 'management', $binding['before'] ) ) {
+			$result['management'] = $this->management_state( $post_id, $context['root'], (string) $binding['resource']['id'] );
 		}
-		return array( 'canonical' => $canonical, 'wordpress' => $wp );
+		return $result;
 	}
 
 	private function mutate_effect( array $operation, array $context ): void {
@@ -287,6 +328,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		}
 		$this->authorize_post_mutation( $post_id > 0 ? 'edit' : 'create', $post_id, (string) ( $source->post_type ?? 'post' ) );
 		$postarr = $this->post_array( $source );
+		$postarr['post_parent'] = $this->runtime_parent_id( $source, $storage, $context['root'] );
 		if ( $post_id > 0 ) {
 			$postarr['ID'] = $post_id;
 		} elseif ( (int) ( $source->ID ?? 0 ) > 0 ) {
@@ -302,6 +344,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$this->sync_meta( $result, (array) ( $source->_frontmatter_meta ?? array() ) );
 		$this->sync_terms( $result, (array) ( $source->_frontmatter_terms ?? array() ) );
 		$receipt = $this->wordpress_receipt( $result, get_post( $result ) );
+		$receipt['source_identity'] = (string) ( $source->_source_identity ?? $context['current_path'] );
 		$this->update_management_meta( $result, $context['root'], $context['current_path'], $receipt, (string) $operation['binding']['resource']['id'] );
 	}
 
@@ -322,10 +365,18 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		}
 		$post->_frontmatter_meta  = $this->wordpress_meta( $post_id );
 		$post->_frontmatter_terms = $this->wordpress_terms( $post_id, (string) $post->post_type );
+		$post->_source_identity = (string) get_post_meta( $post_id, self::SOURCE_IDENTITY_META, true );
+		if ( '' === $post->_source_identity ) { $post->_source_identity = $context['current_path'] ?? $context['expected_path']; }
 		$expected_receipt = $this->post_receipt( $post, $post->_frontmatter_meta, $post->_frontmatter_terms );
 		$existing = $storage->read_post( $post_id );
 		$existing_path = false !== ( $found = $storage->path_for_post( $post_id ) ) ? $this->path_from_root( $found, $context['root'] ) : null;
 		if ( null === $existing || $existing_path !== $context['expected_path'] || $this->post_receipt( $existing, (array) $existing->_frontmatter_meta, (array) $existing->_frontmatter_terms ) !== $expected_receipt ) {
+			if ( 'index.md' === basename( (string) $context['expected_path'] ) ) {
+				$target = rtrim( $context['root'], '/\\' ) . '/' . $context['expected_path'];
+				if ( ! is_dir( dirname( $target ) ) && ! mkdir( dirname( $target ), 0755, true ) && ! is_dir( dirname( $target ) ) ) {
+					throw new RuntimeException( 'Unable to create the planned canonical hierarchy directory.' );
+				}
+			}
 			$written = $storage->write_post( $post );
 			if ( false === $written ) {
 				throw new RuntimeException( 'Canonical markdown write failed.' );
@@ -335,7 +386,9 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 				throw new WP_Markdown_Reconciliation_Store_Conflict( 'Storage selected a different canonical path than the planned target.' );
 			}
 		}
-		$this->update_management_meta( $post_id, $context['root'], $context['expected_path'], $expected_receipt, (string) $operation['binding']['resource']['id'] );
+		$management_receipt = $expected_receipt;
+		$management_receipt['source_identity'] = $post->_source_identity;
+		$this->update_management_meta( $post_id, $context['root'], $context['expected_path'], $management_receipt, (string) $operation['binding']['resource']['id'] );
 	}
 
 	private function update_management_meta( int $post_id, string $root, ?string $path, array $receipt, ?string $resource_id = null ): void {
@@ -344,6 +397,9 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		}
 		$absolute = $this->absolute_path( $root, $path );
 		update_post_meta( $post_id, self::SOURCE_PATH_META, $path );
+		$source_identity = is_string( $receipt['source_identity'] ?? null ) && '' !== $receipt['source_identity'] ? $receipt['source_identity'] : $path;
+		unset( $receipt['source_identity'] );
+		update_post_meta( $post_id, self::SOURCE_IDENTITY_META, $source_identity );
 		update_post_meta( $post_id, self::SOURCE_HASH_META, null !== $absolute && is_file( $absolute ) ? hash_file( 'sha256', $absolute ) : '' );
 		$resource_id ??= sprintf( 'post:%020d', $post_id );
 		$baseline = array(
@@ -358,6 +414,39 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$registry = $this->baseline_registry( $root );
 		$registry[ $resource_id ] = $this->public_baseline( $baseline );
 		$this->write_baseline_registry( $root, $registry );
+	}
+
+	private function management_state( int $post_id, string $root, string $resource_id ): ?array {
+		$registry = $this->baseline_registry( $root );
+		$registered = isset( $registry[ $resource_id ] ) && is_array( $registry[ $resource_id ] ) ? $registry[ $resource_id ] : null;
+		if ( $post_id < 1 || ! get_post( $post_id ) ) {
+			return null === $registered ? null : array( 'post' => null, 'registry' => $registered );
+		}
+		$path = $this->relative_path( (string) get_post_meta( $post_id, self::SOURCE_PATH_META, true ) );
+		$identity = $this->relative_path( (string) get_post_meta( $post_id, self::SOURCE_IDENTITY_META, true ) );
+		$baseline = $this->baseline( $post_id, $root );
+		if ( null === $path && null === $identity && null === $baseline && null === $registered ) {
+			return null;
+		}
+		return array(
+			'post'     => array( 'source_path' => $path, 'source_identity' => $identity, 'baseline' => $baseline ),
+			'registry' => $registered,
+		);
+	}
+
+	private function desired_management_state( string $root, string $path, array $receipt, string $resource_id, ?string $source_identity = null ): array {
+		$source_identity = null !== $source_identity ? $source_identity : $path;
+		$baseline = array(
+			'canonical_root' => $root,
+			'canonical_path' => $path,
+			'identity'       => WP_Markdown_Reconciliation_Identity::exact( $receipt ),
+			'resource_id'    => $resource_id,
+			'resource_type'  => 'post',
+		);
+		return array(
+			'post'     => array( 'source_path' => $path, 'source_identity' => $source_identity, 'baseline' => $baseline ),
+			'registry' => $baseline,
+		);
 	}
 
 	private function wordpress_posts( array $types ): array {
@@ -401,7 +490,21 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 
 	private function wordpress_meta( int $post_id ): array {
 		$all = (array) get_post_meta( $post_id );
-		unset( $all[ self::SOURCE_PATH_META ], $all[ self::SOURCE_HASH_META ], $all[ self::BASELINE_META ] );
+		unset( $all[ self::SOURCE_PATH_META ], $all[ self::SOURCE_IDENTITY_META ], $all[ self::SOURCE_HASH_META ], $all[ self::BASELINE_META ] );
+		$allowed_internal = array( '_thumbnail_id', '_wp_page_template' );
+		if ( function_exists( 'apply_filters' ) ) {
+			$allowed_internal = (array) apply_filters( 'markdown_db_internal_meta_allowlist', $allowed_internal, function_exists( 'get_post' ) ? get_post( $post_id ) : null );
+		}
+		foreach ( $all as $key => $values ) {
+			if ( str_starts_with( (string) $key, '_' ) && ! in_array( $key, $allowed_internal, true ) ) {
+				unset( $all[ $key ] );
+				continue;
+			}
+			$all[ $key ] = array_map(
+				static fn( mixed $value ): mixed => is_string( $value ) && function_exists( 'maybe_unserialize' ) ? maybe_unserialize( $value ) : $value,
+				(array) $values
+			);
+		}
 		return $all;
 	}
 
@@ -422,10 +525,10 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 	private function normalize_meta( array $meta ): array {
 		$result = array();
 		foreach ( $meta as $key => $values ) {
-			if ( ! is_string( $key ) || '' === $key || in_array( $key, array( self::SOURCE_PATH_META, self::SOURCE_HASH_META, self::BASELINE_META ), true ) ) {
+			if ( ! is_string( $key ) || '' === $key || in_array( $key, array( self::SOURCE_PATH_META, self::SOURCE_IDENTITY_META, self::SOURCE_HASH_META, self::BASELINE_META ), true ) ) {
 				continue;
 			}
-			$values = is_array( $values ) ? $values : array( $values );
+			$values = is_array( $values ) && array_is_list( $values ) ? $values : array( $values );
 			$values = array_map( function ( mixed $value ): mixed {
 				if ( is_string( $value ) && function_exists( 'maybe_unserialize' ) ) {
 					$value = maybe_unserialize( $value );
@@ -546,6 +649,12 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 	}
 
 	private function authorize_post_mutation( string $operation, int $post_id, string $post_type = 'post' ): void {
+		if ( null !== $this->mutation_authorizer ) {
+			if ( ! call_user_func( $this->mutation_authorizer, $operation, $post_id, $post_type ) ) {
+				throw new WP_Markdown_Reconciliation_Store_Conflict( 'The runtime cannot mutate this WordPress resource.' );
+			}
+			return;
+		}
 		if ( ( defined( 'WP_CLI' ) && WP_CLI ) || ! function_exists( 'current_user_can' ) ) {
 			return;
 		}
@@ -584,9 +693,27 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		return isset( $posts[0] ) ? (int) $posts[0] : 0;
 	}
 
+	/** Resolve canonical parent IDs through immutable source identity, never a raw ID match. */
+	private function runtime_parent_id( object $source, WP_Markdown_Storage $storage, string $root ): int {
+		$parent = (int) ( $source->post_parent ?? 0 );
+		if ( $parent < 1 ) { return 0; }
+		$parent_source = $storage->read_post( $parent );
+		if ( null === $parent_source ) {
+			throw new WP_Markdown_Reconciliation_Store_Conflict( 'Canonical managed hierarchy references a missing parent.' );
+		}
+		$identity = $this->relative_path( (string) ( $parent_source->_source_identity ?? '' ) );
+		if ( null === $identity ) { throw new WP_Markdown_Reconciliation_Store_Conflict( 'Canonical parent source identity is invalid.' ); }
+		$ids = get_posts( array( 'post_type' => 'any', 'post_status' => 'any', 'posts_per_page' => 2, 'fields' => 'ids', 'meta_key' => self::SOURCE_IDENTITY_META, 'meta_value' => $identity ) );
+		if ( count( $ids ) !== 1 ) { throw new WP_Markdown_Reconciliation_Store_Conflict( 'Canonical parent source identity is missing or ambiguous in WordPress.' ); }
+		return (int) $ids[0];
+	}
+
 	private function storage( string $root, string $layout_profile = '' ): WP_Markdown_Storage {
 		$storage = $this->storage ?? new WP_Markdown_Storage( $root );
 		$storage->set_content_layout_profile( $layout_profile );
+		if ( function_exists( 'get_post' ) ) {
+			$storage->set_post_resolver( static fn( int $post_id ): ?object => get_post( $post_id ) );
+		}
 		return $storage;
 	}
 

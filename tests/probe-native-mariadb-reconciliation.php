@@ -80,6 +80,7 @@ try {
 	mdi_native_probe_check( $selected instanceof WP_Markdown_WPDB_Reconciliation_Adapter, 'mysqli WordPress runtime selects the WPDB ownership adapter for canonical-to-WordPress operations' );
 
 	$table = $wpdb->prefix . 'mdi_reconciliation_probe_' . bin2hex( random_bytes( 8 ) );
+	$fence_table = $wpdb->prefix . 'mdi_resource_fences';
 	$table_created = false;
 	mdi_native_probe_check( false !== $wpdb->query( "CREATE TABLE {$table} (resource_id VARCHAR(64) PRIMARY KEY, value VARCHAR(191) NOT NULL) ENGINE=InnoDB" ), 'created a uniquely named disposable probe table' );
 	$table_created = true;
@@ -95,7 +96,7 @@ try {
 	$applied = $service->apply( $request + array( 'plan_id' => $plan['plan_id'], 'source_identity' => $plan['source_identity'] ) );
 	$apply_operation_id = $applied['operation_ids'][0] ?? '';
 	$apply_fence_key = substr( hash( 'sha256', $root . '/canonical' ), 0, 16 ) . ':post:apply';
-	$apply_fence = $wpdb->get_row( $wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s', $apply_fence_key ), ARRAY_A );
+	$apply_fence = $wpdb->get_row( $wpdb->prepare( "SELECT operation_id, fence FROM `{$fence_table}` WHERE resource_key = %s", $apply_fence_key ), ARRAY_A );
 	mdi_native_probe_check( 1 === $adapter->mutations && 'canonical-value' === $wpdb->get_var( "SELECT value FROM {$table} WHERE resource_id = 'apply'" ) && 1 === count( $applied['operation_ids'] ) && is_array( $apply_fence ) && $apply_operation_id === $apply_fence['operation_id'] && 0 < (int) $apply_fence['fence'], 'wpdb adapter writes and verifies its MariaDB fence before committing the probe mutation' );
 	$repeated = $service->apply( $request + array( 'plan_id' => $plan['plan_id'], 'source_identity' => $plan['source_identity'] ) );
 	mdi_native_probe_check( 1 === $adapter->mutations && 0 === count( $repeated['operation_ids'] ), 'wpdb adapter repeat apply is idempotent' );
@@ -109,16 +110,16 @@ try {
 	$mutations_after_effect = $adapter->mutations;
 	$recovered = ( new WP_Markdown_Durable_Reconciliation_Coordinator( $store, 'recovery-probe', 1 ) )->recover( $interrupted['id'], $adapter->adapter_for( $claimed ) );
 	$recovery_fence_key = substr( hash( 'sha256', $root . '/canonical' ), 0, 16 ) . ':post:recovery';
-	$recovery_fence = $wpdb->get_row( $wpdb->prepare( 'SELECT operation_id, fence FROM `_mdi_resource_fences` WHERE resource_key = %s', $recovery_fence_key ), ARRAY_A );
+	$recovery_fence = $wpdb->get_row( $wpdb->prepare( "SELECT operation_id, fence FROM `{$fence_table}` WHERE resource_key = %s", $recovery_fence_key ), ARRAY_A );
 	mdi_native_probe_check( 'completed' === $recovered['state'] && $mutations_after_effect === $adapter->mutations && 'canonical-value' === $wpdb->get_var( "SELECT value FROM {$table} WHERE resource_id = 'recovery'" ) && is_array( $recovery_fence ) && $recovered['id'] === $recovery_fence['operation_id'] && (int) $recovered['fence'] === (int) $recovery_fence['fence'] && (int) $claimed['fence'] < (int) $recovered['fence'], 'wpdb adapter recovery re-fences and recognizes the real MariaDB effect without replay' );
 } finally {
 	if ( isset( $wpdb, $apply_fence_key, $apply_operation_id ) ) {
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $apply_fence_key, $apply_operation_id ) );
-		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( 'SELECT operation_id FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $apply_fence_key, $apply_operation_id ) ), 'removed the probe apply fence row owned by this process' );
+		$wpdb->query( $wpdb->prepare( "DELETE FROM `{$fence_table}` WHERE resource_key = %s AND operation_id = %s", $apply_fence_key, $apply_operation_id ) );
+		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( "SELECT operation_id FROM `{$fence_table}` WHERE resource_key = %s AND operation_id = %s", $apply_fence_key, $apply_operation_id ) ), 'removed the probe apply fence row owned by this process' );
 	}
 	if ( isset( $wpdb, $recovery_fence_key, $recovered ) ) {
-		$wpdb->query( $wpdb->prepare( 'DELETE FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $recovery_fence_key, $recovered['id'] ) );
-		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( 'SELECT operation_id FROM `_mdi_resource_fences` WHERE resource_key = %s AND operation_id = %s', $recovery_fence_key, $recovered['id'] ) ), 'removed the probe recovery fence row owned by this process' );
+		$wpdb->query( $wpdb->prepare( "DELETE FROM `{$fence_table}` WHERE resource_key = %s AND operation_id = %s", $recovery_fence_key, $recovered['id'] ) );
+		mdi_native_probe_check( null === $wpdb->get_var( $wpdb->prepare( "SELECT operation_id FROM `{$fence_table}` WHERE resource_key = %s AND operation_id = %s", $recovery_fence_key, $recovered['id'] ) ), 'removed the probe recovery fence row owned by this process' );
 	}
 	if ( isset( $wpdb, $table, $table_created ) && $table_created ) {
 		$wpdb->query( "DROP TABLE {$table}" );

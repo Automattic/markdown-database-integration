@@ -287,7 +287,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 			}
 		}
 		$canonical = null === $file_post ? null : $this->post_receipt( $file_post, (array) ( $file_post->_frontmatter_meta ?? array() ), (array) ( $file_post->_frontmatter_terms ?? array() ) );
-		$result = isset( $binding['before']['canonical'], $binding['after']['canonical'] ) && $context['current_path'] !== $context['expected_path']
+		$result = isset( $binding['before']['canonical'], $binding['after']['canonical'] ) && null !== $context['current_path'] && null !== $context['expected_path'] && $context['current_path'] !== $context['expected_path']
 			? array( 'canonical' => array( 'path' => $path, 'value' => $canonical ), 'wordpress' => $wp )
 			: array( 'canonical' => $canonical, 'wordpress' => $wp );
 		if ( array_key_exists( 'management', $binding['before'] ) ) {

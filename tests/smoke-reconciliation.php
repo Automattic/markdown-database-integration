@@ -269,6 +269,8 @@ $observe_effect = new ReflectionMethod( $path_observer_adapter, 'observe_effect'
 $path_change_binding = array( 'binding' => array( 'kind' => 'written_from_wordpress', 'resource' => array( 'id' => $reparented_child['resource_id'] ), 'before' => array( 'canonical' => mdi_reconcile_identity( $child_move_before['canonical'] ) ), 'after' => array( 'canonical' => mdi_reconcile_identity( $child_move_after['canonical'] ) ) ) );
 $path_change_observed = $observe_effect->invoke( $path_observer_adapter, $path_change_binding, array( 'root' => $canonical, 'current_path' => 'page/parent/child.md', 'expected_path' => 'page/child.md', 'post_id' => 0, 'layout_profile' => '' ) );
 mdi_reconcile_check( array_key_exists( 'path', $path_change_observed['canonical'] ), 'production observer preserves path-aware durability for a content write that also moves canonical route' );
+$create_observed = $observe_effect->invoke( $path_observer_adapter, $path_change_binding, array( 'root' => $canonical, 'current_path' => null, 'expected_path' => 'page/child.md', 'post_id' => 0, 'layout_profile' => '' ) );
+mdi_reconcile_check( ! array_key_exists( 'path', (array) $create_observed['canonical'] ), 'production observer keeps initial canonical creation on the content-only durability contract' );
 
 $adapter->set_source( 'changed-source' );
 mdi_reconcile_throws( fn() => $service->apply( $apply_request ), WP_Markdown_Reconciliation_Store_Conflict::class, 'stale source plan is rejected before new mutation' );

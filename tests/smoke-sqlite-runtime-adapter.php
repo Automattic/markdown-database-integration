@@ -34,10 +34,14 @@ $pdo = new PDO( 'sqlite::memory:' );
 $connection = new WP_SQLite_Connection( $pdo );
 $legacy = new WP_Markdown_Driver( $connection, 'wordpress', new WP_Markdown_Storage() );
 $adapter = new WP_Markdown_SQLite_Runtime_Adapter( $connection, 'wordpress', new WP_Markdown_Storage() );
+$detect_operation = new ReflectionMethod( WP_Markdown_SQLite_Runtime_Adapter::class, 'detect_operation' );
 
 $passed = $legacy instanceof WP_Markdown_SQLite_Runtime_Adapter
 	&& $legacy instanceof WP_Markdown_Driver
-	&& $adapter->operations() instanceof WP_Markdown_SQLite_Operations;
+	&& $adapter->operations() instanceof WP_Markdown_SQLite_Operations
+	&& null === $detect_operation->invoke( $adapter, 'TRUNCATE TABLE ownership_test' )
+	&& null === $detect_operation->invoke( $adapter, 'CREATE INDEX ownership_name ON ownership_test (name)' )
+	&& null === $detect_operation->invoke( $adapter, 'DELETE a, b FROM ownership_test a, ownership_test b WHERE a.id = b.id' );
 
 $pdo->exec( 'CREATE TABLE ownership_test (id INTEGER PRIMARY KEY)' );
 $adapter->beginTransaction();

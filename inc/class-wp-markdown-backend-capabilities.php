@@ -103,6 +103,14 @@ class WP_Markdown_Backend_Capabilities {
 		) );
 	}
 
+	/** mysql-full owns an early wpdb boundary but has no canonical drain yet. */
+	public static function mysql_full(): self {
+		return new self( 'mysql-full', array(
+			'content_mutation_capture' => true,
+			'table_mutation_capture'   => true,
+		) );
+	}
+
 	public function get_backend(): string {
 		return $this->backend;
 	}
@@ -179,6 +187,9 @@ class WP_Markdown_Backend_Resolver {
 		}
 		if ( 'mysql-content' === $id && ! isset( self::$declarations['mysql-content'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::mysql_content() );
+		}
+		if ( 'mysql-full' === $id && ! isset( self::$declarations['mysql-full'] ) ) {
+			self::register( WP_Markdown_Backend_Capabilities::mysql_full() );
 		}
 		if ( ! isset( self::$declarations[ $id ] ) ) {
 			throw new WP_Markdown_Unknown_Backend( array(

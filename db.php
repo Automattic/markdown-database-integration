@@ -16,8 +16,38 @@
 
 // mysql-content is a plugin-level MySQL runtime. Leave normal wpdb bootstrap
 // intact so the plugin can report the explicit db.php migration diagnostic.
-	if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) {
+if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) {
 	define( 'MARKDOWN_DB_RETAINED_DROPIN', true );
+	return;
+}
+
+// mysql-full must own this boundary because plugins load after wpdb bootstrap.
+if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) {
+	$markdown_db_mysql_plugin_dir = null;
+	foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $path ) {
+		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/class-wp-markdown-sql-classifier.php' ) && is_file( $path . '/inc/class-wp-markdown-mysql-wpdb.php' ) ) {
+			$markdown_db_mysql_plugin_dir = $path;
+			break;
+		}
+	}
+	if ( null === $markdown_db_mysql_plugin_dir || ! class_exists( 'wpdb' ) || ! is_callable( $GLOBALS['markdown_db_mysql_mutation_sink'] ?? null ) ) {
+		$GLOBALS['markdown_db_mysql_full_diagnostic'] = array( 'code' => null === $markdown_db_mysql_plugin_dir || ! class_exists( 'wpdb' ) ? 'markdown_db_mysql_full_bootstrap_unavailable' : 'markdown_db_mysql_full_sink_unavailable', 'message' => 'mysql-full requires a compatible MDI db.php bootstrap, stock wpdb, and an injected mutation sink.' );
+		return;
+	}
+	try {
+		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
+		$markdown_db_mysql_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
+		$markdown_db_mysql_backend->require( 'table_mutation_capture' );
+		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-wpdb.php';
+		if ( 1 !== WP_Markdown_MySQL_WPDB::BOOTSTRAP_ABI ) {
+			throw new RuntimeException( 'Incompatible mysql-full bootstrap ABI.' );
+		}
+		$GLOBALS['wpdb'] = new WP_Markdown_MySQL_WPDB( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, $GLOBALS['markdown_db_mysql_mutation_sink'] );
+		define( 'MARKDOWN_DB_DROPIN', true );
+	} catch ( Throwable $error ) {
+		unset( $GLOBALS['wpdb'] );
+		$GLOBALS['markdown_db_mysql_full_diagnostic'] = array( 'code' => 'markdown_db_mysql_full_bootstrap_incompatible', 'message' => $error->getMessage() );
+	}
 	return;
 }
 

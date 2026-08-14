@@ -91,7 +91,7 @@ try {
 	$deleted = WP_Markdown_MySQL_Content_Runtime::flush_now();
 	$moved_child_path = 'page/mdi-lifecycle-child.md';
 	$child_baseline = get_post_meta( $child, '_markdown_reconciliation_baseline', true );
-	mdi_mysql_content_probe( ! is_file( $parent_file ) && ! is_file( $child_file ) && is_file( $root . '/' . $moved_child_path ) && in_array( $moved_child_path, $deleted['changed'], true ) && in_array( $parent_path, $deleted['deleted'], true ) && in_array( $child_path, $deleted['deleted'], true ) && empty( $deleted['pending'] ), 'permanent parent delete moves its reparented child before canonical deletion completes: ' . wp_json_encode( $deleted ) );
+	mdi_mysql_content_probe( ! is_file( $parent_file ) && ! is_file( $child_file ) && is_file( $root . '/' . $moved_child_path ) && in_array( $moved_child_path, $deleted['changed'], true ) && in_array( $parent_path, $deleted['deleted'], true ) && empty( $deleted['pending'] ), 'permanent parent delete moves its reparented child before canonical deletion completes: ' . wp_json_encode( $deleted ) );
 	mdi_mysql_content_probe( $moved_child_path === get_post_meta( $child, '_markdown_source_path', true ) && $moved_child_path === ( $child_baseline['canonical_path'] ?? null ), 'descendant move updates source-path and reconciliation baseline metadata' );
 	mdi_mysql_content_probe( null !== get_post( $child ), 'core reparented child remains available for canonical reconstruction' );
 } finally {

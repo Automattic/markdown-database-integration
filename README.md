@@ -226,10 +226,11 @@ planned -> claimed -> effect_observed -> completed
 ```
 
 `WP_Markdown_Reconciliation_Adapter` keeps WordPress, SQLite, MySQL, and file
-observation/mutation details behind the owning adapter. Recovery is deliberately
-observation-only: it never replays an adapter mutation, and completes only when
-every named domain exactly proves the intended after identity. Missing,
-indeterminate, or divergent evidence is persisted as a structured
+observation/mutation details behind the owning adapter. Recovery of an ordinary
+operation is observation-only and completes only when every named domain exactly
+proves the intended after identity. A separately prepared WordPress commit may
+continue its canonical effect only after its exact commit checkpoint is proven.
+Missing, indeterminate, or divergent evidence is persisted as a structured
 `reconciliation_required` conflict.
 
 Because only an owning backend can make resource fencing atomic with its effect,
@@ -248,6 +249,40 @@ when the store is constructed, and at least one root must be declared. Deploymen
 should derive its authentication key from server-only secret material and place
 it in a server-owned runtime directory. This journal is runtime coordination
 state, not canonical content; it has no Git or publication requirement.
+
+### Three-Way Content Reconciliation
+
+`WP_Markdown_Reconciliation_Service` is the backend-neutral planning and apply
+contract shared by PHP callers, backend content adapters, WP-CLI, and the
+`markdown-db/reconcile` ability. It compares the current normalized canonical
+post identity, current normalized WordPress post identity, and the last common
+baseline recorded for that canonical root. Plans contain deterministic arrays
+for `created`, `updated_from_file`, `written_from_wordpress`,
+`deleted_from_file`, `deleted_from_wordpress`, `moved`, `unchanged`, and
+`conflicts`.
+
+The production adapter keeps the secret-free last-common identity in both post
+metadata and a root-keyed WordPress option so the baseline survives deletion of
+the WordPress row. Normalized content identities intentionally exclude the
+backend-assigned post ID; the resource ID binds ownership separately.
+
+Public entries contain only SHA-256 identities, canonical paths, and resource
+IDs. Conflict entries include all three compared identities and do not mutate
+by default. MDI performs no Git operation, remote merge, branch update, or
+publication decision; those remain caller policy.
+
+Every applied resource is an operation in the durable store described above.
+Apply first validates the reviewed source and plan without effects, then
+enumerates original incomplete operation IDs and recovers or
+executes under the production database/filesystem ownership adapters. Exact
+before and after identities, the plan, source snapshot, resource, root, and
+continuation are bound into the durable operation ID. An ambiguous effect is
+reported as `reconciliation_required`, never inferred as success.
+
+Deletion is disabled unless `deletion_policy=managed`, and even then requires a
+last-common baseline proving that the resource was managed by the selected
+canonical root. Batch sizes are bounded from 1 through 1000. Continuations are
+opaque, stable objects bound to the same plan and complete source snapshot.
 
 With one root, `MARKDOWN_DB_STATE_DIR` defaults to
 `MARKDOWN_DB_CONTENT_DIR`. When they are split, the content root owns
@@ -454,6 +489,67 @@ The same operations are available to agents through abilities:
 
 - `markdown-db/import`
 - `markdown-db/export`
+- `markdown-db/reconcile`
+
+### Reconciliation
+
+Plan first. Dry-run does not acquire resource ownership or mutate files or the
+database:
+
+```bash
+wp markdown-db reconcile --dry-run \
+  --managed-scope=post,page \
+  --direction=bidirectional \
+  --deletion-policy=none \
+  --conflict-policy=none \
+  --batch-size=100 \
+  --format=json
+```
+
+Apply the exact reviewed snapshot by passing the returned identities:
+
+```bash
+wp markdown-db reconcile \
+  --managed-scope=post,page \
+  --direction=bidirectional \
+  --deletion-policy=none \
+  --conflict-policy=none \
+  --batch-size=100 \
+  --plan-id=<plan_id> \
+  --source-identity=<source_identity> \
+  --format=json
+```
+
+For another dry-run or apply page, pass the returned continuation object as JSON
+with `--continuation='<json>'` while retaining the same reviewed plan and source
+identities. Each continuation authenticates the still-unprocessed suffix, so
+mutations completed by earlier pages do not invalidate later pages. Any change
+to an unprocessed resource makes continuation fail closed. Set
+`--deletion-policy=managed` only when deletion propagation is intended. The
+same keys use underscores in the ability/PHP input (`dry_run`,
+`canonical_root`, `managed_scope`, `deletion_policy`, `conflict_policy`,
+`batch_size`, `plan_id`, and `source_identity`).
+
+External PHP callers use the same facade as the public transports:
+
+```php
+$plan = WP_Markdown_CLI::reconcile(
+    array(
+        'dry_run'         => true,
+        'canonical_root'  => '/srv/site/content',
+        'managed_scope'   => array( 'post', 'page' ),
+        'direction'       => 'bidirectional',
+        'deletion_policy' => 'none',
+        'conflict_policy' => 'none',
+        'batch_size'      => 100,
+    )
+);
+```
+
+Backend integrations can instead construct `WP_Markdown_Reconciliation_Service`
+with a `WP_Markdown_Reconciliation_Content_Adapter`. The adapter enumerates
+normalized resource snapshots and returns the #190 owning adapter for each
+operation; it must not create another journal.
 
 The import path upserts posts instead of duplicating them. It records
 `_markdown_source_path` and `_markdown_source_hash` post meta so repeat imports

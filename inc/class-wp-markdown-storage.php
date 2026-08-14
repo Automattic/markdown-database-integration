@@ -339,8 +339,7 @@ class WP_Markdown_Storage {
 
 				// Remove old file if path changed (slug change or reparent).
 				if ( null !== $previous_path && $previous_path !== $file_path ) {
-					$this->observe_file_mutation( $previous_path );
-					@unlink( $previous_path );
+					$this->safe_unlink( $previous_path );
 					$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
 				}
 			}
@@ -384,12 +383,11 @@ class WP_Markdown_Storage {
 	public function delete_post( int $post_id ): bool {
 		$file_path = $this->find_file_by_id( $post_id );
 
-		if ( ! $file_path || ! file_exists( $file_path ) ) {
+		if ( ! $file_path || ! file_exists( $file_path ) || ! $this->existing_path_is_safe( $file_path ) ) {
 			return false;
 		}
 
-		$this->observe_file_mutation( $file_path );
-		$result = @unlink( $file_path );
+		$result = $this->safe_unlink( $file_path );
 
 		if ( $result ) {
 			// Clean up empty directories up to the post type dir.
@@ -480,6 +478,9 @@ class WP_Markdown_Storage {
 		$conflicts     = array();
 
 		foreach ( $dirs as $type_dir ) {
+			if ( is_link( $type_dir ) ) {
+				continue;
+			}
 			$dirname = basename( $type_dir );
 
 			// Skip internal directories (prefixed with underscore).
@@ -655,6 +656,9 @@ class WP_Markdown_Storage {
 		}
 
 		foreach ( $dirs as $type_dir ) {
+			if ( is_link( $type_dir ) ) {
+				continue;
+			}
 			$dirname = basename( $type_dir );
 
 			if ( str_starts_with( $dirname, '_' ) || in_array( $dirname, $this->excluded_types, true ) ) {
@@ -674,6 +678,9 @@ class WP_Markdown_Storage {
 	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
 	 */
 	private function iterate_markdown_directory_manifest( string $dir, string $type_dir, int $parent_id ): \Generator {
+		if ( is_link( $dir ) ) {
+			return;
+		}
 		$entries = scandir( $dir );
 		if ( false === $entries ) {
 			return;
@@ -691,6 +698,9 @@ class WP_Markdown_Storage {
 			}
 
 			$path = $dir . '/' . $entry;
+			if ( is_link( $path ) ) {
+				continue;
+			}
 
 			if ( is_dir( $path ) ) {
 				if ( str_starts_with( $entry, '_' ) ) {
@@ -719,6 +729,36 @@ class WP_Markdown_Storage {
 				'parent_id' => $derived_parent_id,
 			);
 		}
+	}
+
+	private function existing_path_is_safe( string $path ): bool {
+		$root = realpath( $this->content_dir );
+		$real = realpath( $path );
+		if ( false === $root || false === $real || ! str_starts_with( $real, rtrim( $root, DIRECTORY_SEPARATOR ) . DIRECTORY_SEPARATOR ) ) {
+			return false;
+		}
+		$current = rtrim( $this->content_dir, '/\\' );
+		$relative = ltrim( substr( $path, strlen( $current ) ), '/\\' );
+		foreach ( preg_split( '#[\\\\/]#', $relative ) ?: array() as $segment ) {
+			$current .= DIRECTORY_SEPARATOR . $segment;
+			if ( is_link( $current ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function safe_unlink( string $path ): bool {
+		if ( ! $this->existing_path_is_safe( $path ) ) {
+			return false;
+		}
+		$before = @lstat( $path );
+		if ( ! is_array( $before ) || is_link( $path ) ) {
+			return false;
+		}
+		$this->observe_file_mutation( $path );
+		$after = @lstat( $path );
+		return is_array( $after ) && $before['dev'] === $after['dev'] && $before['ino'] === $after['ino'] && ! is_link( $path ) && @unlink( $path );
 	}
 
 	/**
@@ -779,18 +819,11 @@ class WP_Markdown_Storage {
 
 	/** Write using a non-legacy profile's canonical source path. */
 	private function write_profile_post( object $post ): string|false {
-		$profile = $this->content_layout();
-		if ( empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
-			error_log( 'Markdown DB: content layout profile has no path_for_post callback.' );
+		$relative = $this->profile_path_for_post( $post );
+		if ( false === $relative ) {
 			return false;
 		}
 		$frontmatter = $this->build_frontmatter( $post );
-		$relative = call_user_func( $profile['path_for_post'], $post, $frontmatter, array( 'content_dir' => $this->content_dir, 'profile_id' => $profile['id'] ) );
-		$relative = is_string( $relative ) ? $this->validate_profile_path( $relative ) : null;
-		if ( null === $relative ) {
-			error_log( 'Markdown DB: content layout profile returned an unsafe canonical path.' );
-			return false;
-		}
 		$file_path = $this->profile_absolute_path( $relative, true );
 		if ( null === $file_path ) {
 			return false;
@@ -817,8 +850,7 @@ class WP_Markdown_Storage {
 			return false;
 		}
 		if ( null !== $old_path && $old_path !== $file_path && file_exists( $old_path ) ) {
-			$this->observe_file_mutation( $old_path );
-			if ( ! @unlink( $old_path ) ) {
+			if ( ! $this->safe_unlink( $old_path ) ) {
 				@unlink( $tmp_path );
 				return false;
 			}
@@ -835,6 +867,23 @@ class WP_Markdown_Storage {
 			$this->record_profile_index( $id, $file_path );
 		}
 		return $file_path;
+	}
+
+	/** Return the validated route selected by the active non-legacy profile. */
+	public function profile_path_for_post( object $post ): string|false {
+		$profile = $this->content_layout();
+		if ( ! empty( $profile['legacy'] ) || empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
+			error_log( 'Markdown DB: content layout profile has no path_for_post callback.' );
+			return false;
+		}
+		$frontmatter = $this->build_frontmatter( $post );
+		$relative = call_user_func( $profile['path_for_post'], $post, $frontmatter, array( 'content_dir' => $this->content_dir, 'profile_id' => $profile['id'] ) );
+		$relative = is_string( $relative ) ? $this->validate_profile_path( $relative ) : null;
+		if ( null === $relative ) {
+			error_log( 'Markdown DB: content layout profile returned an unsafe canonical path.' );
+			return false;
+		}
+		return $relative;
 	}
 
 	/** @return string[] */
@@ -1135,7 +1184,7 @@ class WP_Markdown_Storage {
 	private function scan_directory_recursive( string $dir ): array {
 		$files = array();
 
-		if ( ! is_dir( $dir ) ) {
+		if ( ! is_dir( $dir ) || is_link( $dir ) ) {
 			return $files;
 		}
 
@@ -1150,6 +1199,9 @@ class WP_Markdown_Storage {
 			}
 
 			$path = $dir . '/' . $entry;
+			if ( is_link( $path ) ) {
+				continue;
+			}
 
 			if ( is_dir( $path ) ) {
 				// Skip internal directories (e.g. _tables, _schema).
@@ -1245,6 +1297,9 @@ class WP_Markdown_Storage {
 		}
 
 		foreach ( $dirs as $dir ) {
+			if ( is_link( $dir ) ) {
+				continue;
+			}
 			$dirname = basename( $dir );
 
 			// Skip internal directories.
@@ -1269,8 +1324,7 @@ class WP_Markdown_Storage {
 						continue;
 					}
 					// Competing disk copy — unlink it.
-					$this->observe_file_mutation( $file );
-					@unlink( $file );
+					$this->safe_unlink( $file );
 					$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
 					$this->index[ $id ] = $canonical;
 					continue;
@@ -1294,13 +1348,11 @@ class WP_Markdown_Storage {
 					}
 
 					if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
-						$this->observe_file_mutation( $existing );
-						@unlink( $existing );
+						$this->safe_unlink( $existing );
 						$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
 						$this->index[ $id ] = $file;
 					} else {
-						$this->observe_file_mutation( $file );
-						@unlink( $file );
+						$this->safe_unlink( $file );
 						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
 					}
 				} else {
@@ -2024,7 +2076,7 @@ class WP_Markdown_Storage {
 	 * @param string $dir Directory path.
 	 */
 	private function remove_directory_recursive( string $dir ): void {
-		if ( ! is_dir( $dir ) ) {
+		if ( ! is_dir( $dir ) || is_link( $dir ) ) {
 			return;
 		}
 
@@ -2039,11 +2091,14 @@ class WP_Markdown_Storage {
 			}
 
 			$path = $dir . '/' . $entry;
+			if ( is_link( $path ) ) {
+				continue;
+			}
 			if ( is_dir( $path ) ) {
 				$this->remove_directory_recursive( $path );
 				@rmdir( $path );
 			} else {
-				@unlink( $path );
+				$this->safe_unlink( $path );
 			}
 		}
 	}
@@ -2055,6 +2110,11 @@ class WP_Markdown_Storage {
 	 */
 	public function get_content_dir(): string {
 		return $this->content_dir;
+	}
+
+	public function delete_relative_path( string $relative ): bool {
+		$relative = $this->validate_profile_path( $relative );
+		return null !== $relative && $this->safe_unlink( rtrim( $this->content_dir, '/\\' ) . DIRECTORY_SEPARATOR . $relative );
 	}
 
 	/**

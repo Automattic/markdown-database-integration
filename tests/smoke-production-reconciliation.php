@@ -111,7 +111,7 @@ $recoverable_ids = array_column( $reopened->recoverable( 1 ), 'id' );
 mdi_production_check( array( $enumerated['id'] ) === $recoverable_ids, 'bounded production enumeration returns the original durable operation ID before deriving intent' );
 
 // Persisted filesystem fencing rejects an older owner before replacement.
-$stale = $claimed; $newer = $stale; $newer['id'] = str_repeat( 'b', 64 ); $newer['fence'] = $stale['fence'] + 1;
+$stale = $claimed; $newer = $stale; $newer['id'] = str_repeat( 'b', 64 ); $newer['fence'] = $recovered['fence'] + 1;
 $recovery_adapter->fence( $newer ); $stale_rejected = false;
 try { $recovery_adapter->apply( $stale ); } catch ( WP_Markdown_Reconciliation_Store_Conflict ) { $stale_rejected = true; }
 mdi_production_check( $stale_rejected && 'recovered' === file_get_contents( $path ), 'durable filesystem fence rejects stale replacement owner' );
@@ -123,6 +123,7 @@ $pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_valu
 $pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
+$pdo->exec( 'CREATE TABLE `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
 $observe_db = static function ( array $operation, PDO $connection ): array { unset( $operation ); $value = $connection->query( 'SELECT post_title FROM wp_posts WHERE ID = 42' )->fetchColumn(); return array( 'wordpress' => false === $value ? null : $value ); };
 $mutate_db = static function ( array $operation, PDO $connection ): void { unset( $operation ); $connection->exec( "UPDATE wp_posts SET post_title = 'after' WHERE ID = 42" ); };
 $db_adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $pdo, $observe_db, $mutate_db );
@@ -174,6 +175,6 @@ $mysql_pdo = new MDI_MySQL_Protocol_PDO(); $mysql_state = 'before';
 $mysql_adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $mysql_pdo, static function () use ( &$mysql_state ): array { return array( 'wordpress' => $mysql_state ); }, static function () use ( &$mysql_state ): void { $mysql_state = 'after'; } );
 $mysql_result = $coordinator->reconcile( mdi_production_intent( $canonical, 'mysql-protocol', 'update', array( 'wordpress' => 'before' ), array( 'wordpress' => 'after' ) ), $mysql_adapter );
 $mysql_sql = implode( "\n", $mysql_pdo->sql );
-mdi_production_check( 'completed' === $mysql_result['state'] && str_contains( $mysql_sql, 'BEGIN' ) && str_contains( $mysql_sql, 'COMMIT' ) && str_contains( $mysql_sql, 'SELECT fence FROM' ) && str_contains( $mysql_sql, 'DELETE FROM' ) && str_contains( $mysql_sql, 'INSERT INTO' ) && str_contains( $mysql_sql, 'SELECT operation_id, fence FROM' ), 'MySQL-compatible PDO double verifies transaction and parameterized fence protocol (no live MySQL engine available)' );
+mdi_production_check( 'completed' === $mysql_result['state'] && ! str_contains( $mysql_sql, 'CREATE TABLE' ) && str_contains( $mysql_sql, 'BEGIN' ) && str_contains( $mysql_sql, 'COMMIT' ) && str_contains( $mysql_sql, 'DELETE FROM' ) && str_contains( $mysql_sql, 'INSERT INTO' ) && str_contains( $mysql_sql, 'SELECT operation_id, fence FROM' ), 'MySQL-compatible PDO double verifies pre-provisioned transaction and parameterized fence protocol (no live MySQL engine available)' );
 
 exit( empty( $failures ) ? 0 : 1 );

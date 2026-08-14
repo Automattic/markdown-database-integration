@@ -14,6 +14,13 @@
  * @package Markdown_Database_Integration
  */
 
+// mysql-content is a plugin-level MySQL runtime. Leave normal wpdb bootstrap
+// intact so the plugin can report the explicit db.php migration diagnostic.
+	if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) {
+	define( 'MARKDOWN_DB_RETAINED_DROPIN', true );
+	return;
+}
+
 define( 'SQLITE_DB_DROPIN_VERSION', '1.8.0' );
 define( 'MARKDOWN_DB_DROPIN', true );
 

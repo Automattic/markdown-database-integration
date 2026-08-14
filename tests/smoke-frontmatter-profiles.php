@@ -218,6 +218,7 @@ $okf_child_file = $okf_storage->write_post(
 		'post_excerpt'      => 'Child description',
 		'post_content'      => "Child body\nwith blocks",
 		'guid'              => 'https://example.test/okf-child',
+		'_source_identity'  => 'page/original-parent/okf-child.md',
 	)
 );
 
@@ -230,6 +231,9 @@ if ( ! str_contains( $okf_raw, "tags:\n  - alpha\n  - beta\n" ) ) {
 }
 if ( ! str_contains( $okf_raw, "timestamp: \"2026-06-17T14:15:16+00:00\"\n" ) ) {
 	$failures[] = 'OKF profile did not export an ISO-like timestamp';
+}
+if ( ! str_contains( $okf_raw, "source_identity: page/original-parent/okf-child.md\n" ) ) {
+	$failures[] = 'OKF profile did not export immutable source identity';
 }
 
 $okf_import_storage = new WP_Markdown_Storage( $tmp_root );
@@ -268,6 +272,9 @@ if ( null === $okf_parent || null === $okf_child ) {
 	}
 	if ( array( 'alpha', 'beta' ) !== ( $okf_child->_frontmatter_terms['post_tag'] ?? array() ) ) {
 		$failures[] = 'OKF import did not map top-level tags back to post_tag terms';
+	}
+	if ( 'page/original-parent/okf-child.md' !== ( $okf_child->_source_identity ?? '' ) ) {
+		$failures[] = 'OKF import did not preserve immutable source identity';
 	}
 }
 

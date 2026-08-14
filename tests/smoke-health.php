@@ -41,6 +41,13 @@ mdi_health_assert( 'dropin_missing_or_replaced' === $mirror_degraded['status'], 
 $mysql = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => false ) );
 mdi_health_assert( 'not_applicable' === $mysql['status'] && $mysql['healthy'], 'MySQL import/export runtime is not reported broken' );
 mdi_health_assert( 'none' === $mysql['backend']['id'], 'non-SQLite runtime reports no active MDI backend' );
+$mysql_content_unconfigured = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => false, 'backend_capabilities' => WP_Markdown_Backend_Capabilities::mysql_content() ) );
+mdi_health_assert( 'not_configured' === $mysql_content_unconfigured['status'] && ! $mysql_content_unconfigured['healthy'], 'MySQL content-primary fails closed without an explicit managed post-type scope' );
+$mysql_content = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => false, 'managed_post_types' => 'post,page', 'backend_capabilities' => WP_Markdown_Backend_Capabilities::mysql_content() ) );
+mdi_health_assert( 'healthy' === $mysql_content['status'] && $mysql_content['healthy'], 'MySQL content-primary runtime is healthy without a db.php drop-in' );
+mdi_health_assert( 'mysql-content' === $mysql_content['backend']['id'], 'MySQL content-primary reports its active backend' );
+$mysql_content_dropin = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => false, 'dropin_loaded' => true, 'managed_post_types' => 'post', 'backend_capabilities' => WP_Markdown_Backend_Capabilities::mysql_content() ) );
+mdi_health_assert( 'mysql_content_dropin_migration_required' === $mysql_content_dropin['status'] && str_contains( $mysql_content_dropin['message'], 'Remove' ), 'MySQL content-primary gives explicit db.php migration instructions' );
 $incomplete_backend = new WP_Markdown_Backend_Capabilities( 'incomplete', array() );
 $unsupported = WP_Markdown_Health::diagnose( array( 'sqlite_runtime' => true, 'backend_capabilities' => $incomplete_backend, 'required_capabilities' => array( 'cold_reconstruction' ) ) );
 mdi_health_assert( 'unsupported_backend_capability' === $unsupported['status'] && ! $unsupported['healthy'], 'health fails closed for a required unsupported capability' );

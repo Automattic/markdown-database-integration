@@ -7,6 +7,9 @@ define( 'ABSPATH', dirname( __DIR__ ) . '/' );
 $GLOBALS['mdi_reconcile_actions'] = array();
 $GLOBALS['mdi_reconcile_categories'] = array();
 $GLOBALS['mdi_reconcile_abilities'] = array();
+$GLOBALS['mdi_reconcile_post_meta'] = array();
+$GLOBALS['mdi_reconcile_options'] = array();
+$GLOBALS['mdi_reconcile_posts'] = array();
 
 function add_action( string $hook, callable $callback ): void {
 	$GLOBALS['mdi_reconcile_actions'][ $hook ][] = $callback;
@@ -18,6 +21,21 @@ function wp_has_ability_category( string $name ): bool { return isset( $GLOBALS[
 function wp_register_ability( string $name, array $definition ): void { $GLOBALS['mdi_reconcile_abilities'][ $name ] = $definition; }
 function wp_has_ability( string $name ): bool { return isset( $GLOBALS['mdi_reconcile_abilities'][ $name ] ); }
 function current_user_can( string $capability ): bool { return 'manage_options' === $capability; }
+function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed { unset( $hook, $args ); return $value; }
+function get_post_meta( int $post_id, string $key = '', bool $single = false ): mixed {
+	$meta = $GLOBALS['mdi_reconcile_post_meta'][ $post_id ] ?? array();
+	if ( '' === $key ) { return $meta; }
+	$values = $meta[ $key ] ?? array();
+	return $single ? ( $values[0] ?? '' ) : $values;
+}
+function get_option( string $key, mixed $default = false ): mixed { return $GLOBALS['mdi_reconcile_options'][ $key ] ?? $default; }
+function get_post( int $post_id ): ?object { return $GLOBALS['mdi_reconcile_posts'][ $post_id ] ?? null; }
+function get_object_taxonomies( string $post_type ): array { unset( $post_type ); return array(); }
+function maybe_unserialize( mixed $value ): mixed {
+	if ( ! is_string( $value ) || ! preg_match( '/^(?:a|O|s|i|b|d|N):/', $value ) ) { return $value; }
+	$result = @unserialize( $value, array( 'allowed_classes' => false ) );
+	return false === $result && 'b:0;' !== $value ? $value : $result;
+}
 
 require_once __DIR__ . '/../inc/class-wp-markdown-reconciliation-service.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-wordpress-reconciliation-adapter.php';
@@ -219,6 +237,16 @@ $first_ids = $applied['operation_ids']; $first_mutations = $adapter->mutation_ca
 $repeated = $service->apply( $apply_request );
 mdi_reconcile_check( $first_ids === $repeated['operation_ids'] && $first_mutations === $adapter->mutation_calls, 'repeated apply is idempotent with stable operation IDs and no duplicate mutation' );
 
+// A scoped child receives its clean parent only as hierarchy context, never as a mutation target.
+$parent_snapshot = array( 'resource_id' => 'post:00000000000000000010', 'resource_type' => 'post', 'canonical_path' => 'page/parent.md', 'expected_canonical_path' => 'page/parent.md', 'canonical' => array( 'post_parent' => 0, 'body' => 'parent' ), 'wordpress' => array( 'post_parent' => 0, 'body' => 'parent' ), 'baseline' => mdi_reconcile_baseline( $canonical, 'page/parent.md', array( 'post_parent' => 0, 'body' => 'parent' ) ) );
+$child_snapshot = array( 'resource_id' => 'post:00000000000000000011', 'resource_type' => 'post', 'canonical_path' => 'page/parent/child.md', 'expected_canonical_path' => 'page/parent/child.md', 'canonical' => array( 'post_parent' => 10, 'body' => 'old-child' ), 'wordpress' => array( 'post_parent' => 10, 'body' => 'child' ), 'baseline' => mdi_reconcile_baseline( $canonical, 'page/parent/child.md', array( 'post_parent' => 10, 'body' => 'old-child' ) ) );
+$scoped_adapter = new MDI_Reconciliation_Content_Adapter( array( $parent_snapshot, $child_snapshot ), $runtime . '/scoped-child', $pdo );
+$scoped_service = new WP_Markdown_Reconciliation_Service( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/scoped-child-journal', $canonical ) ), $scoped_adapter );
+$scoped_request = mdi_reconcile_request( $canonical ) + array( 'resource_ids' => array( 'post:00000000000000000011' ) );
+$scoped_plan = $scoped_service->plan( $scoped_request );
+$scoped_apply = $scoped_service->apply( $scoped_request + array( 'plan_id' => $scoped_plan['plan_id'], 'source_identity' => $scoped_plan['source_identity'] ) );
+mdi_reconcile_check( 1 === count( $scoped_apply['operation_ids'] ) && 0 === $scoped_adapter->mutation_calls['post:00000000000000000010'] && 1 === $scoped_adapter->mutation_calls['post:00000000000000000011'], 'scoped child apply validates clean parent context without mutating it' );
+
 $adapter->set_source( 'changed-source' );
 mdi_reconcile_throws( fn() => $service->apply( $apply_request ), WP_Markdown_Reconciliation_Store_Conflict::class, 'stale source plan is rejected before new mutation' );
 
@@ -274,6 +302,12 @@ while ( null !== $bounded_page['continuation'] ) {
 mdi_reconcile_check( 3 === count( array_unique( $bounded_operation_ids ) ) && 3 === array_sum( $bounded_apply_adapter->mutation_calls ) && 1 === max( $bounded_apply_adapter->mutation_calls ), 'bounded apply keeps the reviewed identity across mutating pages without replay' );
 
 $production_adapter = new WP_Markdown_WordPress_Reconciliation_Adapter();
+$authorize = new ReflectionMethod( $production_adapter, 'authorize_post_mutation' );
+mdi_reconcile_throws( fn() => $authorize->invoke( $production_adapter, 'edit', 42, 'page' ), WP_Markdown_Reconciliation_Store_Conflict::class, 'production adapter retains normal WordPress capability checks by default' );
+$trusted_adapter = new WP_Markdown_WordPress_Reconciliation_Adapter( null, null, static fn( string $operation, int $post_id, string $post_type ): bool => 'edit' === $operation && 42 === $post_id && 'page' === $post_type );
+$trusted_authorize = new ReflectionMethod( $trusted_adapter, 'authorize_post_mutation' );
+$trusted_authorize->invoke( $trusted_adapter, 'edit', 42, 'page' );
+mdi_reconcile_check( true, 'trusted runtime may provide an explicit WordPress mutation authorizer' );
 $parse_cursor = new ReflectionMethod( $production_adapter, 'parse_continuation' );
 $cursor_hash = str_repeat( 'a', 64 );
 mdi_reconcile_check( array( 'post:00000000000000000042', $cursor_hash ) === $parse_cursor->invoke( $production_adapter, 'v2:post%3A00000000000000000042:' . $cursor_hash ), 'production continuation parses its percent-encoded resource key' );
@@ -286,6 +320,20 @@ $child_before = $state_entry->invoke( $production_adapter, 'post:000000000000000
 $child_after = $state_entry->invoke( $production_adapter, 'post:00000000000000000042', $canonical, $child_file, null, 'page/parent/child.md', 'page/renamed-parent/child.md', null );
 $child_key = 'post:00000000000000000042';
 mdi_reconcile_check( $source_identity->invoke( $production_adapter, array( $child_key => $child_before ), array( $child_key ) ) !== $source_identity->invoke( $production_adapter, array( $child_key => $child_after ), array( $child_key ) ), 'unprocessed suffix authentication covers a descendant target path changed by its parent' );
+$managed_post = (object) array( 'ID' => 42, 'post_type' => 'page', 'post_name' => 'child' );
+$GLOBALS['mdi_reconcile_posts'][42] = $managed_post;
+$managed_entry = $state_entry->invoke( $production_adapter, $child_key, $canonical, null, $managed_post, null, 'page/parent/child.md', null );
+mdi_reconcile_check(
+	isset( $managed_entry['snapshot']['durable_before_extra']['management'], $managed_entry['snapshot']['durable_after_extra_by_category']['written_from_wordpress']['management'] )
+	&& ! WP_Markdown_Reconciliation_Identity::equal( $managed_entry['snapshot']['durable_before_extra']['management'], $managed_entry['snapshot']['durable_after_extra_by_category']['written_from_wordpress']['management'] ),
+	'production operations require source-path management metadata before WordPress-to-canonical completion'
+);
+$managed_receipt = $managed_entry['snapshot']['wordpress'];
+$initialized_snapshot = $state_entry->invoke( $production_adapter, $child_key, $canonical, array( 'post' => $managed_post, 'receipt' => $managed_receipt, 'hash' => str_repeat( 'c', 64 ) ), $managed_post, 'page/parent/child.md', 'page/parent/child.md', null )['snapshot'];
+$initialized_adapter = new MDI_Reconciliation_Content_Adapter( array( $initialized_snapshot ), $runtime . '/management-init', $pdo, 'management-init' );
+$initialized_service = new WP_Markdown_Reconciliation_Service( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/management-init-journal', $canonical ) ), $initialized_adapter );
+$initialized_plan = $initialized_service->plan( array_replace( mdi_reconcile_request( $canonical ), array( 'direction' => 'wordpress_to_canonical' ) ) );
+mdi_reconcile_check( 1 === $initialized_plan['counts']['written_from_wordpress'], 'equal pre-existing content initializes management metadata in WordPress-to-canonical recovery: flag=' . json_encode( $initialized_snapshot['management_uninitialized'] ?? null ) . ' counts=' . json_encode( $initialized_plan['counts'] ) );
 
 markdown_db_register_content_layout_profile( 'reconciliation-flat-fixture', array(
 	'enumerate' => static fn(): array => array(),
@@ -330,6 +378,16 @@ $receipt_method = new ReflectionMethod( $production_adapter, 'post_receipt' );
 $full_post = (object) array( 'post_author' => 7, 'post_date' => '2026-01-01 00:00:00', 'post_date_gmt' => '2026-01-01 00:00:00', 'post_content' => 'body', 'post_title' => 'title', 'post_excerpt' => 'excerpt', 'post_status' => 'publish', 'comment_status' => 'closed', 'ping_status' => 'closed', 'post_password' => 'password', 'post_name' => 'slug', 'post_modified' => '2026-01-02 00:00:00', 'post_modified_gmt' => '2026-01-02 00:00:00', 'post_parent' => 3, 'guid' => 'guid', 'menu_order' => 4, 'post_type' => 'page', 'post_mime_type' => 'text/plain', 'comment_count' => 5 );
 $full_receipt = $receipt_method->invoke( $production_adapter, $full_post, array(), array() );
 mdi_reconcile_check( 7 === $full_receipt['post_author'] && 'excerpt' === $full_receipt['post_excerpt'] && 4 === $full_receipt['menu_order'] && 'text/plain' === $full_receipt['post_mime_type'] && array_key_exists( 'post_content_filtered', $full_receipt ) && array_key_exists( 'to_ping', $full_receipt ) && array_key_exists( 'pinged', $full_receipt ) && ! array_key_exists( 'post_modified', $full_receipt ) && ! array_key_exists( 'comment_count', $full_receipt ) && ! array_key_exists( 'guid', $full_receipt ), 'reconciliation identity covers writable post fields and excludes WordPress-managed values' );
+
+$coordinator_root = $canonical . '/coordinator-bootstrap';
+mkdir( $coordinator_root, 0755, true );
+mdi_reconcile_check( wp_markdown_durable_reconciliation_coordinator( array( $coordinator_root ) ) instanceof WP_Markdown_Durable_Reconciliation_Coordinator, 'production coordinator creates its private authentication key without hard-link support' );
+
+$wordpress_meta_method = new ReflectionMethod( $production_adapter, 'wordpress_meta' );
+$GLOBALS['mdi_reconcile_post_meta'][42] = array( 'structured' => array( serialize( array( 'nested' => array( 'value' => 7 ) ) ) ) );
+mdi_reconcile_check( array( 'nested' => array( 'value' => 7 ) ) === $wordpress_meta_method->invoke( $production_adapter, 42 )['structured'][0], 'WordPress serialized meta is normalized before canonical storage serialization' );
+$normalized_meta_method = new ReflectionMethod( $production_adapter, 'normalize_meta' );
+mdi_reconcile_check( array( array( 'nested' => array( 'value' => 7 ) ) ) === $normalized_meta_method->invoke( $production_adapter, array( 'structured' => array( 'nested' => array( 'value' => 7 ) ) ) )['structured'], 'canonical associative meta remains one structured value' );
 
 // Store lease ownership and the actual filesystem ownership adapter both fence stale workers.
 $ownership_store = mdi_reconcile_store( $runtime . '/ownership-journal', $canonical );

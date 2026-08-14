@@ -42,6 +42,14 @@ function mdi_mysql_full_probe_compare( wpdb $stock, wpdb $delegate, string $stoc
 $observations = array();
 $stock = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
 $delegate = new WP_Markdown_MySQL_WPDB( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST, static function ( array $observation ) use ( &$observations ): void { $observations[] = $observation; } );
+$base_prefix = $GLOBALS['table_prefix'] ?? 'wp_';
+$stock->set_prefix( $base_prefix );
+$delegate->set_prefix( $base_prefix );
+$stock->set_blog_id( 2 );
+$delegate->set_blog_id( 2 );
+if ( 2 !== $stock->blogid || 2 !== $delegate->blogid || $stock->prefix !== $delegate->prefix || $stock->base_prefix !== $delegate->base_prefix ) {
+	throw new RuntimeException( 'Multisite prefix state mismatch.' );
+}
 $suffix = substr( hash( 'sha256', getmypid() . ':' . microtime( true ) ), 0, 10 );
 $stock_table = $stock->prefix . 'mdi_mysql_full_stock_' . $suffix;
 $delegate_table = $delegate->prefix . 'mdi_mysql_full_delegate_' . $suffix;

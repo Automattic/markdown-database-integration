@@ -56,6 +56,7 @@ if ( 2 === $argc ) {
 	file_put_contents( $mdi . '/inc/class-wp-markdown-content-layout-profiles.php', "<?php\n" );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-storage.php', "<?php\nclass WP_Markdown_Storage {}\n" );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
 	copy( dirname( __DIR__ ) . '/inc/interface-wp-markdown-backend-operations.php', $mdi . '/inc/interface-wp-markdown-backend-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sqlite-operations.php', $mdi . '/inc/class-wp-markdown-sqlite-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sqlite-runtime-adapter.php', $mdi . '/inc/class-wp-markdown-sqlite-runtime-adapter.php' );

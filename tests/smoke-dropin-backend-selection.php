@@ -34,6 +34,12 @@ if ( 2 === $argc ) {
 		file_put_contents( $mdi . '/inc/' . $file, "<?php\n" );
 	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
+	$mysql_wpdb = $mdi . '/inc/class-wp-markdown-mysql-wpdb.php';
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-wpdb.php', $mysql_wpdb );
+	if ( 'mysql-full-incompatible' === $scenario ) {
+		file_put_contents( $mysql_wpdb, str_replace( 'BOOTSTRAP_ABI = 1', 'BOOTSTRAP_ABI = 2', (string) file_get_contents( $mysql_wpdb ) ) );
+	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-durable-reconciliation-operations.php', $mdi . '/inc/class-wp-markdown-durable-reconciliation-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-reconciliation-adapters.php', $mdi . '/inc/class-wp-markdown-reconciliation-adapters.php' );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-driver.php', "<?php\n" );
@@ -44,6 +50,9 @@ if ( 2 === $argc ) {
 	define( 'ABSPATH', $root . '/' );
 	define( 'WP_CONTENT_DIR', $content );
 	define( 'DB_NAME', 'wordpress' );
+	define( 'DB_USER', 'user' );
+	define( 'DB_PASSWORD', 'password' );
+	define( 'DB_HOST', 'host' );
 	define( 'MARKDOWN_DB_VERSION', 'test' );
 	if ( 'unknown' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'unknown' );
@@ -51,9 +60,32 @@ if ( 2 === $argc ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
 	}
+	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible' ), true ) ) {
+		define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
+		class wpdb { public function __construct( $user, $password, $name, $host ) {} public function query( $query ) { return true; } }
+		if ( 'mysql-full' === $scenario ) {
+			$GLOBALS['markdown_db_mysql_mutation_sink'] = static function ( array $mutation ): void {};
+		}
+	}
 
 	try {
-		require $content . '/db.php';
+		// Match require_wp_db(): instantiate stock wpdb when db.php leaves no global.
+		$bootstrap = static function () use ( $content ): void {
+			global $wpdb;
+			require $content . '/db.php';
+			if ( ! isset( $wpdb ) ) {
+				$wpdb = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
+			}
+		};
+		$bootstrap();
+		if ( 'mysql-full' === $scenario && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB ) {
+			echo "PASS: mysql-full installs the MDI-owned wpdb boundary.\n";
+			exit( 0 );
+		}
+		if ( in_array( $scenario, array( 'mysql-full-no-sink', 'mysql-full-incompatible' ), true ) && $GLOBALS['wpdb'] instanceof wpdb && str_starts_with( (string) ( $GLOBALS['markdown_db_mysql_full_diagnostic']['code'] ?? '' ), 'markdown_db_mysql_full_' ) ) {
+			echo "PASS: {$scenario} explicitly falls back to stock wpdb.\n";
+			exit( 0 );
+		}
 		if ( 'sqlite' !== $scenario || ! isset( $GLOBALS['wpdb'] ) ) {
 			throw new RuntimeException( 'Expected backend bootstrap failure.' );
 		}
@@ -74,7 +106,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

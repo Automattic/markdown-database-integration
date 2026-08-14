@@ -26,7 +26,7 @@ class WP_Markdown_Health {
 		$mode = is_string( $mode ) ? $mode : '';
 
 		$sqlite_runtime = $context['sqlite_runtime'] ?? ( class_exists( 'WP_SQLite_DB' ) && $wpdb instanceof WP_SQLite_DB );
-		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime || ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
+		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime || ( defined( 'MARKDOWN_DB_BACKEND' ) && in_array( MARKDOWN_DB_BACKEND, array( 'mysql-content', 'mysql-full' ), true ) ) ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
 		if ( ! $backend instanceof WP_Markdown_Backend_Capabilities ) {
 			throw new InvalidArgumentException( 'backend_capabilities must be a WP_Markdown_Backend_Capabilities instance.' );
 		}
@@ -44,6 +44,24 @@ class WP_Markdown_Health {
 			}
 		}
 		if ( ! $sqlite_runtime ) {
+			if ( 'mysql-full' === $backend->get_backend() ) {
+				$boundary = $context['mysql_full_boundary'] ?? ( class_exists( 'WP_Markdown_MySQL_WPDB' ) && $wpdb instanceof WP_Markdown_MySQL_WPDB );
+				$sink = $context['mysql_full_sink'] ?? ( is_object( $wpdb ?? null ) && method_exists( $wpdb, 'has_mutation_sink' ) && $wpdb->has_mutation_sink() );
+				$diagnostic = $context['mysql_full_diagnostic'] ?? ( $GLOBALS['markdown_db_mysql_full_diagnostic'] ?? null );
+				if ( is_array( $diagnostic ) && 'markdown_db_mysql_full_sink_unavailable' === ( $diagnostic['code'] ?? null ) ) {
+					return self::with_backend( array( 'status' => 'mysql_full_sink_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full could not install its wpdb boundary because no mutation sink was injected.', 'diagnostic' => $diagnostic ), $backend );
+				}
+				if ( ! $boundary ) {
+					return self::with_backend( array( 'status' => 'mysql_full_dropin_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full requires the MDI-owned db.php wpdb boundary; normal plugin bootstrap cannot observe early queries.' ), $backend );
+				}
+				if ( ! $sink ) {
+					return self::with_backend( array( 'status' => 'mysql_full_sink_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full has no injected mutation sink, so capture is disabled.' ), $backend );
+				}
+				if ( is_array( $diagnostic ) && 'markdown_db_mysql_full_observer_failed' === ( $diagnostic['code'] ?? null ) ) {
+					return self::with_backend( array( 'status' => 'mysql_full_observer_failed', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full mutation capture encountered a sink failure.', 'diagnostic' => $diagnostic ), $backend );
+				}
+				return self::with_backend( array( 'status' => 'mysql_full_capture_only', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI mysql-full mutation capture is active. Canonical outbox publication is not implemented in this slice.' ), $backend );
+			}
 			if ( 'mysql-content' === $backend->get_backend() ) {
 				$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_RETAINED_DROPIN' ) || ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN ) );
 				if ( $dropin_loaded ) {

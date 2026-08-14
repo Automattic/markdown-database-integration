@@ -23,6 +23,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+require_once __DIR__ . '/class-wp-markdown-sql-classifier.php';
 require_once __DIR__ . '/class-wp-markdown-sqlite-operations.php';
 
 // Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO
@@ -739,47 +740,21 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 	 * @return array|null { type: 'DML'|'DDL', op: string, table: string } or null.
 	 */
 	private function detect_operation( string $query ): ?array {
-		$trimmed = ltrim( $query );
-
-		// DML operations: INSERT, UPDATE, DELETE, REPLACE.
-		// All tables are persisted unless explicitly ephemeral.
-		if ( preg_match( '/^\s*(INSERT(?:\s+IGNORE)?|REPLACE)\s+INTO\s+`?(\w+)`?/i', $trimmed, $m ) ) {
-			$table = $m[2];
-			$op = strtoupper( str_contains( strtoupper( $m[1] ), 'REPLACE' ) ? 'REPLACE' : 'INSERT' );
-			if ( ! $this->is_ephemeral_table( $table ) ) {
-				return array( 'type' => 'DML', 'op' => $op, 'table' => $table );
-			}
-		} elseif ( preg_match( '/^\s*UPDATE\s+`?(\w+)`?/i', $trimmed, $m ) ) {
-			$table = $m[1];
-			if ( ! $this->is_ephemeral_table( $table ) ) {
-				return array( 'type' => 'DML', 'op' => 'UPDATE', 'table' => $table );
-			}
-		} elseif ( preg_match( '/^\s*DELETE\s+FROM\s+`?(\w+)`?/i', $trimmed, $m ) ) {
-			$table = $m[1];
-			if ( ! $this->is_ephemeral_table( $table ) ) {
-				return array( 'type' => 'DML', 'op' => 'DELETE', 'table' => $table );
-			}
+		$operation = WP_Markdown_SQL_Classifier::mutation( $query );
+		if ( null === $operation ) {
+			return null;
 		}
-		// DDL operations: CREATE TABLE, ALTER TABLE, DROP TABLE, DROP INDEX ... ON.
-		// Only persist schema for non-core tables (core schemas are in the loader).
-		elseif ( preg_match( '/^\s*CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?`?(\w+)`?/i', $trimmed, $m ) ) {
-			$table = $m[1];
-			if ( ! $this->is_core_table( $table ) ) {
-				return array( 'type' => 'DDL', 'op' => 'CREATE', 'table' => $table );
-			}
-		} elseif ( preg_match( '/^\s*ALTER\s+TABLE\s+`?(\w+)`?/i', $trimmed, $m ) ) {
-			return array( 'type' => 'DDL', 'op' => 'ALTER', 'table' => $m[1] );
-		} elseif ( preg_match( '/^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?`?(\w+)`?/i', $trimmed, $m ) ) {
-			return array( 'type' => 'DDL', 'op' => 'DROP', 'table' => $m[1] );
-		} elseif ( preg_match( '/^\s*DROP\s+INDEX\s+`?(\w+)`?\s+ON\s+`?(\w+)`?\s*;?\s*$/i', $trimmed, $m ) ) {
-			// DROP INDEX changes the referenced table but does not remove it, so
-			// use the existing ALTER snapshot path after the parent query succeeds.
-			if ( ! $this->is_core_table( $m[2] ) ) {
-				return array( 'type' => 'DDL', 'op' => 'ALTER', 'table' => $m[2] );
-			}
+		// mysql-full owns multi-table DELETE and index creation; retain SQLite's prior set.
+		if ( ! isset( $operation['table'] ) || 'TRUNCATE' === $operation['op'] || preg_match( '/^\s*CREATE\s+(?:(?:OR\s+REPLACE)\s+)?(?:(?:UNIQUE|FULLTEXT|SPATIAL|VECTOR)\s+)?INDEX\b/i', $query ) ) {
+			return null;
 		}
-
-		return null;
+		if ( 'DML' === $operation['type'] && $this->is_ephemeral_table( $operation['table'] ) ) {
+			return null;
+		}
+		if ( 'DDL' === $operation['type'] && $this->is_core_table( $operation['table'] ) && preg_match( '/^\s*(?:CREATE\s+TABLE|DROP\s+INDEX)/i', $query ) ) {
+			return null;
+		}
+		return $operation;
 	}
 
 	/**

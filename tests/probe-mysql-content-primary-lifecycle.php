@@ -41,6 +41,8 @@ try {
 	$receipt = WP_Markdown_MySQL_Content_Runtime::flush_now();
 	$parent_path = (string) get_post_meta( $parent, '_markdown_source_path', true );
 	$parent_file = $root . '/' . $parent_path;
+	$child_path = (string) get_post_meta( $child, '_markdown_source_path', true );
+	$child_file = $root . '/' . $child_path;
 	$post_path = (string) get_post_meta( $post, '_markdown_source_path', true );
 	$post_file = $root . '/' . $post_path;
 	mdi_mysql_content_probe( 3 === count( $receipt['changed'] ) && empty( $receipt['pending'] ), 'coalesced post/meta/term writes into one completed canonical projection per resource: ' . wp_json_encode( $receipt ) );
@@ -87,20 +89,23 @@ try {
 
 	wp_delete_post( $parent, true );
 	$deleted = WP_Markdown_MySQL_Content_Runtime::flush_now();
-	mdi_mysql_content_probe( ! is_file( $parent_file ) && ! empty( $deleted['deleted'] ), 'permanent delete projects after descendant-safe lifecycle handling: ' . wp_json_encode( $deleted ) );
+	$moved_child_path = 'page/mdi-lifecycle-child.md';
+	$child_baseline = get_post_meta( $child, '_markdown_reconciliation_baseline', true );
+	mdi_mysql_content_probe( ! is_file( $parent_file ) && ! is_file( $child_file ) && is_file( $root . '/' . $moved_child_path ) && in_array( $moved_child_path, $deleted['changed'], true ) && in_array( $parent_path, $deleted['deleted'], true ) && in_array( $child_path, $deleted['deleted'], true ) && empty( $deleted['pending'] ), 'permanent parent delete moves its reparented child before canonical deletion completes: ' . wp_json_encode( $deleted ) );
+	mdi_mysql_content_probe( $moved_child_path === get_post_meta( $child, '_markdown_source_path', true ) && $moved_child_path === ( $child_baseline['canonical_path'] ?? null ), 'descendant move updates source-path and reconciliation baseline metadata' );
 	mdi_mysql_content_probe( null !== get_post( $child ), 'core reparented child remains available for canonical reconstruction' );
 } finally {
 	$teardown_receipts = array();
 	foreach ( array_reverse( $created ) as $id ) {
 		if ( get_post( $id ) ) {
 			wp_delete_post( $id, true );
-			$teardown_receipts[] = WP_Markdown_MySQL_Content_Runtime::flush_now();
+			$teardown_receipt = WP_Markdown_MySQL_Content_Runtime::flush_now();
+			$teardown_receipts[] = $teardown_receipt;
+			mdi_mysql_content_probe( empty( $teardown_receipt['pending'] ), 'teardown deletion completes without pending reconciliation: ' . wp_json_encode( $teardown_receipt ) );
 		}
 	}
 	$teardown = WP_Markdown_MySQL_Content_Runtime::flush_now();
-	$teardown_storage = new WP_Markdown_Storage( MARKDOWN_DB_CONTENT_DIR );
-	foreach ( $created as $id ) { $teardown_storage->delete_post( $id ); }
 	$rows_left = array_filter( $created, static fn( int $id ): bool => null !== get_post( $id ) );
 	$files_left = array_filter( $created, static fn( int $id ): bool => null !== ( new WP_Markdown_Storage( MARKDOWN_DB_CONTENT_DIR ) )->read_post( $id ) );
-	mdi_mysql_content_probe( empty( $rows_left ) && empty( $files_left ), 'probe teardown removes its MariaDB rows and canonical files: rows=' . wp_json_encode( $rows_left ) . ' files=' . wp_json_encode( $files_left ) . ' receipts=' . wp_json_encode( $teardown_receipts ) . ' final=' . wp_json_encode( $teardown ) );
+	mdi_mysql_content_probe( empty( $rows_left ) && empty( $files_left ) && empty( $teardown['pending'] ), 'probe teardown removes its MariaDB rows and canonical files through lifecycle projection: rows=' . wp_json_encode( $rows_left ) . ' files=' . wp_json_encode( $files_left ) . ' receipts=' . wp_json_encode( $teardown_receipts ) . ' final=' . wp_json_encode( $teardown ) );
 }

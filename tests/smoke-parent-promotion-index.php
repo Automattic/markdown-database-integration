@@ -313,6 +313,39 @@ assert_true( ! file_exists( $tmp_root . '/wiki/root-parent.md' ), 'sibling leaf 
 assert_eq( $captured[10] ?? null, 'wiki/root-parent/index.md', 'callback fired with new index.md path' );
 
 // ---------------------------------------------------------------------------
+// Test 6 — deleting a parent then writing its core-reparented child
+// ---------------------------------------------------------------------------
+echo "\nTest 6: parent deletion allows its child to move to the type root\n";
+
+rm_rf( $tmp_root );
+write_leaf( $tmp_root . '/wiki/root-parent/index.md', 10, 'root-parent', 0 );
+write_leaf( $tmp_root . '/wiki/root-parent/mid-parent.md', 11, 'mid-parent', 10 );
+
+$storage = new WP_Markdown_Storage( $tmp_root, array() );
+$storage->set_post_resolver( function ( int $id ) use ( &$posts ) {
+	return $posts[ $id ] ?? null;
+} );
+
+assert_true( $storage->delete_post( 10 ), 'parent index.md deleted' );
+unset( $posts[10] );
+$posts[11]->post_parent = 0;
+$reparented = (object) array(
+	'ID'           => 11,
+	'post_type'    => 'wiki',
+	'post_name'    => 'mid-parent',
+	'post_parent'  => 0,
+	'post_status'  => 'publish',
+	'post_title'   => 'Mid',
+	'post_content' => 'body',
+);
+$written_path = $storage->write_post( $reparented );
+
+assert_eq( $written_path, $tmp_root . '/wiki/mid-parent.md', 'reparented child written at the type root' );
+assert_true( file_exists( $tmp_root . '/wiki/mid-parent.md' ), 'new child path exists' );
+assert_true( ! file_exists( $tmp_root . '/wiki/root-parent/mid-parent.md' ), 'old child path removed' );
+assert_true( ! is_dir( $tmp_root . '/wiki/root-parent' ), 'empty parent directory removed' );
+
+// ---------------------------------------------------------------------------
 // Cleanup
 // ---------------------------------------------------------------------------
 rm_rf( $tmp_root );

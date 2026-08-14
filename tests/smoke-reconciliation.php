@@ -85,6 +85,7 @@ final class MDI_Reconciliation_Content_Adapter implements WP_Markdown_Reconcilia
 	public array $effect_state = array();
 	public array $after_state = array();
 	public array $mutation_calls = array();
+	public array $mutation_order = array();
 	public int $adapter_calls = 0;
 	public string $source_identity;
 	public bool $change_source_on_mutation = false;
@@ -135,6 +136,7 @@ final class MDI_Reconciliation_Content_Adapter implements WP_Markdown_Reconcilia
 		$observe = fn(): array => $this->effect_state[ $id ];
 		$mutate = function () use ( $id, $binding ): void {
 			++$this->mutation_calls[ $id ];
+			$this->mutation_order[] = $id;
 			$this->effect_state[ $id ] = $this->after_state[ $id ];
 			if ( $this->change_source_on_mutation ) { $this->set_source( 'mutation-' . array_sum( $this->mutation_calls ) ); }
 			if ( 'wordpress_to_canonical' === $binding['direction'] ) {
@@ -246,6 +248,20 @@ $scoped_request = mdi_reconcile_request( $canonical ) + array( 'resource_ids' =>
 $scoped_plan = $scoped_service->plan( $scoped_request );
 $scoped_apply = $scoped_service->apply( $scoped_request + array( 'plan_id' => $scoped_plan['plan_id'], 'source_identity' => $scoped_plan['source_identity'] ) );
 mdi_reconcile_check( 1 === count( $scoped_apply['operation_ids'] ) && 0 === $scoped_adapter->mutation_calls['post:00000000000000000010'] && 1 === $scoped_adapter->mutation_calls['post:00000000000000000011'], 'scoped child apply validates clean parent context without mutating it' );
+
+// A core-reparented child must move out before its deleted parent's index disappears.
+$deleted_parent = array( 'resource_id' => 'post:00000000000000000020', 'resource_type' => 'post', 'canonical_path' => 'page/parent/index.md', 'expected_canonical_path' => null, 'canonical' => array( 'post_parent' => 0, 'body' => 'parent' ), 'wordpress' => null, 'baseline' => mdi_reconcile_baseline( $canonical, 'page/parent/index.md', array( 'post_parent' => 0, 'body' => 'parent' ) ) );
+$child_canonical = array( 'post_parent' => 20, 'body' => 'child' );
+$child_wordpress = array( 'post_parent' => 0, 'body' => 'child' );
+$child_move_before = array( 'canonical' => array( 'path' => 'page/parent/child.md', 'value' => $child_canonical ), 'wordpress' => $child_wordpress );
+$child_move_after = array( 'canonical' => array( 'path' => 'page/child.md', 'value' => $child_wordpress ), 'wordpress' => $child_wordpress );
+$reparented_child = array( 'resource_id' => 'post:00000000000000000021', 'resource_type' => 'post', 'canonical_path' => 'page/parent/child.md', 'expected_canonical_path' => 'page/child.md', 'canonical' => $child_canonical, 'wordpress' => $child_wordpress, 'baseline' => mdi_reconcile_baseline( $canonical, 'page/parent/child.md', $child_canonical ), 'move_direction' => 'wordpress_to_canonical', 'durable_before' => array_map( 'mdi_reconcile_identity', $child_move_before ), 'durable_after' => array_map( 'mdi_reconcile_identity', $child_move_after ), '_durable_before' => $child_move_before, '_durable_after' => $child_move_after );
+$delete_adapter = new MDI_Reconciliation_Content_Adapter( array( $deleted_parent, $reparented_child ), $runtime . '/parent-delete', $pdo );
+$delete_service = new WP_Markdown_Reconciliation_Service( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/parent-delete-journal', $canonical ) ), $delete_adapter );
+$delete_request = array_replace( mdi_reconcile_request( $canonical ), array( 'direction' => 'wordpress_to_canonical', 'deletion_policy' => 'managed', 'conflict_policy' => 'prefer_wordpress' ) );
+$delete_plan = $delete_service->plan( $delete_request );
+$delete_service->apply( $delete_request + array( 'plan_id' => $delete_plan['plan_id'], 'source_identity' => $delete_plan['source_identity'] ) );
+mdi_reconcile_check( array( $reparented_child['resource_id'], $deleted_parent['resource_id'] ) === $delete_adapter->mutation_order, 'reparented descendant moves before its former parent canonical file is deleted: ' . json_encode( $delete_adapter->mutation_order ) );
 
 $adapter->set_source( 'changed-source' );
 mdi_reconcile_throws( fn() => $service->apply( $apply_request ), WP_Markdown_Reconciliation_Store_Conflict::class, 'stale source plan is rejected before new mutation' );

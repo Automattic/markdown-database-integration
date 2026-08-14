@@ -489,7 +489,7 @@ final class WP_Markdown_Reconciliation_Service {
 		return $this->coordinator->reconcile( $intent, $adapter );
 	}
 
-	/** Parents are applied before descendants; canonical deletions run children first. */
+	/** Writes run parent-first before destructive canonical deletions, which run children-first. */
 	private function hierarchy_order( array $snapshots ): array {
 		$depth = array();
 		$visiting = array();
@@ -507,9 +507,10 @@ final class WP_Markdown_Reconciliation_Service {
 		};
 		foreach ( array_keys( $snapshots ) as $key ) { $resolve( $key ); }
 		uasort( $snapshots, function ( array $a, array $b ) use ( $depth ): int {
-			$delete_a = null === $a['canonical']; $delete_b = null === $b['canonical'];
+			$delete_a = null !== $a['baseline'] && ( null === $a['canonical'] || null === $a['wordpress'] );
+			$delete_b = null !== $b['baseline'] && ( null === $b['canonical'] || null === $b['wordpress'] );
 			$da = $depth[ $a['resource_id'] ] ?? 0; $db = $depth[ $b['resource_id'] ] ?? 0;
-			if ( $delete_a || $delete_b ) { return $delete_a === $delete_b ? $db <=> $da : ( $delete_a ? -1 : 1 ); }
+			if ( $delete_a || $delete_b ) { return $delete_a === $delete_b ? $db <=> $da : ( $delete_a ? 1 : -1 ); }
 			return $da === $db ? $a['resource_id'] <=> $b['resource_id'] : $da <=> $db;
 		} );
 		return $snapshots;

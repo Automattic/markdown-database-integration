@@ -55,11 +55,15 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-adap
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-service.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-wordpress-reconciliation-adapter.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-content-runtime.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-outbox.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
 function markdown_database_integration_ensure_mysql_reconciliation_state(): void {
 	global $wpdb;
+	if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) {
+		return;
+	}
 	if ( ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
 		return;
 	}

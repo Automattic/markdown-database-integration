@@ -86,4 +86,15 @@ class WP_Markdown_SQL_Classifier {
 
 		return null;
 	}
+
+	public static function unsupported_transaction_boundary( string $query ): bool {
+		return self::unsupported_implicit_commit( $query ) || (bool) preg_match( '/^\s*(?:CALL\b|DO\b|HANDLER\b|UNLOCK\s+TABLES\b|XA\b)/i', $query );
+	}
+
+	public static function unsupported_implicit_commit( string $query ): bool {
+		return (bool) preg_match(
+			'/^\s*(?:(?:ALTER|CREATE|DROP)\s+(?:DATABASE|EVENT|FUNCTION|INSTANCE|LOGFILE\s+GROUP|PROCEDURE|ROLE|SEQUENCE|SERVER|SPATIAL\s+REFERENCE\s+SYSTEM|TABLESPACE|TRIGGER|USER|VIEW)\b|RENAME\s+(?:TABLE|USER)\b|GRANT\b|REVOKE\b|SET\s+PASSWORD\b|LOCK\s+TABLES\b|LOAD\s+DATA\b|(?:ANALYZE|CHECK|OPTIMIZE|REPAIR)\s+TABLE\b|CACHE\s+INDEX\b|FLUSH\b|LOAD\s+INDEX\s+INTO\s+CACHE\b|RESET(?:\s+(?:MASTER|REPLICA|SLAVE))?\b|INSTALL\s+(?:PLUGIN|COMPONENT)\b|UNINSTALL\s+(?:PLUGIN|COMPONENT)\b|CHANGE\s+(?:MASTER|REPLICATION\s+SOURCE)\b|START\s+(?:REPLICA|SLAVE)\b|STOP\s+(?:REPLICA|SLAVE)\b)/i',
+			$query
+		);
+	}
 }

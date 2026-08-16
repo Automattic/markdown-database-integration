@@ -35,10 +35,11 @@ if ( 2 === $argc ) {
 	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-outbox.php', $mdi . '/inc/class-wp-markdown-mysql-outbox.php' );
 	$mysql_wpdb = $mdi . '/inc/class-wp-markdown-mysql-wpdb.php';
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-wpdb.php', $mysql_wpdb );
 	if ( 'mysql-full-incompatible' === $scenario ) {
-		file_put_contents( $mysql_wpdb, str_replace( 'BOOTSTRAP_ABI = 1', 'BOOTSTRAP_ABI = 2', (string) file_get_contents( $mysql_wpdb ) ) );
+		file_put_contents( $mysql_wpdb, str_replace( 'BOOTSTRAP_ABI = 2', 'BOOTSTRAP_ABI = 3', (string) file_get_contents( $mysql_wpdb ) ) );
 	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-durable-reconciliation-operations.php', $mdi . '/inc/class-wp-markdown-durable-reconciliation-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-reconciliation-adapters.php', $mdi . '/inc/class-wp-markdown-reconciliation-adapters.php' );
@@ -60,12 +61,35 @@ if ( 2 === $argc ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
 	}
-	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible' ), true ) ) {
+	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ), true ) ) {
 		define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
-		class wpdb { public function __construct( $user, $password, $name, $host ) {} public function query( $query ) { return true; } }
-		if ( 'mysql-full' === $scenario ) {
-			$GLOBALS['markdown_db_mysql_mutation_sink'] = static function ( array $mutation ): void {};
+		$GLOBALS['mdi_dropin_scenario'] = $scenario;
+		class MDI_Dropin_Result { private array $rows; public function __construct( array $rows ) { $this->rows = $rows; } public function fetch_assoc(): ?array { return array_shift( $this->rows ); } public function free(): void {} }
+		class MDI_Dropin_Statement {
+			public int $affected_rows = 0;
+			public string $error = '';
+			private mixed $result = true;
+			public function __construct( private MDI_Dropin_Connection $connection, private string $query ) {}
+			public function bind_param( string $types, mixed &...$values ): bool { unset( $types, $values ); return true; }
+			public function execute(): bool { $this->result = $this->connection->query( $this->query ); return false !== $this->result; }
+			public function get_result(): mixed { return $this->result; }
+			public function close(): void {}
 		}
+		class MDI_Dropin_Connection { public int $affected_rows = 0; public string $error = ''; public function prepare( string $query ): MDI_Dropin_Statement { return new MDI_Dropin_Statement( $this, $query ); } public function query( string $query ): mixed {
+			if ( str_starts_with( $query, 'SHOW COLUMNS' ) ) {
+				$types = array( 'id' => 'bigint unsigned', 'event_id' => 'char(36)', 'schema_version' => 'smallint unsigned', 'state' => 'varchar(16)', 'database_name' => 'varchar(191)', 'blog_id' => 'bigint unsigned', 'table_prefix' => 'varchar(191)', 'base_prefix' => 'varchar(191)', 'event_kind' => 'varchar(16)', 'operation_name' => 'varchar(32)', 'payload' => 'longtext', 'payload_sha256' => 'char(64)', 'created_at' => 'datetime', 'available_at' => 'datetime', 'leased_until' => 'datetime', 'lease_token' => 'varchar(64)', 'worker_token' => 'varchar(64)', 'acknowledged_at' => 'datetime', 'acknowledgement_token' => 'varchar(64)', 'attempts' => 'int unsigned', 'reclaims' => 'int unsigned', 'failures' => 'int unsigned', 'last_error' => 'text', 'last_error_at' => 'datetime' );
+				if ( 'mysql-full-outbox-incompatible' === ( $GLOBALS['mdi_dropin_scenario'] ?? '' ) ) { unset( $types['last_error_at'] ); }
+				$nullable = array( 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'last_error', 'last_error_at' );
+				$defaults = array( 'state' => 'pending', 'attempts' => '0', 'reclaims' => '0', 'failures' => '0' );
+				$rows = array();
+				foreach ( $types as $field => $type ) { $rows[] = array( 'Field' => $field, 'Type' => $type, 'Null' => in_array( $field, $nullable, true ) ? 'YES' : 'NO', 'Default' => $defaults[ $field ] ?? null, 'Extra' => 'id' === $field ? 'auto_increment' : '' ); }
+				return new MDI_Dropin_Result( $rows );
+			}
+			if ( str_starts_with( $query, 'SHOW INDEX' ) ) { $rows = array(); foreach ( array( 'PRIMARY' => array( 'id' ), 'mdi_event' => array( 'event_id' ), 'mdi_claim' => array( 'state', 'available_at', 'id' ), 'mdi_lease_reclaim' => array( 'state', 'leased_until', 'id' ), 'mdi_scope' => array( 'database_name', 'blog_id', 'table_prefix', 'id' ), 'mdi_payload' => array( 'payload_sha256' ) ) as $key => $columns ) { foreach ( $columns as $offset => $column ) { $rows[] = array( 'Key_name' => $key, 'Seq_in_index' => $offset + 1, 'Column_name' => $column, 'Non_unique' => in_array( $key, array( 'PRIMARY', 'mdi_event' ), true ) ? 0 : 1, 'Sub_part' => null, 'Index_type' => 'BTREE' ); } } return new MDI_Dropin_Result( $rows ); }
+			if ( str_starts_with( $query, 'SELECT `ENGINE`' ) ) { return new MDI_Dropin_Result( array( array( 'Engine' => 'InnoDB' ) ) ); }
+			return true;
+		} }
+		class wpdb { protected object $dbh; public function __construct( $user, $password, $name, $host ) { $this->dbh = new MDI_Dropin_Connection(); } public function query( $query ) { return true; } }
 	}
 
 	try {
@@ -74,15 +98,15 @@ if ( 2 === $argc ) {
 			global $wpdb;
 			require $content . '/db.php';
 			if ( ! isset( $wpdb ) ) {
-				$wpdb = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
+				$GLOBALS['wpdb'] = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
 			}
 		};
 		$bootstrap();
-		if ( 'mysql-full' === $scenario && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB ) {
+		if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink' ), true ) && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB && ( $GLOBALS['markdown_db_mysql_outbox'] ?? null ) instanceof WP_Markdown_MySQL_Outbox ) {
 			echo "PASS: mysql-full installs the MDI-owned wpdb boundary.\n";
 			exit( 0 );
 		}
-		if ( in_array( $scenario, array( 'mysql-full-no-sink', 'mysql-full-incompatible' ), true ) && $GLOBALS['wpdb'] instanceof wpdb && str_starts_with( (string) ( $GLOBALS['markdown_db_mysql_full_diagnostic']['code'] ?? '' ), 'markdown_db_mysql_full_' ) ) {
+		if ( in_array( $scenario, array( 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ), true ) && $GLOBALS['wpdb'] instanceof wpdb && str_starts_with( (string) ( $GLOBALS['markdown_db_mysql_full_diagnostic']['code'] ?? '' ), 'markdown_db_mysql_full_' ) ) {
 			echo "PASS: {$scenario} explicitly falls back to stock wpdb.\n";
 			exit( 0 );
 		}
@@ -106,7 +130,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

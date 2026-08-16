@@ -48,19 +48,28 @@ class WP_Markdown_Health {
 				$boundary = $context['mysql_full_boundary'] ?? ( class_exists( 'WP_Markdown_MySQL_WPDB' ) && $wpdb instanceof WP_Markdown_MySQL_WPDB );
 				$sink = $context['mysql_full_sink'] ?? ( is_object( $wpdb ?? null ) && method_exists( $wpdb, 'has_mutation_sink' ) && $wpdb->has_mutation_sink() );
 				$diagnostic = $context['mysql_full_diagnostic'] ?? ( $GLOBALS['markdown_db_mysql_full_diagnostic'] ?? null );
-				if ( is_array( $diagnostic ) && 'markdown_db_mysql_full_sink_unavailable' === ( $diagnostic['code'] ?? null ) ) {
-					return self::with_backend( array( 'status' => 'mysql_full_sink_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full could not install its wpdb boundary because no mutation sink was injected.', 'diagnostic' => $diagnostic ), $backend );
+				if ( is_array( $diagnostic ) && str_starts_with( (string) ( $diagnostic['code'] ?? '' ), 'markdown_db_mysql_full_bootstrap_' ) ) {
+					return self::with_backend( array( 'status' => 'mysql_full_bootstrap_failed', 'healthy' => false, 'mode' => $mode, 'message' => (string) ( $diagnostic['message'] ?? 'mysql-full bootstrap failed.' ), 'diagnostic' => $diagnostic ), $backend );
 				}
 				if ( ! $boundary ) {
 					return self::with_backend( array( 'status' => 'mysql_full_dropin_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full requires the MDI-owned db.php wpdb boundary; normal plugin bootstrap cannot observe early queries.' ), $backend );
 				}
 				if ( ! $sink ) {
-					return self::with_backend( array( 'status' => 'mysql_full_sink_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full has no injected mutation sink, so capture is disabled.' ), $backend );
+					return self::with_backend( array( 'status' => 'mysql_full_outbox_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full has no durable mutation outbox, so capture is disabled.' ), $backend );
 				}
 				if ( is_array( $diagnostic ) && 'markdown_db_mysql_full_observer_failed' === ( $diagnostic['code'] ?? null ) ) {
 					return self::with_backend( array( 'status' => 'mysql_full_observer_failed', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full mutation capture encountered a sink failure.', 'diagnostic' => $diagnostic ), $backend );
 				}
-				return self::with_backend( array( 'status' => 'mysql_full_capture_only', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI mysql-full mutation capture is active. Canonical outbox publication is not implemented in this slice.' ), $backend );
+				$outbox = $context['mysql_full_outbox'] ?? ( $GLOBALS['markdown_db_mysql_outbox'] ?? null );
+				try {
+					$outbox_diagnostics = $context['mysql_full_outbox_diagnostics'] ?? ( is_object( $outbox ) && method_exists( $outbox, 'diagnostics' ) ? $outbox->diagnostics() : null );
+				} catch ( Throwable $error ) {
+					$outbox_diagnostics = array( 'ready' => false, 'error' => $error->getMessage() );
+				}
+				if ( ! is_array( $outbox_diagnostics ) || empty( $outbox_diagnostics['ready'] ) ) {
+					return self::with_backend( array( 'status' => 'mysql_full_outbox_unavailable', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full could not validate its durable outbox schema.', 'outbox' => $outbox_diagnostics ), $backend );
+				}
+				return self::with_backend( array( 'status' => 'mysql_full_outbox_ready', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI mysql-full durable mutation handoff is ready. Canonical publication remains a later slice.', 'outbox' => $outbox_diagnostics ), $backend );
 			}
 			if ( 'mysql-content' === $backend->get_backend() ) {
 				$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_RETAINED_DROPIN' ) || ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN ) );

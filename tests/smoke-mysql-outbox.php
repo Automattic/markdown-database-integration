@@ -20,7 +20,7 @@ class MDI_Test_MySQL_Outbox extends WP_Markdown_MySQL_Outbox {
 	protected function claim_records( string $worker_token, int $limit, int $lease_seconds ): array {
 		$active = array_values( array_filter( $this->records, fn( array $row ): bool => 'leased' === $row['state'] && $worker_token === $row['worker_token'] && $row['leased_until'] > $this->now ) );
 		if ( $active ) { return array_slice( $active, 0, $limit ); }
-		$claimed = array();
+		foreach ( $this->records as $head ) { if ( 'acked' !== $head['state'] && 'diagnostic' !== $head['state'] ) { if ( 'leased' === $head['state'] && $head['leased_until'] > $this->now ) { return array(); } break; } }
 		$lease_token = 'lease-' . $this->next_lease++;
 		foreach ( $this->records as &$row ) {
 			$eligible = in_array( $row['state'], array( 'pending', 'failed' ), true ) && $row['available_at'] <= $this->now;
@@ -28,11 +28,11 @@ class MDI_Test_MySQL_Outbox extends WP_Markdown_MySQL_Outbox {
 			if ( ! $eligible && ! $reclaim ) { continue; }
 			if ( $reclaim ) { ++$row['reclaims']; }
 			$row['state'] = 'leased'; $row['lease_token'] = $lease_token; $row['worker_token'] = $worker_token; $row['leased_until'] = $this->now + $lease_seconds; ++$row['attempts'];
-			$claimed[] = $row;
-			if ( count( $claimed ) >= $limit ) { break; }
+			return array( $row );
 		}
-		return $claimed;
+		return array();
 	}
+	public function cache_semantic_envelope( int $id, string $worker_token, string $lease_token, array $envelope ): bool { foreach ( $this->records as &$row ) { if ( $id === $row['id'] && $worker_token === $row['worker_token'] && $lease_token === $row['lease_token'] ) { $row['semantic_envelope'] = $envelope; return true; } } return false; }
 	protected function acknowledge_record( int $id, string $worker_token, string $lease_token ): bool {
 		foreach ( $this->records as &$row ) {
 			if ( $id !== $row['id'] ) { continue; }
@@ -73,7 +73,7 @@ $outbox = new MDI_Test_MySQL_Outbox( new stdClass(), 'wp_mdi_mysql_outbox' );
 $outbox( mdi_outbox_observation( 'INSERT', 'wp_2_posts' ) );
 mdi_outbox_assert( 1 === count( $outbox->records ) && 'pending' === $outbox->records[0]['state'], 'autocommit mutation persists immediately' );
 $payload = $outbox->records[0]['payload'];
-mdi_outbox_assert( 1 === $payload['version'] && 'wordpress' === $payload['database'] && 2 === $payload['scope']['blog_id'] && array( 'wp_2_posts' ) === $payload['mutation']['tables'], 'payload retains versioned database and multisite scope' );
+mdi_outbox_assert( 2 === $payload['version'] && 'wordpress' === $payload['database'] && 2 === $payload['scope']['blog_id'] && array( 'wp_2_posts' ) === $payload['mutation']['tables'], 'payload retains versioned database and multisite scope' );
 mdi_outbox_assert( hash( 'sha256', $outbox->records[0]['json'] ) === $outbox->records[0]['sha256'], 'payload identity hashes the normalized JSON bytes' );
 
 $txbox = new MDI_Test_MySQL_Outbox( new stdClass(), 'wp_mdi_mysql_outbox' );
@@ -134,6 +134,7 @@ $claimbox = new MDI_Test_MySQL_Outbox( new stdClass(), 'wp_mdi_mysql_outbox' );
 $claimbox( mdi_outbox_observation( 'INSERT', 'wp_2_posts' ) );
 $first = $claimbox->claim( 'worker-a', 1, 10 );
 mdi_outbox_assert( 1 === count( $first ) && 1 === $first[0]['attempts'], 'claim is bounded and increments attempts' );
+mdi_outbox_assert( array() === $claimbox->claim( 'worker-b', 1, 10 ), 'a second worker cannot bypass a leased global head-of-line event' );
 mdi_outbox_assert( $first === $claimbox->claim( 'worker-a', 1, 10 ), 'active claim token is idempotent' );
 mdi_outbox_assert( $claimbox->fail( $first[0]['id'], 'worker-a', $first[0]['lease_token'], 'temporary', 5 ) && array() === $claimbox->claim( 'worker-b', 1, 10 ), 'failure records a delayed retry' );
 $claimbox->now += 5;

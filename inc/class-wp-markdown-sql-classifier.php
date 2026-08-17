@@ -9,6 +9,7 @@ class WP_Markdown_SQL_Classifier {
 
 	/** @return array{type:string,op:string,table?:string,tables?:string[]}|null */
 	public static function mutation( string $query ): ?array {
+		$drop_query = preg_replace( '/(?:\s*(?:--[^\r\n]*|#[^\r\n]*|\/\*.*?\*\/)\s*)+$/s', '', $query );
 		if ( preg_match( '/^\s*(INSERT(?:\s+IGNORE)?|REPLACE)\s+INTO\s+`?(\w+)`?/i', $query, $match ) ) {
 			return array( 'type' => 'DML', 'op' => str_contains( strtoupper( $match[1] ), 'REPLACE' ) ? 'REPLACE' : 'INSERT', 'table' => $match[2] );
 		}
@@ -50,8 +51,13 @@ class WP_Markdown_SQL_Classifier {
 		if ( preg_match( '/^\s*ALTER\s+TABLE\s+`?(\w+)`?/i', $query, $match ) ) {
 			return array( 'type' => 'DDL', 'op' => 'ALTER', 'table' => $match[1] );
 		}
-		if ( preg_match( '/^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?`?(\w+)`?/i', $query, $match ) ) {
-			return array( 'type' => 'DDL', 'op' => 'DROP', 'table' => $match[1] );
+		if ( preg_match( '/^\s*DROP\s+TABLE\s+(?:IF\s+EXISTS\s+)?(.+?)\s*;?\s*$/is', $drop_query, $match ) ) {
+			$tables = array();
+			foreach ( preg_split( '/\s*,\s*/', trim( $match[1] ) ) ?: array() as $operand ) {
+				if ( ! preg_match( '/^`?([A-Za-z_][A-Za-z0-9_]*)`?$/', $operand, $table_match ) ) { return null; }
+				$tables[ $table_match[1] ] = true;
+			}
+			if ( $tables ) { $tables = array_keys( $tables ); return 1 === count( $tables ) ? array( 'type' => 'DDL', 'op' => 'DROP', 'table' => $tables[0] ) : array( 'type' => 'DDL', 'op' => 'DROP', 'tables' => $tables ); }
 		}
 		if ( preg_match( '/^\s*DROP\s+INDEX\s+`?\w+`?\s+ON\s+`?(\w+)`?\s*;?\s*$/i', $query, $match ) ) {
 			return array( 'type' => 'DDL', 'op' => 'ALTER', 'table' => $match[1] );

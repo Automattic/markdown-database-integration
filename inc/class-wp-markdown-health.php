@@ -69,7 +69,12 @@ class WP_Markdown_Health {
 				if ( ! is_array( $outbox_diagnostics ) || empty( $outbox_diagnostics['ready'] ) ) {
 					return self::with_backend( array( 'status' => 'mysql_full_outbox_unavailable', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full could not validate its durable outbox schema.', 'outbox' => $outbox_diagnostics ), $backend );
 				}
-				return self::with_backend( array( 'status' => 'mysql_full_outbox_ready', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI mysql-full durable mutation handoff is ready. Canonical publication remains a later slice.', 'outbox' => $outbox_diagnostics ), $backend );
+				$drain = $context['mysql_full_semantic_drain'] ?? ( $GLOBALS['markdown_db_mysql_semantic_drain'] ?? null );
+				try { $drain_diagnostics = is_object( $drain ) && method_exists( $drain, 'diagnostics' ) ? $drain->diagnostics() : array( 'ready' => false ); } catch ( Throwable $error ) { $drain_diagnostics = array( 'ready' => false, 'error' => $error->getMessage() ); }
+				if ( empty( $drain_diagnostics['ready'] ) || empty( $drain_diagnostics['planner_ready'] ) ) {
+					return self::with_backend( array( 'status' => 'mysql_full_semantic_drain_unavailable', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full durable capture is ready but semantic intent planning is unavailable.', 'outbox' => $outbox_diagnostics, 'semantic_drain' => $drain_diagnostics ), $backend );
+				}
+				return self::with_backend( array( 'status' => 'mysql_full_semantic_drain_ready', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI mysql-full semantic intent drain is ready. Canonical publication, cold reconstruction, and full-primary stability remain later slices.', 'outbox' => $outbox_diagnostics, 'semantic_drain' => $drain_diagnostics ), $backend );
 			}
 			if ( 'mysql-content' === $backend->get_backend() ) {
 				$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_RETAINED_DROPIN' ) || ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN ) );

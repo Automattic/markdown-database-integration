@@ -11,7 +11,8 @@ if ( ! defined( 'ABSPATH' ) || ! defined( 'MARKDOWN_DB_BACKEND' ) || 'mysql-full
 
 global $wpdb;
 $outbox = $GLOBALS['markdown_db_mysql_outbox'] ?? null;
-if ( ! $wpdb instanceof WP_Markdown_MySQL_WPDB || ! $outbox instanceof WP_Markdown_MySQL_Outbox || ! $outbox->is_ready() ) {
+$drain = $GLOBALS['markdown_db_mysql_semantic_drain'] ?? null;
+if ( ! $wpdb instanceof WP_Markdown_MySQL_WPDB || ! $outbox instanceof WP_Markdown_MySQL_Outbox || ! $outbox->is_ready() || ! $drain instanceof WP_Markdown_MySQL_Semantic_Drain ) {
 	throw new RuntimeException( 'mysql-full did not bootstrap a ready durable outbox.' );
 }
 
@@ -54,9 +55,23 @@ try {
 	$token = 'native-autocommit-' . $suffix;
 	$records = $outbox->claim( $token, 10, 60 );
 	$payloads = mdi_native_outbox_payloads( $records );
-	mdi_native_outbox_assert( 2 === count( $payloads ) && array( 'CREATE', 'INSERT' ) === array_column( array_column( $payloads, 'mutation' ), 'operation' ), 'Autocommit DDL and DML did not produce ordered durable records.' );
-	mdi_native_outbox_assert( 2 === $payloads[1]['scope']['blog_id'] && $wpdb->prefix === $payloads[1]['scope']['table_prefix'] && $base_prefix === $payloads[1]['scope']['base_prefix'] && array( $table ) === $payloads[1]['mutation']['tables'], 'Native record lost concrete multisite scope.' );
+	mdi_native_outbox_assert( 1 === count( $payloads ) && 'CREATE' === $payloads[0]['mutation']['operation'], 'Raw claim exposes only the global head-of-line event.' );
 	mdi_native_outbox_ack_all( $outbox, $records, $token );
+	$records = $outbox->claim( $token, 10, 60 );
+	$payloads = mdi_native_outbox_payloads( $records );
+	mdi_native_outbox_assert( 1 === count( $payloads ) && 'INSERT' === $payloads[0]['mutation']['operation'] && 2 === $payloads[0]['scope']['blog_id'] && $wpdb->prefix === $payloads[0]['scope']['table_prefix'] && $base_prefix === $payloads[0]['scope']['base_prefix'] && array( $table ) === $payloads[0]['mutation']['tables'], 'Native record lost concrete multisite scope.' );
+	mdi_native_outbox_ack_all( $outbox, $records, $token );
+
+	$wpdb->query( "UPDATE `{$table}` SET `value`='planned' WHERE `id`=1" );
+	$seen = array();
+	$failed_once = $drain->drain( 'native-semantic-failure-' . $suffix, static function ( array $envelope ) use ( &$seen ): bool { $seen[] = $envelope; return false; }, 10, 60 );
+	mdi_native_outbox_assert( 1 === $failed_once['failed'] && 0 === $failed_once['acknowledged'], 'Consumer failure did not retain the leased record for retry.' );
+	$replayed = $drain->drain( 'native-semantic-replay-' . $suffix, static function ( array $envelope ) use ( &$seen ): bool { $seen[] = $envelope; return true; }, 10, 60 );
+	mdi_native_outbox_assert( 1 === $replayed['acknowledged'] && 2 === count( $seen ) && $seen[0] === $seen[1] && 2 === $seen[1]['intents'][0]['blog_id'] && ! empty( $seen[1]['intents'][0]['current_rows'] ) && 'planned' === $seen[1]['intents'][0]['current_rows'][0]['value'], 'Semantic replay did not preserve its stable event envelope or perform a current-row lookup.' );
+	$wpdb->query( "ALTER TABLE `{$table}` ADD `planned_marker` TINYINT NOT NULL DEFAULT 0" );
+	$schemas = array();
+	$drain->drain( 'native-semantic-schema-' . $suffix, static function ( array $intent ) use ( &$schemas ): bool { $schemas[] = $intent; return true; }, 10, 60 );
+	mdi_native_outbox_assert( 1 === count( $schemas ) && str_contains( (string) ( $schemas[0]['schema']['create_sql'] ?? '' ), 'planned_marker' ), 'Semantic DDL intent did not carry current SHOW CREATE TABLE evidence.' );
 
 	$mode_row = $connection->query( 'SELECT @@SESSION.sql_mode AS `sql_mode`' )->fetch_assoc();
 	$original_sql_mode = (string) $mode_row['sql_mode'];
@@ -88,8 +103,10 @@ try {
 	mdi_native_outbox_assert( false !== $wpdb->query( 'COMMIT' ), 'Native transaction commit failed.' );
 	$token = 'native-committed-' . $suffix;
 	$records = $outbox->claim( $token, 10, 60 );
-	$payloads = mdi_native_outbox_payloads( $records );
-	mdi_native_outbox_assert( array( 'commit-1', 'commit-2' ) === array_map( static fn( array $payload ): string => str_contains( $payload['mutation']['sql'], 'commit-1' ) ? 'commit-1' : 'commit-2', $payloads ), 'Committed transaction records lost query order.' );
+	mdi_native_outbox_assert( 1 === count( $records ) && str_contains( $records[0]['payload']['mutation']['sql'], 'commit-1' ), 'Raw claim did not retain the first committed event as global head.' );
+	mdi_native_outbox_ack_all( $outbox, $records, $token );
+	$records = $outbox->claim( $token, 10, 60 );
+	mdi_native_outbox_assert( 1 === count( $records ) && str_contains( $records[0]['payload']['mutation']['sql'], 'commit-2' ), 'Raw claim did not expose the next committed event after acknowledgement.' );
 	mdi_native_outbox_ack_all( $outbox, $records, $token );
 
 	$wpdb->query( 'START TRANSACTION' );

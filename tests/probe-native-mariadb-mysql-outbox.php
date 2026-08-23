@@ -72,6 +72,14 @@ try {
 	$schemas = array();
 	$drain->drain( 'native-semantic-schema-' . $suffix, static function ( array $intent ) use ( &$schemas ): bool { $schemas[] = $intent; return true; }, 10, 60 );
 	mdi_native_outbox_assert( 1 === count( $schemas ) && str_contains( (string) ( $schemas[0]['schema']['create_sql'] ?? '' ), 'planned_marker' ), 'Semantic DDL intent did not carry current SHOW CREATE TABLE evidence.' );
+	$wpdb->query( "ALTER TABLE `{$table}` ADD `canonical_marker` TINYINT NOT NULL DEFAULT 0" );
+	$wpdb->query( "UPDATE `{$table}` SET `canonical_marker`=1 WHERE `id`=1" );
+	$publication = wp_markdown_mysql_full_flush( 10 );
+	$state_root = rtrim( MARKDOWN_DB_STATE_DIR, '/\\' ) . '/sites/2';
+	$table_suffix = substr( $table, strlen( $wpdb->prefix ) );
+	$canonical_table = $state_root . '/_tables/' . $table_suffix . '.json';
+	$canonical_schema = $state_root . '/_schema/' . $table_suffix . '.sql';
+	mdi_native_outbox_assert( 2 === $publication['acknowledged'] && is_file( $canonical_table ) && is_file( $canonical_schema ) && str_contains( (string) file_get_contents( $canonical_schema ), 'canonical_marker' ) && 1 === (int) ( json_decode( (string) file_get_contents( $canonical_table ), true )[0]['canonical_marker'] ?? 0 ), 'Canonical publisher did not durably materialize native MariaDB table and schema intents.' );
 
 	$mode_row = $connection->query( 'SELECT @@SESSION.sql_mode AS `sql_mode`' )->fetch_assoc();
 	$original_sql_mode = (string) $mode_row['sql_mode'];
@@ -161,5 +169,7 @@ try {
 	$connection->query( "DROP TABLE IF EXISTS `{$ddl_table}`" );
 	$connection->query( "DROP TABLE IF EXISTS `{$bad_outbox_table}`" );
 	$connection->query( "TRUNCATE TABLE `{$outbox_table}`" );
+	if ( isset( $canonical_table ) && is_file( $canonical_table ) ) { unlink( $canonical_table ); }
+	if ( isset( $canonical_schema ) && is_file( $canonical_schema ) ) { unlink( $canonical_schema ); }
 	$wpdb->set_blog_id( $original_blog_id );
 }

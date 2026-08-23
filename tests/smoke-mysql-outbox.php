@@ -76,6 +76,13 @@ $payload = $outbox->records[0]['payload'];
 mdi_outbox_assert( 2 === $payload['version'] && 'wordpress' === $payload['database'] && 2 === $payload['scope']['blog_id'] && array( 'wp_2_posts' ) === $payload['mutation']['tables'], 'payload retains versioned database and multisite scope' );
 mdi_outbox_assert( hash( 'sha256', $outbox->records[0]['json'] ) === $outbox->records[0]['sha256'], 'payload identity hashes the normalized JSON bytes' );
 
+$planned = new MDI_Test_MySQL_Outbox( new stdClass(), 'wp_mdi_mysql_outbox', static fn( array $record ): array => array( array( 'event_id' => $record['event_id'], 'kind' => 'table', 'operation' => 'UPDATE', 'table' => 'wp_2_posts' ) ) );
+$planned( mdi_outbox_observation( 'UPDATE', 'wp_2_posts' ) );
+mdi_outbox_assert( $planned->records[0]['event_id'] === ( $planned->records[0]['semantic_envelope']['event_id'] ?? null ) && 1 === count( $planned->records[0]['semantic_envelope']['intents'] ?? array() ), 'semantic evidence is captured at the successful mutation boundary' );
+$failed_plan = new MDI_Test_MySQL_Outbox( new stdClass(), 'wp_mdi_mysql_outbox', static function (): array { throw new RuntimeException( 'planner unavailable' ); } );
+try { $failed_plan( mdi_outbox_observation( 'UPDATE', 'wp_2_posts' ) ); } catch ( RuntimeException $error ) {}
+mdi_outbox_assert( 1 === count( $failed_plan->records ) && ! isset( $failed_plan->records[0]['semantic_envelope'] ), 'planning failure preserves the raw durable outbox record for retry' );
+
 $txbox = new MDI_Test_MySQL_Outbox( new stdClass(), 'wp_mdi_mysql_outbox' );
 $txbox->after_control( array( 'action' => 'begin' ) );
 $txbox( mdi_outbox_observation( 'UPDATE', 'wp_2_posts', true ) );

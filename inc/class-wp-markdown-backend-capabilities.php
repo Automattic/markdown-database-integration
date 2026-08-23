@@ -103,11 +103,14 @@ class WP_Markdown_Backend_Capabilities {
 		) );
 	}
 
-	/** mysql-full owns an early wpdb boundary but has no canonical drain yet. */
+	/** mysql-full captures every supported wpdb mutation and publishes canonical state. */
 	public static function mysql_full(): self {
 		return new self( 'mysql-full', array(
 			'content_mutation_capture' => true,
 			'table_mutation_capture'   => true,
+			'schema_persistence'       => true,
+			'explicit_flush'           => true,
+			'changed_path_receipts'    => true,
 		) );
 	}
 

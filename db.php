@@ -47,10 +47,11 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 		}
 		$markdown_db_mysql_wpdb = new WP_Markdown_MySQL_WPDB( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
 		$markdown_db_base_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
-		$markdown_db_mysql_outbox = new WP_Markdown_MySQL_Outbox( $markdown_db_mysql_wpdb->markdown_db_mysql_connection(), $markdown_db_base_prefix . 'mdi_mysql_outbox' );
+		$markdown_db_mysql_impact_adapter = new WP_Markdown_MySQL_Impact_Adapter( $markdown_db_mysql_wpdb->markdown_db_mysql_connection() );
+		$markdown_db_mysql_outbox = new WP_Markdown_MySQL_Outbox( $markdown_db_mysql_wpdb->markdown_db_mysql_connection(), $markdown_db_base_prefix . 'mdi_mysql_outbox', array( $markdown_db_mysql_impact_adapter, 'intents' ) );
 		$markdown_db_mysql_wpdb->set_mutation_sink( $markdown_db_mysql_outbox );
 		$GLOBALS['markdown_db_mysql_outbox'] = $markdown_db_mysql_outbox;
-		$GLOBALS['markdown_db_mysql_semantic_drain'] = new WP_Markdown_MySQL_Semantic_Drain( $markdown_db_mysql_outbox, new WP_Markdown_MySQL_Impact_Adapter( $markdown_db_mysql_wpdb->markdown_db_mysql_connection() ) );
+		$GLOBALS['markdown_db_mysql_semantic_drain'] = new WP_Markdown_MySQL_Semantic_Drain( $markdown_db_mysql_outbox, $markdown_db_mysql_impact_adapter );
 		$GLOBALS['wpdb'] = $markdown_db_mysql_wpdb;
 		define( 'MARKDOWN_DB_DROPIN', true );
 	} catch ( Throwable $error ) {

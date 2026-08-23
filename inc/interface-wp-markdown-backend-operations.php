@@ -16,7 +16,7 @@ interface WP_Markdown_Backend_Operations {
 	/** @return array<int,array<string,mixed>|object> */
 	public function post_terms( int $post_id ): array;
 	/** @return array<int,int> */
-	public function affected_post_ids( string $table_suffix, array $resource_ids, string $operation ): array;
+	public function affected_post_ids( string $table_suffix, array $resource_ids, string $operation, array $scope = array() ): array;
 	/** @return array<string,array<string,mixed>> keyed by option name */
 	public function options( array $names, bool $all = false ): array;
 	/** @return string[] */

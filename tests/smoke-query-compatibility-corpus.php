@@ -78,11 +78,15 @@ try { $failing_recorder->capture( 'core.exception', 'THROW', static function ():
 catch ( RuntimeException $error ) { $backend_exception = $error->getMessage(); }
 $lazy_db = new MDI_Lazy_Query_Corpus_DB(); $lazy_recorder = new WP_Markdown_Query_Compatibility_Recorder( $normalizer );
 $lazy_recorder->capture( 'core.lazy-metadata', 'SELECT 1', static fn(): int => $lazy_db->query( 'SELECT 1' ), $lazy_db );
+$invalid_replacement = false;
+try { new WP_Markdown_Query_Compatibility_Normalizer( array( 'invalid' => null ) ); }
+catch ( InvalidArgumentException $error ) { $invalid_replacement = true; }
 $json = $recorder->json();
 $checks = array(
 	'caller return values preserved' => 1 === $returns['core.posts.insert'] && true === $returns['core.transaction.begin'] && false === $returns['core.failure.invalid-query'],
 	'versioned deterministic fixture' => true === $comparison['compatible'],
 	'normalization removes volatile and sensitive bytes' => ! str_contains( $json, 'secret.example.test' ) && ! str_contains( $json, '/private/runtime/wordpress' ) && ! str_contains( $json, 'secret-token' ) && str_contains( $json, '<uuid>' ) && str_contains( $json, '<timestamp>' ),
+	'invalid sanitization replacements fail explicitly' => $invalid_replacement,
 	'rows and column metadata retain ordered behavioral shape' => 'siteurl' === ( $document['observations'][0]['result']['rows'][0]['option_name'] ?? null ) && 'option_name' === ( $document['observations'][0]['result']['columns'][0]['name'] ?? null ),
 	'error code and message behavior are retained' => 1064 === ( $document['observations'][10]['result']['error_code'] ?? null ) && str_contains( (string) ( $document['observations'][10]['result']['last_error'] ?? '' ), '<secret>' ),
 	'lazy non-mysqli metadata remains untouched' => 0 === $lazy_db->metadata_calls && array() === $lazy_recorder->document()['observations'][0]['result']['columns'],

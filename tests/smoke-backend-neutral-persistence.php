@@ -14,7 +14,7 @@ class MDI_Fake_Backend implements WP_Markdown_Backend_Operations {
 	public function post_status( int $post_id ): ?string { $this->calls[] = "post-status:$post_id"; return null; }
 	public function post_meta( int $post_id ): array { $this->calls[] = "post-meta:$post_id"; return array(); }
 	public function post_terms( int $post_id ): array { $this->calls[] = "post-terms:$post_id"; return array(); }
-	public function affected_post_ids( string $table_suffix, array $resource_ids, string $operation ): array { $this->calls[] = "affected:$table_suffix:$operation"; return array_map( 'intval', $resource_ids ); }
+	public function affected_post_ids( string $table_suffix, array $resource_ids, string $operation, array $scope = array() ): array { unset( $scope ); $this->calls[] = "affected:$table_suffix:$operation"; return array_map( 'intval', $resource_ids ); }
 	public function options( array $names, bool $all = false ): array { $this->calls[] = 'options:' . implode( ',', $names ); return array(); }
 	public function option_names(): array { return array(); }
 	public function insert_id(): int { return 0; }

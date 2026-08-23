@@ -56,6 +56,9 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-serv
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-wordpress-reconciliation-adapter.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-content-runtime.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-outbox.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-operations.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-canonical-publisher.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-mysql-full-runtime.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
@@ -173,6 +176,7 @@ add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
 add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'switch_blog', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Content_Runtime', 'bootstrap' ), 20 );
+add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Full_Runtime', 'bootstrap' ), 20 );
 add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 

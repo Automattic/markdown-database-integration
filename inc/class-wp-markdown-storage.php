@@ -426,6 +426,24 @@ class WP_Markdown_Storage {
 		$this->index = null;
 	}
 
+	/** Delete Markdown files while propagating any incomplete filesystem mutation. */
+	public function truncate_strict( string $post_type = '' ): void {
+		if ( ! is_dir( $this->content_dir ) ) { return; }
+		if ( '' !== $post_type ) {
+			$this->remove_directory_recursive_strict( $this->content_dir . '/' . $this->sanitize_path( $post_type ) );
+		} else {
+			$entries = scandir( $this->content_dir );
+			if ( false === $entries ) { throw new RuntimeException( 'Markdown DB: Failed to inspect canonical content directory.' ); }
+			foreach ( $entries as $entry ) {
+				if ( '.' === $entry || '..' === $entry || str_starts_with( $entry, '_' ) ) { continue; }
+				$path = $this->content_dir . '/' . $entry;
+				if ( is_link( $path ) ) { throw new RuntimeException( 'Markdown DB: Refusing to truncate a linked content path.' ); }
+				if ( is_dir( $path ) ) { $this->remove_directory_recursive_strict( $path ); }
+			}
+		}
+		$this->index = null;
+	}
+
 	/**
 	 * Get all markdown files as post objects.
 	 *
@@ -2127,6 +2145,24 @@ class WP_Markdown_Storage {
 				@rmdir( $path );
 			} else {
 				$this->safe_unlink( $path );
+			}
+		}
+	}
+
+	private function remove_directory_recursive_strict( string $dir ): void {
+		if ( ! file_exists( $dir ) ) { return; }
+		if ( ! is_dir( $dir ) || is_link( $dir ) ) { throw new RuntimeException( 'Markdown DB: Canonical content path is not a safe directory.' ); }
+		$entries = scandir( $dir );
+		if ( false === $entries ) { throw new RuntimeException( 'Markdown DB: Failed to inspect canonical content directory.' ); }
+		foreach ( $entries as $entry ) {
+			if ( '.' === $entry || '..' === $entry ) { continue; }
+			$path = $dir . '/' . $entry;
+			if ( is_link( $path ) ) { throw new RuntimeException( 'Markdown DB: Refusing to truncate a linked content path.' ); }
+			if ( is_dir( $path ) ) {
+				$this->remove_directory_recursive_strict( $path );
+				if ( ! rmdir( $path ) ) { throw new RuntimeException( 'Markdown DB: Failed to remove canonical content directory.' ); }
+			} elseif ( ! $this->safe_unlink( $path ) ) {
+				throw new RuntimeException( 'Markdown DB: Failed to remove canonical content file.' );
 			}
 		}
 	}

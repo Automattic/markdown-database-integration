@@ -52,13 +52,16 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	}
 	public function post_meta( int $post_id ): array { return $this->rows( 'SELECT meta_key, meta_value FROM `' . $this->table( 'postmeta' ) . '` WHERE post_id = ' . $post_id ); }
 	public function post_terms( int $post_id ): array { $prefix = ( $this->prefix )(); return $this->rows( "SELECT tt.taxonomy, t.slug FROM `{$prefix}term_relationships` tr JOIN `{$prefix}term_taxonomy` tt ON tr.term_taxonomy_id = tt.term_taxonomy_id JOIN `{$prefix}terms` t ON tt.term_id = t.term_id WHERE tr.object_id = {$post_id}" ); }
-	public function affected_post_ids( string $table_suffix, array $resource_ids, string $operation ): array {
+	public function affected_post_ids( string $table_suffix, array $resource_ids, string $operation, array $scope = array() ): array {
 		unset( $operation );
+		$identity = (string) ( $scope['identity']['column'] ?? '' );
 		if ( 'term_relationships' === $table_suffix && in_array( '*', $resource_ids, true ) ) {
 			return array_map( static fn( $row ): int => (int) $row->ID, $this->rows( 'SELECT ID FROM `' . $this->table( 'posts' ) . '`' ) );
 		}
 		$ids = array_values( array_filter( array_map( 'intval', $resource_ids ) ) );
+		if ( 'postmeta' === $table_suffix && 'post_id' === $identity ) { return $ids; }
 		if ( 'postmeta' === $table_suffix && ! empty( $ids ) ) { $rows = $this->rows( 'SELECT post_id FROM `' . $this->table( 'postmeta' ) . '` WHERE meta_id IN (' . implode( ',', $ids ) . ')' ); return array_map( static fn( $row ): int => (int) $row->post_id, $rows ); }
+		if ( 'term_relationships' === $table_suffix && 'object_id' === $identity ) { return $ids; }
 		return $ids;
 	}
 	public function options( array $names, bool $all = false ): array {

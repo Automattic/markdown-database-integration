@@ -380,6 +380,45 @@ Primary mode trades cold-boot work for reconstructable persisted state. To
 reconstruct the complete configured state, retain both the content tree and the
 state tree when they are split.
 
+### Native MySQL/MariaDB Backends
+
+MDI also has two explicit native-database backends:
+
+- `mysql-content` runs as a normal plugin without `db.php`. It makes the post
+  types listed in `MARKDOWN_DB_MANAGED_POST_TYPES` content-primary, including
+  post rows, meta, terms, hierarchy, reconciliation, explicit flush receipts,
+  and reconstruction of those managed posts.
+- `mysql-full` uses the MDI `db.php` boundary to preserve stock `wpdb` behavior
+  while capturing supported DML and DDL into a transactional InnoDB outbox.
+  Successful mutations are planned immediately into stable semantic envelopes,
+  committed through the outbox, and published to
+  the existing Markdown, JSON, and schema layouts. Failed publication remains
+  in the outbox for retry, and `wp_markdown_mysql_full_flush()` provides an
+  explicit durability boundary with changed-path receipts.
+
+Configure one backend in `wp-config.php`:
+
+```php
+define( 'MARKDOWN_DB_BACKEND', 'mysql-content' );
+define( 'MARKDOWN_DB_MANAGED_POST_TYPES', 'post,page,wiki' );
+
+// Or, with the MDI db.php installed:
+define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
+```
+
+For multisite `mysql-full`, site-local canonical roots default to
+`sites/{blog_id}` below the configured content and state roots. Network-global
+tables remain in the base state root. `markdown_db_mysql_full_roots` can supply
+deployment-owned roots for each captured scope. Changed-path receipts qualify
+site-local paths with `sites/{blog_id}/` so equal paths from different sites do
+not collide.
+
+`mysql-full` currently publishes canonical state but does not yet reconstruct
+an empty MySQL/MariaDB database from those files. Direct `mysqli` writes,
+separate connections, server-side writers, multi-statements, stored-routine
+internal statements, and XA transactions remain outside the captured `wpdb`
+boundary and are reported by diagnostics.
+
 With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
 single-root layout:
 

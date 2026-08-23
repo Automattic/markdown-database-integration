@@ -48,6 +48,10 @@ $record['payload']['mutation']['tables'] = array( 'wp_users' );
 mdi_semantic_assert( 'wp_users' === $adapter->intents( $record )[0]['table'], 'base-prefix current site scope permits explicit global tables' );
 $record['payload']['result']['rows_affected'] = 0;
 mdi_semantic_assert( array() === $adapter->intents( $record ), 'proven no-op DML emits no semantic impact' );
+$record['payload']['result']['rows_affected'] = 1;
+$record['payload']['mutation'] = array( 'kind' => 'table', 'operation' => 'DELETE', 'tables' => array( 'wp_terms' ), 'sql' => 'DELETE FROM wp_terms WHERE term_id=7' );
+$deleted_term = $adapter->intents( $record )[0];
+mdi_semantic_assert( array( '*' ) === $deleted_term['resource_ids'] && ! empty( $deleted_term['scope']['conservative'] ), 'term deletes conservatively invalidate embedded Markdown frontmatter' );
 
 class MDI_Semantic_Drain_Outbox extends WP_Markdown_MySQL_Outbox {
 	public array $records = array();
@@ -68,6 +72,9 @@ $drain_outbox->records[2]['payload']['mutation']['tables'] = array( 'wp_2_posts'
 $failed_drain = $drain->drain( 'semantic-worker', static fn( array $envelope ): bool => true, 2 );
 $failure = json_decode( (string) $drain_outbox->records[2]['last_error'], true );
 mdi_semantic_assert( 1 === $failed_drain['failed'] && 'failed' === $drain_outbox->records[2]['state'] && 'planning' === ( $failure['stage'] ?? null ) && isset( $failure['event_id'], $failure['message'] ), 'planning failures are bounded structured diagnostics persisted through the outbox' );
+$drain_outbox->records[] = array( 'id' => 4, 'event_id' => 'event-4', 'payload_sha256' => '', 'state' => 'pending', 'payload' => array(), 'semantic_envelope' => array( 'event_id' => 'event-4', 'outbox_id' => 4, 'payload_sha256' => '', 'intents' => array() ) );
+$cached_drain = $drain->drain( 'semantic-worker', static fn( array $envelope ): bool => 'event-4' === $envelope['event_id'], 1 );
+mdi_semantic_assert( 1 === $cached_drain['acknowledged'] && 'acked' === $drain_outbox->records[3]['state'], 'mutation-time semantic envelopes drain without re-planning live database state' );
 
 if ( $failures ) { foreach ( $failures as $failure ) { echo "FAIL: {$failure}\n"; } exit( 1 ); }
 echo "All semantic impact smoke checks passed.\n";

@@ -149,6 +149,7 @@ class WP_Markdown_Canonical_Persistence {
 	 * @var bool
 	 */
 	private $writing = false;
+	private bool $strict_persistence = false;
 
 	/**
 	 * Canonical paths touched since the previous successful flush, keyed by path.
@@ -242,12 +243,13 @@ class WP_Markdown_Canonical_Persistence {
 	 *
 	 * @param array{key:string,resource:string,operation:string,table:string,context?:array<string,mixed>} $mutation
 	 */
-	public function persist_mutation( array $mutation ): void {
+	public function persist_mutation( array $mutation, bool $throw_on_error = false ): void {
+		$this->strict_persistence = $this->strict_persistence || $throw_on_error;
 		if ( ! empty( $mutation['context']['schema'] ) ) {
-			$this->persist_schema( '', $mutation['table'], $mutation['operation'] );
+			$this->persist_schema( '', $mutation['table'], $mutation['operation'], $throw_on_error );
 			return;
 		}
-		$this->apply_normalized_mutation( $mutation );
+		$this->apply_normalized_mutation( $mutation, $throw_on_error );
 	}
 
 	/** Recover original durable WordPress-to-canonical IDs before new intent is derived. */
@@ -318,7 +320,7 @@ class WP_Markdown_Canonical_Persistence {
 	}
 
 	/** @param array{operation:string,table:string,context?:array<string,mixed>} $mutation */
-	private function apply_normalized_mutation( array $mutation ): void {
+	private function apply_normalized_mutation( array $mutation, bool $throw_on_error = false ): void {
 		if ( $this->writing ) {
 			return;
 		}
@@ -336,9 +338,9 @@ class WP_Markdown_Canonical_Persistence {
 			if ( $table_suffix === 'posts' ) {
 				$this->persist_post_write( $resource_ids, $op_type );
 			} elseif ( $table_suffix === 'postmeta' ) {
-				$this->persist_postmeta_write( $resource_ids, $op_type );
+				$this->persist_postmeta_write( $resource_ids, $op_type, (array) ( $mutation['context']['scope'] ?? array() ) );
 			} elseif ( in_array( $table_suffix, array( 'term_relationships', 'term_taxonomy', 'terms' ), true ) ) {
-				$this->persist_terms_write( $resource_ids, $op_type, $table_suffix );
+				$this->persist_terms_write( $resource_ids, $op_type, $table_suffix, (array) ( $mutation['context']['scope'] ?? array() ) );
 			} elseif ( $table_suffix === 'options' ) {
 				// Defer to shutdown. Track which specific option_name(s) were
 				// touched so we can write only the changed files — per-option
@@ -351,16 +353,39 @@ class WP_Markdown_Canonical_Persistence {
 				if ( empty( $ids ) ) { $ids = array( '*' ); }
 				foreach ( $ids as $id ) { $this->dirty_partition_resources[ $table_suffix ][ (string) $id ] = true; }
 				$this->ensure_shutdown_registered();
+			} elseif ( array_key_exists( 'current_rows', $mutation['context'] ?? array() ) && $this->persist_captured_table_rows( $table_suffix, (array) $mutation['context']['current_rows'], (array) ( $mutation['context']['scope'] ?? array() ) ) ) {
+				return;
 			} else {
 				// Defer users, usermeta, and all other tables to shutdown.
 				$this->mark_dirty( $table_suffix );
 			}
 		} catch ( \Throwable $e ) {
-			// Write failures should never break WordPress.
+			if ( $throw_on_error || $this->strict_persistence ) {
+				throw $e;
+			}
 			error_log( 'Markdown DB write error: ' . $e->getMessage() );
+		} finally {
+			$this->writing = false;
 		}
+	}
 
-		$this->writing = false;
+	/** Apply an exact captured row mutation to an existing complete table snapshot. */
+	private function persist_captured_table_rows( string $table_suffix, array $current_rows, array $scope ): bool {
+		$identity = $scope['identity'] ?? null;
+		$column = is_array( $identity ) ? (string) ( $identity['column'] ?? '' ) : '';
+		$values = is_array( $identity ) ? (array) ( $identity['values'] ?? array() ) : array();
+		$path = $this->state_dir . '/_tables/' . $table_suffix . '.json';
+		if ( ! preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/', $column ) || 1 !== count( $values ) || ! is_scalar( $values[0] ) || ! is_file( $path ) ) { return false; }
+		$identity_value = (string) $values[0];
+		$existing = json_decode( (string) file_get_contents( $path ), true );
+		if ( ! is_array( $existing ) || ! array_is_list( $existing ) ) { throw new RuntimeException( 'Markdown DB: Existing table snapshot is invalid.' ); }
+		foreach ( $current_rows as $row ) {
+			if ( ! is_array( $row ) || ! array_key_exists( $column, $row ) || $identity_value !== (string) $row[ $column ] ) { throw new RuntimeException( 'Markdown DB: Captured table row does not match its identity.' ); }
+		}
+		$rows = array_values( array_filter( $existing, static fn( mixed $row ): bool => ! is_array( $row ) || ! array_key_exists( $column, $row ) || $identity_value !== (string) $row[ $column ] ) );
+		array_push( $rows, ...$current_rows );
+		$this->write_json( $path, $rows );
+		return true;
 	}
 
 	/**
@@ -551,7 +576,7 @@ class WP_Markdown_Canonical_Persistence {
 			$root = str_replace( DIRECTORY_SEPARATOR, '/', rtrim( $root, '/' ) );
 			if ( str_starts_with( $absolute_path, $root . '/' ) ) {
 				$path = substr( $absolute_path, strlen( $root ) + 1 );
-				if ( str_ends_with( $path, '.md' ) || str_ends_with( $path, '.json' ) ) {
+				if ( str_ends_with( $path, '.md' ) || str_ends_with( $path, '.json' ) || str_ends_with( $path, '.sql' ) ) {
 					return $path;
 				}
 			}
@@ -875,9 +900,14 @@ class WP_Markdown_Canonical_Persistence {
 		// flush. Any number of downstream writes (postmeta, terms, etc.)
 		// in the same request collapses to a single file write. See #21.
 		if ( 'INSERT' === $op_type || 'REPLACE' === $op_type ) {
-			$id = $this->operations->insert_id();
-			if ( $id && ! $this->is_auto_draft( (int) $id ) ) {
-				$this->mark_post_dirty( (int) $id );
+			$ids = array_values( array_filter( array_map( 'intval', $ids ) ) );
+			if ( empty( $ids ) ) {
+				$ids = array_filter( array( $this->operations->insert_id() ) );
+			}
+			foreach ( $ids as $id ) {
+				if ( ! $this->is_auto_draft( (int) $id ) ) {
+					$this->mark_post_dirty( (int) $id );
+				}
 			}
 		} elseif ( 'UPDATE' === $op_type ) {
 			foreach ( $ids as $id ) {
@@ -900,6 +930,7 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			$status = $this->operations->post_status( $post_id );
 		} catch ( \Throwable $e ) {
+			if ( $this->strict_persistence ) { throw $e; }
 			return false;
 		}
 
@@ -919,6 +950,7 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			$rows = $this->operations->post_rows( array( $post_id ) );
 		} catch ( \Throwable $e ) {
+			if ( $this->strict_persistence ) { throw $e; }
 			return false;
 		}
 
@@ -1046,9 +1078,9 @@ class WP_Markdown_Canonical_Persistence {
 	 * @param string $query   The SQL query.
 	 * @param string $op_type INSERT, UPDATE, DELETE, REPLACE.
 	 */
-	private function persist_postmeta_write( array $resource_ids, string $op_type ): void {
+	private function persist_postmeta_write( array $resource_ids, string $op_type, array $scope = array() ): void {
 		// Find which post IDs are affected.
-		$post_ids = $this->operations->affected_post_ids( 'postmeta', $resource_ids, $op_type );
+		$post_ids = $this->operations->affected_post_ids( 'postmeta', $resource_ids, $op_type, $scope );
 
 		// Queue each affected post for a single shutdown rewrite, so bulk
 		// meta updates (ACF repeaters, Woo product attributes, 50-key
@@ -1073,16 +1105,14 @@ class WP_Markdown_Canonical_Persistence {
 	 * @param string $op_type      INSERT, UPDATE, DELETE, REPLACE.
 	 * @param string $table_suffix Which terms table was written.
 	 */
-	private function persist_terms_write( array $resource_ids, string $op_type, string $table_suffix ): void {
-		if ( $table_suffix === 'term_relationships' ) {
-			// Queue affected posts for a single shutdown rewrite. Assigning
-			// N categories + M tags in one request collapses to one file
-			// write per post, not one per relationship. See issue #21.
-			$post_ids = $this->operations->affected_post_ids( $table_suffix, $resource_ids, $op_type );
-			foreach ( $post_ids as $post_id ) {
-				$this->mark_post_dirty( (int) $post_id );
-			}
+	private function persist_terms_write( array $resource_ids, string $op_type, string $table_suffix, array $scope = array() ): void {
+		// Every terms-table mutation can change embedded Markdown frontmatter.
+		$post_ids = $this->operations->affected_post_ids( $table_suffix, $resource_ids, $op_type, $scope );
+		foreach ( $post_ids as $post_id ) {
+			$this->mark_post_dirty( (int) $post_id );
+		}
 
+		if ( $table_suffix === 'term_relationships' ) {
 			// Defer non-markdown term_relationships JSON dump to shutdown.
 			$this->mark_dirty( 'term_relationships_non_markdown' );
 		}
@@ -1106,6 +1136,7 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			$rows = $this->operations->table_rows( $table_suffix );
 		} catch ( \Throwable $e ) {
+			if ( $this->strict_persistence ) { throw $e; }
 			return;
 		}
 
@@ -1135,6 +1166,7 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			$rows = $this->operations->table_rows( 'posts' );
 		} catch ( \Throwable $e ) {
+			if ( $this->strict_persistence ) { throw $e; }
 			return $ids;
 		}
 
@@ -1156,6 +1188,7 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			$rows = $this->operations->table_rows( 'posts' );
 		} catch ( \Throwable $e ) {
+			if ( $this->strict_persistence ) { throw $e; }
 			return;
 		}
 
@@ -1185,6 +1218,7 @@ class WP_Markdown_Canonical_Persistence {
 		try {
 			$rows = $this->operations->table_rows( $table_suffix, is_array( $policy ) ? $policy : null );
 		} catch ( \Throwable $e ) {
+			if ( $this->strict_persistence ) { throw $e; }
 			error_log( "Markdown DB: Failed to read {$table_suffix} for persist: " . $e->getMessage() );
 			return;
 		}
@@ -1344,7 +1378,7 @@ class WP_Markdown_Canonical_Persistence {
 	 * @param string $table    The affected table name.
 	 * @param string $ddl_type CREATE, ALTER, or DROP.
 	 */
-	public function persist_schema( string $query, string $table, string $ddl_type ): void {
+	public function persist_schema( string $query, string $table, string $ddl_type, bool $throw_on_error = false ): void {
 		if ( $this->writing ) {
 			return;
 		}
@@ -1357,34 +1391,75 @@ class WP_Markdown_Canonical_Persistence {
 			}
 			$schema_dir = $this->state_dir . '/_schema';
 
-			if ( ! is_dir( $schema_dir ) ) {
-				mkdir( $schema_dir, 0755, true );
+			if ( ! is_dir( $schema_dir ) && ! mkdir( $schema_dir, 0755, true ) && ! is_dir( $schema_dir ) ) {
+				throw new RuntimeException( 'Markdown DB: Failed to create schema directory.' );
 			}
 
 			$schema_path = $schema_dir . '/' . $table_suffix . '.sql';
 
-			if ( 'DROP' === $ddl_type ) {
-				// Remove schema and data files.
-				@unlink( $schema_path );
-				@unlink( $this->state_dir . '/_tables/' . $table_suffix . '.json' );
+			if ( in_array( $ddl_type, array( 'DROP', 'TRUNCATE' ), true ) ) {
+				// DROP removes schema and data; TRUNCATE removes data and retains schema.
+				$this->track_canonical_mutation( $schema_path );
+				if ( 'DROP' === $ddl_type && is_file( $schema_path ) && ! unlink( $schema_path ) ) { throw new RuntimeException( 'Markdown DB: Failed to remove schema file.' ); }
+				$this->remove_table_data( $table_suffix );
+				if ( 'TRUNCATE' === $ddl_type ) {
+					$create_sql = $this->operations->persist_schema( $table_suffix, $ddl_type );
+					if ( null === $create_sql && $throw_on_error ) { throw new RuntimeException( 'Markdown DB: Current table schema is unavailable.' ); }
+					if ( null !== $create_sql ) { $this->write_schema_file( $schema_path, $create_sql ); }
+				}
 			} else {
 				// CREATE or ALTER — snapshot the current table state.
 				// SHOW CREATE TABLE returns a clean MySQL CREATE TABLE
 				// with all columns, types, defaults, and indexes.
 				$create_sql = $this->operations->persist_schema( $table_suffix, $ddl_type );
-				if ( null !== $create_sql ) {
-					file_put_contents(
-						$schema_path,
-						$create_sql . ";\n",
-						LOCK_EX
-					);
+				if ( null === $create_sql && $throw_on_error ) {
+					throw new RuntimeException( 'Markdown DB: Current table schema is unavailable.' );
 				}
+				if ( null !== $create_sql ) { $this->write_schema_file( $schema_path, $create_sql ); }
 			}
 		} catch ( \Throwable $e ) {
+			if ( $throw_on_error ) { throw $e; }
 			error_log( 'Markdown DB schema persist error: ' . $e->getMessage() );
+		} finally {
+			$this->writing = false;
 		}
+	}
 
-		$this->writing = false;
+	private function write_schema_file( string $schema_path, string $create_sql ): void {
+		$contents = $create_sql . ";\n";
+		$this->track_canonical_mutation( $schema_path );
+		$tmp = $this->json_tmp_path( $schema_path );
+		$handle = $this->open_json_temp_file( $tmp, $schema_path );
+		try {
+			$this->write_json_contents( $handle, $contents, $schema_path );
+			if ( ! fflush( $handle ) || ! rename( $tmp, $schema_path ) ) { throw new RuntimeException( 'Markdown DB: Failed to publish schema file.' ); }
+		} finally {
+			fclose( $handle );
+			if ( is_file( $tmp ) ) { unlink( $tmp ); }
+		}
+		$this->track_canonical_write( $schema_path, hash( 'sha256', $contents ) );
+	}
+
+	private function remove_table_data( string $table_suffix ): void {
+		if ( 'posts' === $table_suffix ) { $this->storage->truncate_strict(); }
+		if ( 'options' === $table_suffix ) {
+			foreach ( glob( $this->state_dir . '/_options/*.json' ) ?: array() as $path ) { $this->remove_canonical_file( $path ); }
+		}
+		$this->remove_canonical_file( $this->state_dir . '/_tables/' . $table_suffix . '.json' );
+		$directory = $this->state_dir . '/_tables/' . $table_suffix;
+		if ( ! is_dir( $directory ) ) { return; }
+		foreach ( glob( $directory . '/generation-*', GLOB_ONLYDIR ) ?: array() as $generation ) {
+			foreach ( glob( $generation . '/*.json' ) ?: array() as $path ) { $this->remove_canonical_file( $path ); }
+			if ( ! rmdir( $generation ) ) { throw new RuntimeException( 'Markdown DB: Failed to remove table partition generation.' ); }
+		}
+		$this->remove_canonical_file( $directory . '/.mdi-partition.json' );
+		if ( ! rmdir( $directory ) ) { throw new RuntimeException( 'Markdown DB: Failed to remove table partition directory.' ); }
+	}
+
+	private function remove_canonical_file( string $path ): void {
+		if ( ! is_file( $path ) ) { return; }
+		$this->track_canonical_mutation( $path );
+		if ( ! unlink( $path ) ) { throw new RuntimeException( 'Markdown DB: Failed to remove canonical table data.' ); }
 	}
 
 	/**

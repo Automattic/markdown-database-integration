@@ -35,7 +35,7 @@ final class WP_Markdown_MySQL_Impact_Adapter {
 		foreach ( $tables as $table ) {
 			$table = $this->scoped_table( $table, $prefix, $base );
 			foreach ( WP_Markdown_Mutation_Impact::for_query( $mutation['sql'], $operation, $table, (int) ( $payload['result']['insert_id'] ?? 0 ), fn( int $term_id ): array => $this->term_objects( $prefix, $term_id ) ) as $intent ) {
-				if ( 'DELETE' === $intent['operation'] && ( str_ends_with( $table, 'postmeta' ) || str_ends_with( $table, 'term_relationships' ) ) ) {
+				if ( 'DELETE' === $intent['operation'] && ( str_ends_with( $table, 'postmeta' ) || str_ends_with( $table, 'term_relationships' ) || str_ends_with( $table, 'term_taxonomy' ) || str_ends_with( $table, 'terms' ) ) ) {
 					$intent['resource_ids'] = array( '*' );
 					$intent['scope'] = array( 'resource_ids_by_column' => array(), 'assigned_columns' => array(), 'conservative' => true );
 				}

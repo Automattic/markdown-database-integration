@@ -18,13 +18,15 @@ class WP_Markdown_MySQL_Outbox {
 	/** @var array<int,array<string,mixed>> */
 	private array $boundary_failures = array();
 	private int $last_affected_rows = 0;
+	private $semantic_planner;
 
-	public function __construct( object $connection, string $table ) {
+	public function __construct( object $connection, string $table, ?callable $semantic_planner = null ) {
 		if ( ! preg_match( '/^[A-Za-z0-9_]+$/', $table ) ) {
 			throw new InvalidArgumentException( 'Invalid MySQL outbox table name.' );
 		}
 		$this->connection = $connection;
 		$this->table      = $table;
+		$this->semantic_planner = $semantic_planner;
 		$this->install_schema();
 	}
 
@@ -101,14 +103,21 @@ class WP_Markdown_MySQL_Outbox {
 	/** Accept one normalized successful mutation observation. */
 	public function __invoke( array $observation ): void {
 		$record = $this->normalize_observation( $observation );
+		$planning_error = null;
+		if ( is_callable( $this->semantic_planner ) ) {
+			try { $record['semantic_envelope'] = array( 'event_id' => $record['event_id'], 'outbox_id' => 0, 'payload_sha256' => $record['sha256'], 'intents' => ( $this->semantic_planner )( $record ) ); }
+			catch ( Throwable $error ) { $planning_error = $error; }
+		}
 		if ( ! empty( $observation['transaction']['active'] ) ) {
 			$this->pending[] = $record;
+			if ( null !== $planning_error ) { throw $planning_error; }
 			return;
 		}
 		$this->persist_record( $record, 'pending' );
 		if ( ! empty( $observation['commit_outbox'] ) ) {
 			$this->execute( 'COMMIT' );
 		}
+		if ( null !== $planning_error ) { throw $planning_error; }
 	}
 
 	public function record_unsupported_boundary( string $query, array $transaction, string $reason = 'unsupported_transaction_boundary' ): void {
@@ -283,10 +292,11 @@ class WP_Markdown_MySQL_Outbox {
 	protected function persist_record( array $record, string $state ): void {
 		$scope = $record['payload']['scope'] ?? array();
 		$mutation = $record['payload']['mutation'] ?? array();
+		$semantic_envelope = isset( $record['semantic_envelope'] ) ? json_encode( $record['semantic_envelope'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR ) : null;
 		$this->execute_bound(
-			"INSERT INTO `{$this->table}` (`event_id`,`schema_version`,`state`,`database_name`,`blog_id`,`table_prefix`,`base_prefix`,`event_kind`,`operation_name`,`payload`,`payload_sha256`,`created_at`,`available_at`) VALUES (?,?,?,?,?,?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE `event_id`=VALUES(`event_id`)",
-			'sississssss',
-			array( $record['event_id'], self::SCHEMA_VERSION, $state, (string) ( $record['payload']['database'] ?? '' ), max( 0, (int) ( $scope['blog_id'] ?? 0 ) ), (string) ( $scope['table_prefix'] ?? '' ), (string) ( $scope['base_prefix'] ?? '' ), isset( $record['payload']['diagnostic'] ) ? 'diagnostic' : (string) ( $mutation['kind'] ?? 'table' ), isset( $record['payload']['diagnostic'] ) ? (string) ( $record['payload']['diagnostic']['reason'] ?? 'unsupported' ) : (string) ( $mutation['operation'] ?? '' ), $record['json'], $record['sha256'] )
+			"INSERT INTO `{$this->table}` (`event_id`,`schema_version`,`state`,`database_name`,`blog_id`,`table_prefix`,`base_prefix`,`event_kind`,`operation_name`,`payload`,`payload_sha256`,`semantic_envelope`,`created_at`,`available_at`) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW(),NOW()) ON DUPLICATE KEY UPDATE `event_id`=VALUES(`event_id`)",
+			'sississsssss',
+			array( $record['event_id'], self::SCHEMA_VERSION, $state, (string) ( $record['payload']['database'] ?? '' ), max( 0, (int) ( $scope['blog_id'] ?? 0 ) ), (string) ( $scope['table_prefix'] ?? '' ), (string) ( $scope['base_prefix'] ?? '' ), isset( $record['payload']['diagnostic'] ) ? 'diagnostic' : (string) ( $mutation['kind'] ?? 'table' ), isset( $record['payload']['diagnostic'] ) ? (string) ( $record['payload']['diagnostic']['reason'] ?? 'unsupported' ) : (string) ( $mutation['operation'] ?? '' ), $record['json'], $record['sha256'], $semantic_envelope )
 		);
 	}
 
@@ -504,6 +514,7 @@ class WP_Markdown_MySQL_Outbox {
 			$row['reclaims'] = (int) $row['reclaims'];
 			$row['payload']  = json_decode( (string) $row['payload'], true, 512, JSON_THROW_ON_ERROR );
 			$row['semantic_envelope'] = null === ( $row['semantic_envelope'] ?? null ) ? null : json_decode( (string) $row['semantic_envelope'], true, 512, JSON_THROW_ON_ERROR );
+			if ( is_array( $row['semantic_envelope'] ) ) { $row['semantic_envelope']['outbox_id'] = $row['id']; }
 		}
 		return $rows;
 	}

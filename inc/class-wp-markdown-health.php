@@ -176,7 +176,8 @@ class WP_Markdown_Health {
 			return self::repair_failure( 'A wp-content/db.php destination is required.' );
 		}
 
-		if ( file_exists( $destination ) && self::is_mdi_dropin( $destination ) ) {
+		$destination_is_mdi = file_exists( $destination ) && self::is_mdi_dropin( $destination );
+		if ( $destination_is_mdi && hash_equals( (string) hash_file( 'sha256', $source ), (string) hash_file( 'sha256', $destination ) ) ) {
 			return array(
 				'success' => true,
 				'changed' => false,
@@ -186,21 +187,27 @@ class WP_Markdown_Health {
 		}
 
 		$backup = $destination . '.markdown-db-backup';
-		if ( file_exists( $destination ) && ! $force ) {
+		if ( file_exists( $destination ) && ! $destination_is_mdi && ! $force ) {
 			return self::repair_failure( 'Refusing to overwrite an unrelated db.php. Re-run with --force to back it up to ' . $backup . ' first.' );
 		}
-		if ( file_exists( $destination ) && file_exists( $backup ) ) {
+		if ( file_exists( $destination ) && ! $destination_is_mdi && file_exists( $backup ) ) {
 			return self::repair_failure( 'Refusing to overwrite an unrelated db.php because the deterministic backup path already exists: ' . $backup );
 		}
 		if ( ! is_dir( dirname( $destination ) ) || ! is_writable( dirname( $destination ) ) ) {
 			return self::repair_failure( 'The db.php destination directory is not writable.' );
 		}
 
-		if ( file_exists( $destination ) && ! rename( $destination, $backup ) ) {
+		$created_backup = file_exists( $destination ) && ! $destination_is_mdi;
+		if ( $created_backup && ! rename( $destination, $backup ) ) {
 			return self::repair_failure( 'Could not create the backup: ' . $backup );
 		}
-		if ( ! copy( $source, $destination ) ) {
-			if ( file_exists( $backup ) ) {
+
+		$temporary = $destination . '.markdown-db-tmp-' . bin2hex( random_bytes( 8 ) );
+		if ( ! copy( $source, $temporary ) || ! rename( $temporary, $destination ) ) {
+			if ( file_exists( $temporary ) ) {
+				unlink( $temporary );
+			}
+			if ( $created_backup && file_exists( $backup ) ) {
 				rename( $backup, $destination );
 			}
 			return self::repair_failure( 'Could not install the MDI db.php drop-in.' );
@@ -209,9 +216,9 @@ class WP_Markdown_Health {
 		return array(
 			'success' => true,
 			'changed' => true,
-			'status'  => 'installed',
-			'backup'  => file_exists( $backup ) ? $backup : '',
-			'message' => 'Installed the MDI db.php drop-in. Restart PHP or WordPress before checking health because db.php loads before plugins.',
+			'status'  => $destination_is_mdi ? 'updated' : 'installed',
+			'backup'  => $created_backup && file_exists( $backup ) ? $backup : '',
+			'message' => ( $destination_is_mdi ? 'Updated' : 'Installed' ) . ' the MDI db.php drop-in. Restart PHP or WordPress before checking health because db.php loads before plugins.',
 		);
 	}
 

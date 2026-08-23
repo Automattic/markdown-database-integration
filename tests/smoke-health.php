@@ -85,6 +85,12 @@ $install = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'desti
 mdi_health_assert( $install['success'] && $install['changed'] && file_exists( $destination ), 'missing drop-in installs' );
 $repeat = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination ) );
 mdi_health_assert( $repeat['success'] && ! $repeat['changed'] && 'already_installed' === $repeat['status'], 'healthy drop-in repair is idempotent' );
+$outdated_dropin = "<?php\n// @studio-keep\ndefine( 'MARKDOWN_DB_DROPIN', true );\n// outdated\n";
+file_put_contents( $destination, $outdated_dropin );
+$updated = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination ) );
+mdi_health_assert( $updated['success'] && $updated['changed'] && 'updated' === $updated['status'], 'outdated MDI drop-in is refreshed' );
+mdi_health_assert( file_get_contents( $source ) === file_get_contents( $destination ), 'refreshed MDI drop-in matches the packaged source' );
+mdi_health_assert( empty( glob( $destination . '.markdown-db-tmp-*' ) ?: array() ), 'drop-in refresh leaves no staged files' );
 $unrelated_dropin = "<?php\n// unrelated\n";
 file_put_contents( $destination, $unrelated_dropin );
 $refusal = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination ) );

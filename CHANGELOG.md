@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.10.2] - 2026-08-23
+
+### Changed
+- Preserve exact option deletions in full flushes
+
 ## [0.10.1] - 2026-08-23
 
 ### Changed

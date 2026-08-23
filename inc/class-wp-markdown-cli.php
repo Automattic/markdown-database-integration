@@ -390,7 +390,10 @@ class WP_Markdown_CLI {
 		$update_count = 0;
 
 		foreach ( $posts as $post ) {
-			$source_path = (string) ( $post->_source_identity ?? self::relative_path( (string) ( $post->_source_file ?? '' ), $content_dir ) );
+			$source_path = (string) ( $post->_source_identity ?? '' );
+			if ( '' === $source_path ) {
+				$source_path = self::relative_path( (string) ( $post->_source_file ?? '' ), $content_dir );
+			}
 			if ( '' === $source_path ) {
 				$skipped[] = array(
 					'path'   => '',

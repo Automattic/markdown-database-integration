@@ -146,6 +146,10 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		}
 
 		$this->ready = true;
+		// The legacy adapter materializes query results before wpdb can inspect them.
+		if ( ! defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) || ! MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) {
+			$this->set_sql_mode();
+		}
 	}
 
 	/**

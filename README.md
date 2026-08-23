@@ -419,6 +419,35 @@ separate connections, server-side writers, multi-statements, stored-routine
 internal statements, and XA transactions remain outside the captured `wpdb`
 boundary and are reported by diagnostics.
 
+### Query Compatibility Corpus
+
+The `mdi-native` query-runtime program uses a versioned, backend-neutral corpus
+to preserve caller-visible `wpdb` behavior without making MySQL part of the
+future engine. `WP_Markdown_Query_Compatibility_Recorder` wraps one query at a
+time, returns the backend result unchanged, and records ordered rows, column
+metadata, errors, insert IDs, affected-row counts, and transaction transitions.
+Callers provide explicit replacements for site URLs, paths, credentials, and
+scenario-specific content; UUIDs and SQL timestamps are normalized by default.
+
+The committed standalone contract runs with:
+
+```bash
+php tests/smoke-query-compatibility-corpus.php
+```
+
+To emit reviewer-resolvable evidence from a disposable native MariaDB WordPress
+runtime, run the following command and retain its JSON output:
+
+```bash
+wp eval-file wp-content/plugins/markdown-database-integration/tests/probe-native-mariadb-query-corpus.php
+```
+
+The native probe uses a dedicated database connection, creates one uniquely
+named InnoDB table, asserts and records read, write, schema, failure, rollback,
+and transaction behavior, and removes the table in `finally`.
+Recording is tooling-only and has no effect unless a caller explicitly invokes
+the recorder.
+
 With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
 single-root layout:
 

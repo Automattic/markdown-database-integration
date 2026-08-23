@@ -632,7 +632,7 @@ class WP_Markdown_Canonical_Persistence {
 	private function persist_options(): void {
 		$ephemeral_names = $this->get_ephemeral_option_names();
 		$names = $this->dirty_options_all
-			? $this->list_all_non_ephemeral_option_names( $ephemeral_names )
+			? array_values( array_unique( array_merge( $this->list_all_non_ephemeral_option_names( $ephemeral_names ), array_keys( $this->dirty_option_names ) ) ) )
 			: array_keys( $this->dirty_option_names );
 
 		if ( empty( $names ) ) {

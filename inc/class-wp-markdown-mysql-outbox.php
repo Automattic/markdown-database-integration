@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 class WP_Markdown_MySQL_Outbox {
-	public const SCHEMA_VERSION = 1;
+	public const SCHEMA_VERSION = 2;
 	private object $connection;
 	private string $table;
 	protected bool $ready = false;
@@ -155,6 +155,15 @@ class WP_Markdown_MySQL_Outbox {
 		return 0 < $id && $this->fail_record( $id, $worker_token, $lease_token, $error, max( 0, min( 86400, $retry_delay_seconds ) ) );
 	}
 
+	/** Persist an immutable event envelope while this exact lease is current. */
+	public function cache_semantic_envelope( int $id, string $worker_token, string $lease_token, array $envelope ): bool {
+		$this->validate_token( $worker_token );
+		$this->validate_token( $lease_token );
+		$json = json_encode( $envelope, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR );
+		$this->execute_bound( "UPDATE `{$this->table}` SET `semantic_envelope`=? WHERE `id`=? AND `state`='leased' AND `worker_token`=? AND `lease_token`=? AND `leased_until` > NOW() AND (`semantic_envelope` IS NULL OR `semantic_envelope`=?)", 'sisss', array( $json, $id, $worker_token, $lease_token, $json ) );
+		return 1 === $this->affected_rows();
+	}
+
 	public function diagnostics(): array {
 		$diagnostics = $this->read_diagnostics();
 		$diagnostics['deferred_unsupported_boundaries'] = count( $this->boundary_failures );
@@ -188,6 +197,7 @@ class WP_Markdown_MySQL_Outbox {
 			`failures` INT UNSIGNED NOT NULL DEFAULT 0,
 			`last_error` TEXT NULL,
 			`last_error_at` DATETIME NULL,
+			`semantic_envelope` LONGTEXT NULL,
 			PRIMARY KEY (`id`),
 			UNIQUE KEY `mdi_event` (`event_id`),
 			KEY `mdi_claim` (`state`,`available_at`,`id`),
@@ -197,16 +207,21 @@ class WP_Markdown_MySQL_Outbox {
 		) ENGINE=InnoDB";
 		$this->execute( $sql );
 		$columns = $this->rows( "SHOW COLUMNS FROM `{$this->table}`" );
-		$indexes = $this->rows( "SHOW INDEX FROM `{$this->table}`" );
 		$column_names = array_column( $columns, 'Field' );
+		if ( ! in_array( 'semantic_envelope', $column_names, true ) ) {
+			$this->execute( "ALTER TABLE `{$this->table}` ADD COLUMN `semantic_envelope` LONGTEXT NULL" );
+			$columns = $this->rows( "SHOW COLUMNS FROM `{$this->table}`" );
+			$column_names = array_column( $columns, 'Field' );
+		}
+		$indexes = $this->rows( "SHOW INDEX FROM `{$this->table}`" );
 		$index_names  = array_values( array_unique( array_column( $indexes, 'Key_name' ) ) );
-		foreach ( array( 'id', 'event_id', 'schema_version', 'state', 'database_name', 'blog_id', 'table_prefix', 'base_prefix', 'event_kind', 'operation_name', 'payload', 'payload_sha256', 'created_at', 'available_at', 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'attempts', 'reclaims', 'failures', 'last_error', 'last_error_at' ) as $column ) {
+		foreach ( array( 'id', 'event_id', 'schema_version', 'state', 'database_name', 'blog_id', 'table_prefix', 'base_prefix', 'event_kind', 'operation_name', 'payload', 'payload_sha256', 'created_at', 'available_at', 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'attempts', 'reclaims', 'failures', 'last_error', 'last_error_at', 'semantic_envelope' ) as $column ) {
 			if ( ! in_array( $column, $column_names, true ) ) {
 				throw new RuntimeException( 'MySQL outbox schema is missing column ' . $column . '.' );
 			}
 		}
 		$column_types = array_column( $columns, 'Type', 'Field' );
-		foreach ( array( 'id' => '/^bigint.*unsigned$/', 'event_id' => '/^char\(36\)$/', 'schema_version' => '/^smallint.*unsigned$/', 'state' => '/^varchar\(16\)$/', 'database_name' => '/^varchar\(191\)$/', 'blog_id' => '/^bigint.*unsigned$/', 'table_prefix' => '/^varchar\(191\)$/', 'base_prefix' => '/^varchar\(191\)$/', 'event_kind' => '/^varchar\(16\)$/', 'operation_name' => '/^varchar\(32\)$/', 'payload' => '/^longtext$/', 'payload_sha256' => '/^char\(64\)$/', 'created_at' => '/^datetime$/', 'available_at' => '/^datetime$/', 'leased_until' => '/^datetime$/', 'lease_token' => '/^varchar\(64\)$/', 'worker_token' => '/^varchar\(64\)$/', 'acknowledged_at' => '/^datetime$/', 'acknowledgement_token' => '/^varchar\(64\)$/', 'attempts' => '/^int.*unsigned$/', 'reclaims' => '/^int.*unsigned$/', 'failures' => '/^int.*unsigned$/', 'last_error' => '/^text$/', 'last_error_at' => '/^datetime$/' ) as $column => $pattern ) {
+		foreach ( array( 'id' => '/^bigint.*unsigned$/', 'event_id' => '/^char\(36\)$/', 'schema_version' => '/^smallint.*unsigned$/', 'state' => '/^varchar\(16\)$/', 'database_name' => '/^varchar\(191\)$/', 'blog_id' => '/^bigint.*unsigned$/', 'table_prefix' => '/^varchar\(191\)$/', 'base_prefix' => '/^varchar\(191\)$/', 'event_kind' => '/^varchar\(16\)$/', 'operation_name' => '/^varchar\(32\)$/', 'payload' => '/^longtext$/', 'payload_sha256' => '/^char\(64\)$/', 'created_at' => '/^datetime$/', 'available_at' => '/^datetime$/', 'leased_until' => '/^datetime$/', 'lease_token' => '/^varchar\(64\)$/', 'worker_token' => '/^varchar\(64\)$/', 'acknowledged_at' => '/^datetime$/', 'acknowledgement_token' => '/^varchar\(64\)$/', 'attempts' => '/^int.*unsigned$/', 'reclaims' => '/^int.*unsigned$/', 'failures' => '/^int.*unsigned$/', 'last_error' => '/^text$/', 'last_error_at' => '/^datetime$/', 'semantic_envelope' => '/^longtext$/' ) as $column => $pattern ) {
 			if ( ! preg_match( $pattern, strtolower( (string) ( $column_types[ $column ] ?? '' ) ) ) ) {
 				throw new RuntimeException( 'MySQL outbox schema has an incompatible type for column ' . $column . '.' );
 			}
@@ -218,7 +233,7 @@ class WP_Markdown_MySQL_Outbox {
 				throw new RuntimeException( 'MySQL outbox schema has incompatible nullability for column ' . $column . '.' );
 			}
 		}
-		foreach ( array( 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'last_error', 'last_error_at' ) as $column ) {
+		foreach ( array( 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'last_error', 'last_error_at', 'semantic_envelope' ) as $column ) {
 			if ( 'YES' !== ( $column_definitions[ $column ]['Null'] ?? null ) ) {
 				throw new RuntimeException( 'MySQL outbox schema has incompatible nullability for column ' . $column . '.' );
 			}
@@ -276,18 +291,20 @@ class WP_Markdown_MySQL_Outbox {
 	}
 
 	protected function claim_records( string $worker_token, int $limit, int $lease_seconds ): array {
-		$claim_lock = 'mdi:' . substr( hash( 'sha256', $this->table . "\0" . $worker_token ), 0, 60 );
+		$claim_lock = 'mdi:' . substr( hash( 'sha256', $this->table ), 0, 60 );
 		if ( 1 !== (int) $this->scalar_prepared( 'SELECT GET_LOCK(?, 5)', 's', array( $claim_lock ) ) ) {
 			throw new RuntimeException( 'Could not acquire the MySQL outbox worker claim lock.' );
 		}
 		try {
-			$existing = $this->rows_prepared( "SELECT * FROM `{$this->table}` WHERE `state`='leased' AND `worker_token`=? AND `leased_until` > NOW() ORDER BY `id` LIMIT {$limit}", 's', array( $worker_token ) );
+			$existing = $this->rows_prepared( "SELECT * FROM `{$this->table}` WHERE `state`='leased' AND `worker_token`=? AND `leased_until` > NOW() ORDER BY `id` LIMIT 1", 's', array( $worker_token ) );
 			if ( $existing ) {
 				return $this->decode_rows( $existing );
 			}
+			$head = $this->rows( "SELECT `id` FROM `{$this->table}` WHERE `state` <> 'acked' AND `state` <> 'diagnostic' ORDER BY `id` LIMIT 1" )[0] ?? null;
+			if ( ! is_array( $head ) ) { return array(); }
 			$lease_token = $this->uuid();
-			$this->execute_bound( "UPDATE `{$this->table}` SET `reclaims`=`reclaims`+IF(`state`='leased',1,0),`state`='leased',`lease_token`=?,`worker_token`=?,`leased_until`=DATE_ADD(NOW(), INTERVAL {$lease_seconds} SECOND),`attempts`=`attempts`+1 WHERE `id` IN (SELECT `id` FROM (SELECT `id` FROM `{$this->table}` WHERE ((`state` IN ('pending','failed') AND `available_at` <= NOW()) OR (`state`='leased' AND `leased_until` <= NOW())) ORDER BY `id` LIMIT {$limit}) AS `mdi_eligible`) AND ((`state` IN ('pending','failed') AND `available_at` <= NOW()) OR (`state`='leased' AND `leased_until` <= NOW()))", 'ss', array( $lease_token, $worker_token ) );
-			return $this->decode_rows( $this->rows_prepared( "SELECT * FROM `{$this->table}` WHERE `state`='leased' AND `lease_token`=? ORDER BY `id` LIMIT {$limit}", 's', array( $lease_token ) ) );
+			$this->execute_bound( "UPDATE `{$this->table}` SET `reclaims`=`reclaims`+IF(`state`='leased',1,0),`state`='leased',`lease_token`=?,`worker_token`=?,`leased_until`=DATE_ADD(NOW(), INTERVAL {$lease_seconds} SECOND),`attempts`=`attempts`+1 WHERE `id`=? AND ((`state` IN ('pending','failed') AND `available_at` <= NOW()) OR (`state`='leased' AND `leased_until` <= NOW()))", 'ssi', array( $lease_token, $worker_token, (int) $head['id'] ) );
+			return $this->decode_rows( $this->rows_prepared( "SELECT * FROM `{$this->table}` WHERE `state`='leased' AND `lease_token`=? ORDER BY `id` LIMIT 1", 's', array( $lease_token ) ) );
 		} finally {
 			$this->scalar_prepared( 'SELECT RELEASE_LOCK(?)', 's', array( $claim_lock ) );
 		}
@@ -310,7 +327,13 @@ class WP_Markdown_MySQL_Outbox {
 		$aggregate = $this->rows( "SELECT SUM(`state`='pending') AS `pending`,SUM(`state`='leased') AS `leased`,SUM(`state`='failed') AS `failed`,SUM(`state`='diagnostic') AS `unsupported_boundaries`,COALESCE(SUM(`attempts`),0) AS `attempts`,COALESCE(SUM(`reclaims`),0) AS `reclaims`,COALESCE(SUM(`failures`),0) AS `failures`,COALESCE(MAX(TIMESTAMPDIFF(SECOND,`created_at`,NOW())),0) AS `oldest_record_age_seconds` FROM `{$this->table}` WHERE `state` <> 'acked'" )[0] ?? array();
 		$last_failure = $this->rows( "SELECT `id`,`last_error`,`last_error_at` FROM `{$this->table}` WHERE `last_error` IS NOT NULL ORDER BY `last_error_at` DESC,`id` DESC LIMIT 1" )[0] ?? null;
 		$unsupported  = $this->rows( "SELECT `id`,`payload`,`created_at` FROM `{$this->table}` WHERE `state`='diagnostic' ORDER BY `id` DESC LIMIT 1" )[0] ?? null;
-		return array( 'backlog' => array_map( 'intval', $aggregate ), 'last_failure' => $last_failure, 'unsupported_boundary_sample' => $unsupported ? json_decode( (string) $unsupported['payload'], true ) : null );
+		if ( is_array( $last_failure ) && is_string( $last_failure['last_error'] ?? null ) ) {
+			$structured = json_decode( $last_failure['last_error'], true );
+			if ( is_array( $structured ) && isset( $structured['stage'], $structured['message'] ) ) {
+				$last_failure['diagnostic'] = $structured;
+			}
+		}
+		return array( 'backlog' => array_map( 'intval', $aggregate ), 'last_failure' => $last_failure, 'planning_failure_sample' => ( $last_failure['diagnostic']['stage'] ?? null ) === 'planning' ? $last_failure['diagnostic'] : null, 'unsupported_boundary_sample' => $unsupported ? json_decode( (string) $unsupported['payload'], true ) : null );
 	}
 
 	private function flush_pending(): void {
@@ -480,6 +503,7 @@ class WP_Markdown_MySQL_Outbox {
 			$row['failures'] = (int) $row['failures'];
 			$row['reclaims'] = (int) $row['reclaims'];
 			$row['payload']  = json_decode( (string) $row['payload'], true, 512, JSON_THROW_ON_ERROR );
+			$row['semantic_envelope'] = null === ( $row['semantic_envelope'] ?? null ) ? null : json_decode( (string) $row['semantic_envelope'], true, 512, JSON_THROW_ON_ERROR );
 		}
 		return $rows;
 	}

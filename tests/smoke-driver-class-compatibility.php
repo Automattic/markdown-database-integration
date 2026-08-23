@@ -58,6 +58,7 @@ if ( 2 === $argc ) {
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
 	copy( dirname( __DIR__ ) . '/inc/interface-wp-markdown-backend-operations.php', $mdi . '/inc/interface-wp-markdown-backend-operations.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mutation-impact.php', $mdi . '/inc/class-wp-markdown-mutation-impact.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sqlite-operations.php', $mdi . '/inc/class-wp-markdown-sqlite-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sqlite-runtime-adapter.php', $mdi . '/inc/class-wp-markdown-sqlite-runtime-adapter.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-driver.php', $mdi . '/inc/class-wp-markdown-driver.php' );

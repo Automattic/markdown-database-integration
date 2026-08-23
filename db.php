@@ -39,6 +39,8 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 		$markdown_db_mysql_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
 		$markdown_db_mysql_backend->require( 'table_mutation_capture' );
 		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-outbox.php';
+		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-impact-adapter.php';
+		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-semantic-drain.php';
 		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-wpdb.php';
 		if ( 2 !== WP_Markdown_MySQL_WPDB::BOOTSTRAP_ABI ) {
 			throw new RuntimeException( 'Incompatible mysql-full bootstrap ABI.' );
@@ -48,6 +50,7 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 		$markdown_db_mysql_outbox = new WP_Markdown_MySQL_Outbox( $markdown_db_mysql_wpdb->markdown_db_mysql_connection(), $markdown_db_base_prefix . 'mdi_mysql_outbox' );
 		$markdown_db_mysql_wpdb->set_mutation_sink( $markdown_db_mysql_outbox );
 		$GLOBALS['markdown_db_mysql_outbox'] = $markdown_db_mysql_outbox;
+		$GLOBALS['markdown_db_mysql_semantic_drain'] = new WP_Markdown_MySQL_Semantic_Drain( $markdown_db_mysql_outbox, new WP_Markdown_MySQL_Impact_Adapter( $markdown_db_mysql_wpdb->markdown_db_mysql_connection() ) );
 		$GLOBALS['wpdb'] = $markdown_db_mysql_wpdb;
 		define( 'MARKDOWN_DB_DROPIN', true );
 	} catch ( Throwable $error ) {

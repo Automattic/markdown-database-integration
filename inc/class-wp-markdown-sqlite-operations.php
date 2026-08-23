@@ -301,46 +301,10 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	}
 	private function file_receipt( string $path ): ?array { return is_file( $path ) ? array( 'path' => $path, 'hash' => hash_file( 'sha256', $path ) ) : null; }
 	public function mutations_for_query( string $query, array $operation ): array {
-		$table = $operation['table']; $ids = array(); $ids_by_column = array();
-		$predicate = preg_match( '/\bWHERE\b(.*?)(?:\bORDER\s+BY\b|\bLIMIT\b|$)/is', $query, $where_match ) ? $where_match[1] : '';
-		$ambiguous_scope = 'REPLACE' === $operation['op'] || preg_match( '/\bOR\b/i', $predicate ) || preg_match( '/\bON\s+DUPLICATE\s+KEY\s+UPDATE\b|\bON\s+CONFLICT\b.*\bDO\s+UPDATE\b/is', $query );
-		if ( ! $ambiguous_scope && '' !== $predicate && preg_match_all( '/(?:^|\bAND\b)\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*(?:=\s*(?:\'([^\']*)\'|"([^"]*)"|(-?\d+(?:\.\d+)?))|IN\s*\(([^\)]*)\))/i', $predicate, $identity_matches, PREG_SET_ORDER ) ) {
-			foreach ( $identity_matches as $match ) {
-				$column = strtolower( (string) $match[1] );
-				$values = isset( $match[5] ) && '' !== $match[5] ? str_getcsv( $match[5], ',', "'", '\\' ) : array( $match[2] ?: ( $match[3] ?: $match[4] ) );
-				foreach ( $values as $value ) {
-					$value = trim( (string) $value, " \t\n\r\0\x0B'\"`" );
-					if ( preg_match( '/^(?:-?\d+(?:\.\d+)?|[^\s(),]+)$/', $value ) ) { $ids_by_column[ $column ][ $value ] = true; }
-				}
-			}
-		}
-		$multi_row_insert = in_array( $operation['op'], array( 'INSERT', 'REPLACE' ), true ) && preg_match( '/\)\s*,\s*\(/', $query );
-		if ( ! $multi_row_insert && in_array( $operation['op'], array( 'INSERT', 'REPLACE' ), true ) && preg_match( '/\(([^)]*)\)\s*VALUES\s*\((.*)\)/is', $query, $insert_match ) ) {
-			$columns = str_getcsv( $insert_match[1], ',', '`', '\\' ); $values = str_getcsv( $insert_match[2], ',', "'", '\\' );
-			foreach ( $columns as $index => $column ) { if ( isset( $values[ $index ] ) ) { $column = strtolower( trim( $column, " \t\n\r\0\x0B`\"'" ) ); $value = stripslashes( trim( $values[ $index ], " \t\n\r\0\x0B'\"" ) ); if ( '' !== $column && '' !== $value && ! in_array( strtoupper( $value ), array( 'NULL', 'DEFAULT' ), true ) ) { $ids_by_column[ $column ][ $value ] = true; } } }
-		}
-		if ( preg_match_all( '/\b(?:ID|post_id|object_id|option_name)\b\s*(?:=|IN\s*\()\s*(?:[\'\"]?([^\s,\)\'\"]+)|([^\)]*))/i', $query, $matches, PREG_SET_ORDER ) ) { foreach ( $matches as $match ) { foreach ( explode( ',', $match[1] ?: $match[2] ) as $id ) { $id = trim( $id, " \t\n\r\0\x0B'\""); if ( '' !== $id ) { $ids[ $id ] = true; } } } }
-		if ( empty( $ids ) && 'term_relationships' === $this->strip_prefix( $table ) ) {
-			$object_id = $this->inserted_column_value( $query, 'object_id' );
-			if ( null !== $object_id ) { $ids[ $object_id ] = true; }
-			if ( empty( $ids ) && preg_match( '/\bterm_taxonomy_id\b\s*=\s*(\d+)/i', $query, $match ) ) {
-				foreach ( $this->rows( 'SELECT object_id FROM `' . $this->table( 'term_relationships' ) . '` WHERE term_taxonomy_id = ' . (int) $match[1] ) as $row ) { $ids[ (string) $row->object_id ] = true; }
-			}
-		}
-		if ( empty( $ids ) && 'options' === $this->strip_prefix( $table ) && in_array( $operation['op'], array( 'INSERT', 'REPLACE' ), true ) ) {
-			$name = $this->inserted_column_value( $query, 'option_name' );
-			if ( null !== $name ) { $ids[ $name ] = true; }
-		}
-		if ( empty( $ids ) && in_array( $operation['op'], array( 'INSERT', 'REPLACE' ), true ) ) { $ids[ (string) $this->driver->get_insert_id() ] = true; }
-		if ( empty( $ids ) ) { $ids['*'] = true; }
-		$assigned_columns = array();
-		if ( 'UPDATE' === $operation['op'] && preg_match( '/\bSET\b(.*?)(?:\bWHERE\b|\bORDER\s+BY\b|\bLIMIT\b|$)/is', $query, $set_match ) && preg_match_all( '/(?:^|,)\s*`?([A-Za-z_][A-Za-z0-9_]*)`?\s*=/', $set_match[1], $assignment_matches ) ) {
-			$assigned_columns = array_values( array_unique( array_map( 'strtolower', $assignment_matches[1] ) ) );
-		}
-		$scope_ids = array();
-		foreach ( $ids_by_column as $column => $column_ids ) { $scope_ids[ $column ] = array_map( 'strval', array_keys( $column_ids ) ); }
-		$scope = array( 'resource_ids_by_column' => $multi_row_insert || $ambiguous_scope ? array() : $scope_ids, 'assigned_columns' => $assigned_columns );
-		return array_map( static fn( string $id ): array => array( 'stable_id' => $table . ':' . $id, 'kind' => 'DDL' === $operation['type'] ? 'schema' : 'table', 'operation' => $operation['op'], 'table' => $table, 'resource_ids' => array( $id ), 'scope' => $scope ), array_keys( $ids ) );
+		require_once __DIR__ . '/class-wp-markdown-mutation-impact.php';
+		$table = $operation['table'];
+		$insert_id = method_exists( $this->driver, 'get_insert_id' ) ? (int) $this->driver->get_insert_id() : 0;
+		return WP_Markdown_Mutation_Impact::for_query( $query, $operation, $table, $insert_id, function ( int $term_id ): array { return array_map( static fn( $row ): int => (int) $row->object_id, $this->rows( 'SELECT object_id FROM `' . $this->table( 'term_relationships' ) . '` WHERE term_taxonomy_id = ' . $term_id ) ); }, false );
 	}
 	private function strip_prefix( string $table ): string { $prefix = ( $this->prefix )(); return str_starts_with( $table, $prefix ) ? substr( $table, strlen( $prefix ) ) : $table; }
 	private function inserted_column_value( string $query, string $column ): ?string {

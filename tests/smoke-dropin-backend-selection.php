@@ -36,6 +36,9 @@ if ( 2 === $argc ) {
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-outbox.php', $mdi . '/inc/class-wp-markdown-mysql-outbox.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mutation-impact.php', $mdi . '/inc/class-wp-markdown-mutation-impact.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-impact-adapter.php', $mdi . '/inc/class-wp-markdown-mysql-impact-adapter.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-semantic-drain.php', $mdi . '/inc/class-wp-markdown-mysql-semantic-drain.php' );
 	$mysql_wpdb = $mdi . '/inc/class-wp-markdown-mysql-wpdb.php';
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-wpdb.php', $mysql_wpdb );
 	if ( 'mysql-full-incompatible' === $scenario ) {
@@ -61,7 +64,7 @@ if ( 2 === $argc ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
 	}
-	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ), true ) ) {
+	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'mysql-full-prior-outbox' ), true ) ) {
 		define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
 		$GLOBALS['mdi_dropin_scenario'] = $scenario;
 		class MDI_Dropin_Result { private array $rows; public function __construct( array $rows ) { $this->rows = $rows; } public function fetch_assoc(): ?array { return array_shift( $this->rows ); } public function free(): void {} }
@@ -75,11 +78,13 @@ if ( 2 === $argc ) {
 			public function get_result(): mixed { return $this->result; }
 			public function close(): void {}
 		}
-		class MDI_Dropin_Connection { public int $affected_rows = 0; public string $error = ''; public function prepare( string $query ): MDI_Dropin_Statement { return new MDI_Dropin_Statement( $this, $query ); } public function query( string $query ): mixed {
+		class MDI_Dropin_Connection { public int $affected_rows = 0; public string $error = ''; public bool $upgraded = false; public function prepare( string $query ): MDI_Dropin_Statement { return new MDI_Dropin_Statement( $this, $query ); } public function query( string $query ): mixed {
+			if ( str_starts_with( $query, 'ALTER TABLE' ) && str_contains( $query, 'ADD COLUMN `semantic_envelope`' ) ) { $this->upgraded = true; return true; }
 			if ( str_starts_with( $query, 'SHOW COLUMNS' ) ) {
-				$types = array( 'id' => 'bigint unsigned', 'event_id' => 'char(36)', 'schema_version' => 'smallint unsigned', 'state' => 'varchar(16)', 'database_name' => 'varchar(191)', 'blog_id' => 'bigint unsigned', 'table_prefix' => 'varchar(191)', 'base_prefix' => 'varchar(191)', 'event_kind' => 'varchar(16)', 'operation_name' => 'varchar(32)', 'payload' => 'longtext', 'payload_sha256' => 'char(64)', 'created_at' => 'datetime', 'available_at' => 'datetime', 'leased_until' => 'datetime', 'lease_token' => 'varchar(64)', 'worker_token' => 'varchar(64)', 'acknowledged_at' => 'datetime', 'acknowledgement_token' => 'varchar(64)', 'attempts' => 'int unsigned', 'reclaims' => 'int unsigned', 'failures' => 'int unsigned', 'last_error' => 'text', 'last_error_at' => 'datetime' );
+				$types = array( 'id' => 'bigint unsigned', 'event_id' => 'char(36)', 'schema_version' => 'smallint unsigned', 'state' => 'varchar(16)', 'database_name' => 'varchar(191)', 'blog_id' => 'bigint unsigned', 'table_prefix' => 'varchar(191)', 'base_prefix' => 'varchar(191)', 'event_kind' => 'varchar(16)', 'operation_name' => 'varchar(32)', 'payload' => 'longtext', 'payload_sha256' => 'char(64)', 'created_at' => 'datetime', 'available_at' => 'datetime', 'leased_until' => 'datetime', 'lease_token' => 'varchar(64)', 'worker_token' => 'varchar(64)', 'acknowledged_at' => 'datetime', 'acknowledgement_token' => 'varchar(64)', 'attempts' => 'int unsigned', 'reclaims' => 'int unsigned', 'failures' => 'int unsigned', 'last_error' => 'text', 'last_error_at' => 'datetime', 'semantic_envelope' => 'longtext' );
 				if ( 'mysql-full-outbox-incompatible' === ( $GLOBALS['mdi_dropin_scenario'] ?? '' ) ) { unset( $types['last_error_at'] ); }
-				$nullable = array( 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'last_error', 'last_error_at' );
+				if ( 'mysql-full-prior-outbox' === ( $GLOBALS['mdi_dropin_scenario'] ?? '' ) && ! $this->upgraded ) { unset( $types['semantic_envelope'] ); }
+				$nullable = array( 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'last_error', 'last_error_at', 'semantic_envelope' );
 				$defaults = array( 'state' => 'pending', 'attempts' => '0', 'reclaims' => '0', 'failures' => '0' );
 				$rows = array();
 				foreach ( $types as $field => $type ) { $rows[] = array( 'Field' => $field, 'Type' => $type, 'Null' => in_array( $field, $nullable, true ) ? 'YES' : 'NO', 'Default' => $defaults[ $field ] ?? null, 'Extra' => 'id' === $field ? 'auto_increment' : '' ); }
@@ -102,7 +107,8 @@ if ( 2 === $argc ) {
 			}
 		};
 		$bootstrap();
-		if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink' ), true ) && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB && ( $GLOBALS['markdown_db_mysql_outbox'] ?? null ) instanceof WP_Markdown_MySQL_Outbox ) {
+		if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-no-sink', 'mysql-full-prior-outbox' ), true ) && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB && ( $GLOBALS['markdown_db_mysql_outbox'] ?? null ) instanceof WP_Markdown_MySQL_Outbox ) {
+			if ( 'mysql-full-prior-outbox' === $scenario && ! $GLOBALS['wpdb']->markdown_db_mysql_connection()->upgraded ) { throw new RuntimeException( 'Prior outbox schema was not upgraded.' ); }
 			echo "PASS: mysql-full installs the MDI-owned wpdb boundary.\n";
 			exit( 0 );
 		}
@@ -130,7 +136,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'mysql-full', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'mysql-full', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

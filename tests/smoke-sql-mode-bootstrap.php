@@ -1,11 +1,16 @@
 <?php
 /**
- * Regression coverage for canonical SQLite bootstrap avoiding MySQL SQL modes.
+ * Regression coverage for SQLite SQL mode bootstrap compatibility.
  *
  * Usage: php tests/smoke-sql-mode-bootstrap.php
  */
 
 declare( strict_types=1 );
+
+$legacy = in_array( '--legacy', $argv, true );
+if ( $legacy ) {
+	define( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API', true );
+}
 
 $root = sys_get_temp_dir() . '/mdi-sql-mode-bootstrap-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
@@ -22,6 +27,7 @@ class WP_SQLite_DB {
 	public string $dbname;
 	public string $last_error = '';
 	public bool $ready = false;
+	public bool $zero_dates_allowed = false;
 	public string $prefix = 'wp_';
 	public int $sql_mode_calls = 0;
 
@@ -44,9 +50,7 @@ class WP_SQLite_DB {
 	public function set_sql_mode( array $modes = array() ): void {
 		unset( $modes );
 		++$this->sql_mode_calls;
-		// Canonical SQLite query results are arrays here, so the inherited
-		// PDO-statement assumption reproduces the production fatal.
-		$this->dbh->query( 'SELECT @@SESSION.sql_mode' )->fetchAll( PDO::FETCH_OBJ );
+		$this->zero_dates_allowed = true;
 	}
 }
 
@@ -117,8 +121,16 @@ function mdi_sql_mode_assert( bool $condition, string $label ): void {
 	}
 }
 
-mdi_sql_mode_assert( true === $database->ready, 'canonical SQLite database boot completes' );
-mdi_sql_mode_assert( 0 === $database->sql_mode_calls, 'canonical SQLite boot does not invoke MySQL SQL mode discovery' );
+mdi_sql_mode_assert( true === $database->ready, 'SQLite database boot completes' );
+if ( $legacy ) {
+	mdi_sql_mode_assert( 0 === $database->sql_mode_calls, 'legacy result API skips incompatible SQL mode discovery' );
+} else {
+	mdi_sql_mode_assert( 1 === $database->sql_mode_calls, 'canonical result API normalizes WordPress SQL modes' );
+	mdi_sql_mode_assert( $database->zero_dates_allowed, 'canonical bootstrap allows WordPress zero-date sentinels' );
+	$command = escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' --legacy';
+	passthru( $command, $legacy_status );
+	mdi_sql_mode_assert( 0 === $legacy_status, 'legacy result API remains bootable' );
+}
 
 unset( $database );
 @unlink( FQDB );

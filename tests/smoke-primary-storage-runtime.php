@@ -175,9 +175,10 @@ mdi_runtime_assert( array( '_options/blogname.json' ) === $same_size_changed['ch
 $driver->query( "UPDATE wp_posts SET post_name = 'moved-post' WHERE ID = 12" );
 $moved = $runtime->flush();
 mdi_runtime_assert( array( 'post/moved-post.md' ) === $moved['created'] && array( 'post/cold-post.md' ) === $moved['deleted'], 'slug movement reports canonical paths without a stale file' );
+$driver->query( 'UPDATE wp_options SET option_value = option_value' );
 $driver->query( 'DELETE FROM wp_options WHERE option_name = \'siteurl\'' );
 $deleted = $runtime->flush();
-mdi_runtime_assert( array( '_options/siteurl.json' ) === $deleted['deleted'], 'deleted canonical option path is reported' );
+mdi_runtime_assert( array( '_options/siteurl.json' ) === $deleted['deleted'], 'exact option deletion survives a mixed all-options flush' );
 
 $missing_identity_rejected = false;
 try {

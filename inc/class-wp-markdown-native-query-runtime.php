@@ -113,10 +113,60 @@ final class WP_Markdown_Native_Runtime_Factory {
 		);
 	}
 
+	public static function usermeta_schema(): WP_Markdown_Native_Table_Schema {
+		$unsigned = static fn( mixed $value ): bool => is_string( $value )
+			&& 1 === preg_match( '/^[1-9][0-9]*$/D', $value );
+		$nonnegative = static fn( mixed $value ): bool => is_string( $value )
+			&& 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value );
+		$lookup = array(
+			'normalize'       => array( self::class, 'normalize_unsigned' ),
+			'lookup_validate' => static fn( array $values ): bool => ! in_array(
+				null,
+				array_map( array( self::class, 'normalize_unsigned' ), $values ),
+				true
+			),
+		);
+
+		return new WP_Markdown_Native_Table_Schema(
+			array(
+				'umeta_id'  => array(
+					'type'      => 8,
+					'nullable'  => false,
+					'validate'  => $unsigned,
+					'normalize' => array( self::class, 'normalize_unsigned' ),
+				),
+				'user_id'    => array_merge(
+					array(
+						'type'             => 8,
+						'nullable'         => false,
+						'validate'         => $nonnegative,
+						'lookup_operators' => array( 'IN' ),
+					),
+					$lookup
+				),
+				'meta_key'   => array(
+					'type'     => 253,
+					'nullable' => true,
+					'validate' => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 255,
+				),
+				'meta_value' => array(
+					'type'     => 252,
+					'nullable' => true,
+					'validate' => 'is_string',
+				),
+			),
+			'umeta_id',
+			array( 'user_id' )
+		);
+	}
+
 	public static function registry(
 		string $state_root,
-		string $prefix = 'wp_'
+		string $prefix = 'wp_',
+		?string $base_prefix = null,
+		bool $multisite = false
 	): WP_Markdown_Native_Table_Registry {
+		$base_prefix = $base_prefix ?? $prefix;
 		$registry = new WP_Markdown_Native_Table_Registry();
 		$options  = self::options_schema();
 		$registry->register(
@@ -124,14 +174,30 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$options,
 			new WP_Markdown_Native_Option_Provider( $state_root, $options )
 		);
+		self::register_json_snapshot(
+			$registry,
+			$state_root,
+			$base_prefix . 'users',
+			self::users_schema( $multisite ),
+			'users.json'
+		);
+		self::register_json_snapshot(
+			$registry,
+			$state_root,
+			$base_prefix . 'usermeta',
+			self::usermeta_schema(),
+			'usermeta.json'
+		);
 		return $registry;
 	}
 
 	public static function runtime(
 		string $state_root,
-		string $prefix = 'wp_'
+		string $prefix = 'wp_',
+		?string $base_prefix = null,
+		bool $multisite = false
 	): WP_Markdown_Native_Query_Runtime {
-		return new WP_Markdown_Native_Query_Runtime( self::registry( $state_root, $prefix ) );
+		return new WP_Markdown_Native_Query_Runtime( self::registry( $state_root, $prefix, $base_prefix, $multisite ) );
 	}
 
 	public static function register_json_snapshot(

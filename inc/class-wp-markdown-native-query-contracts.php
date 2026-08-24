@@ -26,7 +26,7 @@ final class WP_Markdown_Query_Request {
 }
 
 final class WP_Markdown_Query_Result {
-	/** @param array<int,array<string,string>> $rows @param array<int,array{name:string,type:int,table?:string}> $columns */
+	/** @param array<int,array<string,string|null>> $rows @param array<int,array{name:string,type:int,table?:string}> $columns */
 	private function __construct(
 		private int|bool $return_value,
 		private array $rows,

@@ -89,7 +89,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			static function ( array $source ) use ( $projection ): array {
 				$row = array();
 				foreach ( $projection as $column ) {
-					$row[ $column ] = (string) $source[ $column ];
+					$row[ $column ] = null === $source[ $column ] ? null : (string) $source[ $column ];
 				}
 				return $row;
 			},

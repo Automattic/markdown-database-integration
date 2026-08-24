@@ -334,6 +334,15 @@ Restart PHP or WordPress after an install or repair because WordPress loads
 primary install can report `install_fallback` while WordPress completes its
 first installation.
 
+This order also applies to WP-CLI: an installed MDI `db.php` runtime is active
+before normal plugin activation and is not removed by
+`--skip-plugins=markdown-database-integration`. Canonical persistence registers
+its own native PHP shutdown callback only after a tracked mutation. Read-only
+commands therefore have a clean, zero-work flush; dirty requests publish their
+bounded dirty subset atomically before exit. Subscribe to
+`markdown_database_integration_persistence_diagnostics` to attribute a flush
+to its tables, post IDs, partition resources, and canonical paths.
+
 On a normal MySQL/MariaDB WordPress site, activate the plugin without copying
 the `db.php` drop-in. Use the import/export commands or abilities to move
 content between the active database and `MARKDOWN_DB_CONTENT_DIR`.

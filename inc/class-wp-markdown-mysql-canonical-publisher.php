@@ -7,6 +7,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class WP_Markdown_MySQL_Canonical_Publisher {
 	private array $last_changes = array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
+	/** @var array<string,bool> Successfully published durable envelope IDs in this process. */
+	private array $published_events = array();
 
 	public function __construct( private object $connection ) {}
 
@@ -14,6 +16,10 @@ final class WP_Markdown_MySQL_Canonical_Publisher {
 		$intents = $envelope['intents'] ?? null;
 		if ( ! is_array( $intents ) || ! is_string( $envelope['event_id'] ?? null ) || '' === $envelope['event_id'] ) {
 			throw new RuntimeException( 'MySQL canonical publication envelope is invalid.' );
+		}
+		if ( isset( $this->published_events[ $envelope['event_id'] ] ) ) {
+			$this->last_changes = array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
+			return true;
 		}
 		if ( ! $intents ) { $this->last_changes = array( 'created' => array(), 'changed' => array(), 'deleted' => array() ); return true; }
 		$first = $intents[0];
@@ -62,6 +68,7 @@ final class WP_Markdown_MySQL_Canonical_Publisher {
 		}
 		foreach ( $changes as &$paths ) { $paths = array_values( array_unique( $paths ) ); sort( $paths, SORT_STRING ); } unset( $paths );
 		$this->last_changes = $changes;
+		$this->published_events[ $envelope['event_id'] ] = true;
 		return true;
 	}
 

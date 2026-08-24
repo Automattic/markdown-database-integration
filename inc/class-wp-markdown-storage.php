@@ -378,13 +378,25 @@ class WP_Markdown_Storage {
 	 * directory becomes empty, it's cleaned up.
 	 *
 	 * @param int $post_id The post ID.
-	 * @return bool True if deleted, false if not found.
+	 * @return bool True when deleted, false when absent or failed.
 	 */
 	public function delete_post( int $post_id ): bool {
+		return 'deleted' === $this->delete_post_result( $post_id );
+	}
+
+	/**
+	 * Delete a post's markdown file with an explicit absence/failure outcome.
+	 *
+	 * @return 'deleted'|'absent'|'failed'
+	 */
+	public function delete_post_result( int $post_id ): string {
 		$file_path = $this->find_file_by_id( $post_id );
 
-		if ( ! $file_path || ! file_exists( $file_path ) || ! $this->existing_path_is_safe( $file_path ) ) {
-			return false;
+		if ( ! $file_path || ! file_exists( $file_path ) ) {
+			return 'absent';
+		}
+		if ( ! $this->existing_path_is_safe( $file_path ) ) {
+			return 'failed';
 		}
 
 		$result = $this->safe_unlink( $file_path );
@@ -400,7 +412,7 @@ class WP_Markdown_Storage {
 			}
 		}
 
-		return $result;
+		return $result ? 'deleted' : 'failed';
 	}
 
 	/**

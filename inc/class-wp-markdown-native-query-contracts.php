@@ -25,6 +25,60 @@ final class WP_Markdown_Query_Request {
 
 }
 
+final class WP_Markdown_Native_Query_Predicate {
+	/** @param array<int,int|string> $values */
+	public function __construct(
+		private readonly string $column,
+		private readonly string $operator,
+		private readonly array $values
+	) {}
+
+	public function column(): string {
+		return $this->column;
+	}
+
+	public function operator(): string {
+		return $this->operator;
+	}
+
+	/** @return array<int,int|string> */
+	public function values(): array {
+		return $this->values;
+	}
+}
+
+final class WP_Markdown_Native_Query_Plan {
+	/** @param array<int,string> $projection */
+	public function __construct(
+		private readonly string $table,
+		private readonly array $projection,
+		private readonly ?WP_Markdown_Native_Query_Predicate $predicate,
+		private readonly ?string $order,
+		private readonly int $limit
+	) {}
+
+	public function table(): string {
+		return $this->table;
+	}
+
+	/** @return array<int,string> */
+	public function projection(): array {
+		return $this->projection;
+	}
+
+	public function predicate(): ?WP_Markdown_Native_Query_Predicate {
+		return $this->predicate;
+	}
+
+	public function order(): ?string {
+		return $this->order;
+	}
+
+	public function limit(): int {
+		return $this->limit;
+	}
+}
+
 final class WP_Markdown_Query_Result {
 	/** @param array<int,array<string,string|null>> $rows @param array<int,array{name:string,type:int,table?:string}> $columns */
 	private function __construct(

@@ -17,36 +17,37 @@ final class WP_Markdown_Native_Runtime_Factory {
 	public static function options_schema(): WP_Markdown_Native_Table_Schema {
 		return new WP_Markdown_Native_Table_Schema(
 			array(
-				'option_id'    => array(
-					'type'     => 8,
-					'nullable' => false,
-					'validate' => static fn( mixed $value ): bool => is_int( $value ) && $value >= 0,
+				'option_id'    => new WP_Markdown_Native_Column(
+					8,
+					false,
+					static fn( mixed $value ): bool => is_int( $value ) && $value >= 0
 				),
-				'option_name'  => array(
-					'type'            => 253,
-					'nullable'        => false,
-					'validate'        => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 191,
-					'normalize'       => array( self::class, 'normalize_ascii_ci' ),
-					'lookup_validate' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
+				'option_name'  => new WP_Markdown_Native_Column(
+					253,
+					false,
+					static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 191,
+					array( self::class, 'normalize_ascii_ci' ),
+					array( '=', 'IN' ),
+					static fn( array $values ): bool => self::all_ascii_strings( $values )
 				),
-				'option_value' => array(
-					'type'     => 252,
-					'nullable' => false,
-					'validate' => 'is_string',
+				'option_value' => new WP_Markdown_Native_Column(
+					252,
+					false,
+					'is_string'
 				),
-				'autoload'     => array(
-					'type'             => 253,
-					'nullable'         => false,
-					'validate'         => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 20,
-					'lookup_operators' => array( 'IN' ),
-					'lookup_validate'  => static fn( array $values ): bool => ! array_diff(
+				'autoload'     => new WP_Markdown_Native_Column(
+					253,
+					false,
+					static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 20,
+					null,
+					array( 'IN' ),
+					static fn( array $values ): bool => ! array_diff(
 						$values,
 						array( 'yes', 'on', 'auto-on', 'auto' )
-					),
+					)
 				),
 			),
-			'option_id',
-			array( 'option_name', 'autoload' )
+			'option_id'
 		);
 	}
 
@@ -61,55 +62,36 @@ final class WP_Markdown_Native_Runtime_Factory {
 			&& 1 === preg_match( '/^-?(?:0|[1-9][0-9]*)$/D', $value );
 
 		$columns = array(
-			'ID'                  => array(
-				'type'            => 8,
-				'nullable'        => false,
-				'validate'        => $unsigned,
-				'normalize'       => array( self::class, 'normalize_unsigned' ),
-				'lookup_validate' => static fn( array $values ): bool => ! in_array(
+			'ID'                  => new WP_Markdown_Native_Column(
+				8,
+				false,
+				$unsigned,
+				array( self::class, 'normalize_unsigned' ),
+				array( '=', 'IN' ),
+				static fn( array $values ): bool => ! in_array(
 					null,
 					array_map( array( self::class, 'normalize_unsigned' ), $values ),
 					true
-				),
+				)
 			),
 			'user_login'          => self::lookup_string_column( 60, true ),
 			'user_pass'           => self::string_column( 255 ),
 			'user_nicename'       => self::lookup_string_column( 50, true ),
 			'user_email'          => self::lookup_string_column( 100, true ),
 			'user_url'            => self::string_column( 100 ),
-			'user_registered'     => array(
-				'type'     => 12,
-				'nullable' => false,
-				'validate' => $width( 19 ),
-			),
+			'user_registered'     => new WP_Markdown_Native_Column( 12, false, $width( 19 ) ),
 			'user_activation_key' => self::string_column( 255 ),
-			'user_status'         => array(
-				'type'      => 3,
-				'nullable'  => false,
-				'validate'  => $signed,
-				'normalize' => array( self::class, 'normalize_signed' ),
-			),
+			'user_status'         => new WP_Markdown_Native_Column( 3, false, $signed, array( self::class, 'normalize_signed' ) ),
 			'display_name'        => self::string_column( 250 ),
 		);
 		if ( $multisite ) {
-			$columns['spam'] = array(
-				'type'      => 1,
-				'nullable'  => false,
-				'validate'  => $nonnegative,
-				'normalize' => array( self::class, 'normalize_unsigned' ),
-			);
-			$columns['deleted'] = array(
-				'type'      => 1,
-				'nullable'  => false,
-				'validate'  => $nonnegative,
-				'normalize' => array( self::class, 'normalize_unsigned' ),
-			);
+			$columns['spam'] = new WP_Markdown_Native_Column( 1, false, $nonnegative, array( self::class, 'normalize_unsigned' ) );
+			$columns['deleted'] = new WP_Markdown_Native_Column( 1, false, $nonnegative, array( self::class, 'normalize_unsigned' ) );
 		}
 
 		return new WP_Markdown_Native_Table_Schema(
 			$columns,
-			'ID',
-			array( 'ID', 'user_login', 'user_nicename', 'user_email' )
+			'ID'
 		);
 	}
 
@@ -118,45 +100,25 @@ final class WP_Markdown_Native_Runtime_Factory {
 			&& 1 === preg_match( '/^[1-9][0-9]*$/D', $value );
 		$nonnegative = static fn( mixed $value ): bool => is_string( $value )
 			&& 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value );
-		$lookup = array(
-			'normalize'       => array( self::class, 'normalize_unsigned' ),
-			'lookup_validate' => static fn( array $values ): bool => ! in_array(
-				null,
-				array_map( array( self::class, 'normalize_unsigned' ), $values ),
-				true
-			),
-		);
-
 		return new WP_Markdown_Native_Table_Schema(
 			array(
-				'umeta_id'  => array(
-					'type'      => 8,
-					'nullable'  => false,
-					'validate'  => $unsigned,
-					'normalize' => array( self::class, 'normalize_unsigned' ),
+				'umeta_id'  => new WP_Markdown_Native_Column( 8, false, $unsigned, array( self::class, 'normalize_unsigned' ) ),
+				'user_id'    => new WP_Markdown_Native_Column(
+					8,
+					false,
+					$nonnegative,
+					array( self::class, 'normalize_unsigned' ),
+					array( 'IN' ),
+					static fn( array $values ): bool => ! in_array(
+						null,
+						array_map( array( self::class, 'normalize_unsigned' ), $values ),
+						true
+					)
 				),
-				'user_id'    => array_merge(
-					array(
-						'type'             => 8,
-						'nullable'         => false,
-						'validate'         => $nonnegative,
-						'lookup_operators' => array( 'IN' ),
-					),
-					$lookup
-				),
-				'meta_key'   => array(
-					'type'     => 253,
-					'nullable' => true,
-					'validate' => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 255,
-				),
-				'meta_value' => array(
-					'type'     => 252,
-					'nullable' => true,
-					'validate' => 'is_string',
-				),
+				'meta_key'   => new WP_Markdown_Native_Column( 253, true, static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 255 ),
+				'meta_value' => new WP_Markdown_Native_Column( 252, true, 'is_string' ),
 			),
-			'umeta_id',
-			array( 'user_id' )
+			'umeta_id'
 		);
 	}
 
@@ -245,28 +207,24 @@ final class WP_Markdown_Native_Runtime_Factory {
 		return strtolower( $value );
 	}
 
-	/** @return array{type:int,nullable:bool,validate:callable} */
-	private static function string_column( int $maximum ): array {
-		return array(
-			'type'     => 253,
-			'nullable' => false,
-			'validate' => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum,
+	private static function string_column( int $maximum ): WP_Markdown_Native_Column {
+		return new WP_Markdown_Native_Column(
+			253,
+			false,
+			static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum
 		);
 	}
 
-	/** @return array{type:int,nullable:bool,validate:callable,lookup_validate:callable} */
-	private static function lookup_string_column( int $maximum, bool $ascii_case_insensitive = false ): array {
-		$lookup = array(
-			'lookup_validate' => static fn( array $values ): bool => $ascii_case_insensitive
+	private static function lookup_string_column( int $maximum, bool $ascii_case_insensitive = false ): WP_Markdown_Native_Column {
+		return new WP_Markdown_Native_Column(
+			253,
+			false,
+			static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum,
+			$ascii_case_insensitive ? array( self::class, 'normalize_ascii_ci' ) : null,
+			array( '=', 'IN' ),
+			static fn( array $values ): bool => $ascii_case_insensitive
 				? self::all_ascii_strings( $values )
-				: self::all_strings( $values ),
-		);
-		if ( $ascii_case_insensitive ) {
-			$lookup['normalize'] = array( self::class, 'normalize_ascii_ci' );
-		}
-		return array_merge(
-			self::string_column( $maximum ),
-			$lookup
+				: self::all_strings( $values )
 		);
 	}
 

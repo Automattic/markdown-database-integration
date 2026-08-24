@@ -288,7 +288,8 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		if ( $post_mutation && $pdo->inTransaction() ) { throw new RuntimeException( 'Post persistence requires the runtime-owned transaction boundary.' ); }
 		$wordpress_before = empty( $post_ids ) ? array() : $this->write_engine->wordpress_post_identities( $post_ids );
 		$owns_transaction = $post_mutation;
-		if ( $owns_transaction ) { $pdo->beginTransaction(); }
+		$adapter_transactions = $owns_transaction && $this->parent_owns_transaction_api();
+		if ( $owns_transaction ) { $adapter_transactions ? parent::beginTransaction() : $pdo->beginTransaction(); }
 		try {
 			$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
 			if ( empty( $post_ids ) && null !== $op && in_array( $op['op'], array( 'INSERT', 'REPLACE' ), true ) && str_ends_with( strtolower( (string) $op['table'] ), 'posts' ) ) {
@@ -299,9 +300,9 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 				$operation = $this->write_engine->prepare_post_commit( $post_id, $wordpress_before[ $post_id ] ?? null );
 				if ( null !== $operation ) { $prepared[] = $operation; }
 			}
-			if ( $owns_transaction ) { $pdo->commit(); }
+			if ( $owns_transaction ) { $adapter_transactions ? parent::commit() : $pdo->commit(); }
 		} catch ( \Throwable $error ) {
-			if ( $owns_transaction && $pdo->inTransaction() ) { $pdo->rollBack(); }
+			if ( $owns_transaction && ( $adapter_transactions ? parent::inTransaction() : $pdo->inTransaction() ) ) { $adapter_transactions ? parent::rollBack() : $pdo->rollBack(); }
 			throw $error;
 		}
 		foreach ( $prepared as $operation ) { $this->write_engine->continue_post_commit( $operation ); }

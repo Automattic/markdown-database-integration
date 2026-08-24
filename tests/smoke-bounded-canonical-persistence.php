@@ -12,13 +12,16 @@ function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_bounded
 final class WP_Markdown_Storage {
 	private $observer = null;
 	public bool $fail_next_post_write = false;
+	public int $post_delete_failures_remaining = 0;
 	public int $post_write_attempts = 0;
+	public int $post_delete_attempts = 0;
 	public function __construct( private string $content_dir ) {}
 	public function set_file_mutation_observer( callable $observer ): void { $this->observer = $observer; }
 	public function get_content_dir(): string { return $this->content_dir; }
 	public function is_markdown_type( string $post_type ): bool { return 'post' === $post_type; }
 	public function write_post( object $post ): string|false { $this->post_write_attempts++; if ( $this->fail_next_post_write ) { $this->fail_next_post_write = false; return false; } $path = $this->content_dir . '/post-' . (int) $post->ID . '.md'; if ( is_callable( $this->observer ) ) { ( $this->observer )( $path ); } file_put_contents( $path, (string) $post->post_content ); return $path; }
-	public function delete_post( int $post_id ): bool { $path = $this->content_dir . '/post-' . $post_id . '.md'; if ( ! is_file( $path ) ) { return true; } if ( is_callable( $this->observer ) ) { ( $this->observer )( $path ); } return unlink( $path ); }
+	public function delete_post( int $post_id ): bool { return 'deleted' === $this->delete_post_result( $post_id ); }
+	public function delete_post_result( int $post_id ): string { $this->post_delete_attempts++; if ( $this->post_delete_failures_remaining > 0 ) { $this->post_delete_failures_remaining--; return 'failed'; } $path = $this->content_dir . '/post-' . $post_id . '.md'; if ( ! is_file( $path ) ) { return 'absent'; } if ( is_callable( $this->observer ) ) { ( $this->observer )( $path ); } return unlink( $path ) ? 'deleted' : 'failed'; }
 	public function path_for_post( int $post_id ): string|false { $path = $this->content_dir . '/post-' . $post_id . '.md'; return is_file( $path ) ? $path : false; }
 	public function read_post( int $post_id ): ?object { return null; }
 }
@@ -27,9 +30,10 @@ require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 final class MDI_Bounded_Operations implements WP_Markdown_Backend_Operations {
 	public bool $fail_options_once = false;
 	public int $option_reads = 0;
+	public array $deleted_post_ids = array();
 	public array $rows = array( 'target' => array( 'option_id' => 7, 'option_name' => 'target', 'option_value' => 'durable', 'autoload' => 'yes' ) );
 	public function table_rows( string $table_suffix, ?array $policy = null ): iterable { return array(); }
-	public function post_rows( array $post_ids ): array { return array( 42 ) === array_map( 'intval', $post_ids ) ? array( array( 'ID' => 42, 'post_type' => 'post', 'post_content' => 'durable post' ) ) : array(); }
+	public function post_rows( array $post_ids ): array { $ids = array_map( 'intval', $post_ids ); if ( array_intersect( $ids, $this->deleted_post_ids ) ) { return array(); } return array( 42 ) === $ids ? array( array( 'ID' => 42, 'post_type' => 'post', 'post_content' => 'durable post' ) ) : array(); }
 	public function post_status( int $post_id ): ?string { return null; }
 	public function post_meta( int $post_id ): array { return array(); }
 	public function post_terms( int $post_id ): array { return array(); }
@@ -130,8 +134,29 @@ mdi_bounded_assert( 'retryable_failure' === $persistence->last_flush_diagnostics
 $persistence->flush_dirty( true );
 mdi_bounded_assert( 2 === $storage->post_write_attempts && is_file( $root . '/post-42.md' ) && 'persisted' === $persistence->last_flush_diagnostics()['status'], 'retried markdown write publishes a durable canonical post' );
 
-// Replacing a large canonical snapshot never rereads it through hash_file at shutdown.
+// A non-Markdown deletion has no Markdown file, but must still remove its JSON fallback row.
 mkdir( $root . '/_tables', 0700, true );
+$fallback_posts = $root . '/_tables/posts.json';
+file_put_contents( $fallback_posts, "[\n    { \"ID\": 77 }\n]" );
+$delete_non_markdown = array( 'key' => 'post:77', 'resource' => 'post:77', 'operation' => 'DELETE', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '77' ) ) );
+$operations->deleted_post_ids = array( 77 );
+$persistence->persist_mutation( $delete_non_markdown );
+$fallback_changes = $persistence->flush_dirty( true );
+mdi_bounded_assert( array() === json_decode( (string) file_get_contents( $fallback_posts ), true ) && in_array( '_tables/posts.json', $fallback_changes['changed'], true ), 'absent non-Markdown delete persists fallback JSON removal' );
+
+// A real Markdown delete failure remains dirty and retries at the request boundary.
+$operations->deleted_post_ids = array( 42 );
+$storage->post_delete_attempts = 0;
+$storage->post_delete_failures_remaining = 2;
+$delete_markdown = array( 'key' => 'post:42', 'resource' => 'post:42', 'operation' => 'DELETE', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '42' ) ) );
+$persistence->persist_mutation( $delete_markdown );
+$persistence->flush_dirty();
+mdi_bounded_assert( 2 === $storage->post_delete_attempts && is_file( $root . '/post-42.md' ) && array( 42 ) === $persistence->last_flush_diagnostics()['dirty_posts'] && 'retryable_failure' === $persistence->last_flush_diagnostics()['status'], 'failed Markdown delete retains a retryable dirty post' );
+$persistence->flush_dirty( true );
+mdi_bounded_assert( 3 === $storage->post_delete_attempts && ! is_file( $root . '/post-42.md' ) && 'persisted' === $persistence->last_flush_diagnostics()['status'], 'retried Markdown delete removes the canonical file durably' );
+$operations->deleted_post_ids = array();
+
+// Replacing a large canonical snapshot never rereads it through hash_file at shutdown.
 $large = $root . '/_tables/large.json';
 file_put_contents( $large, str_repeat( 'old', 3 * 1024 * 1024 ) );
 $write = new ReflectionMethod( $persistence, 'write_json' );

@@ -271,7 +271,7 @@ class WP_Markdown_Canonical_Persistence {
 				};
 				$mutation = function () use ( $id ): void {
 					$rows = $this->operations->post_rows( array( $id ) );
-					if ( empty( $rows ) ) { if ( ! $this->storage->delete_post( $id ) ) { throw new RuntimeException( 'Recovered canonical post deletion failed.' ); } $this->operations->delete_file_index( $id ); return; }
+					if ( empty( $rows ) ) { $this->delete_canonical_post( $id ); $this->operations->delete_file_index( $id ); return; }
 					$path = $this->storage->write_post( (object) $rows[0] );
 					if ( false === $path ) { throw new RuntimeException( 'Recovered canonical post replacement failed.' ); }
 					$relative = str_starts_with( $path, $this->content_dir . '/' ) ? substr( $path, strlen( $this->content_dir ) + 1 ) : $path;
@@ -306,7 +306,7 @@ class WP_Markdown_Canonical_Persistence {
 		$checkpoint = array( 'wordpress' => $wordpress_after, 'canonical' => $canonical_before, 'index' => $index_before );
 		$observer = fn(): array => array( 'wordpress' => $this->current_post_receipt( $post_id ), 'canonical' => $this->storage_post_receipt( $post_id ), 'index' => $this->file_index_receipt( $post_id ) );
 		$mutation = function () use ( $post_id, $wordpress_after ): void {
-			if ( null === $wordpress_after ) { if ( ! $this->storage->delete_post( $post_id ) ) { throw new RuntimeException( 'Prepared canonical post deletion failed.' ); } $this->operations->delete_file_index( $post_id ); return; }
+			if ( null === $wordpress_after ) { $this->delete_canonical_post( $post_id ); $this->operations->delete_file_index( $post_id ); return; }
 			$rows = $this->operations->post_rows( array( $post_id ) );
 			if ( empty( $rows ) ) { throw new RuntimeException( 'Prepared WordPress post is unavailable.' ); }
 			$path = $this->storage->write_post( (object) $rows[0] );
@@ -902,8 +902,14 @@ class WP_Markdown_Canonical_Persistence {
 			// Deletes must fire immediately — a queued rewrite for the same
 			// ID in this request would try to re-persist a vanished post.
 			foreach ( $ids as $id ) {
-				$this->persist_post_deletion( (int) $id );
-				$this->unmark_post_dirty( $id );
+				try {
+					$this->persist_post_deletion( (int) $id );
+					$this->unmark_post_dirty( $id );
+				} catch ( \Throwable $e ) {
+					// A failed immediate deletion is retried at the request boundary.
+					$this->mark_post_dirty( (int) $id );
+					throw $e;
+				}
 			}
 
 			// Non-markdown posts JSON also needs updating.
@@ -1032,17 +1038,23 @@ class WP_Markdown_Canonical_Persistence {
 
 	private function persist_post_deletion( int $post_id ): void {
 		if ( null === $this->reconciliation ) {
-			if ( ! $this->storage->delete_post( $post_id ) ) {
-				throw new RuntimeException( 'Markdown DB: Canonical post deletion failed.' );
-			}
+			$this->delete_canonical_post( $post_id );
 			$this->operations->delete_file_index( $post_id );
 			return;
 		}
 		$before = array( 'canonical' => $this->storage_post_receipt( $post_id ), 'index' => $this->file_index_receipt( $post_id ) );
 		$observer = fn(): array => array( 'canonical' => $this->storage_post_receipt( $post_id ), 'index' => $this->file_index_receipt( $post_id ) );
-		$mutation = function () use ( $post_id ): void { if ( ! $this->storage->delete_post( $post_id ) ) { throw new RuntimeException( 'Canonical post deletion failed.' ); } $this->operations->delete_file_index( $post_id ); };
+		$mutation = function () use ( $post_id ): void { $this->delete_canonical_post( $post_id ); $this->operations->delete_file_index( $post_id ); };
 		$adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $this->reconciliation_fence_directory, $observer, $mutation );
 		$this->reconciliation->reconcile( array( 'plan_id' => 'persistence-delete:' . $post_id . ':' . hash( 'sha256', WP_Markdown_Reconciliation_Identity::encode( $before ) ), 'continuation' => array( 'post_id' => $post_id ), 'canonical_root' => $this->content_dir, 'resource' => array( 'type' => 'post', 'id' => (string) $post_id ), 'kind' => 'deletion', 'direction' => 'wordpress_to_canonical', 'before' => $before, 'after' => array( 'canonical' => null, 'index' => null ) ), $adapter );
+	}
+
+	/** Treat an absent Markdown file as a successful non-Markdown deletion. */
+	private function delete_canonical_post( int $post_id ): void {
+		$result = $this->storage->delete_post_result( $post_id );
+		if ( 'deleted' !== $result && 'absent' !== $result ) {
+			throw new RuntimeException( 'Markdown DB: Canonical post deletion failed.' );
+		}
 	}
 
 	private function file_index_receipt( int $post_id ): ?array {

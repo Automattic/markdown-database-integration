@@ -278,6 +278,169 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	}
 }
 
+final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Native_File_Provider {
+	private string $lock_root;
+
+	public function __construct(
+		string $state_root,
+		WP_Markdown_Native_Table_Schema $schema,
+		private string $table,
+		private string $identity_column
+	) {
+		$this->lock_root = rtrim( $state_root, '/\\' );
+		parent::__construct( $state_root, $schema );
+		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table )
+			|| ! $schema->has_column( $identity_column )
+			|| ! $schema->is_lookup( $identity_column )
+		) {
+			throw new InvalidArgumentException( 'Partition providers require a table and indexed identity column.' );
+		}
+	}
+
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		$predicate = $access->predicate();
+		if ( null === $predicate || $this->identity_column !== $predicate->column() ) {
+			return $this->failure(
+				'markdown_db_native_unsupported_query',
+				'unsupported_partition_access',
+				'The native partition provider requires an exact identity predicate.'
+			);
+		}
+
+		$lock = $this->partition_lock();
+		if ( $lock instanceof WP_Markdown_Query_Result ) {
+			return $lock;
+		}
+		try {
+			$generation = $this->active_generation();
+			if ( $generation instanceof WP_Markdown_Query_Result ) {
+				return $generation;
+			}
+			if ( null === $generation ) {
+				return array();
+			}
+
+			$identities = array();
+			foreach ( $predicate->values() as $value ) {
+				$normalized = $this->schema->column( $this->identity_column )->normalize( $value );
+				if ( ! is_int( $normalized ) && ! is_string( $normalized ) ) {
+					return $this->malformed( 'invalid_partition_identity', 'The requested partition identity cannot be normalized.' );
+				}
+				$identity = (string) $normalized;
+				$identities[ $identity ] = $normalized;
+			}
+			if ( $access->order() === $this->identity_column ) {
+				usort(
+					$identities,
+					fn( mixed $left, mixed $right ): int => $this->schema->compare_values( $this->identity_column, $left, $right )
+				);
+			}
+
+			$rows = array();
+			foreach ( $identities as $normalized ) {
+				if ( $access->order() === $this->identity_column && count( $rows ) >= $access->limit() ) {
+					break;
+				}
+				$identity = (string) $normalized;
+				$row = $this->partition_row( $generation, $identity );
+				if ( $row instanceof WP_Markdown_Query_Result ) {
+					return $row;
+				}
+				if ( null !== $row ) {
+					$rows[] = $row;
+				}
+			}
+			return $this->bounded_rows( $rows, $access );
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/** @return resource|WP_Markdown_Query_Result */
+	private function partition_lock() {
+		$directory = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-database-integration-locks';
+		if ( ! is_dir( $directory ) && ! @mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) {
+			return $this->malformed( 'unavailable_partition_lock', 'The native partition lock directory is unavailable.' );
+		}
+		$path = $directory . '/partition-' . hash( 'sha256', $this->lock_root . "\0" . $this->table ) . '.lock';
+		$lock = @fopen( $path, 'c+' );
+		if ( false === $lock || ! flock( $lock, LOCK_SH ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			return $this->malformed( 'unavailable_partition_lock', 'The native partition lock cannot be acquired.' );
+		}
+		return $lock;
+	}
+
+	private function active_generation(): string|WP_Markdown_Query_Result|null {
+		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_tables' . DIRECTORY_SEPARATOR . $this->table;
+		if ( ! file_exists( $directory ) && ! is_link( $directory ) ) {
+			return null;
+		}
+		$root = realpath( $directory );
+		if ( is_link( $directory ) || false === $root || ! is_dir( $root ) || ! $this->contains( $this->state_root, $root ) ) {
+			return $this->malformed( 'unsafe_partition_directory', 'The canonical partition directory is unsafe.' );
+		}
+
+		$marker = $this->read_json( $root . DIRECTORY_SEPARATOR . '.mdi-partition.json', $root, 'partition_marker' );
+		if ( $marker instanceof WP_Markdown_Query_Result ) {
+			return $this->read_failure( $marker, 'invalid_partition_marker', 'The canonical partition marker cannot be read.' );
+		}
+		if ( ! is_array( $marker )
+			|| 1 !== ( $marker['version'] ?? null )
+			|| $this->table !== ( $marker['table'] ?? null )
+			|| $this->identity_column !== ( $marker['identity_column'] ?? null )
+			|| 1 !== preg_match( '/^generation-[a-f0-9]{24}$/D', (string) ( $marker['generation'] ?? '' ) )
+		) {
+			return $this->malformed( 'invalid_partition_marker', 'The canonical partition marker does not match its declared table.' );
+		}
+
+		$path = $root . DIRECTORY_SEPARATOR . $marker['generation'];
+		$generation = realpath( $path );
+		if ( is_link( $path ) || false === $generation || ! is_dir( $generation ) || ! $this->contains( $root, $generation ) ) {
+			return $this->malformed( 'invalid_partition_generation', 'The active canonical partition generation is unavailable.' );
+		}
+		return $generation;
+	}
+
+	/** @return array<string,mixed>|WP_Markdown_Query_Result|null */
+	private function partition_row( string $generation, string $identity ): array|WP_Markdown_Query_Result|null {
+		$path = $generation . DIRECTORY_SEPARATOR . hash( 'sha256', $identity ) . '.json';
+		if ( ! file_exists( $path ) && ! is_link( $path ) ) {
+			return null;
+		}
+		$data = $this->read_json( $path, $generation, 'partition_row' );
+		if ( $data instanceof WP_Markdown_Query_Result ) {
+			return $this->read_failure( $data, 'invalid_partition_row', 'The requested canonical partition row cannot be read.' );
+		}
+		$metadata = is_array( $data ) ? ( $data['_mdi_partition'] ?? null ) : null;
+		$row      = is_array( $data ) ? ( $data['row'] ?? null ) : null;
+		if ( ! is_array( $metadata )
+			|| 1 !== ( $metadata['version'] ?? null )
+			|| $this->identity_column !== ( $metadata['identity_column'] ?? null )
+			|| $identity !== ( $metadata['identity'] ?? null )
+			|| ! is_array( $row )
+			|| true !== $this->schema->validate_row( $row )
+			|| $identity !== (string) $this->schema->column( $this->identity_column )->normalize( $row[ $this->identity_column ] )
+		) {
+			return $this->malformed( 'invalid_partition_row', 'The requested canonical partition row does not match its identity or schema.' );
+		}
+		return $row;
+	}
+
+	private function malformed( string $reason, string $message ): WP_Markdown_Query_Result {
+		return $this->failure( 'markdown_db_native_malformed_partition', $reason, $message );
+	}
+
+	private function read_failure( WP_Markdown_Query_Result $failure, string $reason, string $message ): WP_Markdown_Query_Result {
+		return 'markdown_db_native_unsafe_path' === ( $failure->diagnostic()['code'] ?? '' )
+			? $failure
+			: $this->malformed( $reason, $message );
+	}
+}
+
 final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_Provider {
 	private bool $loaded = false;
 	private string $signature = '';

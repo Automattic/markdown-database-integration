@@ -514,10 +514,8 @@ class WP_Markdown_Canonical_Persistence {
 			$this->last_flush_diagnostics['canonical_paths'] = array_values( array_unique( array_merge( $this->last_flush_diagnostics['canonical_paths'], array_merge( $changes['created'], $changes['changed'], $changes['deleted'] ) ) ) );
 			sort( $this->last_flush_diagnostics['canonical_paths'], SORT_STRING );
 			$this->canonical_mutations = array();
-			if ( function_exists( 'do_action' ) ) {
-				do_action( 'markdown_database_integration_flushed', $changes );
-				$this->emit_persistence_diagnostics();
-			}
+			$this->emit_persistence_observer( 'markdown_database_integration_flushed', $changes );
+			$this->emit_persistence_diagnostics();
 			return $changes;
 		} catch ( \Throwable $e ) {
 			$this->last_flush_diagnostics['status'] = 'retryable_failure';
@@ -535,8 +533,18 @@ class WP_Markdown_Canonical_Persistence {
 
 	/** Emit bounded diagnostics without exposing backend or filesystem error detail. */
 	private function emit_persistence_diagnostics(): void {
+		$this->emit_persistence_observer( 'markdown_database_integration_persistence_diagnostics', $this->last_flush_diagnostics );
+	}
+
+	/** Observer failures cannot override canonical durability or retry state. */
+	private function emit_persistence_observer( string $hook, mixed ...$args ): void {
 		if ( function_exists( 'do_action' ) ) {
-			do_action( 'markdown_database_integration_persistence_diagnostics', $this->last_flush_diagnostics );
+			try {
+				do_action( $hook, ...$args );
+			} catch ( \Throwable $ignored ) {
+				// Listener exception text can contain application data; keep this bounded.
+				error_log( 'Markdown DB persistence observer failed: ' . $hook );
+			}
 		}
 	}
 

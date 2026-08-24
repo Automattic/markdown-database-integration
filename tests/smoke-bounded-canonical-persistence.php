@@ -6,7 +6,8 @@ define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/interface-wp-markdown-backend-operations.php';
 
 $GLOBALS['mdi_bounded_actions'] = array();
-function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_bounded_actions'][] = array( 'hook' => $hook, 'args' => $args ); }
+$GLOBALS['mdi_bounded_throwing_hook'] = null;
+function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_bounded_actions'][] = array( 'hook' => $hook, 'args' => $args ); if ( $hook === $GLOBALS['mdi_bounded_throwing_hook'] ) { throw new RuntimeException( 'observer failure must not replace persistence failure' ); } }
 
 final class WP_Markdown_Storage {
 	private $observer = null;
@@ -94,6 +95,31 @@ $failure_action = end( $GLOBALS['mdi_bounded_actions'] );
 mdi_bounded_assert( $failure_thrown && 'retryable_failure' === $failure_diagnostics['status'] && 'canonical_persistence_failed' === $failure_diagnostics['failure'] && ! isset( $failure_diagnostics['error'] ) && 'markdown_database_integration_persistence_diagnostics' === $failure_action['hook'] && $failure_diagnostics === $failure_action['args'][0], 'failed persistence emits sanitized retryable diagnostics before rethrowing' );
 $persistence->flush_dirty( true );
 mdi_bounded_assert( 3 === $operations->option_reads && 'persisted' === $persistence->last_flush_diagnostics()['status'], 'failed dirty subset retries and completes durably' );
+
+// Diagnostics listeners are non-authoritative for both rethrow and return paths.
+$GLOBALS['mdi_bounded_throwing_hook'] = 'markdown_database_integration_persistence_diagnostics';
+$operations->fail_options_once = true;
+$persistence->persist_mutation( $mutation );
+$original_error = null;
+try { $persistence->flush_dirty( true ); } catch ( RuntimeException $error ) { $original_error = $error->getMessage(); }
+mdi_bounded_assert( str_contains( (string) $original_error, 'Failed to read dirty options: transient options read failure' ) && array( 'options' ) === $persistence->last_flush_diagnostics()['dirty_tables'] && 'retryable_failure' === $persistence->last_flush_diagnostics()['status'], 'throwing diagnostics listener preserves the original rethrown persistence error and retry state' );
+$GLOBALS['mdi_bounded_throwing_hook'] = null;
+$persistence->flush_dirty( true );
+
+$GLOBALS['mdi_bounded_throwing_hook'] = 'markdown_database_integration_persistence_diagnostics';
+$operations->fail_options_once = true;
+$persistence->persist_mutation( $mutation );
+$returned = $persistence->flush_dirty();
+mdi_bounded_assert( array( 'created' => array(), 'changed' => array(), 'deleted' => array() ) === $returned && array( 'options' ) === $persistence->last_flush_diagnostics()['dirty_tables'] && 'retryable_failure' === $persistence->last_flush_diagnostics()['status'], 'throwing diagnostics listener preserves non-throw failure return and retry state' );
+$GLOBALS['mdi_bounded_throwing_hook'] = null;
+$persistence->flush_dirty( true );
+
+// Successful writes remain successful when either public observer throws.
+$GLOBALS['mdi_bounded_throwing_hook'] = 'markdown_database_integration_flushed';
+$persistence->persist_mutation( $mutation );
+$success_with_throwing_observer = $persistence->flush_dirty( true );
+$GLOBALS['mdi_bounded_throwing_hook'] = null;
+mdi_bounded_assert( array( '_options/target.json' ) === $success_with_throwing_observer['changed'] && 'persisted' === $persistence->last_flush_diagnostics()['status'], 'throwing success observer cannot convert durable persistence into failure' );
 
 // A false markdown write is a retryable durability failure, not a successful post flush.
 $post_mutation = array( 'key' => 'post:42', 'resource' => 'post:42', 'operation' => 'UPDATE', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '42' ) ) );

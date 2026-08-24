@@ -20,19 +20,33 @@ class WP_MySQL_On_SQLite {
 	public array $queries = array();
 	public bool $fail_status_queries = false;
 	private WP_SQLite_Connection $connection;
+	private bool $in_transaction = false;
 	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
 		unset( $dsn, $username, $password );
 		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
 	}
 	public function get_connection(): WP_SQLite_Connection { return $this->connection; }
 	public function get_insert_id(): int { return (int) $this->connection->get_pdo()->lastInsertId(); }
+	public function beginTransaction(): bool { $this->connection->get_pdo()->beginTransaction(); $this->in_transaction = true; return true; }
+	public function commit(): bool { $this->connection->get_pdo()->commit(); $this->in_transaction = false; return true; }
+	public function rollBack(): bool { $this->connection->get_pdo()->rollBack(); $this->in_transaction = false; return true; }
+	public function inTransaction(): bool { return $this->in_transaction; }
 	public function query( string $sql, $fetch_mode = PDO::FETCH_OBJ, ...$args ) {
 		unset( $args );
 		$this->queries[] = $sql;
 		if ( $this->fail_status_queries && str_contains( $sql, 'SELECT post_status FROM' ) ) {
 			throw new RuntimeException( 'Simulated status lookup failure.' );
 		}
-		return $this->connection->get_pdo()->query( $sql );
+		$wrap = ! $this->in_transaction && 1 === preg_match( '/^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i', $sql );
+		if ( $wrap ) { $this->connection->get_pdo()->beginTransaction(); }
+		try {
+			$result = $this->connection->get_pdo()->query( $sql );
+			if ( $wrap ) { $this->connection->get_pdo()->commit(); }
+			return $result;
+		} catch ( Throwable $error ) {
+			if ( $wrap && $this->connection->get_pdo()->inTransaction() ) { $this->connection->get_pdo()->rollBack(); }
+			throw $error;
+		}
 	}
 }
 

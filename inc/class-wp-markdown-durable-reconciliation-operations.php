@@ -581,7 +581,7 @@ final class WP_Markdown_Durable_Reconciliation_Operations {
 			$actual = $this->observe( $adapter, $record );
 			if ( $this->matches( $record['binding']['after'], $actual ) ) { return $this->complete( $record, $actual, $now, $boundary ); }
 		}
-		return $this->conflict( $record, $actual, $record['binding']['after'], 'recovery_after_state_not_proven', $now, $boundary );
+		return $this->conflict( $record, $actual, $record['binding']['after'], 'after_state_not_proven', $now, $boundary );
 	}
 
 	private function complete( array $record, array $actual, int $now, ?callable $boundary ): array {

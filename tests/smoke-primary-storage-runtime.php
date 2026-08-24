@@ -175,7 +175,8 @@ $option_insert_mutation = $operations->mutations_for_query(
 	array( 'table' => 'wp_options', 'op' => 'INSERT', 'type' => 'DML' )
 );
 mdi_runtime_assert( array( 'inserted_option' ) === $option_insert_mutation[0]['resource_ids'], 'option INSERT mutation identity uses option_name rather than the numeric insert ID' );
-$driver->query( "UPDATE `wp_posts` SET `post_content` = 'Canonical body', `post_title` = 'Written post' WHERE `ID` = 12" );
+$lazy_content = "Canonical body  \t\n";
+$driver->query( "UPDATE `wp_posts` SET `post_content` = '{$lazy_content}', `post_title` = 'Written post' WHERE `ID` = 12" );
 $driver->query( "UPDATE `wp_posts` SET `post_excerpt` = 'Quoted IN predicate' WHERE `ID` IN (12)" );
 $driver->query( "UPDATE wp_options SET option_value = 'https://example.test' WHERE option_name = 'siteurl'" );
 $driver->query( "UPDATE wp_options SET option_value = 'Canonical name' WHERE option_name = 'blogname'" );
@@ -210,6 +211,19 @@ $driver->query( 'DELETE FROM wp_options WHERE option_name = \'siteurl\'' );
 $deleted = $runtime->flush();
 mdi_runtime_assert( array( '_options/siteurl.json' ) === $deleted['deleted'], 'exact option deletion survives a mixed all-options flush' );
 
+$lazy_round_trip_cases = array(
+	12 => $lazy_content,
+	16 => '',
+	17 => 'Content without a final LF',
+	18 => "CRLF content\r\nwith a final CRLF\r\n",
+);
+foreach ( $lazy_round_trip_cases as $post_id => $content ) {
+	if ( 12 === $post_id ) {
+		continue;
+	}
+	$driver->query( 'INSERT INTO wp_posts (ID, post_content, post_title, post_status, post_name, post_type) VALUES (' . $post_id . ', ' . $pdo->quote( $content ) . ", 'Lazy case {$post_id}', 'publish', 'lazy-case-{$post_id}', 'post')" );
+}
+
 $missing_identity_rejected = false;
 try {
 	WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $pdo ), 'wordpress', null, false );
@@ -236,8 +250,14 @@ $cold_pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta
 $cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER, term_order INTEGER DEFAULT 0)' );
-WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
-mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
+$cold_runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
+$cold_driver = $cold_runtime->get_driver();
+$lazy_round_trip_matches = array();
+foreach ( $lazy_round_trip_cases as $post_id => $content ) {
+	$cold_post = $cold_driver->query_cursor( 'SELECT ID, post_content FROM wp_posts WHERE ID = ' . $post_id )->fetch( PDO::FETCH_OBJ );
+	$lazy_round_trip_matches[] = $content === ( $cold_post->post_content ?? null );
+}
+mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn() && ! in_array( false, $lazy_round_trip_matches, true ) && 4 === count( $lazy_round_trip_matches ), 'cold reconstruction and lazy post SELECT preserve LF-terminated trailing whitespace, empty, no-final-LF, and CRLF content exactly' );
 
 $unsupported_cold_boot = false;
 try {

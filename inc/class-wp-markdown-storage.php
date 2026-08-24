@@ -1609,7 +1609,7 @@ class WP_Markdown_Storage {
 			return null;
 		}
 
-		return rtrim( $m[1] );
+		return str_ends_with( $m[1], "\n" ) ? substr( $m[1], 0, -1 ) : $m[1];
 	}
 
 	/**

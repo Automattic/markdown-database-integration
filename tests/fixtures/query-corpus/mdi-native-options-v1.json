@@ -1,0 +1,188 @@
+{
+    "schema": "mdi-query-compatibility-corpus/v1",
+    "observations": [
+        {
+            "schema_version": 1,
+            "sequence": 1,
+            "scenario": "core.options.get-option",
+            "query": "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1",
+            "result": {
+                "return": {
+                    "type": "integer",
+                    "value": 1
+                },
+                "rows": [
+                    {
+                        "option_value": "https://example.test"
+                    }
+                ],
+                "columns": [
+                    {
+                        "name": "option_value",
+                        "type": "252"
+                    }
+                ],
+                "last_error": "",
+                "error_code": 0,
+                "insert_id": 0,
+                "rows_affected": 0,
+                "num_rows": 1,
+                "exception": null
+            },
+            "transaction": {
+                "before": [],
+                "after": []
+            }
+        },
+        {
+            "schema_version": 1,
+            "sequence": 2,
+            "scenario": "core.options.load-alloptions",
+            "query": "SELECT option_name, option_value FROM wp_options WHERE autoload IN ( 'yes', 'on', 'auto-on', 'auto' )",
+            "result": {
+                "return": {
+                    "type": "integer",
+                    "value": 4
+                },
+                "rows": [
+                    {
+                        "option_name": "siteurl",
+                        "option_value": "https://example.test"
+                    },
+                    {
+                        "option_name": "blogname",
+                        "option_value": "Native Site"
+                    },
+                    {
+                        "option_name": "automatic",
+                        "option_value": "automatic"
+                    },
+                    {
+                        "option_name": "legacy",
+                        "option_value": "legacy"
+                    }
+                ],
+                "columns": [
+                    {
+                        "name": "option_name",
+                        "type": "253"
+                    },
+                    {
+                        "name": "option_value",
+                        "type": "252"
+                    }
+                ],
+                "last_error": "",
+                "error_code": 0,
+                "insert_id": 0,
+                "rows_affected": 0,
+                "num_rows": 4,
+                "exception": null
+            },
+            "transaction": {
+                "before": [],
+                "after": []
+            }
+        },
+        {
+            "schema_version": 1,
+            "sequence": 3,
+            "scenario": "core.options.load-alloptions-fallback",
+            "query": "SELECT option_name, option_value FROM wp_options",
+            "result": {
+                "return": {
+                    "type": "integer",
+                    "value": 6
+                },
+                "rows": [
+                    {
+                        "option_name": "siteurl",
+                        "option_value": "https://example.test"
+                    },
+                    {
+                        "option_name": "tab\tback\\slash",
+                        "option_value": "escaped"
+                    },
+                    {
+                        "option_name": "blogname",
+                        "option_value": "Native Site"
+                    },
+                    {
+                        "option_name": "automatic",
+                        "option_value": "automatic"
+                    },
+                    {
+                        "option_name": "legacy",
+                        "option_value": "legacy"
+                    },
+                    {
+                        "option_name": "disabled",
+                        "option_value": "disabled"
+                    }
+                ],
+                "columns": [
+                    {
+                        "name": "option_name",
+                        "type": "253"
+                    },
+                    {
+                        "name": "option_value",
+                        "type": "252"
+                    }
+                ],
+                "last_error": "",
+                "error_code": 0,
+                "insert_id": 0,
+                "rows_affected": 0,
+                "num_rows": 6,
+                "exception": null
+            },
+            "transaction": {
+                "before": [],
+                "after": []
+            }
+        },
+        {
+            "schema_version": 1,
+            "sequence": 4,
+            "scenario": "core.options.prime-caches",
+            "query": "SELECT option_name, option_value FROM wp_options WHERE option_name IN ('legacy','missing','siteurl','legacy')",
+            "result": {
+                "return": {
+                    "type": "integer",
+                    "value": 2
+                },
+                "rows": [
+                    {
+                        "option_name": "siteurl",
+                        "option_value": "https://example.test"
+                    },
+                    {
+                        "option_name": "legacy",
+                        "option_value": "legacy"
+                    }
+                ],
+                "columns": [
+                    {
+                        "name": "option_name",
+                        "type": "253"
+                    },
+                    {
+                        "name": "option_value",
+                        "type": "252"
+                    }
+                ],
+                "last_error": "",
+                "error_code": 0,
+                "insert_id": 0,
+                "rows_affected": 0,
+                "num_rows": 2,
+                "exception": null
+            },
+            "transaction": {
+                "before": [],
+                "after": []
+            }
+        }
+    ]
+}

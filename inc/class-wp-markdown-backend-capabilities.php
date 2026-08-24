@@ -60,6 +60,7 @@ class WP_Markdown_Backend_Capabilities {
 		'lazy_post_content_resolution',
 		'explicit_flush',
 		'changed_path_receipts',
+		'canonical_option_select',
 	);
 
 	private string $backend;
@@ -90,7 +91,9 @@ class WP_Markdown_Backend_Capabilities {
 	 * while future backends are extracted behind this contract.
 	 */
 	public static function sqlite(): self {
-		return new self( 'sqlite', array_fill_keys( self::KNOWN, true ) );
+		$capabilities = array_fill_keys( self::KNOWN, true );
+		$capabilities['canonical_option_select'] = false;
+		return new self( 'sqlite', $capabilities );
 	}
 
 	/** Content-primary MySQL deliberately excludes full-table interception. */
@@ -112,6 +115,11 @@ class WP_Markdown_Backend_Capabilities {
 			'explicit_flush'           => true,
 			'changed_path_receipts'    => true,
 		) );
+	}
+
+	/** mdi-native currently executes only bounded option reads from canonical state. */
+	public static function mdi_native(): self {
+		return new self( 'mdi-native', array( 'canonical_option_select' => true ) );
 	}
 
 	public function get_backend(): string {
@@ -193,6 +201,9 @@ class WP_Markdown_Backend_Resolver {
 		}
 		if ( 'mysql-full' === $id && ! isset( self::$declarations['mysql-full'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::mysql_full() );
+		}
+		if ( 'mdi-native' === $id && ! isset( self::$declarations['mdi-native'] ) ) {
+			self::register( WP_Markdown_Backend_Capabilities::mdi_native() );
 		}
 		if ( ! isset( self::$declarations[ $id ] ) ) {
 			throw new WP_Markdown_Unknown_Backend( array(

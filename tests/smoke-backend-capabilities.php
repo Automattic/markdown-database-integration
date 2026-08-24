@@ -28,14 +28,16 @@ $expected = array(
 	'lazy_post_content_resolution',
 	'explicit_flush',
 	'changed_path_receipts',
+	'canonical_option_select',
 );
 
 mdi_backend_assert( 'sqlite' === $sqlite->get_backend(), 'SQLite reference backend identifier is stable' );
 mdi_backend_assert( $expected === array_keys( $sqlite->report()['capabilities'] ), 'SQLite reference contract declares the complete compatibility matrix in stable order' );
-foreach ( $expected as $capability ) {
+foreach ( array_diff( $expected, array( 'canonical_option_select' ) ) as $capability ) {
 	mdi_backend_assert( $sqlite->supports( $capability ), 'SQLite supports ' . $capability );
 	$sqlite->require( $capability );
 }
+mdi_backend_assert( ! $sqlite->supports( 'canonical_option_select' ), 'SQLite does not claim direct canonical option execution' );
 
 $mysql_content = WP_Markdown_Backend_Capabilities::mysql_content();
 mdi_backend_assert( 'mysql-content' === $mysql_content->get_backend(), 'MySQL content-primary backend identifier is stable' );
@@ -51,8 +53,22 @@ foreach ( array( 'content_mutation_capture', 'table_mutation_capture', 'schema_p
 foreach ( array( 'cold_reconstruction', 'disposable_index_operation', 'lazy_post_content_resolution' ) as $capability ) {
 	mdi_backend_assert( ! $mysql_full->supports( $capability ), 'MySQL full-primary does not claim an unimplemented reconstruction capability: ' . $capability );
 }
+mdi_backend_assert( ! $mysql_content->supports( 'canonical_option_select' ) && ! $mysql_full->supports( 'canonical_option_select' ), 'MySQL backends do not claim direct canonical option execution' );
 foreach ( array( 'table_mutation_capture', 'schema_persistence', 'disposable_index_operation', 'lazy_post_content_resolution' ) as $capability ) {
 	mdi_backend_assert( ! $mysql_content->supports( $capability ), 'MySQL content-primary fails closed for ' . $capability );
+}
+
+$native = WP_Markdown_Backend_Capabilities::mdi_native();
+mdi_backend_assert( 'mdi-native' === $native->get_backend(), 'Native backend identifier is stable' );
+mdi_backend_assert( $native->supports( 'canonical_option_select' ), 'Native backend declares its bounded option query guarantee' );
+foreach ( array_diff( $expected, array( 'canonical_option_select' ) ) as $capability ) {
+	mdi_backend_assert( ! $native->supports( $capability ), 'Native backend fails closed for ' . $capability );
+}
+try {
+	WP_Markdown_Backend_Resolver::require_runtime_capabilities( $native, 'primary' );
+	mdi_backend_assert( false, 'Native backend cannot activate the incomplete primary runtime' );
+} catch ( WP_Markdown_Unsupported_Backend_Capability $error ) {
+	mdi_backend_assert( 'mdi-native' === $error->get_diagnostic()['backend'], 'Native primary-runtime rejection identifies the backend' );
 }
 
 $incomplete = new WP_Markdown_Backend_Capabilities( 'test', array( 'content_mutation_capture' => true ) );

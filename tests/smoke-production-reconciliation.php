@@ -165,16 +165,21 @@ $checkpoint_adapter->apply( $checkpoint_prepared );
 $checkpoint_recovered = $checkpoint_operations->recover( $checkpoint_record['id'], 'post-commit-recovery', 200, 30, $checkpoint_adapter );
 mdi_production_check( 'completed' === $checkpoint_recovered['state'] && 1 === $checkpoint_applies && 'after' === $checkpoint_state['canonical'] && array( 'post_id' => 42 ) === $checkpoint_state['index'], 'interrupted post-commit recovery observes an applied canonical effect without replay' );
 
-// A post-commit observer still fails closed when the canonical effect differs.
+// An interrupted post-commit mismatch expires, is reclaimed, and fails closed without replay.
 $mismatch_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );
 $mismatch_observer = static function () use ( &$mismatch_state ): array { return $mismatch_state; };
-$mismatch_apply = static function () use ( &$mismatch_state ): void { $mismatch_state['canonical'] = 'different'; $mismatch_state['index'] = array( 'post_id' => 42 ); };
+$mismatch_applies = 0;
+$mismatch_apply = static function () use ( &$mismatch_state, &$mismatch_applies ): void { ++$mismatch_applies; $mismatch_state['canonical'] = 'different'; $mismatch_state['index'] = array( 'post_id' => 42 ); };
 $mismatch_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $mismatch_observer, $mismatch_apply );
-$mismatch_prepared = $coordinator->prepare( array( 'plan_id' => 'prepared-production-mismatch', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $mismatch_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) ), $mismatch_adapter );
+$mismatch_intent = array( 'plan_id' => 'prepared-production-mismatch', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $mismatch_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) );
+$mismatch_intent['checkpoint'] = array_map( array( WP_Markdown_Reconciliation_Identity::class, 'exact' ), $mismatch_intent['checkpoint'] );
+$mismatch_record = $coordinator->plan( $mismatch_intent );
+$mismatch_prepared = $checkpoint_operations->prepare( $mismatch_record['id'], 'post-commit-mismatch-worker', 300, 1, $mismatch_adapter );
 $mismatch_state['wordpress'] = 'after';
+$mismatch_adapter->apply( $mismatch_prepared );
 $mismatch_rejected = false;
-try { $coordinator->continue_prepared( $mismatch_prepared['id'], $mismatch_adapter ); } catch ( WP_Markdown_Reconciliation_Conflict $error ) { $mismatch_rejected = 'after_state_not_proven' === ( $error->conflict()['reason'] ?? null ); }
-mdi_production_check( $mismatch_rejected && 'different' === $mismatch_state['canonical'], 'prepared production writes fail closed when canonical state genuinely differs after commit' );
+try { $checkpoint_operations->recover( $mismatch_record['id'], 'post-commit-mismatch-recovery', 400, 30, $mismatch_adapter ); } catch ( WP_Markdown_Reconciliation_Conflict $error ) { $mismatch_rejected = 'after_state_not_proven' === ( $error->conflict()['reason'] ?? null ); }
+mdi_production_check( $mismatch_rejected && 'reconciliation_required' === $store->get( $mismatch_record['id'] )['state'] && 1 === $mismatch_applies && 'different' === $mismatch_state['canonical'], 'interrupted post-commit mismatch recovery fails closed without replay' );
 
 // Hostile pre-existing symlink state is rejected instead of traversed.
 $hostile_target = $root . '/hostile-target'; mkdir( $hostile_target, 0700 );

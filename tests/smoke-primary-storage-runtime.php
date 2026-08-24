@@ -212,11 +212,15 @@ $deleted = $runtime->flush();
 mdi_runtime_assert( array( '_options/siteurl.json' ) === $deleted['deleted'], 'exact option deletion survives a mixed all-options flush' );
 
 $lazy_round_trip_cases = array(
+	12 => $lazy_content,
 	16 => '',
 	17 => 'Content without a final LF',
 	18 => "CRLF content\r\nwith a final CRLF\r\n",
 );
 foreach ( $lazy_round_trip_cases as $post_id => $content ) {
+	if ( 12 === $post_id ) {
+		continue;
+	}
 	$driver->query( 'INSERT INTO wp_posts (ID, post_content, post_title, post_status, post_name, post_type) VALUES (' . $post_id . ', ' . $pdo->quote( $content ) . ", 'Lazy case {$post_id}', 'publish', 'lazy-case-{$post_id}', 'post')" );
 }
 
@@ -253,7 +257,7 @@ foreach ( $lazy_round_trip_cases as $post_id => $content ) {
 	$cold_post = $cold_driver->query_cursor( 'SELECT ID, post_content FROM wp_posts WHERE ID = ' . $post_id )->fetch( PDO::FETCH_OBJ );
 	$lazy_round_trip_matches[] = $content === ( $cold_post->post_content ?? null );
 }
-mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn() && ! in_array( false, $lazy_round_trip_matches, true ) && 3 === count( $lazy_round_trip_matches ), 'cold reconstruction and lazy post SELECT preserve empty, no-final-LF, and CRLF content exactly' );
+mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn() && ! in_array( false, $lazy_round_trip_matches, true ) && 4 === count( $lazy_round_trip_matches ), 'cold reconstruction and lazy post SELECT preserve LF-terminated trailing whitespace, empty, no-final-LF, and CRLF content exactly' );
 
 $unsupported_cold_boot = false;
 try {

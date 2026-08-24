@@ -200,6 +200,17 @@ $operation_db->query( 'DELETE a, b FROM wp_options a, wp_options b WHERE a.optio
 $multi_delete = $operation_observations[10] ?? array();
 mdi_mysql_full_assert( 'DELETE' === ( $multi_delete['operation'] ?? null ) && array( 'wp_options' ) === ( $multi_delete['tables'] ?? null ) && ! isset( $multi_delete['table'] ), 'multi-table DELETE emits one complete target set rather than a false single-table observation' );
 
+$shadow_db = new WP_Markdown_MySQL_WPDB( 'user', 'pass', 'db', 'host' );
+$shadow_spy = new class() {
+	public array $observations = array();
+	public function observe( string $query, mixed $return_value, object $database ): void {
+		$this->observations[] = array( $query, $return_value, $database->num_rows );
+	}
+};
+$shadow_db->set_native_shadow_verifier( $shadow_spy );
+$shadow_return = $shadow_db->query( 'SELECT * FROM `wp_items`' );
+mdi_mysql_full_assert( 1 === $shadow_return && array( array( 'SELECT * FROM `wp_items`', 1, 1 ) ) === $shadow_spy->observations, 'mysql-full observes authoritative SELECT state after execution without changing its return' );
+
 $last_error = $db->last_error;
 $failed = $db->query( 'BROKEN SQL' );
 mdi_mysql_full_assert( false === $failed && 'syntax error' === $db->last_error && 6 === count( $observations ), 'failed parent query retains its error and emits nothing' );

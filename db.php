@@ -14,6 +14,38 @@
  * @package Markdown_Database_Integration
  */
 
+if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) ) {
+	function markdown_database_integration_enable_native_shadow( object $database, string $plugin_dir ): void {
+		if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW' ) || true !== MARKDOWN_DB_NATIVE_SHADOW || ! method_exists( $database, 'set_native_shadow_verifier' ) ) {
+			return;
+		}
+
+		try {
+			require_once $plugin_dir . '/inc/class-wp-markdown-native-shadow-verifier.php';
+			$state_root = defined( 'MARKDOWN_DB_STATE_DIR' )
+				? (string) MARKDOWN_DB_STATE_DIR
+				: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown' );
+			$prefix = (string) ( $database->prefix ?? ( $GLOBALS['table_prefix'] ?? 'wp_' ) );
+			$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? $prefix ) );
+			$runtime = WP_Markdown_Native_Runtime_Factory::runtime(
+				$state_root,
+				$prefix,
+				$base_prefix,
+				defined( 'MULTISITE' ) && MULTISITE
+			);
+			$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
+			$verifier = new WP_Markdown_Native_Shadow_Verifier( $runtime, $maximum );
+			$database->set_native_shadow_verifier( $verifier );
+			$GLOBALS['markdown_db_native_shadow_verifier'] = $verifier;
+		} catch ( Throwable $error ) {
+			$GLOBALS['markdown_db_native_shadow_diagnostic'] = array(
+				'code'  => 'markdown_db_native_shadow_bootstrap_failed',
+				'class' => get_class( $error ),
+			);
+		}
+	}
+}
+
 // mysql-content is a plugin-level MySQL runtime. Leave normal wpdb bootstrap
 // intact so the plugin can report the explicit db.php migration diagnostic.
 if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) {
@@ -50,6 +82,7 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 		$markdown_db_mysql_impact_adapter = new WP_Markdown_MySQL_Impact_Adapter( $markdown_db_mysql_wpdb->markdown_db_mysql_connection() );
 		$markdown_db_mysql_outbox = new WP_Markdown_MySQL_Outbox( $markdown_db_mysql_wpdb->markdown_db_mysql_connection(), $markdown_db_base_prefix . 'mdi_mysql_outbox', array( $markdown_db_mysql_impact_adapter, 'intents' ) );
 		$markdown_db_mysql_wpdb->set_mutation_sink( $markdown_db_mysql_outbox );
+		markdown_database_integration_enable_native_shadow( $markdown_db_mysql_wpdb, $markdown_db_mysql_plugin_dir );
 		$GLOBALS['markdown_db_mysql_outbox'] = $markdown_db_mysql_outbox;
 		$GLOBALS['markdown_db_mysql_semantic_drain'] = new WP_Markdown_MySQL_Semantic_Drain( $markdown_db_mysql_outbox, $markdown_db_mysql_impact_adapter );
 		$GLOBALS['wpdb'] = $markdown_db_mysql_wpdb;
@@ -304,6 +337,7 @@ if ( defined( 'DB_NAME' ) && '' !== DB_NAME ) {
 }
 
 $GLOBALS['wpdb'] = new WP_Markdown_DB( $db_name );
+markdown_database_integration_enable_native_shadow( $GLOBALS['wpdb'], $markdown_plugin_dir );
 
 // Boot Query Monitor integration if present.
 $qm_boot = $sqlite_plugin_implementation_folder_path . '/integrations/query-monitor/boot.php';

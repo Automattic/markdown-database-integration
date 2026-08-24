@@ -21,6 +21,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+require_once __DIR__ . '/class-wp-markdown-query-observer-boundary.php';
 
 class WP_Markdown_DB extends WP_SQLite_DB {
 
@@ -40,6 +41,27 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 * @var string|null 'load_all' or 'sync_incremental'.
 	 */
 	private $deferred_primary_loader_action = null;
+
+	private mixed $native_shadow_verifier = null;
+
+	public function set_native_shadow_verifier( mixed $verifier ): void {
+		if ( ! is_object( $verifier ) || ! method_exists( $verifier, 'observe' ) ) {
+			throw new InvalidArgumentException( 'The native shadow verifier must observe authoritative queries.' );
+		}
+		$this->native_shadow_verifier = $verifier;
+	}
+
+	public function query( $query ) {
+		$queries_before = (int) $this->num_queries;
+		$result = parent::query( $query );
+		if ( (int) $this->num_queries > $queries_before ) {
+			$effective_query = is_string( $this->last_query ) && '' !== $this->last_query
+				? $this->last_query
+				: (string) $query;
+			WP_Markdown_Query_Observer_Boundary::observe( $this->native_shadow_verifier, $effective_query, $result, $this );
+		}
+		return $result;
+	}
 
 	/**
 	 * Connects to the database.

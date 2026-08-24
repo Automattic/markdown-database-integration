@@ -146,7 +146,8 @@ $option_insert_mutation = $operations->mutations_for_query(
 	array( 'table' => 'wp_options', 'op' => 'INSERT', 'type' => 'DML' )
 );
 mdi_runtime_assert( array( 'inserted_option' ) === $option_insert_mutation[0]['resource_ids'], 'option INSERT mutation identity uses option_name rather than the numeric insert ID' );
-$driver->query( "UPDATE wp_posts SET post_content = 'Canonical body', post_title = 'Written post' WHERE ID = 12" );
+$driver->query( "UPDATE `wp_posts` SET `post_content` = 'Canonical body', `post_title` = 'Written post' WHERE `ID` = 12" );
+$driver->query( "UPDATE `wp_posts` SET `post_excerpt` = 'Quoted IN predicate' WHERE `ID` IN (12)" );
 $driver->query( "UPDATE wp_options SET option_value = 'https://example.test' WHERE option_name = 'siteurl'" );
 $driver->query( "UPDATE wp_options SET option_value = 'Canonical name' WHERE option_name = 'blogname'" );
 $first = $runtime->flush();

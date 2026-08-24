@@ -8,10 +8,12 @@
   "remote_path": "wp-content/plugins/markdown-database-integration",
   "scripts": {
     "lint": [
-      "php -l markdown-database-integration.php && for file in inc/*.php tests/*.php; do php -l \"$file\" || exit 1; done"
+      "php -l markdown-database-integration.php && for file in inc/*.php tests/*.php; do php -l \"$file\" || exit 1; done",
+      "test -z \"$(gofmt -l native-engine)\" && go test -C native-engine ./..."
     ],
     "test": [
-      "for test_file in tests/smoke-*.php; do php \"$test_file\" || exit 1; done"
+      "for test_file in tests/smoke-*.php; do php \"$test_file\" || exit 1; done",
+      "bash tests/run-native-mysql-sidecar.sh"
     ]
   },
   "version_targets": [

@@ -428,6 +428,23 @@ separate connections, server-side writers, multi-statements, stored-routine
 internal statements, and XA transactions remain outside the captured `wpdb`
 boundary and are reported by diagnostics.
 
+### Embedded MySQL Engine
+
+The arbitrary-plugin native target is tracked by
+[issue #232](https://github.com/Automattic/markdown-database-integration/issues/232).
+MDI pins `dolthub/go-mysql-server` in `native-engine/` to provide a standard
+MySQL wire-protocol and query-engine frontend without SQLite or a MySQL/MariaDB
+server. The first executable contract uses its memory backend only to verify
+real PHP `mysqli` text queries, prepared statements, session state, metadata,
+errors, readiness, and shutdown. Canonical storage adapters and production
+`db.php` routing remain fail-closed future milestones.
+
+Run the cross-language protocol gate with:
+
+```bash
+bash tests/run-native-mysql-sidecar.sh
+```
+
 ### Query Compatibility Corpus
 
 The `mdi-native` query-runtime program uses a versioned, backend-neutral corpus

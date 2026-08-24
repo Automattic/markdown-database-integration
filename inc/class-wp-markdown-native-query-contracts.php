@@ -79,6 +79,37 @@ final class WP_Markdown_Native_Query_Plan {
 	}
 }
 
+final class WP_Markdown_Native_Table_Access {
+	/** @param array<int,string> $projection */
+	public function __construct(
+		private readonly array $projection,
+		private readonly ?WP_Markdown_Native_Query_Predicate $predicate,
+		private readonly string $order,
+		private readonly int $limit
+	) {
+		if ( array() === $projection || $limit < 0 ) {
+			throw new InvalidArgumentException( 'Native table access requires a projection and nonnegative bound.' );
+		}
+	}
+
+	/** @return array<int,string> */
+	public function projection(): array {
+		return $this->projection;
+	}
+
+	public function predicate(): ?WP_Markdown_Native_Query_Predicate {
+		return $this->predicate;
+	}
+
+	public function order(): string {
+		return $this->order;
+	}
+
+	public function limit(): int {
+		return $this->limit;
+	}
+}
+
 final class WP_Markdown_Query_Result {
 	/** @param array<int,array<string,string|null>> $rows @param array<int,array{name:string,type:int,table?:string}> $columns */
 	private function __construct(
@@ -148,9 +179,6 @@ interface WP_Markdown_Query_Runtime {
 
 /** Providers supply validated rows without exposing storage to the executor. */
 interface WP_Markdown_Native_Table_Provider {
-	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
-	public function scan(): array|WP_Markdown_Query_Result;
-
-	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
-	public function lookup( string $column, array $values ): array|WP_Markdown_Query_Result;
+	/** @return iterable<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result;
 }

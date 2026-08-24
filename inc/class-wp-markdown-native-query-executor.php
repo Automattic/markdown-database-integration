@@ -54,29 +54,30 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->result( array(), $projection, $plan->table(), $schema );
 		}
 
-		$rows = null === $predicate
-			? $table['provider']->scan()
-			: $table['provider']->lookup( $predicate->column(), $predicate->values() );
-		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return $rows;
-		}
-		foreach ( $rows as $row ) {
-			if ( true !== $schema->validate_row( $row ) ) {
-				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
-			}
-		}
-
-		$order = $plan->order() ?? $schema->natural_order();
-		usort(
-			$rows,
-			static fn( array $left, array $right ): int => $schema->compare_values(
-				$order,
-				$left[ $order ],
-				$right[ $order ]
+		$provided = $table['provider']->read(
+			new WP_Markdown_Native_Table_Access(
+				$projection,
+				$predicate,
+				$plan->order() ?? $schema->natural_order(),
+				$plan->limit()
 			)
 		);
+		if ( $provided instanceof WP_Markdown_Query_Result ) {
+			return $provided;
+		}
 
-		return $this->result( array_slice( $rows, 0, $plan->limit() ), $projection, $plan->table(), $schema );
+		$rows = array();
+		foreach ( $provided as $row ) {
+			if ( count( $rows ) >= $plan->limit() ) {
+				break;
+			}
+			if ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $projection ) ) {
+				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
+			}
+			$rows[] = $row;
+		}
+
+		return $this->result( $rows, $projection, $plan->table(), $schema );
 	}
 
 	/** @param array<int,array<string,mixed>> $rows @param array<int,string> $projection */

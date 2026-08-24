@@ -8,6 +8,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
 	protected string $state_root;
+	/** @var array<string,array<string,array<int,array<string,mixed>>>> */
+	private array $indexes = array();
 
 	public function __construct(
 		string $state_root,
@@ -35,7 +37,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	}
 
 	/** @return mixed|WP_Markdown_Query_Result */
-	protected function read_json( string $path, string $root, string $kind ) {
+	protected function read_json( string $path, string $root, string $kind, ?string &$digest = null ) {
 		$real = realpath( $path );
 		if ( is_link( $path ) || false === $real || ! is_file( $real ) || ! $this->contains( $root, $real ) ) {
 			return $this->failure(
@@ -80,6 +82,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 					'The canonical state file cannot be read.'
 				);
 			}
+			$digest = hash( 'sha256', $contents );
 			return json_decode( $contents, true, 512, JSON_THROW_ON_ERROR );
 		} catch ( JsonException $error ) {
 			return $this->failure(
@@ -123,9 +126,90 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		}
 		return $rows;
 	}
+
+	/** @param array<int,array<string,mixed>> $rows @return array<int,array<string,mixed>> */
+	protected function indexed_rows( array $rows, WP_Markdown_Native_Query_Predicate $predicate ): array {
+		$column = $predicate->column();
+		if ( ! isset( $this->indexes[ $column ] ) ) {
+			$this->indexes[ $column ] = array();
+			foreach ( $rows as $row ) {
+				$key = $this->schema->value_key( $column, $row[ $column ] );
+				if ( null !== $key ) {
+					$this->indexes[ $column ][ $key ][] = $row;
+				}
+			}
+		}
+
+		$selected = array();
+		$seen     = array();
+		foreach ( $predicate->values() as $value ) {
+			$key = $this->schema->value_key( $column, $value );
+			foreach ( null === $key ? array() : ( $this->indexes[ $column ][ $key ] ?? array() ) as $row ) {
+				$identity = $this->schema->value_key( $this->schema->natural_order(), $row[ $this->schema->natural_order() ] );
+				if ( null !== $identity && ! isset( $seen[ $identity ] ) ) {
+					$seen[ $identity ] = true;
+					$selected[]        = $row;
+				}
+			}
+		}
+		return $selected;
+	}
+
+	/** @param array<int,array<string,mixed>> $rows @return array<int,array<string,mixed>> */
+	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access ): array {
+		usort(
+			$rows,
+			fn( array $left, array $right ): int => $this->schema->compare_values(
+				$access->order(),
+				$left[ $access->order() ],
+				$right[ $access->order() ]
+			)
+		);
+
+		$selected = array();
+		foreach ( $rows as $source ) {
+			if ( count( $selected ) >= $access->limit() ) {
+				break;
+			}
+			$row = array();
+			foreach ( $access->projection() as $column ) {
+				$row[ $column ] = $source[ $column ];
+			}
+			$selected[] = $row;
+		}
+		return $selected;
+	}
+
+	protected function reset_indexes(): void {
+		$this->indexes = array();
+	}
+
+	/** Cache identity only; path safety is still enforced while reading. */
+	protected function path_signature( string $path, ?string $content_digest = null ): string {
+		clearstatcache( true, $path );
+		$stat = @lstat( $path );
+		if ( false === $stat ) {
+			return 'missing';
+		}
+		$identity = implode( ':', array( $stat['dev'], $stat['ino'], $stat['mode'], $stat['size'], $stat['mtime'], $stat['ctime'], $stat['nlink'] ?? 0 ) );
+		if ( is_link( $path ) ) {
+			return 'link:' . $identity . ':' . (string) @readlink( $path );
+		}
+		if ( is_file( $path ) ) {
+			if ( 1 !== ( $stat['nlink'] ?? 1 ) ) {
+				return 'linked-file:' . $identity;
+			}
+			return 'file:' . $identity . ':' . ( $content_digest ?? (string) @hash_file( 'sha256', $path ) );
+		}
+		return 'node:' . $identity;
+	}
 }
 
 final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native_File_Provider {
+	private bool $loaded = false;
+	private string $signature = '';
+	/** @var array<int,array<string,mixed>>|WP_Markdown_Query_Result|null */
+	private array|WP_Markdown_Query_Result|null $snapshot = null;
 
 	public function __construct(
 		string $state_root,
@@ -135,14 +219,37 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		parent::__construct( $state_root, $schema );
 	}
 
-	public function scan(): array|WP_Markdown_Query_Result {
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		$rows = $this->snapshot();
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
+		}
+		if ( null !== $access->predicate() ) {
+			$rows = $this->indexed_rows( $rows, $access->predicate() );
+		}
+		return $this->bounded_rows( $rows, $access );
+	}
+
+	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	private function snapshot(): array|WP_Markdown_Query_Result {
 		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_tables';
+		$path      = $directory . DIRECTORY_SEPARATOR . $this->filename;
+		if ( $this->loaded ) {
+			$signature = $this->snapshot_signature( $directory, $path );
+			if ( $signature === $this->signature ) {
+				return $this->snapshot;
+			}
+		}
+		$this->loaded = true;
+		$this->reset_indexes();
 		if ( ! file_exists( $directory ) && ! is_link( $directory ) ) {
-			return array();
+			$this->signature = $this->snapshot_signature( $directory, $path );
+			return $this->snapshot = array();
 		}
 		$root = realpath( $directory );
 		if ( is_link( $directory ) || false === $root || ! is_dir( $root ) || ! $this->contains( $this->state_root, $root ) ) {
-			return $this->failure(
+			$this->signature = $this->snapshot_signature( $directory, $path );
+			return $this->snapshot = $this->failure(
 				'markdown_db_native_unsafe_path',
 				'unsafe_tables_directory',
 				'The canonical tables directory is not contained by the state root.'
@@ -151,51 +258,65 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 
 		$path = $root . DIRECTORY_SEPARATOR . $this->filename;
 		if ( ! file_exists( $path ) && ! is_link( $path ) ) {
-			return array();
+			$this->signature = $this->snapshot_signature( $directory, $path );
+			return $this->snapshot = array();
 		}
-		$data = $this->read_json( $path, $root, 'table_file' );
-		return $data instanceof WP_Markdown_Query_Result
+		$digest = null;
+		$data = $this->read_json( $path, $root, 'table_file', $digest );
+		$this->signature = $this->snapshot_signature( $directory, $path, $digest );
+		return $this->snapshot = $data instanceof WP_Markdown_Query_Result
 			? $data
 			: $this->validate_rows( $data, $this->schema->natural_order() );
 	}
 
-	public function lookup( string $column, array $values ): array|WP_Markdown_Query_Result {
-		if ( ! $this->schema->is_lookup( $column ) ) {
-			return $this->failure(
-				'markdown_db_native_unsupported_query',
-				'unsupported_lookup',
-				'The requested predicate column is not indexed by this native table.'
-			);
+	private function snapshot_signature( string $directory, string $path, ?string $digest = null ): string {
+		$directory_signature = $this->path_signature( $directory );
+		if ( is_link( $directory ) || ! is_dir( $directory ) ) {
+			return $directory_signature . '|unavailable';
 		}
-		$rows = $this->scan();
-		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return $rows;
-		}
-		return array_values(
-			array_filter(
-				$rows,
-				function ( array $row ) use ( $column, $values ): bool {
-					foreach ( $values as $value ) {
-						if ( $this->schema->values_match( $column, $row[ $column ], $value ) ) {
-							return true;
-						}
-					}
-					return false;
-				}
-			)
-		);
+		return $directory_signature . '|' . $this->path_signature( $path, $digest );
 	}
 }
 
 final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_Provider {
+	private bool $loaded = false;
+	private string $signature = '';
+	/** @var array<int,array<string,mixed>>|WP_Markdown_Query_Result|null */
+	private array|WP_Markdown_Query_Result|null $snapshot = null;
+	/** @var array<string,array{signature:string,value:array<string,mixed>|WP_Markdown_Query_Result|null}> */
+	private array $option_cache = array();
 
-	public function scan(): array|WP_Markdown_Query_Result {
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		$predicate = $access->predicate();
+		if ( null !== $predicate && 'option_name' === $predicate->column() ) {
+			$rows = $this->named_rows( $predicate->values() );
+		} else {
+			$rows = $this->snapshot();
+			if ( is_array( $rows ) && null !== $predicate ) {
+				$rows = $this->indexed_rows( $rows, $predicate );
+			}
+		}
+		return $rows instanceof WP_Markdown_Query_Result ? $rows : $this->bounded_rows( $rows, $access );
+	}
+
+	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	private function snapshot(): array|WP_Markdown_Query_Result {
+		if ( $this->loaded ) {
+			$signature = $this->options_signature();
+			if ( $signature === $this->signature ) {
+				return $this->snapshot;
+			}
+		}
+		$this->loaded = true;
+		$this->reset_indexes();
 		$root = $this->options_root();
 		if ( $root instanceof WP_Markdown_Query_Result ) {
-			return $root;
+			$this->signature = $this->options_signature();
+			return $this->snapshot = $root;
 		}
 		if ( null === $root ) {
-			return array();
+			$this->signature = $this->options_signature();
+			return $this->snapshot = array();
 		}
 
 		try {
@@ -206,7 +327,8 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 				}
 			}
 		} catch ( UnexpectedValueException $error ) {
-			return $this->failure(
+			$this->signature = $this->options_signature();
+			return $this->snapshot = $this->failure(
 				'markdown_db_native_unsafe_path',
 				'unreadable_options_directory',
 				'The canonical options directory cannot be enumerated.'
@@ -215,7 +337,8 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		if ( $root !== realpath( $this->state_root . DIRECTORY_SEPARATOR . '_options' )
 			|| is_link( $this->state_root . DIRECTORY_SEPARATOR . '_options' )
 		) {
-			return $this->failure(
+			$this->signature = $this->options_signature();
+			return $this->snapshot = $this->failure(
 				'markdown_db_native_unsafe_path',
 				'changed_options_directory',
 				'The canonical options directory changed while it was being enumerated.'
@@ -226,16 +349,20 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		$rows  = array();
 		$ids   = array();
 		$names = array();
+		$signatures = array();
 		foreach ( $paths as $path ) {
-			$row = $this->read_option( $path, $root );
+			$path_signature = null;
+			$row = $this->read_option( $path, $root, null, $path_signature );
 			if ( $row instanceof WP_Markdown_Query_Result ) {
-				return $row;
+				$this->signature = $this->options_signature();
+				return $this->snapshot = $row;
 			}
 			if ( basename( $path ) !== WP_Markdown_Canonical_Option_Path::filename( $row['option_name'] )
 				|| isset( $ids[ $row['option_id'] ] )
 				|| isset( $names[ $row['option_name'] ] )
 			) {
-				return $this->failure(
+				$this->signature = $this->options_signature();
+				return $this->snapshot = $this->failure(
 					'markdown_db_native_malformed_option',
 					'invalid_option_identity',
 					'Canonical option files must have unique identities and canonical filenames.'
@@ -244,31 +371,19 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			$ids[ $row['option_id'] ]     = true;
 			$names[ $row['option_name'] ] = true;
 			$rows[]                       = $row;
+			$signatures[ basename( $path ) ] = (string) $path_signature;
+			$key = (string) $this->schema->value_key( 'option_name', $row['option_name'] );
+			$this->option_cache[ $key ] = array(
+				'signature' => (string) $path_signature,
+				'value'     => $row,
+			);
 		}
-		return $rows;
+		$this->signature = $this->options_signature( $signatures );
+		return $this->snapshot = $rows;
 	}
 
-	public function lookup( string $column, array $values ): array|WP_Markdown_Query_Result {
-		if ( ! $this->schema->is_lookup( $column ) ) {
-			return $this->failure(
-				'markdown_db_native_unsupported_query',
-				'unsupported_lookup',
-				'The requested predicate column is not indexed by this native table.'
-			);
-		}
-		if ( 'option_name' !== $column ) {
-			$rows = $this->scan();
-			if ( $rows instanceof WP_Markdown_Query_Result ) {
-				return $rows;
-			}
-			return array_values(
-				array_filter(
-					$rows,
-					fn( array $row ): bool => $this->matches_any( $column, $row[ $column ], $values )
-				)
-			);
-		}
-
+	/** @param array<int,int|string> $values @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	private function named_rows( array $values ): array|WP_Markdown_Query_Result {
 		$root = $this->options_root();
 		if ( $root instanceof WP_Markdown_Query_Result ) {
 			return $root;
@@ -283,16 +398,26 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			if ( ! is_string( $name ) ) {
 				continue;
 			}
+			$key = (string) $this->schema->value_key( 'option_name', $name );
 			$path = $this->option_path( $root, $name );
 			if ( $path instanceof WP_Markdown_Query_Result ) {
 				return $path;
 			}
-			if ( null === $path ) {
-				continue;
+			$signature = null === $path ? 'missing' : ( isset( $this->option_cache[ $key ] ) ? $this->path_signature( $path ) : null );
+			if ( ! isset( $this->option_cache[ $key ] ) || $signature !== $this->option_cache[ $key ]['signature'] ) {
+				$path_signature = null;
+				$value = null === $path ? null : $this->read_option( $path, $root, $name, $path_signature );
+				$this->option_cache[ $key ] = array(
+					'signature' => null === $path ? 'missing' : (string) $path_signature,
+					'value'     => $value,
+				);
 			}
-			$row = $this->read_option( $path, $root, $name );
+			$row = $this->option_cache[ $key ]['value'];
 			if ( $row instanceof WP_Markdown_Query_Result ) {
 				return $row;
+			}
+			if ( null === $row ) {
+				continue;
 			}
 			if ( isset( $ids[ $row['option_id'] ] ) ) {
 				return $this->failure(
@@ -305,6 +430,27 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			$rows[]                   = $row;
 		}
 		return $rows;
+	}
+
+	/** @param array<string,string>|null $file_signatures */
+	private function options_signature( ?array $file_signatures = null ): string {
+		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_options';
+		$parts = array( $this->path_signature( $directory ) );
+		if ( null !== $file_signatures ) {
+			$parts += $file_signatures;
+		} elseif ( is_dir( $directory ) && ! is_link( $directory ) ) {
+			try {
+				foreach ( new FilesystemIterator( $directory, FilesystemIterator::SKIP_DOTS ) as $entry ) {
+					if ( str_ends_with( $entry->getFilename(), '.json' ) ) {
+						$parts[ $entry->getFilename() ] = $this->path_signature( $directory . DIRECTORY_SEPARATOR . $entry->getFilename() );
+					}
+				}
+			} catch ( UnexpectedValueException $error ) {
+				$parts[] = 'unreadable';
+			}
+		}
+		ksort( $parts, SORT_STRING );
+		return hash( 'sha256', serialize( $parts ) );
 	}
 
 	private function option_path( string $root, string $name ): string|WP_Markdown_Query_Result|null {
@@ -372,9 +518,12 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 	private function read_option(
 		string $path,
 		string $root,
-		?string $expected = null
+		?string $expected = null,
+		?string &$signature = null
 	): array|WP_Markdown_Query_Result {
-		$row = $this->read_json( $path, $root, 'option_file' );
+		$digest = null;
+		$row = $this->read_json( $path, $root, 'option_file', $digest );
+		$signature = $this->path_signature( $path, $digest );
 		if ( $row instanceof WP_Markdown_Query_Result ) {
 			$diagnostic = $row->diagnostic();
 			return 'markdown_db_native_unsafe_path' === ( $diagnostic['code'] ?? '' )
@@ -396,14 +545,5 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			);
 		}
 		return $row;
-	}
-
-	private function matches_any( string $column, mixed $row_value, array $values ): bool {
-		foreach ( $values as $value ) {
-			if ( $this->schema->values_match( $column, $row_value, $value ) ) {
-				return true;
-			}
-		}
-		return false;
 	}
 }

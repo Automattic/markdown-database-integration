@@ -125,6 +125,11 @@ final class WP_Markdown_Native_Table_Schema {
 		return $this->column( $column )->normalize( $left ) <=> $this->column( $column )->normalize( $right );
 	}
 
+	public function value_key( string $column, mixed $value ): ?string {
+		$value = $this->column( $column )->normalize( $value );
+		return null === $value ? null : serialize( $value );
+	}
+
 	/** @return true|string */
 	public function validate_row( array $row ) {
 		if ( count( $row ) !== count( $this->columns )
@@ -135,6 +140,19 @@ final class WP_Markdown_Native_Table_Schema {
 		}
 		foreach ( $this->columns as $name => $column ) {
 			if ( ! $column->validates( $row[ $name ] ) ) {
+				return 'invalid_' . $name;
+			}
+		}
+		return true;
+	}
+
+	/** @param array<int,string> $projection @return true|string */
+	public function validate_projection( array $row, array $projection ) {
+		if ( count( $row ) !== count( $projection ) || array_keys( $row ) !== $projection ) {
+			return 'invalid_row_projection';
+		}
+		foreach ( $projection as $name ) {
+			if ( ! $this->column( $name )->validates( $row[ $name ] ) ) {
 				return 'invalid_' . $name;
 			}
 		}

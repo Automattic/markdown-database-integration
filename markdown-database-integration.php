@@ -50,6 +50,8 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-primary-storage-run
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-migration.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-backend-capabilities.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-native-query-runtime.php';
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-native-wpdb.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-durable-reconciliation-operations.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-adapters.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-service.php';

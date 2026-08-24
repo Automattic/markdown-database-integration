@@ -23,6 +23,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-canonical-option-path.php';
+
 class WP_Markdown_Canonical_Persistence {
 
 	/** @var string The canonical Markdown post directory. */
@@ -852,25 +854,7 @@ class WP_Markdown_Canonical_Persistence {
 	 * @return string Safe filename with .json extension.
 	 */
 	public static function option_filename( string $name ): string {
-		$safe = preg_replace( '/[^A-Za-z0-9._\-]/', '_', $name );
-		$safe = preg_replace( '/_+/', '_', $safe );
-		$safe = trim( $safe, '._' );
-		if ( '' === $safe ) {
-			$safe = 'option';
-		}
-
-		$needs_hash = ( $safe !== $name ) || strlen( $name ) > 180;
-		if ( $needs_hash ) {
-			$hash = substr( md5( $name ), 0, 8 );
-			// Keep the readable prefix short enough to fit with hash + ext
-			// inside common filesystem limits (255 bytes).
-			if ( strlen( $safe ) > 180 ) {
-				$safe = substr( $safe, 0, 180 );
-			}
-			return $safe . '-' . $hash . '.json';
-		}
-
-		return $safe . '.json';
+		return WP_Markdown_Canonical_Option_Path::filename( $name );
 	}
 
 	/**

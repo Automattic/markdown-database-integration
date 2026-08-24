@@ -1,0 +1,102 @@
+<?php
+/** Backend-neutral contracts for bounded native queries. */
+
+if ( ! defined( 'ABSPATH' ) ) {
+	exit;
+}
+
+final class WP_Markdown_Query_Request {
+	public function __construct(
+		private string $sql,
+		private string $table_prefix = 'wp_'
+	) {
+		if ( '' === trim( $this->sql ) || 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $this->table_prefix ) ) {
+			throw new InvalidArgumentException( 'A query and supported table prefix are required.' );
+		}
+	}
+
+	public function sql(): string {
+		return $this->sql;
+	}
+
+	public function table_prefix(): string {
+		return $this->table_prefix;
+	}
+
+}
+
+final class WP_Markdown_Query_Result {
+	/** @param array<int,array<string,string>> $rows @param array<int,array{name:string,type:int,table?:string}> $columns */
+	private function __construct(
+		private int|bool $return_value,
+		private array $rows,
+		private array $columns,
+		private string $last_error = '',
+		private int|string $error_code = 0,
+		private ?array $diagnostic = null
+	) {}
+
+	public static function selected( array $rows, array $columns ): self {
+		return new self( count( $rows ), $rows, $columns );
+	}
+
+	/** @param array{code:string,message:string,reason:string} $diagnostic */
+	public static function failure( array $diagnostic ): self {
+		return new self( false, array(), array(), $diagnostic['message'], $diagnostic['code'], $diagnostic );
+	}
+
+	public function return_value(): int|bool {
+		return $this->return_value;
+	}
+
+	public function succeeded(): bool {
+		return false !== $this->return_value;
+	}
+
+	public function diagnostic(): ?array {
+		return $this->diagnostic;
+	}
+
+	/** @return array<string,mixed> State consumed by wpdb compatibility helpers. */
+	public function wpdb_state(): array {
+		return array(
+			'last_result' => array_map( static fn( array $row ): object => (object) $row, $this->rows ),
+			'col_info' => array_map( static fn( array $column ): object => (object) $column, $this->columns ),
+			'last_error' => $this->last_error,
+			'last_errno' => $this->error_code,
+			'insert_id' => 0,
+			'rows_affected' => 0,
+			'num_rows' => count( $this->rows ),
+		);
+	}
+
+	public function corpus_result(): array {
+		return array(
+			'return' => array(
+				'type' => is_bool( $this->return_value ) ? 'boolean' : 'integer',
+				'value' => $this->return_value,
+			),
+			'rows' => $this->rows,
+			'columns' => array_map( static fn( array $column ): array => array( 'name' => $column['name'], 'type' => (string) $column['type'] ), $this->columns ),
+			'last_error' => $this->last_error,
+			'error_code' => $this->error_code,
+			'insert_id' => 0,
+			'rows_affected' => 0,
+			'num_rows' => count( $this->rows ),
+			'exception' => null,
+		);
+	}
+}
+
+interface WP_Markdown_Query_Runtime {
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result;
+}
+
+/** Providers supply validated rows without exposing storage to the executor. */
+interface WP_Markdown_Native_Table_Provider {
+	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	public function scan(): array|WP_Markdown_Query_Result;
+
+	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	public function lookup( string $column, array $values ): array|WP_Markdown_Query_Result;
+}

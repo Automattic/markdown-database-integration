@@ -156,14 +156,16 @@ class WP_Markdown_Canonical_Persistence {
 	/**
 	 * Canonical paths touched since the previous successful flush, keyed by path.
 	 *
-	 * Each value carries the pre-mutation hash and, when MDI serializes a
-	 * replacement itself, its known post-mutation hash. Content is therefore
-	 * hashed only for paths MDI actually mutates, without rereading snapshots
-	 * that were just atomically replaced.
+	 * Each value records the pre-mutation existence fact. Atomic replacement is
+	 * itself the durable change receipt, so shutdown never reads a complete
+	 * preexisting snapshot merely to classify the notification.
 	 *
-	 * @var array<string, array{before:string|null,after:string|null}>
+	 * @var array<string, array{existed:bool}>
 	 */
 	private $canonical_mutations = array();
+
+	/** @var array<string,mixed> Diagnostics from the latest flush attempt. */
+	private $last_flush_diagnostics = array();
 
 	/**
 	 * Next matched temp-file offset to inspect for each canonical JSON path.
@@ -459,9 +461,18 @@ class WP_Markdown_Canonical_Persistence {
 	 */
 	public function flush_dirty( bool $throw_on_error = false ): array {
 		if ( empty( $this->dirty ) && empty( $this->dirty_posts ) && empty( $this->dirty_partition_resources ) && empty( $this->canonical_mutations ) ) {
+			$this->last_flush_diagnostics = array( 'status' => 'clean', 'dirty_tables' => array(), 'dirty_posts' => array(), 'dirty_partition_resources' => array(), 'canonical_paths' => array(), 'canonical_hash_reads' => 0 );
 			return array( 'created' => array(), 'changed' => array(), 'deleted' => array() );
 		}
 
+		$this->last_flush_diagnostics = array(
+			'status'                    => 'pending',
+			'dirty_tables'              => array_keys( $this->dirty ),
+			'dirty_posts'               => array_map( 'intval', array_keys( $this->dirty_posts ) ),
+			'dirty_partition_resources' => array_map( 'array_keys', $this->dirty_partition_resources ),
+			'canonical_paths'           => array_keys( $this->canonical_mutations ),
+			'canonical_hash_reads'      => 0,
+		);
 		$this->writing = true;
 
 		try {
@@ -499,12 +510,18 @@ class WP_Markdown_Canonical_Persistence {
 			$this->dirty_option_names  = array();
 			$this->dirty_options_all   = false;
 			$changes                   = $this->canonical_changes();
+			$this->last_flush_diagnostics['status'] = 'persisted';
+			$this->last_flush_diagnostics['canonical_paths'] = array_values( array_unique( array_merge( $this->last_flush_diagnostics['canonical_paths'], array_merge( $changes['created'], $changes['changed'], $changes['deleted'] ) ) ) );
+			sort( $this->last_flush_diagnostics['canonical_paths'], SORT_STRING );
 			$this->canonical_mutations = array();
 			if ( function_exists( 'do_action' ) ) {
 				do_action( 'markdown_database_integration_flushed', $changes );
+				do_action( 'markdown_database_integration_persistence_diagnostics', $this->last_flush_diagnostics );
 			}
 			return $changes;
 		} catch ( \Throwable $e ) {
+			$this->last_flush_diagnostics['status'] = 'retryable_failure';
+			$this->last_flush_diagnostics['error'] = $e->getMessage();
 			if ( $throw_on_error ) {
 				throw $e;
 			}
@@ -515,6 +532,11 @@ class WP_Markdown_Canonical_Persistence {
 		}
 	}
 
+	/** Return the dirty scope and bounded work performed by the latest flush attempt. */
+	public function last_flush_diagnostics(): array {
+		return $this->last_flush_diagnostics;
+	}
+
 	/**
 	 * @return array{created:string[],changed:string[],deleted:string[]}
 	 */
@@ -523,19 +545,17 @@ class WP_Markdown_Canonical_Persistence {
 		$deleted = array();
 		$changed = array();
 		foreach ( $this->canonical_mutations as $path => $mutation ) {
-			$before   = $mutation['before'];
 			$absolute = $this->canonical_absolute_path( $path );
 			if ( ! is_file( $absolute ) ) {
-				if ( null !== $before ) {
+				if ( $mutation['existed'] ) {
 					$deleted[] = $path;
 				}
 				continue;
 			}
 
-			$after = $mutation['after'] ?? $this->canonical_file_hash( $absolute );
-			if ( null === $before ) {
+			if ( ! $mutation['existed'] ) {
 				$created[] = $path;
-			} elseif ( $after !== $before ) {
+			} else {
 				$changed[] = $path;
 			}
 		}
@@ -553,18 +573,13 @@ class WP_Markdown_Canonical_Persistence {
 		}
 
 		$this->canonical_mutations[ $path ] = array(
-			'before' => is_file( $absolute_path ) ? $this->canonical_file_hash( $absolute_path ) : null,
-			'after'  => null,
+			'existed' => is_file( $absolute_path ),
 		);
 	}
 
-	/** Record the known content identity after MDI atomically replaces a canonical file. */
-	private function track_canonical_write( string $absolute_path, string $hash ): void {
+	/** Record a completed atomic replacement without rereading its destination. */
+	private function track_canonical_write( string $absolute_path ): void {
 		$this->track_canonical_mutation( $absolute_path );
-		$path = $this->canonical_relative_path( $absolute_path );
-		if ( null !== $path ) {
-			$this->canonical_mutations[ $path ]['after'] = $hash;
-		}
 	}
 
 	/** @return string SHA-256 identity for a canonical file. */

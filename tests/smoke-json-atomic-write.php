@@ -126,8 +126,8 @@ assert_true( is_array( $decoded ), 'final JSON exists and parses' );
 assert_eq( isset( $decoded[0]['action_id'] ) ? (int) $decoded[0]['action_id'] : null, 3, 'final write wins' );
 assert_true( empty( $stale ), 'no stale temp files remain', implode( ', ', $stale ) );
 
-// 3. Change classification uses the serialized snapshot identity rather than
-// rereading a large replacement after its atomic rename.
+// 3. Change classification uses bounded mutation facts rather than rereading
+// either side of a large atomic replacement at shutdown.
 $hash_engine  = new MDI_Hash_Observed_Write_Engine( $base, new WP_Markdown_Storage( $base ), new WP_MySQL_On_SQLite(), 'wp_' );
 $hash_path    = $base . '/_tables/hash-observed.json';
 $hash_payload = array_fill( 0, 1000, array( 'history' => str_repeat( 'x', 1024 ) ) );
@@ -136,14 +136,14 @@ $write_method->invoke( $hash_engine, $hash_path, $hash_payload );
 $changes_method = new ReflectionMethod( $hash_engine, 'canonical_changes' );
 $changes        = $changes_method->invoke( $hash_engine );
 
-assert_eq( $hash_engine->canonical_hash_reads, 1, 'replaced snapshot is hashed only before atomic write' );
-assert_eq( $changes['changed'] ?? array(), array( '_tables/hash-observed.json' ), 'known snapshot identity reports changed file' );
+assert_eq( $hash_engine->canonical_hash_reads, 0, 'replaced snapshot is never read for change classification' );
+assert_eq( $changes['changed'] ?? array(), array( '_tables/hash-observed.json' ), 'bounded mutation fact reports replaced file' );
 
 $created_path = $base . '/_tables/hash-created.json';
 $write_method->invoke( $hash_engine, $created_path, $hash_payload );
 $changes = $changes_method->invoke( $hash_engine );
-assert_eq( $hash_engine->canonical_hash_reads, 1, 'new snapshot is not read for change classification' );
-assert_true( in_array( '_tables/hash-created.json', $changes['created'] ?? array(), true ), 'known snapshot identity reports created file' );
+assert_eq( $hash_engine->canonical_hash_reads, 0, 'new snapshot is not read for change classification' );
+assert_true( in_array( '_tables/hash-created.json', $changes['created'] ?? array(), true ), 'bounded mutation fact reports created file' );
 
 // 4. Option files use the same bounded atomic temp-path primitive as table
 // snapshots and leave no process-local temp artifacts after replacement.

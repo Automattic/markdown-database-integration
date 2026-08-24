@@ -6,7 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class WP_Markdown_Native_Query_Parser {
-	public function parse( string $sql ): array|WP_Markdown_Query_Result {
+	public function parse( string $sql ): WP_Markdown_Native_Query_Plan|WP_Markdown_Query_Result {
 		$identifier = '`?[A-Za-z_][A-Za-z0-9_]*`?';
 		$string = "'(?:[^'\\\\]|\\\\.)*'";
 		$scalar = '(?:' . $string . '|[0-9]+)';
@@ -66,16 +66,16 @@ final class WP_Markdown_Native_Query_Parser {
 			$limit = (int) $matches['limit'];
 		}
 
-		return array(
-			'table' => $this->identifier( $matches['table'] ),
-			'projection' => $projection,
-			'predicate' => '' === $predicate_column ? null : array(
-				'column' => $this->identifier( $predicate_column ),
-				'operator' => $operator,
-				'values' => $values,
+		return new WP_Markdown_Native_Query_Plan(
+			$this->identifier( $matches['table'] ),
+			$projection,
+			'' === $predicate_column ? null : new WP_Markdown_Native_Query_Predicate(
+				$this->identifier( $predicate_column ),
+				$operator,
+				$values
 			),
-			'order' => '' === ( $matches['order'] ?? '' ) ? null : $this->identifier( $matches['order'] ),
-			'limit' => $limit,
+			'' === ( $matches['order'] ?? '' ) ? null : $this->identifier( $matches['order'] ),
+			$limit
 		);
 	}
 

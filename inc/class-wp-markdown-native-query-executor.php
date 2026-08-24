@@ -18,19 +18,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $plan;
 		}
 
-		$table = $this->registry->table( $plan['table'] );
+		$table = $this->registry->table( $plan->table() );
 		if ( null === $table ) {
 			return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
 		}
 
 		$schema     = $table['schema'];
-		$projection = array( '*' ) === $plan['projection'] ? array_keys( $schema->columns() ) : $plan['projection'];
+		$predicate  = $plan->predicate();
+		$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
 		$columns    = $projection;
-		if ( null !== $plan['predicate'] ) {
-			$columns[] = $plan['predicate']['column'];
+		if ( null !== $predicate ) {
+			$columns[] = $predicate->column();
 		}
-		if ( null !== $plan['order'] ) {
-			$columns[] = $plan['order'];
+		if ( null !== $plan->order() ) {
+			$columns[] = $plan->order();
 		}
 		foreach ( $columns as $column ) {
 			if ( ! $schema->has_column( $column ) ) {
@@ -38,24 +39,24 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 
-		if ( null !== $plan['predicate'] && ! $schema->allows_lookup(
-			$plan['predicate']['column'],
-			$plan['predicate']['operator'],
-			$plan['predicate']['values']
+		if ( null !== $predicate && ! $schema->allows_lookup(
+			$predicate->column(),
+			$predicate->operator(),
+			$predicate->values()
 		) ) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested predicate.' );
 		}
-		if ( null !== $plan['order'] && ! $schema->allows_order( $plan['order'] ) ) {
+		if ( null !== $plan->order() && ! $schema->allows_order( $plan->order() ) ) {
 			return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
 		}
 
-		if ( 0 === $plan['limit'] ) {
-			return $this->result( array(), $projection, $plan['table'], $schema );
+		if ( 0 === $plan->limit() ) {
+			return $this->result( array(), $projection, $plan->table(), $schema );
 		}
 
-		$rows = null === $plan['predicate']
+		$rows = null === $predicate
 			? $table['provider']->scan()
-			: $table['provider']->lookup( $plan['predicate']['column'], $plan['predicate']['values'] );
+			: $table['provider']->lookup( $predicate->column(), $predicate->values() );
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
 			return $rows;
 		}
@@ -65,7 +66,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 
-		$order = $plan['order'] ?? $schema->natural_order();
+		$order = $plan->order() ?? $schema->natural_order();
 		usort(
 			$rows,
 			static fn( array $left, array $right ): int => $schema->compare_values(
@@ -75,7 +76,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			)
 		);
 
-		return $this->result( array_slice( $rows, 0, $plan['limit'] ), $projection, $plan['table'], $schema );
+		return $this->result( array_slice( $rows, 0, $plan->limit() ), $projection, $plan->table(), $schema );
 	}
 
 	/** @param array<int,array<string,mixed>> $rows @param array<int,string> $projection */
@@ -95,12 +96,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			},
 			$rows
 		);
-		$types = $schema->columns();
 		$columns = array_map(
 			static fn( string $column ): array => array(
 				'name'  => $column,
 				'table' => $table,
-				'type'  => $types[ $column ]['type'],
+				'type'  => $schema->column( $column )->type(),
 			),
 			$projection
 		);

@@ -22,19 +22,7 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 
 		try {
 			require_once $plugin_dir . '/inc/class-wp-markdown-native-shadow-verifier.php';
-			$state_root = defined( 'MARKDOWN_DB_STATE_DIR' )
-				? (string) MARKDOWN_DB_STATE_DIR
-				: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown' );
-			$prefix = (string) ( $database->prefix ?? ( $GLOBALS['table_prefix'] ?? 'wp_' ) );
-			$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? $prefix ) );
-			$runtime = WP_Markdown_Native_Runtime_Factory::runtime(
-				$state_root,
-				$prefix,
-				$base_prefix,
-				defined( 'MULTISITE' ) && MULTISITE
-			);
-			$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
-			$verifier = new WP_Markdown_Native_Shadow_Verifier( $runtime, $maximum );
+			$verifier = WP_Markdown_Native_Shadow_Factory::from_globals( $database );
 			$database->set_native_shadow_verifier( $verifier );
 			$GLOBALS['markdown_db_native_shadow_verifier'] = $verifier;
 		} catch ( Throwable $error ) {

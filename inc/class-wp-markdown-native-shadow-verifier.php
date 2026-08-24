@@ -7,6 +7,25 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/class-wp-markdown-native-query-runtime.php';
 require_once __DIR__ . '/class-wp-markdown-query-compatibility-comparator.php';
+require_once __DIR__ . '/class-wp-markdown-wpdb-result-snapshot.php';
+
+final class WP_Markdown_Native_Shadow_Factory {
+	public static function from_globals( object $database ): WP_Markdown_Native_Shadow_Verifier {
+		$state_root = defined( 'MARKDOWN_DB_STATE_DIR' )
+			? (string) MARKDOWN_DB_STATE_DIR
+			: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown' );
+		$prefix = (string) ( $database->prefix ?? ( $GLOBALS['table_prefix'] ?? 'wp_' ) );
+		$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? $prefix ) );
+		$runtime = WP_Markdown_Native_Runtime_Factory::runtime(
+			$state_root,
+			$prefix,
+			$base_prefix,
+			defined( 'MULTISITE' ) && MULTISITE
+		);
+		$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
+		return new WP_Markdown_Native_Shadow_Verifier( $runtime, $maximum );
+	}
+}
 
 final class WP_Markdown_Native_Shadow_Verifier {
 	private int $sequence = 0;
@@ -65,7 +84,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			}
 
 			$comparison = WP_Markdown_Query_Compatibility_Comparator::compare(
-				$this->authoritative_result( $return_value, $database ),
+				WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true ),
 				$native->corpus_result()
 			);
 			if ( $comparison['compatible'] ) {
@@ -105,63 +124,6 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'counts'           => $this->counts,
 			'first_blocker'    => $this->first_blocker,
 		);
-	}
-
-	/** @return array<string,mixed> */
-	private function authoritative_result( mixed $return_value, object $database ): array {
-		if ( ! is_int( $return_value ) && ! is_bool( $return_value ) ) {
-			throw new RuntimeException( 'Authoritative query results must use wpdb scalar returns.' );
-		}
-		$rows = array();
-		foreach ( $database->last_result ?? array() as $row ) {
-			if ( ! is_array( $row ) && ! is_object( $row ) ) {
-				throw new RuntimeException( 'Authoritative query rows must be arrays or objects.' );
-			}
-			$rows[] = (array) $row;
-		}
-
-		return array(
-			'return' => array(
-				'type'  => is_bool( $return_value ) ? 'boolean' : 'integer',
-				'value' => $return_value,
-			),
-			'rows'          => $rows,
-			'columns'       => $this->columns( $database ),
-			'last_error'    => (string) ( $database->last_error ?? '' ),
-			'error_code'    => isset( $database->last_errno ) ? $database->last_errno : 0,
-			'insert_id'     => (int) ( $database->insert_id ?? 0 ),
-			'rows_affected' => (int) ( $database->rows_affected ?? 0 ),
-			'num_rows'      => (int) ( $database->num_rows ?? 0 ),
-			'exception'     => null,
-		);
-	}
-
-	/** @return array<int,array{name:string,type:string|null}> */
-	private function columns( object $database ): array {
-		if ( ! method_exists( $database, 'get_col_info' ) ) {
-			return array();
-		}
-		try {
-			$property = new ReflectionProperty( $database, 'col_info' );
-			$before = $property->getValue( $database );
-		} catch ( ReflectionException $error ) {
-			return array();
-		}
-
-		try {
-			$names = (array) $database->get_col_info( 'name' );
-			$types = (array) $database->get_col_info( 'type' );
-			$columns = array();
-			foreach ( $names as $index => $name ) {
-				$columns[] = array(
-					'name' => (string) $name,
-					'type' => isset( $types[ $index ] ) ? (string) $types[ $index ] : null,
-				);
-			}
-			return $columns;
-		} finally {
-			$property->setValue( $database, $before );
-		}
 	}
 
 	/** @param array<string,mixed> $details */

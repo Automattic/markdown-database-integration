@@ -149,17 +149,21 @@ $actual_loader->prepare_existing_cache();
 $actual_index = $actual_operations->file_index_receipt( 42 );
 mdi_production_check( null !== $actual_storage->read_post( 42 ) && array( 'post_id' => 42 ) === $actual_index, 'actual canonical persistence, SQLite operations, and loader entry points publish matching file and index state' );
 
-// A claimed WordPress commit checkpoint can continue after commit under its original ID.
+// Recover a post-commit effect that was applied before its observation could complete.
 $checkpoint_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );
 $checkpoint_observer = static function () use ( &$checkpoint_state ): array { return $checkpoint_state; };
 $checkpoint_applies = 0;
 $checkpoint_apply = static function () use ( &$checkpoint_state, &$checkpoint_applies ): void { ++$checkpoint_applies; $checkpoint_state['canonical'] = 'after'; $checkpoint_state['index'] = array( 'post_id' => 42 ); };
 $checkpoint_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $checkpoint_observer, $checkpoint_apply );
-$prepared = $coordinator->prepare( array( 'plan_id' => 'prepared-production-write', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $checkpoint_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) ), $checkpoint_adapter );
+$checkpoint_intent = array( 'plan_id' => 'prepared-production-write', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $checkpoint_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) );
+$checkpoint_intent['checkpoint'] = array_map( array( WP_Markdown_Reconciliation_Identity::class, 'exact' ), $checkpoint_intent['checkpoint'] );
+$checkpoint_record = $coordinator->plan( $checkpoint_intent );
+$checkpoint_operations = new WP_Markdown_Durable_Reconciliation_Operations( $store );
+$checkpoint_prepared = $checkpoint_operations->prepare( $checkpoint_record['id'], 'post-commit-worker', 100, 1, $checkpoint_adapter );
 $checkpoint_state['wordpress'] = 'after';
-$continued = $coordinator->continue_prepared( $prepared['id'], $checkpoint_adapter );
-$continued_retry = $coordinator->recover( $prepared['id'], $checkpoint_adapter );
-mdi_production_check( 'completed' === $continued['state'] && 'completed' === $continued_retry['state'] && 1 === $checkpoint_applies && 'after' === $checkpoint_state['canonical'] && array( 'post_id' => 42 ) === $checkpoint_state['index'], 'prepared production write returns success and recovery observes the completed post-commit effect without replay' );
+$checkpoint_adapter->apply( $checkpoint_prepared );
+$checkpoint_recovered = $checkpoint_operations->recover( $checkpoint_record['id'], 'post-commit-recovery', 200, 30, $checkpoint_adapter );
+mdi_production_check( 'completed' === $checkpoint_recovered['state'] && 1 === $checkpoint_applies && 'after' === $checkpoint_state['canonical'] && array( 'post_id' => 42 ) === $checkpoint_state['index'], 'interrupted post-commit recovery observes an applied canonical effect without replay' );
 
 // A post-commit observer still fails closed when the canonical effect differs.
 $mismatch_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );

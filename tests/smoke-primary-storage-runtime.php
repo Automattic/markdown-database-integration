@@ -175,7 +175,8 @@ $option_insert_mutation = $operations->mutations_for_query(
 	array( 'table' => 'wp_options', 'op' => 'INSERT', 'type' => 'DML' )
 );
 mdi_runtime_assert( array( 'inserted_option' ) === $option_insert_mutation[0]['resource_ids'], 'option INSERT mutation identity uses option_name rather than the numeric insert ID' );
-$driver->query( "UPDATE `wp_posts` SET `post_content` = 'Canonical body', `post_title` = 'Written post' WHERE `ID` = 12" );
+$lazy_content = "Canonical body  \t\n";
+$driver->query( "UPDATE `wp_posts` SET `post_content` = '{$lazy_content}', `post_title` = 'Written post' WHERE `ID` = 12" );
 $driver->query( "UPDATE `wp_posts` SET `post_excerpt` = 'Quoted IN predicate' WHERE `ID` IN (12)" );
 $driver->query( "UPDATE wp_options SET option_value = 'https://example.test' WHERE option_name = 'siteurl'" );
 $driver->query( "UPDATE wp_options SET option_value = 'Canonical name' WHERE option_name = 'blogname'" );
@@ -236,8 +237,9 @@ $cold_pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta
 $cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
 $cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER, term_order INTEGER DEFAULT 0)' );
-WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
-mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn(), 'canonical Markdown and JSON reconstruct mutations after deleting SQLite' );
+$cold_runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
+$cold_post = $cold_runtime->get_driver()->query_cursor( 'SELECT ID, post_content FROM wp_posts WHERE ID = 12' )->fetch( PDO::FETCH_OBJ );
+mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn() && $lazy_content === ( $cold_post->post_content ?? null ), 'cold reconstruction and lazy post SELECT preserve terminal spaces and tabs from canonical Markdown' );
 
 $unsupported_cold_boot = false;
 try {

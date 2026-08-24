@@ -1043,8 +1043,7 @@ class WP_Markdown_Canonical_Persistence {
 			'ID'           => (int) ( $row['ID'] ?? 0 ),
 			'post_name'    => (string) ( $row['post_name'] ?? '' ),
 			'post_title'   => (string) ( $row['post_title'] ?? '' ),
-			// Markdown parsing canonicalizes terminal line endings with rtrim().
-			'post_content' => rtrim( (string) ( $row['post_content'] ?? '' ) ),
+			'post_content' => (string) ( $row['post_content'] ?? '' ),
 			'post_status'  => (string) ( $row['post_status'] ?? '' ),
 			'post_type'    => (string) ( $row['post_type'] ?? 'post' ),
 			'post_parent'  => (int) ( $row['post_parent'] ?? 0 ),

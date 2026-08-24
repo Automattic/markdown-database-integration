@@ -39,12 +39,16 @@ add_filter( 'markdown_db_persistent_table_query', static fn( string $query, stri
 
 $root = sys_get_temp_dir() . '/mdi-partition-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
+$legacy_snapshot = $root . '/_tables/runtime_events.json';
+mkdir( dirname( $legacy_snapshot ), 0755, true );
+file_put_contents( $legacy_snapshot, "[]\n" );
 $driver = new MDI_Partition_Driver();
 $engine = new WP_Markdown_Write_Engine( $root, new WP_Markdown_Storage( $root ), $driver, 'wp_' );
 
 // The first mutation migrates the legacy logical table into complete partitions.
 $engine->persist_write( "UPDATE wp_runtime_events SET payload = 'two' WHERE event_id = 2", 'wp_runtime_events', 'UPDATE' );
-$engine->flush_dirty( true );
+$migration_changes = $engine->flush_dirty( true );
+$migration_diagnostics = $engine->last_flush_diagnostics();
 $directory = $root . '/_tables/runtime_events';
 $marker = json_decode( (string) file_get_contents( $directory . '/.mdi-partition.json' ), true );
 $generation_directory = $directory . '/' . $marker['generation'];
@@ -54,6 +58,7 @@ $paths = array(
 	3 => $generation_directory . '/' . hash( 'sha256', '3' ) . '.json',
 );
 mdi_partition_assert( is_file( $directory . '/.mdi-partition.json' ) && is_file( $paths[1] ) && is_file( $paths[2] ) && is_file( $paths[3] ), 'first mutation creates a complete partitioned table' );
+mdi_partition_assert( ! is_file( $legacy_snapshot ) && in_array( '_tables/runtime_events.json', $migration_changes['deleted'], true ) && in_array( '_tables/runtime_events.json', $migration_diagnostics['canonical_paths'], true ), 'partition migration reports its legacy full-table snapshot deletion' );
 mdi_partition_assert( str_contains( $driver->queries[0], 'SELECT * FROM `wp_runtime_events` ORDER BY 1' ) && ! str_contains( $driver->queries[0], "IN ('999')" ), 'external resource IDs cannot truncate a full partition generation' );
 
 $before = array_map( 'hash_file', array_fill( 0, 3, 'sha256' ), array_values( $paths ) );

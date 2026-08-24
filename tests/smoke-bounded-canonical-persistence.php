@@ -3,8 +3,24 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 require_once __DIR__ . '/../inc/interface-wp-markdown-backend-operations.php';
+
+$GLOBALS['mdi_bounded_actions'] = array();
+function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_bounded_actions'][] = array( 'hook' => $hook, 'args' => $args ); }
+
+final class WP_Markdown_Storage {
+	private $observer = null;
+	public bool $fail_next_post_write = false;
+	public int $post_write_attempts = 0;
+	public function __construct( private string $content_dir ) {}
+	public function set_file_mutation_observer( callable $observer ): void { $this->observer = $observer; }
+	public function get_content_dir(): string { return $this->content_dir; }
+	public function is_markdown_type( string $post_type ): bool { return 'post' === $post_type; }
+	public function write_post( object $post ): string|false { $this->post_write_attempts++; if ( $this->fail_next_post_write ) { $this->fail_next_post_write = false; return false; } $path = $this->content_dir . '/post-' . (int) $post->ID . '.md'; if ( is_callable( $this->observer ) ) { ( $this->observer )( $path ); } file_put_contents( $path, (string) $post->post_content ); return $path; }
+	public function delete_post( int $post_id ): bool { $path = $this->content_dir . '/post-' . $post_id . '.md'; if ( ! is_file( $path ) ) { return true; } if ( is_callable( $this->observer ) ) { ( $this->observer )( $path ); } return unlink( $path ); }
+	public function path_for_post( int $post_id ): string|false { $path = $this->content_dir . '/post-' . $post_id . '.md'; return is_file( $path ) ? $path : false; }
+	public function read_post( int $post_id ): ?object { return null; }
+}
 require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
 final class MDI_Bounded_Operations implements WP_Markdown_Backend_Operations {
@@ -12,7 +28,7 @@ final class MDI_Bounded_Operations implements WP_Markdown_Backend_Operations {
 	public int $option_reads = 0;
 	public array $rows = array( 'target' => array( 'option_id' => 7, 'option_name' => 'target', 'option_value' => 'durable', 'autoload' => 'yes' ) );
 	public function table_rows( string $table_suffix, ?array $policy = null ): iterable { return array(); }
-	public function post_rows( array $post_ids ): array { return array(); }
+	public function post_rows( array $post_ids ): array { return array( 42 ) === array_map( 'intval', $post_ids ) ? array( array( 'ID' => 42, 'post_type' => 'post', 'post_content' => 'durable post' ) ) : array(); }
 	public function post_status( int $post_id ): ?string { return null; }
 	public function post_meta( int $post_id ): array { return array(); }
 	public function post_terms( int $post_id ): array { return array(); }
@@ -50,7 +66,8 @@ function mdi_bounded_remove( string $path ): void { if ( ! is_dir( $path ) ) { @
 $root = sys_get_temp_dir() . '/mdi-bounded-persistence-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0700, true );
 $operations = new MDI_Bounded_Operations();
-$persistence = new MDI_Bounded_Persistence( $root, new WP_Markdown_Storage( $root ), $operations, 'wp_', $root );
+$storage = new WP_Markdown_Storage( $root );
+$persistence = new MDI_Bounded_Persistence( $root, $storage, $operations, 'wp_', $root );
 
 // A read-only request performs no persistence work and no content hashing.
 $persistence->flush_dirty( true );
@@ -70,10 +87,22 @@ mdi_bounded_assert( array( 'options' ) === $diagnostics['dirty_tables'] && array
 // A failed flush retains its dirty fact so the next request can retry safely.
 $operations->fail_options_once = true;
 $persistence->persist_mutation( $mutation );
-$persistence->flush_dirty();
-mdi_bounded_assert( 'retryable_failure' === $persistence->last_flush_diagnostics()['status'], 'failed persistence records retryable diagnostics' );
+$failure_thrown = false;
+try { $persistence->flush_dirty( true ); } catch ( RuntimeException ) { $failure_thrown = true; }
+$failure_diagnostics = $persistence->last_flush_diagnostics();
+$failure_action = end( $GLOBALS['mdi_bounded_actions'] );
+mdi_bounded_assert( $failure_thrown && 'retryable_failure' === $failure_diagnostics['status'] && 'canonical_persistence_failed' === $failure_diagnostics['failure'] && ! isset( $failure_diagnostics['error'] ) && 'markdown_database_integration_persistence_diagnostics' === $failure_action['hook'] && $failure_diagnostics === $failure_action['args'][0], 'failed persistence emits sanitized retryable diagnostics before rethrowing' );
 $persistence->flush_dirty( true );
 mdi_bounded_assert( 3 === $operations->option_reads && 'persisted' === $persistence->last_flush_diagnostics()['status'], 'failed dirty subset retries and completes durably' );
+
+// A false markdown write is a retryable durability failure, not a successful post flush.
+$post_mutation = array( 'key' => 'post:42', 'resource' => 'post:42', 'operation' => 'UPDATE', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '42' ) ) );
+$storage->fail_next_post_write = true;
+$persistence->persist_mutation( $post_mutation );
+$persistence->flush_dirty();
+mdi_bounded_assert( 'retryable_failure' === $persistence->last_flush_diagnostics()['status'] && array( 42 ) === $persistence->last_flush_diagnostics()['dirty_posts'] && 1 === $storage->post_write_attempts && ! is_file( $root . '/post-42.md' ), 'false markdown write retains the dirty post for retry' );
+$persistence->flush_dirty( true );
+mdi_bounded_assert( 2 === $storage->post_write_attempts && is_file( $root . '/post-42.md' ) && 'persisted' === $persistence->last_flush_diagnostics()['status'], 'retried markdown write publishes a durable canonical post' );
 
 // Replacing a large canonical snapshot never rereads it through hash_file at shutdown.
 mkdir( $root . '/_tables', 0700, true );

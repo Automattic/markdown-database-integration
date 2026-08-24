@@ -1454,7 +1454,8 @@ class WP_Markdown_Storage {
 		}
 
 		$frontmatter = $this->decode_yaml( $m[1] );
-		$content     = $metadata_only ? '' : rtrim( $m[2] );
+		// write_post() terminates every body with one LF; remove only that terminator.
+		$content     = $metadata_only ? '' : ( str_ends_with( $m[2], "\n" ) ? substr( $m[2], 0, -1 ) : $m[2] );
 
 		if ( ! $frontmatter ) {
 			return null;

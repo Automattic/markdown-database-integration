@@ -155,6 +155,21 @@ $runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap(
 );
 $driver = $runtime->get_driver();
 $operations = new WP_Markdown_SQLite_Operations( $driver, 'wp_' );
+$post_commit_marker = 'Post-commit persistence succeeds exactly once.';
+$post_commit_result = $driver->query( "UPDATE wp_posts SET post_content = '{$post_commit_marker}\n' WHERE ID = 12" );
+$post_commit_row = (string) $pdo->query( 'SELECT post_content FROM wp_posts WHERE ID = 12' )->fetchColumn();
+$post_commit_file = (string) file_get_contents( $root . '/content/post/cold-post.md' );
+$post_commit_canonical = ( new WP_Markdown_Storage( $root . '/content' ) )->read_post( 12 );
+$post_commit_index = $operations->file_index_receipt( 12 );
+mdi_runtime_assert(
+	false !== $post_commit_result
+	&& $post_commit_marker === rtrim( $post_commit_row )
+	&& $post_commit_marker === ( $post_commit_canonical->post_content ?? null )
+	&& 1 === substr_count( $post_commit_row, $post_commit_marker )
+	&& 1 === substr_count( $post_commit_file, $post_commit_marker )
+	&& array( 'post_id' => 12 ) === $post_commit_index,
+	'post-commit WordPress writes return success and converge once across the row, canonical Markdown, and index'
+);
 $option_insert_mutation = $operations->mutations_for_query(
 	"INSERT INTO wp_options (option_value, option_name, autoload) VALUES ('value', 'inserted_option', 'yes')",
 	array( 'table' => 'wp_options', 'op' => 'INSERT', 'type' => 'DML' )

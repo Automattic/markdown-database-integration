@@ -74,7 +74,7 @@ mkdir( $canonical, 0700 );
 register_shutdown_function( static fn() => mdi_production_remove( $root ) );
 $key = str_repeat( 'production-adapter-key-', 2 );
 $store = new WP_Markdown_Filesystem_Reconciliation_Operation_Store( $journal, $key, array( $canonical ) );
-$coordinator = new WP_Markdown_Durable_Reconciliation_Coordinator( $store, 'process-a', 1 );
+$coordinator = new WP_Markdown_Durable_Reconciliation_Coordinator( $store, 'process-a', 30 );
 
 // Real filesystem create/update/move/delete effects complete with exact receipts.
 $old = $canonical . '/old.md'; $new = $canonical . '/new.md';
@@ -158,6 +158,17 @@ $prepared = $coordinator->prepare( array( 'plan_id' => 'prepared-production-writ
 $checkpoint_state['wordpress'] = 'after';
 $continued = $coordinator->continue_prepared( $prepared['id'], $checkpoint_adapter );
 mdi_production_check( 'completed' === $continued['state'] && 'after' === $checkpoint_state['canonical'] && array( 'post_id' => 42 ) === $checkpoint_state['index'], 'prepared production write continues canonical and index effects after the WordPress commit checkpoint' );
+
+// A post-commit observer still fails closed when the canonical effect differs.
+$mismatch_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );
+$mismatch_observer = static function () use ( &$mismatch_state ): array { return $mismatch_state; };
+$mismatch_apply = static function () use ( &$mismatch_state ): void { $mismatch_state['canonical'] = 'different'; $mismatch_state['index'] = array( 'post_id' => 42 ); };
+$mismatch_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $mismatch_observer, $mismatch_apply );
+$mismatch_prepared = $coordinator->prepare( array( 'plan_id' => 'prepared-production-mismatch', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $mismatch_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) ), $mismatch_adapter );
+$mismatch_state['wordpress'] = 'after';
+$mismatch_rejected = false;
+try { $coordinator->continue_prepared( $mismatch_prepared['id'], $mismatch_adapter ); } catch ( WP_Markdown_Reconciliation_Conflict $error ) { $mismatch_rejected = 'after_state_not_proven' === ( $error->conflict()['reason'] ?? null ); }
+mdi_production_check( $mismatch_rejected && 'different' === $mismatch_state['canonical'], 'prepared production writes fail closed when canonical state genuinely differs after commit' );
 
 // Hostile pre-existing symlink state is rejected instead of traversed.
 $hostile_target = $root . '/hostile-target'; mkdir( $hostile_target, 0700 );

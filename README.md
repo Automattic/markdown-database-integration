@@ -457,6 +457,31 @@ and transaction behavior, and removes the table in `finally`.
 Recording is tooling-only and has no effect unless a caller explicitly invokes
 the recorder.
 
+### Native Shadow Verification
+
+An existing SQLite or `mysql-full` runtime can replay authoritative WordPress
+reads through `mdi-native` without changing query results. Enable this only in a
+disposable verification runtime:
+
+```php
+define( 'MARKDOWN_DB_NATIVE_SHADOW', true );
+define( 'MARKDOWN_DB_NATIVE_SHADOW_MAX', 1000 ); // Optional bounded query count.
+```
+
+After WordPress boot, emit the report with:
+
+```bash
+wp eval-file wp-content/plugins/markdown-database-integration/tests/probe-native-shadow-report.php
+```
+
+The report counts compatible, unsupported, mismatched, ignored, verifier-failed,
+and dropped observations. Its first blocker contains only a SHA-256 query identity,
+a literal-free query template, structured diagnostic codes, and structural
+mismatch paths. SQL literal values and result rows are not retained. The
+authoritative backend remains the sole source of caller-visible behavior, and
+shadow failures do not fail the query. The SHA-256 identity covers the sanitized
+template, not the literal-bearing source query.
+
 With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
 single-root layout:
 

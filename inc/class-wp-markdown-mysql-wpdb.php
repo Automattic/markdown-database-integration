@@ -6,6 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-sql-classifier.php';
+require_once __DIR__ . '/class-wp-markdown-query-observer-boundary.php';
 
 class WP_Markdown_MySQL_WPDB extends wpdb {
 	public const BOOTSTRAP_ABI = 2;
@@ -17,6 +18,7 @@ class WP_Markdown_MySQL_WPDB extends wpdb {
 	private array $transaction = array( 'active' => false, 'autocommit' => true, 'savepoints' => array() );
 	private bool $observing_mutation = false;
 	private int $query_depth = 0;
+	private mixed $native_shadow_verifier = null;
 
 	public function __construct( $dbuser, $dbpassword, $dbname, $dbhost, $mutation_sink = null ) {
 		$this->mutation_sink = $mutation_sink;
@@ -33,6 +35,13 @@ class WP_Markdown_MySQL_WPDB extends wpdb {
 			throw new InvalidArgumentException( 'The mysql-full mutation sink must be callable.' );
 		}
 		$this->mutation_sink = $mutation_sink;
+	}
+
+	public function set_native_shadow_verifier( mixed $verifier ): void {
+		if ( ! is_object( $verifier ) || ! method_exists( $verifier, 'observe' ) ) {
+			throw new InvalidArgumentException( 'The native shadow verifier must observe authoritative queries.' );
+		}
+		$this->native_shadow_verifier = $verifier;
 	}
 
 	public function markdown_db_mysql_connection(): object {
@@ -89,6 +98,9 @@ class WP_Markdown_MySQL_WPDB extends wpdb {
 		$server_attempted = (int) $this->num_queries > $queries_before;
 		// The final query filter captures the exact SQL before wpdb sends it to mysqli.
 		$effective_query = '' !== $effective_query ? $effective_query : (string) $this->last_query;
+		if ( $server_attempted ) {
+			WP_Markdown_Query_Observer_Boundary::observe( $this->native_shadow_verifier, $effective_query, $result, $this );
+		}
 		$control         = WP_Markdown_SQL_Classifier::transaction_control( $effective_query );
 		$mutation        = null === $control ? WP_Markdown_SQL_Classifier::mutation( $effective_query ) : null;
 		$implicit_commit = ( null !== $mutation && 'DDL' === $mutation['type'] ) || WP_Markdown_SQL_Classifier::unsupported_implicit_commit( $effective_query );

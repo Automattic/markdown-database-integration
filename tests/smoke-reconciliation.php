@@ -29,6 +29,7 @@ function get_post_meta( int $post_id, string $key = '', bool $single = false ): 
 	return $single ? ( $values[0] ?? '' ) : $values;
 }
 function get_option( string $key, mixed $default = false ): mixed { return $GLOBALS['mdi_reconcile_options'][ $key ] ?? $default; }
+function update_option( string $key, mixed $value, bool $autoload = true ): bool { unset( $autoload ); $GLOBALS['mdi_reconcile_options'][ $key ] = $value; return true; }
 function get_post( int $post_id ): ?object { return $GLOBALS['mdi_reconcile_posts'][ $post_id ] ?? null; }
 function get_posts( array $query = array() ): array { unset( $query ); return array(); }
 function get_object_taxonomies( string $post_type ): array { unset( $post_type ); return array(); }
@@ -79,6 +80,12 @@ function mdi_reconcile_entry_ids( array $result ): array {
 	foreach ( $result['categories'] as $entries ) { foreach ( $entries as $entry ) { $ids[] = $entry['resource_id']; } }
 	sort( $ids, SORT_STRING );
 	return $ids;
+}
+
+final class MDI_Reconciliation_Delete_Storage extends WP_Markdown_Storage {
+	public string $delete_result = 'deleted';
+	public int $delete_attempts = 0;
+	public function delete_post_result( int $post_id ): string { unset( $post_id ); ++$this->delete_attempts; return $this->delete_result; }
 }
 
 final class MDI_Reconciliation_Content_Adapter implements WP_Markdown_Reconciliation_Content_Adapter {
@@ -333,6 +340,27 @@ $trusted_adapter = new WP_Markdown_WordPress_Reconciliation_Adapter( null, null,
 $trusted_authorize = new ReflectionMethod( $trusted_adapter, 'authorize_post_mutation' );
 $trusted_authorize->invoke( $trusted_adapter, 'edit', 42, 'page' );
 mdi_reconcile_check( true, 'trusted runtime may provide an explicit WordPress mutation authorizer' );
+
+// Canonical deletion must retain its baseline if storage reports an unlink failure.
+$delete_storage = new MDI_Reconciliation_Delete_Storage( $canonical );
+$delete_adapter = new WP_Markdown_WordPress_Reconciliation_Adapter( $delete_storage );
+$delete_method = new ReflectionMethod( $delete_adapter, 'wordpress_to_canonical' );
+$delete_resource = 'post:00000000000000000042';
+$delete_baseline_option = '_markdown_reconciliation_baselines_' . hash( 'sha256', $canonical );
+$baseline_record = array( 'canonical_root' => $canonical, 'canonical_path' => 'page/delete.md', 'identity' => mdi_reconcile_identity( array( 'ID' => 42 ) ), 'resource_id' => $delete_resource, 'resource_type' => 'post' );
+$delete_operation = array( 'binding' => array( 'resource' => array( 'id' => $delete_resource ) ) );
+$delete_context = array( 'root' => $canonical, 'current_path' => 'page/delete.md', 'expected_path' => 'page/delete.md', 'post_id' => 42, 'kind' => 'deleted_from_wordpress', 'layout_profile' => '' );
+$GLOBALS['mdi_reconcile_options'][ $delete_baseline_option ] = array( $delete_resource => $baseline_record );
+$delete_storage->delete_result = 'failed';
+mdi_reconcile_throws( fn() => $delete_method->invoke( $delete_adapter, $delete_operation, $delete_context ), RuntimeException::class, 'failed canonical unlink fails closed before baseline deletion' );
+mdi_reconcile_check( isset( $GLOBALS['mdi_reconcile_options'][ $delete_baseline_option ][ $delete_resource ] ) && 1 === $delete_storage->delete_attempts, 'failed canonical unlink retains baseline retry evidence' );
+$delete_storage->delete_result = 'deleted';
+$delete_method->invoke( $delete_adapter, $delete_operation, $delete_context );
+mdi_reconcile_check( ! isset( $GLOBALS['mdi_reconcile_options'][ $delete_baseline_option ][ $delete_resource ] ) && 2 === $delete_storage->delete_attempts, 'successful canonical unlink clears baseline' );
+$GLOBALS['mdi_reconcile_options'][ $delete_baseline_option ] = array( $delete_resource => $baseline_record );
+$delete_storage->delete_result = 'absent';
+$delete_method->invoke( $delete_adapter, $delete_operation, $delete_context );
+mdi_reconcile_check( ! isset( $GLOBALS['mdi_reconcile_options'][ $delete_baseline_option ][ $delete_resource ] ) && 3 === $delete_storage->delete_attempts, 'absent canonical file clears the completed deletion baseline' );
 $parse_cursor = new ReflectionMethod( $production_adapter, 'parse_continuation' );
 $cursor_hash = str_repeat( 'a', 64 );
 mdi_reconcile_check( array( 'post:00000000000000000042', $cursor_hash ) === $parse_cursor->invoke( $production_adapter, 'v2:post%3A00000000000000000042:' . $cursor_hash ), 'production continuation parses its percent-encoded resource key' );

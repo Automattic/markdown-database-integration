@@ -353,7 +353,10 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		$storage = $this->storage( $context['root'], $context['layout_profile'] );
 		if ( 'deleted_from_wordpress' === $context['kind'] ) {
 			if ( $context['post_id'] > 0 ) {
-				$storage->delete_post( $context['post_id'] );
+				$result = $storage->delete_post_result( $context['post_id'] );
+				if ( 'deleted' !== $result && 'absent' !== $result ) {
+					throw new RuntimeException( 'Canonical deletion failed.' );
+				}
 			} elseif ( null !== $context['current_path'] && ! $storage->delete_relative_path( $context['current_path'] ) ) {
 				throw new RuntimeException( 'Canonical deletion failed.' );
 			}

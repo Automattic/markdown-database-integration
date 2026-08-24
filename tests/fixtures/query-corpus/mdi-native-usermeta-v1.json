@@ -1,0 +1,33 @@
+{
+  "schema": "mdi-query-compatibility-corpus/v1",
+  "observations": [
+    {
+      "schema_version": 1,
+      "sequence": 1,
+      "scenario": "core.usermeta.update-meta-cache",
+      "query": "SELECT user_id, meta_key, meta_value FROM wp_usermeta WHERE user_id IN (1,2,1) ORDER BY umeta_id ASC",
+      "result": {
+        "return": { "type": "integer", "value": 5 },
+        "rows": [
+          { "user_id": "1", "meta_key": "session_tokens", "meta_value": "token-old" },
+          { "user_id": "1", "meta_key": "session_tokens", "meta_value": "token-new" },
+          { "user_id": "1", "meta_key": "wp_capabilities", "meta_value": "caps" },
+          { "user_id": "2", "meta_key": "locale", "meta_value": null },
+          { "user_id": "2", "meta_key": null, "meta_value": "orphan" }
+        ],
+        "columns": [
+          { "name": "user_id", "type": "8" },
+          { "name": "meta_key", "type": "253" },
+          { "name": "meta_value", "type": "252" }
+        ],
+        "last_error": "",
+        "error_code": 0,
+        "insert_id": 0,
+        "rows_affected": 0,
+        "num_rows": 5,
+        "exception": null
+      },
+      "transaction": { "before": [], "after": [] }
+    }
+  ]
+}

@@ -89,13 +89,6 @@ $users_path = $root . '/_tables/users.json';
 file_put_contents( $users_path, json_encode( $users, JSON_THROW_ON_ERROR ) );
 
 $registry = WP_Markdown_Native_Runtime_Factory::registry( $root );
-WP_Markdown_Native_Runtime_Factory::register_json_snapshot(
-	$registry,
-	$root,
-	'wp_users',
-	WP_Markdown_Native_Runtime_Factory::users_schema(),
-	'users.json'
-);
 $runtime = new WP_Markdown_Native_Query_Runtime( $registry );
 
 $login = $runtime->execute(

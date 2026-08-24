@@ -347,7 +347,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 
 	private function prepared_post_ids( string $query, ?array $operation ): array {
 		if ( null === $operation || null === $this->write_engine || $this->syncing || ! str_ends_with( strtolower( (string) $operation['table'] ), 'posts' ) ) { return array(); }
-		if ( ! preg_match_all( '/\bID\b\s*(?:=\s*([0-9]+)|IN\s*\(([^)]*)\))/i', $query, $matches, PREG_SET_ORDER ) ) { return array(); }
+		if ( ! preg_match_all( '/(?<![A-Za-z0-9_])(?:`ID`|ID)(?![A-Za-z0-9_])\s*(?:=\s*([0-9]+)|IN\s*\(([^)]*)\))/i', $query, $matches, PREG_SET_ORDER ) ) { return array(); }
 		$ids = array();
 		foreach ( $matches as $match ) { foreach ( explode( ',', $match[1] ?: $match[2] ) as $id ) { if ( ctype_digit( trim( $id ) ) ) { $ids[ (int) trim( $id ) ] = true; } } }
 		return array_keys( $ids );

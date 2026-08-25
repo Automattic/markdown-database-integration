@@ -1,5 +1,22 @@
 # Changelog
 
+## [0.11.3] - 2026-08-25
+
+### Changed
+- Execute COUNT(*) natively
+- Fail closed on incomplete reconstruction
+- Register generated core snapshots natively
+- Gate concurrent warm synchronization
+- Bound contended warm snapshot hydration
+- Fail closed for partitioned plugin tables
+- Discover persisted plugin schemas natively
+- Generate native core schema catalog
+- Query canonical comments natively
+
+### Fixed
+- stop tracking generated release zip
+- keep warm bootstrap read-only
+
 ## [0.11.2] - 2026-08-25
 
 ### Changed

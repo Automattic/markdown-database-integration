@@ -509,29 +509,7 @@ final class WP_Markdown_Durable_Reconciliation_Operations {
 		if ( ! $this->matches( $record['binding']['before'], $actual ) ) {
 			return $this->conflict( $record, $actual, $record['binding']['before'], 'precondition_not_proven', $now, $boundary );
 		}
-		try {
-			$adapter->apply( $record );
-		} catch ( Throwable $apply_error ) {
-			try {
-				$actual = $this->observe( $adapter, $record );
-			} catch ( Throwable $observe_error ) {
-				return $this->observation_conflict( $record, $observe_error, $now, $boundary, get_class( $apply_error ) );
-			}
-			if ( $this->matches( $record['binding']['after'], $actual ) ) {
-				return $this->complete( $record, $actual, $now, $boundary );
-			}
-			return $this->conflict( $record, $actual, $record['binding']['after'], 'apply_outcome_not_proven', $now, $boundary );
-		}
-		$this->boundary( $boundary, 'effect_applied', $record );
-		try {
-			$actual = $this->observe( $adapter, $record );
-		} catch ( Throwable $error ) {
-			return $this->observation_conflict( $record, $error, $now, $boundary );
-		}
-		if ( ! $this->matches( $record['binding']['after'], $actual ) ) {
-			return $this->conflict( $record, $actual, $record['binding']['after'], 'after_state_not_proven', $now, $boundary );
-		}
-		return $this->complete( $record, $actual, $now, $boundary );
+		return $this->apply_and_complete( $record, $adapter, $now, $boundary );
 	}
 
 	public function prepare( string $operation_id, string $owner, int $now, int $lease_seconds, WP_Markdown_Reconciliation_Adapter $adapter ): array {
@@ -548,10 +526,7 @@ final class WP_Markdown_Durable_Reconciliation_Operations {
 		if ( ! isset( $record['binding']['checkpoint'] ) || ! $this->matches( $record['binding']['checkpoint'], $actual ) ) {
 			return $this->conflict( $record, $actual, $record['binding']['checkpoint'] ?? $record['binding']['before'], 'commit_checkpoint_not_proven', time(), $boundary );
 		}
-		$adapter->apply( $record );
-		$actual = $this->observe( $adapter, $record );
-		if ( ! $this->matches( $record['binding']['after'], $actual ) ) { return $this->conflict( $record, $actual, $record['binding']['after'], 'after_state_not_proven', time(), $boundary ); }
-		return $this->complete( $record, $actual, time(), $boundary );
+		return $this->apply_and_complete( $record, $adapter, time(), $boundary );
 	}
 
 	/** Recovery applies only a prepared continuation whose exact commit checkpoint is proven. */
@@ -577,11 +552,35 @@ final class WP_Markdown_Durable_Reconciliation_Operations {
 			return $this->complete( $record, $actual, $now, $boundary );
 		}
 		if ( isset( $record['binding']['checkpoint'] ) && $this->matches( $record['binding']['checkpoint'], $actual ) ) {
-			$adapter->apply( $record );
-			$actual = $this->observe( $adapter, $record );
-			if ( $this->matches( $record['binding']['after'], $actual ) ) { return $this->complete( $record, $actual, $now, $boundary ); }
+			return $this->apply_and_complete( $record, $adapter, $now, $boundary );
 		}
 		return $this->conflict( $record, $actual, $record['binding']['after'], 'after_state_not_proven', $now, $boundary );
+	}
+
+	private function apply_and_complete( array $record, WP_Markdown_Reconciliation_Adapter $adapter, int $now, ?callable $boundary ): array {
+		try {
+			$adapter->apply( $record );
+		} catch ( Throwable $apply_error ) {
+			try {
+				$actual = $this->observe( $adapter, $record );
+			} catch ( Throwable $observe_error ) {
+				return $this->observation_conflict( $record, $observe_error, $now, $boundary, get_class( $apply_error ) );
+			}
+			if ( $this->matches( $record['binding']['after'], $actual ) ) {
+				return $this->complete( $record, $actual, $now, $boundary );
+			}
+			return $this->conflict( $record, $actual, $record['binding']['after'], 'apply_outcome_not_proven', $now, $boundary );
+		}
+		$this->boundary( $boundary, 'effect_applied', $record );
+		try {
+			$actual = $this->observe( $adapter, $record );
+		} catch ( Throwable $error ) {
+			return $this->observation_conflict( $record, $error, $now, $boundary );
+		}
+		if ( ! $this->matches( $record['binding']['after'], $actual ) ) {
+			return $this->conflict( $record, $actual, $record['binding']['after'], 'after_state_not_proven', $now, $boundary );
+		}
+		return $this->complete( $record, $actual, $now, $boundary );
 	}
 
 	private function complete( array $record, array $actual, int $now, ?callable $boundary ): array {

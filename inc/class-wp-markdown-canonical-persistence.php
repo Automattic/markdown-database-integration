@@ -312,6 +312,10 @@ class WP_Markdown_Canonical_Persistence {
 			// Status lookup failures retain the post for fail-safe persistence.
 		}
 		$wordpress_after = $this->current_post_receipt( $post_id );
+		$post_identity = is_array( $wordpress_after ) ? $wordpress_after : ( is_array( $wordpress_before ) ? $wordpress_before : null );
+		if ( is_array( $post_identity ) && ! $this->storage->is_markdown_type( (string) ( $post_identity['post_type'] ?? 'post' ) ) ) {
+			return null;
+		}
 		$canonical_before = $this->storage_post_receipt( $post_id );
 		$index_before = $this->file_index_receipt( $post_id );
 		$after = array( 'wordpress' => $wordpress_after, 'canonical' => $wordpress_after, 'index' => null === $wordpress_after ? null : array( 'post_id' => $post_id ) );

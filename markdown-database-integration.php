@@ -175,7 +175,35 @@ function markdown_database_integration_import_seed_posts_after_install(): void {
 	}
 }
 
+/** Schedule canonical reconciliation outside the WordPress bootstrap path. */
+function markdown_database_integration_schedule_primary_sync(): void {
+	global $wpdb;
+	if ( ! defined( 'MARKDOWN_DB_MODE' ) || 'primary' !== MARKDOWN_DB_MODE || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'synchronize_primary_index' ) ) {
+		return;
+	}
+
+	if ( wp_next_scheduled( 'markdown_database_integration_sync_primary_index' ) || get_transient( 'markdown_database_integration_primary_sync_scheduled' ) ) {
+		return;
+	}
+
+	$scheduled = wp_schedule_single_event( time(), 'markdown_database_integration_sync_primary_index' );
+	if ( false !== $scheduled && ! is_wp_error( $scheduled ) ) {
+		$interval = defined( 'MARKDOWN_DB_PRIMARY_SYNC_INTERVAL' ) ? (int) MARKDOWN_DB_PRIMARY_SYNC_INTERVAL : 60;
+		set_transient( 'markdown_database_integration_primary_sync_scheduled', 1, max( 10, $interval ) );
+	}
+}
+
+/** Reconcile the primary index from the process-safe scheduled boundary. */
+function markdown_database_integration_sync_primary_index(): void {
+	global $wpdb;
+	if ( is_object( $wpdb ) && method_exists( $wpdb, 'synchronize_primary_index' ) ) {
+		$wpdb->synchronize_primary_index();
+	}
+}
+
 add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
+add_action( 'init', 'markdown_database_integration_schedule_primary_sync', 0 );
+add_action( 'markdown_database_integration_sync_primary_index', 'markdown_database_integration_sync_primary_index' );
 add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'switch_blog', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Content_Runtime', 'bootstrap' ), 20 );

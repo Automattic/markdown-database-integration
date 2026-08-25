@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/class-wp-markdown-canonical-option-path.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-contracts.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-schema.php';
+require_once __DIR__ . '/class-wp-markdown-native-core-schema-catalog.php';
 require_once __DIR__ . '/class-wp-markdown-native-sql-tokenizer.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-ast.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
@@ -18,183 +19,91 @@ require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 final class WP_Markdown_Native_Runtime_Factory {
 
 	public static function options_schema(): WP_Markdown_Native_Table_Schema {
-		return new WP_Markdown_Native_Table_Schema(
+		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+			'options',
+			'integer',
 			array(
-				'option_id'    => new WP_Markdown_Native_Column(
-					8,
-					false,
-					static fn( mixed $value ): bool => is_int( $value ) && $value >= 0
+				'columns' => array(
+					'option_name' => array(
+						'normalizer'      => array( self::class, 'normalize_ascii_ci' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
+					),
+					'autoload' => array(
+						'lookup_operators' => array( 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => ! array_diff( $values, array( 'yes', 'on', 'auto-on', 'auto' ) ),
+					),
 				),
-				'option_name'  => new WP_Markdown_Native_Column(
-					253,
-					false,
-					static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 191,
-					array( self::class, 'normalize_ascii_ci' ),
-					array( '=', 'IN' ),
-					static fn( array $values ): bool => self::all_ascii_strings( $values )
-				),
-				'option_value' => new WP_Markdown_Native_Column(
-					252,
-					false,
-					'is_string'
-				),
-				'autoload'     => new WP_Markdown_Native_Column(
-					253,
-					false,
-					static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 20,
-					null,
-					array( 'IN' ),
-					static fn( array $values ): bool => ! array_diff(
-						$values,
-						array( 'yes', 'on', 'auto-on', 'auto' )
-					)
-				),
-			),
-			'option_id'
+			)
 		);
 	}
 
 	public static function users_schema( bool $multisite = false ): WP_Markdown_Native_Table_Schema {
-		$width = static fn( int $maximum ): callable => static fn( mixed $value ): bool => is_string( $value )
-			&& strlen( $value ) <= $maximum;
-		$unsigned = static fn( mixed $value ): bool => is_string( $value )
-			&& 1 === preg_match( '/^[1-9][0-9]*$/D', $value );
-		$nonnegative = static fn( mixed $value ): bool => is_string( $value )
-			&& 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value );
-		$signed = static fn( mixed $value ): bool => is_string( $value )
-			&& 1 === preg_match( '/^-?(?:0|[1-9][0-9]*)$/D', $value );
-
-		$columns = array(
-			'ID'                  => new WP_Markdown_Native_Column(
-				8,
-				false,
-				$unsigned,
-				array( self::class, 'normalize_unsigned' ),
-				array( '=', 'IN' ),
-				static fn( array $values ): bool => ! in_array(
-					null,
-					array_map( array( self::class, 'normalize_unsigned' ), $values ),
-					true
-				)
+		$ascii_lookup = static fn( array $values ): bool => self::all_ascii_strings( $values );
+		$unsigned_lookup = static fn( array $values ): bool => self::all_normalized_unsigned( $values );
+		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+			'users',
+			'string',
+			array(
+				'columns' => array(
+					'ID' => array( 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $unsigned_lookup ),
+					'user_login' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
+					'user_nicename' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
+					'user_email' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
+				),
 			),
-			'user_login'          => self::lookup_string_column( 60, true ),
-			'user_pass'           => self::string_column( 255 ),
-			'user_nicename'       => self::lookup_string_column( 50, true ),
-			'user_email'          => self::lookup_string_column( 100, true ),
-			'user_url'            => self::string_column( 100 ),
-			'user_registered'     => new WP_Markdown_Native_Column( 12, false, $width( 19 ) ),
-			'user_activation_key' => self::string_column( 255 ),
-			'user_status'         => new WP_Markdown_Native_Column( 3, false, $signed, array( self::class, 'normalize_signed' ) ),
-			'display_name'        => self::string_column( 250 ),
-		);
-		if ( $multisite ) {
-			$columns['spam'] = new WP_Markdown_Native_Column( 1, false, $nonnegative, array( self::class, 'normalize_unsigned' ) );
-			$columns['deleted'] = new WP_Markdown_Native_Column( 1, false, $nonnegative, array( self::class, 'normalize_unsigned' ) );
-		}
-
-		return new WP_Markdown_Native_Table_Schema(
-			$columns,
-			'ID'
+			$multisite
 		);
 	}
 
 	public static function usermeta_schema(): WP_Markdown_Native_Table_Schema {
-		$unsigned = static fn( mixed $value ): bool => is_string( $value )
-			&& 1 === preg_match( '/^[1-9][0-9]*$/D', $value );
-		$nonnegative = static fn( mixed $value ): bool => is_string( $value )
-			&& 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value );
-		return new WP_Markdown_Native_Table_Schema(
+		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+			'usermeta',
+			'string',
 			array(
-				'umeta_id'  => new WP_Markdown_Native_Column( 8, false, $unsigned, array( self::class, 'normalize_unsigned' ) ),
-				'user_id'    => new WP_Markdown_Native_Column(
-					8,
-					false,
-					$nonnegative,
-					array( self::class, 'normalize_unsigned' ),
-					array( 'IN' ),
-					static fn( array $values ): bool => ! in_array(
-						null,
-						array_map( array( self::class, 'normalize_unsigned' ), $values ),
-						true
-					)
+				'columns' => array(
+					'user_id' => array(
+						'lookup_operators' => array( 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_normalized_unsigned( $values ),
+					),
 				),
-				'meta_key'   => new WP_Markdown_Native_Column( 253, true, static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= 255 ),
-				'meta_value' => new WP_Markdown_Native_Column( 252, true, 'is_string' ),
-			),
-			'umeta_id'
+			)
 		);
 	}
 
 	public static function posts_schema(): WP_Markdown_Native_Table_Schema {
-		$unsigned = static fn( mixed $value ): bool => is_int( $value ) && $value >= 0;
-		$string   = static fn( int $maximum ): callable => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum;
-		return new WP_Markdown_Native_Table_Schema(
+		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+			'posts',
+			'integer',
 			array(
-				'ID'                    => new WP_Markdown_Native_Column( 8, false, $unsigned, null, array( '=', 'IN' ) ),
-				'post_author'           => new WP_Markdown_Native_Column( 8, false, $unsigned, null, array( '=', 'IN' ) ),
-				'post_date'             => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
-				'post_date_gmt'         => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
-				'post_content'          => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'post_title'            => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'post_excerpt'          => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'post_status'           => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
-				'comment_status'        => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
-				'ping_status'           => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
-				'post_password'         => new WP_Markdown_Native_Column( 253, false, $string( 255 ) ),
-				'post_name'             => new WP_Markdown_Native_Column( 253, false, $string( 200 ) ),
-				'to_ping'               => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'pinged'                => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'post_modified'         => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
-				'post_modified_gmt'     => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
-				'post_content_filtered' => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'post_parent'           => new WP_Markdown_Native_Column( 8, false, $unsigned, null, array( '=', 'IN' ) ),
-				'guid'                  => new WP_Markdown_Native_Column( 253, false, $string( 255 ) ),
-				'menu_order'            => new WP_Markdown_Native_Column( 3, false, 'is_int' ),
-				'post_type'             => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
-				'post_mime_type'        => new WP_Markdown_Native_Column( 253, false, $string( 100 ) ),
-				'comment_count'         => new WP_Markdown_Native_Column( 8, false, $unsigned ),
-			),
-			'ID'
+				'columns' => array(
+					'ID' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					'post_author' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					'post_parent' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+				),
+			)
 		);
 	}
 
 	public static function comments_schema(): WP_Markdown_Native_Table_Schema {
-		$positive = static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^[1-9][0-9]*$/D', $value );
-		$nonnegative = static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value );
-		$signed = static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^-?(?:0|[1-9][0-9]*)$/D', $value );
-		$string = static fn( int $maximum ): callable => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum;
-		$unsigned_lookup = static fn( array $values ): bool => ! in_array(
-			null,
-			array_map( array( self::class, 'normalize_unsigned' ), $values ),
-			true
-		);
-		return new WP_Markdown_Native_Table_Schema(
+		$unsigned_lookup = static fn( array $values ): bool => self::all_normalized_unsigned( $values );
+		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+			'comments',
+			'string',
 			array(
-				'comment_ID'           => new WP_Markdown_Native_Column( 8, false, $positive, array( self::class, 'normalize_unsigned' ), array( '=', 'IN' ), $unsigned_lookup ),
-				'comment_post_ID'      => new WP_Markdown_Native_Column( 8, false, $nonnegative, array( self::class, 'normalize_unsigned' ), array( '=', 'IN' ), $unsigned_lookup ),
-				'comment_author'       => new WP_Markdown_Native_Column( 252, false, $string( 255 ) ),
-				'comment_author_email' => new WP_Markdown_Native_Column(
-					253,
-					false,
-					$string( 100 ),
-					array( self::class, 'normalize_ascii_ci' ),
-					array( '=', 'IN' ),
-					static fn( array $values ): bool => self::all_ascii_strings( $values )
+				'columns' => array(
+					'comment_ID' => array( 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $unsigned_lookup ),
+					'comment_post_ID' => array( 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $unsigned_lookup ),
+					'comment_author_email' => array(
+						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
+					),
+					'comment_approved' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					'comment_parent' => array( 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $unsigned_lookup ),
 				),
-				'comment_author_url'   => new WP_Markdown_Native_Column( 253, false, $string( 200 ) ),
-				'comment_author_IP'    => new WP_Markdown_Native_Column( 253, false, $string( 100 ) ),
-				'comment_date'         => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
-				'comment_date_gmt'     => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
-				'comment_content'      => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
-				'comment_karma'        => new WP_Markdown_Native_Column( 3, false, $signed, array( self::class, 'normalize_signed' ) ),
-				'comment_approved'     => new WP_Markdown_Native_Column( 253, false, $string( 20 ), null, array( '=', 'IN' ) ),
-				'comment_agent'        => new WP_Markdown_Native_Column( 253, false, $string( 255 ) ),
-				'comment_type'         => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
-				'comment_parent'       => new WP_Markdown_Native_Column( 8, false, $nonnegative, array( self::class, 'normalize_unsigned' ), array( '=', 'IN' ), $unsigned_lookup ),
-				'user_id'              => new WP_Markdown_Native_Column( 8, false, $nonnegative, array( self::class, 'normalize_unsigned' ) ),
-			),
-			'comment_ID',
-			array( 'comment_date_gmt' )
+				'order_columns' => array( 'comment_date_gmt' ),
+			)
 		);
 	}
 
@@ -299,30 +208,9 @@ final class WP_Markdown_Native_Runtime_Factory {
 		return strtolower( $value );
 	}
 
-	private static function string_column( int $maximum ): WP_Markdown_Native_Column {
-		return new WP_Markdown_Native_Column(
-			253,
-			false,
-			static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum
-		);
-	}
-
-	private static function lookup_string_column( int $maximum, bool $ascii_case_insensitive = false ): WP_Markdown_Native_Column {
-		return new WP_Markdown_Native_Column(
-			253,
-			false,
-			static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum,
-			$ascii_case_insensitive ? array( self::class, 'normalize_ascii_ci' ) : null,
-			array( '=', 'IN' ),
-			static fn( array $values ): bool => $ascii_case_insensitive
-				? self::all_ascii_strings( $values )
-				: self::all_strings( $values )
-		);
-	}
-
-	private static function all_strings( array $values ): bool {
+	private static function all_normalized_unsigned( array $values ): bool {
 		foreach ( $values as $value ) {
-			if ( ! is_string( $value ) ) {
+			if ( null === self::normalize_unsigned( $value ) ) {
 				return false;
 			}
 		}

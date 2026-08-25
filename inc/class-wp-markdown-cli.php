@@ -9,11 +9,61 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+final class WP_Markdown_Unsupported_WP_CLI_DB_Command extends LogicException {
+
+	/** @var array{code:string,backend:string,command:string,remediation:string,message:string} */
+	private array $diagnostic;
+
+	public function __construct( string $backend, string $command ) {
+		$remediation = 'wp markdown-db doctor';
+		$this->diagnostic = array(
+			'code'        => 'markdown_db_unsupported_wp_cli_db_command',
+			'backend'     => $backend,
+			'command'     => $command,
+			'remediation' => $remediation,
+			'message'     => sprintf( '%s requires a MySQL backend and is not supported by the MDI %s backend. Run `%s` for MDI health diagnostics.', $command, $backend, $remediation ),
+		);
+		parent::__construct( $this->diagnostic['message'] );
+	}
+
+	/** @return array{code:string,backend:string,command:string,remediation:string,message:string} */
+	public function get_diagnostic(): array {
+		return $this->diagnostic;
+	}
+}
+
 class WP_Markdown_CLI {
 
 	private const SOURCE_PATH_META = '_markdown_source_path';
 	private const SOURCE_IDENTITY_META = '_markdown_source_identity';
 	private const SOURCE_HASH_META = '_markdown_source_hash';
+
+	/** Register compatibility guards for WP-CLI commands owned by other packages. */
+	public static function register_db_command_boundary(): void {
+		WP_CLI::add_hook( 'before_invoke:db check', array( self::class, 'guard_db_check' ) );
+	}
+
+	/** Stop WP-CLI's MySQL-only check before it reads MySQL connection constants. */
+	public static function guard_db_check( string $command ): string {
+		$backend = self::database_backend();
+		if ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN && 'sqlite' === $backend ) {
+			$error = new WP_Markdown_Unsupported_WP_CLI_DB_Command( $backend, 'wp ' . $command );
+			WP_CLI::error( $error );
+			throw $error;
+		}
+
+		return $command;
+	}
+
+	private static function database_backend(): string {
+		if ( defined( 'DB_ENGINE' ) ) {
+			return strtolower( (string) DB_ENGINE );
+		}
+		if ( defined( 'DATABASE_TYPE' ) ) {
+			return strtolower( (string) DATABASE_TYPE );
+		}
+		return defined( 'MARKDOWN_DB_BACKEND' ) ? strtolower( (string) MARKDOWN_DB_BACKEND ) : '';
+	}
 
 	/**
 	 * Register generic import/export abilities when the Abilities API is present.

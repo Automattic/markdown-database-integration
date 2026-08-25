@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.11.1] - 2026-08-24
+
+### Changed
+- Update vulnerable CommonMark dependency
+
 ## [0.11.0] - 2026-08-24
 
 ### Changed

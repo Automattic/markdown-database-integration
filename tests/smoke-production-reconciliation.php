@@ -118,7 +118,7 @@ mdi_production_check( $stale_rejected && 'recovered' === file_get_contents( $pat
 
 // Real SQLite fence ownership and mutation share one transaction boundary.
 $database = $root . '/wordpress.sqlite'; $pdo = new PDO( 'sqlite:' . $database ); $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_title TEXT NOT NULL, post_content TEXT NOT NULL DEFAULT \'\')' ); $pdo->exec( "INSERT INTO wp_posts (ID, post_title) VALUES (42, 'before')" );
+$pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_title TEXT NOT NULL, post_content TEXT NOT NULL DEFAULT \'\', post_name TEXT NOT NULL DEFAULT \'\', post_status TEXT NOT NULL DEFAULT \'publish\', post_type TEXT NOT NULL DEFAULT \'post\', post_parent INTEGER NOT NULL DEFAULT 0)' ); $pdo->exec( "INSERT INTO wp_posts (ID, post_title) VALUES (42, 'before')" );
 $pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
 $pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
@@ -140,7 +140,7 @@ mdi_production_check( $db_rejected && 'after' === $pdo->query( 'SELECT post_titl
 $actual_driver = new MDI_Production_Driver( $pdo );
 $actual_operations = new WP_Markdown_SQLite_Operations( $actual_driver, 'wp_' );
 $actual_operations->ensure_reconciliation_state();
-$actual_storage = new WP_Markdown_Storage( $canonical );
+$actual_storage = new WP_Markdown_Storage( $canonical, array( 'revision' ) );
 $actual_persistence = new WP_Markdown_Canonical_Persistence( $canonical, $actual_storage, $actual_operations, 'wp_', $canonical );
 $actual_persistence->persist_mutation( array( 'key' => 'wp_posts:42', 'resource' => 'wp_posts:42', 'operation' => 'UPDATE', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '42' ) ) ) );
 $actual_persistence->flush_dirty( true );
@@ -148,6 +148,15 @@ $actual_loader = new WP_Markdown_Loader( $canonical, $actual_operations, $actual
 $actual_loader->prepare_existing_cache();
 $actual_index = $actual_operations->file_index_receipt( 42 );
 mdi_production_check( null !== $actual_storage->read_post( 42 ) && array( 'post_id' => 42 ) === $actual_index, 'actual canonical persistence, SQLite operations, and loader entry points publish matching file and index state' );
+
+// JSON-fallback post types never enter the immediate Markdown reconciliation path.
+$pdo->exec( "INSERT INTO wp_posts (ID, post_title, post_name, post_status, post_type, post_parent) VALUES (43, 'Revision', '42-revision-v1', 'inherit', 'revision', 42)" );
+$reconciled_persistence = new WP_Markdown_Canonical_Persistence( $canonical, $actual_storage, $actual_operations, 'wp_', $canonical, $coordinator );
+$revision_prepared = $reconciled_persistence->prepare_post_commit( 43, null );
+$actual_persistence->persist_mutation( array( 'key' => 'wp_posts:43', 'resource' => 'wp_posts:43', 'operation' => 'INSERT', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '43' ) ) ) );
+$actual_persistence->flush_dirty( true );
+$fallback_posts = json_decode( (string) file_get_contents( $canonical . '/_tables/posts.json' ), true );
+mdi_production_check( null === $revision_prepared && in_array( 43, array_map( static fn( array $row ): int => (int) $row['ID'], $fallback_posts ), true ) && null === $actual_storage->read_post( 43 ), 'revision creation persists through JSON fallback without planning a Markdown reconciliation operation' );
 
 // Recover a post-commit effect that was applied before its observation could complete.
 $checkpoint_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );
@@ -180,6 +189,19 @@ $mismatch_adapter->apply( $mismatch_prepared );
 $mismatch_rejected = false;
 try { $checkpoint_operations->recover( $mismatch_record['id'], 'post-commit-mismatch-recovery', 400, 30, $mismatch_adapter ); } catch ( WP_Markdown_Reconciliation_Conflict $error ) { $mismatch_rejected = 'after_state_not_proven' === ( $error->conflict()['reason'] ?? null ); }
 mdi_production_check( $mismatch_rejected && 'reconciliation_required' === $store->get( $mismatch_record['id'] )['state'] && 1 === $mismatch_applies && 'different' === $mismatch_state['canonical'], 'interrupted post-commit mismatch recovery fails closed without replay' );
+
+// Recovery apply failures become terminal conflicts instead of remaining perpetually claimed.
+$apply_failure_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );
+$apply_failure_observer = static function () use ( &$apply_failure_state ): array { return $apply_failure_state; };
+$apply_failure_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $apply_failure_observer, static function (): void { throw new RuntimeException( 'cannot apply' ); } );
+$apply_failure_intent = array( 'plan_id' => 'prepared-apply-failure', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $apply_failure_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) );
+$apply_failure_intent['checkpoint'] = array_map( array( WP_Markdown_Reconciliation_Identity::class, 'exact' ), $apply_failure_intent['checkpoint'] );
+$apply_failure_record = $coordinator->plan( $apply_failure_intent );
+$checkpoint_operations->prepare( $apply_failure_record['id'], 'apply-failure-worker', 500, 1, $apply_failure_adapter );
+$apply_failure_state['wordpress'] = 'after';
+$apply_failure_rejected = false;
+try { $checkpoint_operations->recover( $apply_failure_record['id'], 'apply-failure-recovery', 502, 30, $apply_failure_adapter ); } catch ( WP_Markdown_Reconciliation_Conflict $error ) { $apply_failure_rejected = 'apply_outcome_not_proven' === ( $error->conflict()['reason'] ?? null ); }
+mdi_production_check( $apply_failure_rejected && 'reconciliation_required' === $store->get( $apply_failure_record['id'] )['state'], 'recovery apply failure exits claimed state and requires explicit reconciliation' );
 
 // Hostile pre-existing symlink state is rejected instead of traversed.
 $hostile_target = $root . '/hostile-target'; mkdir( $hostile_target, 0700 );

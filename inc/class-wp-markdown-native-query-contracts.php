@@ -125,7 +125,7 @@ final class WP_Markdown_Query_Result {
 		return new self( count( $rows ), $rows, $columns );
 	}
 
-	/** @param array{code:string,message:string,reason:string} $diagnostic */
+	/** @param array{code:string,message:string,reason:string,sql_offset?:int} $diagnostic */
 	public static function failure( array $diagnostic ): self {
 		return new self( false, array(), array(), $diagnostic['message'], $diagnostic['code'], $diagnostic );
 	}

@@ -1,119 +1,202 @@
 <?php
-/** Deliberately bounded, table-neutral SELECT parser. */
+/** Typed parser and query-plan lowering for bounded native SELECT queries. */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
 final class WP_Markdown_Native_Query_Parser {
+	public function __construct(
+		private WP_Markdown_Native_SQL_Tokenizer $tokenizer = new WP_Markdown_Native_SQL_Tokenizer()
+	) {}
+
 	public function parse( string $sql ): WP_Markdown_Native_Query_Plan|WP_Markdown_Query_Result {
-		$identifier = '`?[A-Za-z_][A-Za-z0-9_]*`?';
-		$string = "'(?:[^'\\\\]|\\\\.)*'";
-		$scalar = '(?:' . $string . '|[0-9]+)';
-		$predicate = '(?:'
-			. '(?<equals_column>' . $identifier . ')\s*=\s*(?<equals_value>' . $scalar . ')'
-			. '|(?<in_column>' . $identifier . ')\s+IN\s*\(\s*(?<in_values>' . $scalar
-			. '(?:\s*,\s*' . $scalar . ')*)\s*\)'
-			. ')';
-		$pattern = '/\A\s*SELECT\s+(?<projection>\*|' . $identifier
-			. '(?:\s*,\s*' . $identifier . ')*)\s+FROM\s+(?<table>' . $identifier . ')'
-			. '(?:\s+WHERE\s+' . $predicate . ')?'
-			. '(?:\s+ORDER\s+BY\s+(?<order>' . $identifier . ')\s+ASC)?'
-			. '(?:\s+LIMIT\s+(?<limit>[0-9]+))?\s*\z/isD';
+		$ast = $this->parse_ast( $sql );
+		return $ast instanceof WP_Markdown_Query_Result ? $ast : $this->lower( $ast );
+	}
 
-		if ( 1 !== preg_match( $pattern, $sql, $matches ) ) {
-			return $this->failure( 'unsupported_grammar', 'mdi-native supports bounded single-table SELECT queries only.' );
+	public function parse_ast( string $sql ): WP_Markdown_Native_SQL_Select|WP_Markdown_Query_Result {
+		try {
+			return ( new WP_Markdown_Native_Select_AST_Parser( $this->tokenizer->tokenize( $sql ) ) )->parse();
+		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
+			return $this->failure( $error->reason(), $error->getMessage(), $error->sql_offset() );
 		}
+	}
 
-		$projection = '*' === $matches['projection']
+	public function lower( WP_Markdown_Native_SQL_Select $ast ): WP_Markdown_Native_Query_Plan|WP_Markdown_Query_Result {
+		$projection = $ast->selects_all()
 			? array( '*' )
-			: array_map( fn( string $item ): string => $this->identifier( trim( $item ) ), explode( ',', $matches['projection'] ) );
-		if ( count( $projection ) !== count( array_unique( $projection ) ) ) {
-			return $this->failure( 'duplicate_projection', 'mdi-native projections must not repeat columns.' );
+			: array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): string => $column->name(), $ast->projection() );
+		$seen = array();
+		foreach ( $ast->projection() as $column ) {
+			if ( isset( $seen[ $column->name() ] ) ) {
+				return $this->failure(
+					'duplicate_projection',
+					'mdi-native projections must not repeat columns.',
+					$column->sql_offset()
+				);
+			}
+			$seen[ $column->name() ] = true;
 		}
 
-		$values = array();
-		$predicate_column = $matches['equals_column'] ?? '';
-		$operator         = '=';
-		$raw              = $matches['equals_value'] ?? '';
-		if ( '' !== ( $matches['in_column'] ?? '' ) ) {
-			$predicate_column = $matches['in_column'];
-			$operator         = 'IN';
-			$raw              = $matches['in_values'];
-		}
-		if ( '' !== $predicate_column ) {
-			preg_match_all( '/' . $scalar . '/sD', $raw, $literals );
-			foreach ( $literals[0] as $literal ) {
-				if ( "'" !== $literal[0] && ! $this->fits_int( $literal ) ) {
-					return $this->failure( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
-				}
-				$value = $this->literal( $literal );
-				if ( null === $value ) {
-					return $this->failure( 'unsupported_literal', 'mdi-native cannot decode the requested scalar literal.' );
-				}
-				$values[] = $value;
-			}
-			if ( 'IN' === $operator ) {
-				$values = array_values( array_unique( $values, SORT_REGULAR ) );
-			}
-		}
-
-		$limit = PHP_INT_MAX;
-		if ( '' !== ( $matches['limit'] ?? '' ) ) {
-			if ( ! $this->fits_int( $matches['limit'] ) ) {
-				return $this->failure( 'overflow_limit', 'mdi-native cannot apply the requested LIMIT.' );
-			}
-			$limit = (int) $matches['limit'];
+		$predicate = $ast->predicate();
+		$values    = null === $predicate
+			? array()
+			: array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
+		if ( null !== $predicate && 'IN' === $predicate->operator() ) {
+			$values = array_values( array_unique( $values, SORT_REGULAR ) );
 		}
 
 		return new WP_Markdown_Native_Query_Plan(
-			$this->identifier( $matches['table'] ),
+			$ast->table()->name(),
 			$projection,
-			'' === $predicate_column ? null : new WP_Markdown_Native_Query_Predicate(
-				$this->identifier( $predicate_column ),
-				$operator,
+			null === $predicate ? null : new WP_Markdown_Native_Query_Predicate(
+				$predicate->column()->name(),
+				$predicate->operator(),
 				$values
 			),
-			'' === ( $matches['order'] ?? '' ) ? null : $this->identifier( $matches['order'] ),
-			$limit
+			$ast->order()?->name(),
+			$ast->limit() ?? PHP_INT_MAX
 		);
 	}
 
-	private function fits_int( string $value ): bool {
-		$value = ltrim( $value, '0' );
-		$value = '' === $value ? '0' : $value;
-		$maximum = (string) PHP_INT_MAX;
-		return strlen( $value ) < strlen( $maximum ) || ( strlen( $value ) === strlen( $maximum ) && strcmp( $value, $maximum ) <= 0 );
+	private function failure( string $reason, string $message, int $sql_offset ): WP_Markdown_Query_Result {
+		return WP_Markdown_Query_Result::failure(
+			array(
+				'code'       => 'markdown_db_native_unsupported_query',
+				'reason'     => $reason,
+				'message'    => $message,
+				'sql_offset' => $sql_offset,
+			)
+		);
 	}
+}
 
-	private function identifier( string $identifier ): string {
-		return '`' === $identifier[0] ? substr( $identifier, 1, -1 ) : $identifier;
-	}
+final class WP_Markdown_Native_Select_AST_Parser {
+	private int $current = 0;
 
-	private function literal( string $literal ): int|string|null {
-		if ( "'" !== $literal[0] ) {
-			return (int) $literal;
+	/** @param array<int,WP_Markdown_Native_SQL_Token> $tokens */
+	public function __construct( private readonly array $tokens ) {}
+
+	public function parse(): WP_Markdown_Native_SQL_Select {
+		$this->expect_keyword( 'SELECT' );
+		$select_all = $this->match_type( WP_Markdown_Native_SQL_Token::STAR );
+		$projection = array();
+		if ( ! $select_all ) {
+			$projection[] = $this->identifier();
+			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				$projection[] = $this->identifier();
+			}
 		}
-		$value = substr( $literal, 1, -1 );
-		$decoded = '';
-		for ( $i = 0, $length = strlen( $value ); $i < $length; ++$i ) {
-			if ( '\\' !== $value[ $i ] ) {
-				$decoded .= $value[ $i ];
-				continue;
-			}
-			if ( ++$i >= $length ) {
-				return null;
-			}
-			$escape = match ( $value[ $i ] ) { '0' => "\0", 'b' => "\x08", 'n' => "\n", 'r' => "\r", 't' => "\t", 'Z' => "\x1a", '\\', "'", '"' => $value[ $i ], default => null };
-			if ( null === $escape ) {
-				return null;
-			}
-			$decoded .= $escape;
+
+		$this->expect_keyword( 'FROM' );
+		$table     = $this->identifier();
+		$predicate = $this->match_keyword( 'WHERE' ) ? $this->predicate() : null;
+		$order     = null;
+		if ( $this->match_keyword( 'ORDER' ) ) {
+			$this->expect_keyword( 'BY' );
+			$order = $this->identifier();
+			$this->expect_keyword( 'ASC' );
 		}
-		return $decoded;
+		$limit = null;
+		if ( $this->match_keyword( 'LIMIT' ) ) {
+			$limit = $this->integer( 'overflow_limit', 'mdi-native cannot apply the requested LIMIT.' );
+		}
+		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
+
+		return new WP_Markdown_Native_SQL_Select( $select_all, $projection, $table, $predicate, $order, $limit );
 	}
 
-	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {
-		return WP_Markdown_Query_Result::failure( array( 'code' => 'markdown_db_native_unsupported_query', 'reason' => $reason, 'message' => $message ) );
+	private function predicate(): WP_Markdown_Native_SQL_Predicate {
+		$column = $this->identifier();
+		if ( $this->match_type( WP_Markdown_Native_SQL_Token::EQUALS ) ) {
+			return new WP_Markdown_Native_SQL_Predicate( $column, '=', array( $this->literal() ) );
+		}
+		$this->expect_keyword( 'IN' );
+		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$values = array( $this->literal() );
+		while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+			$values[] = $this->literal();
+		}
+		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		return new WP_Markdown_Native_SQL_Predicate( $column, 'IN', $values );
+	}
+
+	private function identifier(): WP_Markdown_Native_SQL_Identifier {
+		$token = $this->current();
+		if ( ! in_array( $token->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
+			$this->unsupported( $token );
+		}
+		++$this->current;
+		return new WP_Markdown_Native_SQL_Identifier( (string) $token->value(), $token->sql_offset() );
+	}
+
+	private function literal(): WP_Markdown_Native_SQL_Literal {
+		$token = $this->current();
+		if ( WP_Markdown_Native_SQL_Token::STRING === $token->type() ) {
+			++$this->current;
+			return new WP_Markdown_Native_SQL_Literal( (string) $token->value(), $token->sql_offset() );
+		}
+		if ( WP_Markdown_Native_SQL_Token::INTEGER === $token->type() ) {
+			$value = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
+			return new WP_Markdown_Native_SQL_Literal( $value, $token->sql_offset() );
+		}
+		$this->unsupported( $token );
+	}
+
+	private function integer( string $overflow_reason, string $overflow_message ): int {
+		$token = $this->expect_type( WP_Markdown_Native_SQL_Token::INTEGER );
+		$value = (string) $token->value();
+		$normalized = ltrim( $value, '0' );
+		$normalized = '' === $normalized ? '0' : $normalized;
+		$maximum    = (string) PHP_INT_MAX;
+		if ( strlen( $normalized ) > strlen( $maximum ) || ( strlen( $normalized ) === strlen( $maximum ) && strcmp( $normalized, $maximum ) > 0 ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( $overflow_reason, $token->sql_offset(), $overflow_message );
+		}
+		return (int) $normalized;
+	}
+
+	private function expect_keyword( string $keyword ): void {
+		if ( ! $this->match_keyword( $keyword ) ) {
+			$this->unsupported( $this->current() );
+		}
+	}
+
+	private function match_keyword( string $keyword ): bool {
+		$token = $this->current();
+		if ( WP_Markdown_Native_SQL_Token::KEYWORD !== $token->type() || 0 !== strcasecmp( $keyword, (string) $token->value() ) ) {
+			return false;
+		}
+		++$this->current;
+		return true;
+	}
+
+	private function match_type( string $type ): bool {
+		if ( $type !== $this->current()->type() ) {
+			return false;
+		}
+		++$this->current;
+		return true;
+	}
+
+	private function expect_type( string $type ): WP_Markdown_Native_SQL_Token {
+		$token = $this->current();
+		if ( $type !== $token->type() ) {
+			$this->unsupported( $token );
+		}
+		++$this->current;
+		return $token;
+	}
+
+	private function current(): WP_Markdown_Native_SQL_Token {
+		return $this->tokens[ $this->current ];
+	}
+
+	private function unsupported( WP_Markdown_Native_SQL_Token $token ): never {
+		throw new WP_Markdown_Native_SQL_Parse_Error(
+			'unsupported_grammar',
+			$token->sql_offset(),
+			'mdi-native supports bounded single-table SELECT queries only.'
+		);
 	}
 }

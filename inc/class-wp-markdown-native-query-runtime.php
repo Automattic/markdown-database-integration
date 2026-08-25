@@ -8,6 +8,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/class-wp-markdown-canonical-option-path.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-contracts.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-schema.php';
+require_once __DIR__ . '/class-wp-markdown-native-sql-tokenizer.php';
+require_once __DIR__ . '/class-wp-markdown-native-query-ast.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';

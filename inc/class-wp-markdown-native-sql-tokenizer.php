@@ -108,7 +108,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 					++$offset;
 				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'FROM', 'WHERE', 'IN', 'ORDER', 'BY', 'ASC', 'LIMIT' ), true )
+				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'FROM', 'WHERE', 'IN', 'AND', 'ORDER', 'BY', 'ASC', 'LIMIT' ), true )
 					? WP_Markdown_Native_SQL_Token::KEYWORD
 					: WP_Markdown_Native_SQL_Token::WORD;
 				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );

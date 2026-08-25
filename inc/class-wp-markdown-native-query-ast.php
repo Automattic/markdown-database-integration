@@ -58,12 +58,12 @@ final class WP_Markdown_Native_SQL_Predicate {
 }
 
 final class WP_Markdown_Native_SQL_Select {
-	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection */
+	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates */
 	public function __construct(
 		private readonly bool $select_all,
 		private readonly array $projection,
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
-		private readonly ?WP_Markdown_Native_SQL_Predicate $predicate,
+		private readonly array $predicates,
 		private readonly ?WP_Markdown_Native_SQL_Identifier $order,
 		private readonly ?int $limit
 	) {}
@@ -82,7 +82,12 @@ final class WP_Markdown_Native_SQL_Select {
 	}
 
 	public function predicate(): ?WP_Markdown_Native_SQL_Predicate {
-		return $this->predicate;
+		return $this->predicates[0] ?? null;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
+	public function predicates(): array {
+		return $this->predicates;
 	}
 
 	public function order(): ?WP_Markdown_Native_SQL_Identifier {

@@ -59,6 +59,9 @@ $missing = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT payload FROM wp_runtime_events WHERE event_id = 404 LIMIT 1' )
 );
 $scan = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT payload FROM wp_runtime_events' ) );
+$conjunctive = $runtime->execute(
+	new WP_Markdown_Query_Request( "SELECT payload FROM wp_runtime_events WHERE payload = 'second' AND event_id IN (10, 2) ORDER BY event_id ASC LIMIT 1" )
+);
 
 $requested_malformed_path = $generation . '/' . hash( 'sha256', '3' ) . '.json';
 file_put_contents( $requested_malformed_path, '{malformed-requested' );
@@ -109,6 +112,8 @@ $checks = array(
 	'missing identities are successful and unrelated malformed rows are untouched' => 0 === $missing->return_value(),
 	'unbounded partition scans fail closed' => false === $scan->return_value()
 		&& 'unsupported_partition_access' === ( $scan->diagnostic()['reason'] ?? null ),
+	'partition identity pushes down while residual columns filter before LIMIT' => 1 === $conjunctive->return_value()
+		&& 'second' === ( $conjunctive->wpdb_state()['last_result'][0]->payload ?? null ),
 	'identity ordering applies LIMIT before opening later requested partitions' => 1 === $limited_before_malformed->return_value()
 		&& 'first' === ( $limited_before_malformed->wpdb_state()['last_result'][0]->payload ?? null ),
 	'malformed requested partitions fail without partial rows' => false === $requested_malformed->return_value()

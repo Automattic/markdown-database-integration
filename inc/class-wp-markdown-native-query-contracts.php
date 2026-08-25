@@ -48,11 +48,11 @@ final class WP_Markdown_Native_Query_Predicate {
 }
 
 final class WP_Markdown_Native_Query_Plan {
-	/** @param array<int,string> $projection */
+	/** @param array<int,string> $projection @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
 	public function __construct(
 		private readonly string $table,
 		private readonly array $projection,
-		private readonly ?WP_Markdown_Native_Query_Predicate $predicate,
+		private readonly array $predicates,
 		private readonly ?string $order,
 		private readonly int $limit
 	) {}
@@ -67,7 +67,12 @@ final class WP_Markdown_Native_Query_Plan {
 	}
 
 	public function predicate(): ?WP_Markdown_Native_Query_Predicate {
-		return $this->predicate;
+		return $this->predicates[0] ?? null;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
+	public function predicates(): array {
+		return $this->predicates;
 	}
 
 	public function order(): ?string {

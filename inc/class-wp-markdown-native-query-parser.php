@@ -39,22 +39,23 @@ final class WP_Markdown_Native_Query_Parser {
 			$seen[ $column->name() ] = true;
 		}
 
-		$predicate = $ast->predicate();
-		$values    = null === $predicate
-			? array()
-			: array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
-		if ( null !== $predicate && 'IN' === $predicate->operator() ) {
-			$values = array_values( array_unique( $values, SORT_REGULAR ) );
+		$predicates = array();
+		foreach ( $ast->predicates() as $predicate ) {
+			$values = array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
+			if ( 'IN' === $predicate->operator() ) {
+				$values = array_values( array_unique( $values, SORT_REGULAR ) );
+			}
+			$predicates[] = new WP_Markdown_Native_Query_Predicate(
+				$predicate->column()->name(),
+				$predicate->operator(),
+				$values
+			);
 		}
 
 		return new WP_Markdown_Native_Query_Plan(
 			$ast->table()->name(),
 			$projection,
-			null === $predicate ? null : new WP_Markdown_Native_Query_Predicate(
-				$predicate->column()->name(),
-				$predicate->operator(),
-				$values
-			),
+			$predicates,
 			$ast->order()?->name(),
 			$ast->limit() ?? PHP_INT_MAX
 		);
@@ -91,7 +92,13 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 		$this->expect_keyword( 'FROM' );
 		$table     = $this->identifier();
-		$predicate = $this->match_keyword( 'WHERE' ) ? $this->predicate() : null;
+		$predicates = array();
+		if ( $this->match_keyword( 'WHERE' ) ) {
+			$predicates[] = $this->predicate();
+			while ( $this->match_keyword( 'AND' ) ) {
+				$predicates[] = $this->predicate();
+			}
+		}
 		$order     = null;
 		if ( $this->match_keyword( 'ORDER' ) ) {
 			$this->expect_keyword( 'BY' );
@@ -104,7 +111,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $projection, $table, $predicate, $order, $limit );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $projection, $table, $predicates, $order, $limit );
 	}
 
 	private function predicate(): WP_Markdown_Native_SQL_Predicate {

@@ -16,11 +16,13 @@ final class WP_Markdown_Native_Shadow_Factory {
 			: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown' );
 		$prefix = (string) ( $database->prefix ?? ( $GLOBALS['table_prefix'] ?? 'wp_' ) );
 		$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? $prefix ) );
+		$content_root = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown';
 		$runtime = WP_Markdown_Native_Runtime_Factory::runtime(
 			$state_root,
 			$prefix,
 			$base_prefix,
-			defined( 'MULTISITE' ) && MULTISITE
+			defined( 'MULTISITE' ) && MULTISITE,
+			$content_root
 		);
 		$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
 		return new WP_Markdown_Native_Shadow_Verifier( $runtime, $maximum );

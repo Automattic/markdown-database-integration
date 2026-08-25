@@ -52,7 +52,7 @@ $verifier = new WP_Markdown_Native_Shadow_Verifier( $runtime, 3 );
 $verifier->observe( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1", 1, $database );
 $verifier->observe( "UPDATE wp_options SET option_value = 'private'", 1, $database );
 $database->result( array(), array( array( 'name' => 'ID', 'type' => 8 ) ) );
-$unsupported_query = "SELECT ID FROM wp_posts WHERE post_title = 'private@example.test' AND post_author = 123";
+$unsupported_query = "SELECT comment_ID FROM wp_comments WHERE comment_author_email = 'private@example.test' AND comment_post_ID = 123";
 $verifier->observe( $unsupported_query, 0, $database );
 $verifier->observe( 'SELECT ID FROM wp_posts', 0, $database );
 $report = $verifier->report();
@@ -127,10 +127,10 @@ $checks = array(
 	'observation bounds drop later queries deterministically' => 3 === $report['observed']
 		&& 1 === $report['counts']['dropped'],
 	'first unsupported query retains a sanitized reproducible shape' => 'unsupported' === ( $report['first_blocker']['status'] ?? null )
-		&& hash( 'sha256', 'SELECT ID FROM wp_posts WHERE post_title = ? AND post_author = ?' ) === ( $report['first_blocker']['query_template_sha256'] ?? null )
+		&& hash( 'sha256', 'SELECT comment_ID FROM wp_comments WHERE comment_author_email = ? AND comment_post_ID = ?' ) === ( $report['first_blocker']['query_template_sha256'] ?? null )
 		&& ! str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'private@example.test' )
 		&& ! str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), '123' )
-		&& str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'wp_posts' ),
+		&& str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'wp_comments' ),
 	'column metadata inspection restores lazy wpdb state' => $database->col_info_is_unloaded(),
 	'mismatches expose paths without authoritative or native values' => 'mismatched' === ( $mismatch_report['first_blocker']['status'] ?? null )
 		&& in_array( '$.rows[0].option_value', $mismatch_report['first_blocker']['mismatch_paths'] ?? array(), true )

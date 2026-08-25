@@ -33,6 +33,7 @@ if ( 2 === $argc ) {
 	foreach ( array( 'class-wp-markdown-frontmatter-profiles.php', 'class-wp-markdown-content-layout-profiles.php', 'class-wp-markdown-storage.php', 'class-wp-markdown-search.php', 'class-wp-markdown-write-engine.php', 'class-wp-markdown-loader.php' ) as $file ) {
 		file_put_contents( $mdi . '/inc/' . $file, "<?php\n" );
 	}
+	file_put_contents( $mdi . '/inc/class-wp-markdown-storage.php', "<?php\nclass WP_Markdown_Storage { public function __construct( string \$root ) {} }\n" );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-query-observer-boundary.php', $mdi . '/inc/class-wp-markdown-query-observer-boundary.php' );

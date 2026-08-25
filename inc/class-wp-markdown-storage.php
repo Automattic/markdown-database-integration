@@ -653,21 +653,37 @@ class WP_Markdown_Storage {
 	 *
 	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
 	 */
-	public function get_markdown_file_manifest_iterator(): \Generator {
+	public function get_markdown_file_manifest_iterator( bool $strict = false ): \Generator {
+		if ( $strict && is_link( $this->content_dir ) ) {
+			throw new RuntimeException( 'Markdown DB: Canonical content root must not be a link.' );
+		}
 		if ( ! $this->uses_legacy_layout() ) {
 			$identities = array();
 			foreach ( $this->profile_source_paths() as $relative ) {
 				$path = $this->profile_absolute_path( $relative );
 				if ( null === $path ) {
+					if ( $strict ) {
+						throw new RuntimeException( 'Markdown DB: Content profile returned an unsafe source path.' );
+					}
 					continue;
+				}
+				$stat = @lstat( $path );
+				if ( $strict && ( ! $this->existing_path_is_safe( $path ) || ! is_array( $stat ) || 1 !== ( $stat['nlink'] ?? 1 ) ) ) {
+					throw new RuntimeException( 'Markdown DB: Canonical content source path is unsafe.' );
 				}
 				$post = $this->read_file( $path, true );
 				if ( ! $post ) {
+					if ( $strict ) {
+						throw new RuntimeException( 'Markdown DB: Canonical content source is malformed.' );
+					}
 					continue;
 				}
 				$this->apply_layout_mapping( $post, $relative );
 				$identity = (string) ( $post->_source_identity ?? $relative );
 				if ( isset( $identities[ $identity ] ) ) {
+					if ( $strict ) {
+						throw new RuntimeException( 'Markdown DB: Canonical content contains a duplicate source identity.' );
+					}
 					error_log( sprintf( 'Markdown DB: duplicate source identity %s at %s and %s.', $identity, $identities[ $identity ], $relative ) );
 					continue;
 				}
@@ -686,16 +702,19 @@ class WP_Markdown_Storage {
 		}
 
 		foreach ( $dirs as $type_dir ) {
-			if ( is_link( $type_dir ) ) {
-				continue;
-			}
 			$dirname = basename( $type_dir );
 
 			if ( str_starts_with( $dirname, '_' ) || in_array( $dirname, $this->excluded_types, true ) ) {
 				continue;
 			}
+			if ( is_link( $type_dir ) ) {
+				if ( $strict ) {
+					throw new RuntimeException( 'Markdown DB: Canonical post type directory must not be a link.' );
+				}
+				continue;
+			}
 
-			yield from $this->iterate_markdown_directory_manifest( $type_dir, $type_dir, 0 );
+			yield from $this->iterate_markdown_directory_manifest( $type_dir, $type_dir, 0, $strict );
 		}
 	}
 
@@ -707,12 +726,18 @@ class WP_Markdown_Storage {
 	 * @param int    $parent_id Parent directory's index.md post ID.
 	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
 	 */
-	private function iterate_markdown_directory_manifest( string $dir, string $type_dir, int $parent_id ): \Generator {
+	private function iterate_markdown_directory_manifest( string $dir, string $type_dir, int $parent_id, bool $strict = false ): \Generator {
 		if ( is_link( $dir ) ) {
+			if ( $strict ) {
+				throw new RuntimeException( 'Markdown DB: Canonical content directory must not be a link.' );
+			}
 			return;
 		}
 		$entries = scandir( $dir );
 		if ( false === $entries ) {
+			if ( $strict ) {
+				throw new RuntimeException( 'Markdown DB: Canonical content directory is unreadable.' );
+			}
 			return;
 		}
 
@@ -729,6 +754,9 @@ class WP_Markdown_Storage {
 
 			$path = $dir . '/' . $entry;
 			if ( is_link( $path ) ) {
+				if ( $strict && ! str_starts_with( $entry, '_' ) ) {
+					throw new RuntimeException( 'Markdown DB: Canonical content path must not be a link.' );
+				}
 				continue;
 			}
 
@@ -737,12 +765,16 @@ class WP_Markdown_Storage {
 					continue;
 				}
 
-				yield from $this->iterate_markdown_directory_manifest( $path, $type_dir, $current_parent_id );
+				yield from $this->iterate_markdown_directory_manifest( $path, $type_dir, $current_parent_id, $strict );
 				continue;
 			}
 
 			if ( ! str_ends_with( $entry, '.md' ) ) {
 				continue;
+			}
+			$stat = @lstat( $path );
+			if ( $strict && ( ! $this->existing_path_is_safe( $path ) || ! is_array( $stat ) || 1 !== ( $stat['nlink'] ?? 1 ) ) ) {
+				throw new RuntimeException( 'Markdown DB: Canonical Markdown file is unsafe.' );
 			}
 
 			$derived_parent_id = null;

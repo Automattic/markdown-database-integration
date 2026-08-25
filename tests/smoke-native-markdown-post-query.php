@@ -112,13 +112,20 @@ $outside = $root . '/outside.md';
 $write( $outside, 45, 'Outside', 7, 'Outside body' );
 $linked = function_exists( 'symlink' ) && @symlink( $outside, $content . '/post/linked.md' );
 $unsafe = $linked ? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE post_author = 7' ) ) : null;
+if ( $linked ) {
+	@unlink( $content . '/post/linked.md' );
+}
+$hardlinked = function_exists( 'link' ) && @link( $outside, $content . '/post/linked.md' );
+$unsafe_hardlink = $hardlinked ? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE post_author = 7' ) ) : null;
 
 $checks['malformed and duplicate Markdown fail without partial rows'] = false === $malformed->return_value()
 	&& false === $duplicate->return_value()
 	&& array() === $malformed->wpdb_state()['last_result']
 	&& 'markdown_db_native_malformed_post' === ( $duplicate->diagnostic()['code'] ?? null );
-$checks['linked Markdown paths fail closed'] = ! $linked || ( false === $unsafe->return_value()
-	&& 'markdown_db_native_malformed_post' === ( $unsafe->diagnostic()['code'] ?? null ) );
+$checks['linked Markdown paths fail closed'] = ( ! $linked || ( false === $unsafe->return_value()
+	&& 'markdown_db_native_malformed_post' === ( $unsafe->diagnostic()['code'] ?? null ) ) )
+	&& ( ! $hardlinked || ( false === $unsafe_hardlink->return_value()
+	&& 'markdown_db_native_malformed_post' === ( $unsafe_hardlink->diagnostic()['code'] ?? null ) ) );
 
 if ( 1 !== ( $shadow_report['counts']['compatible'] ?? 0 ) ) {
 	fwrite( STDERR, json_encode( $shadow_report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . PHP_EOL );

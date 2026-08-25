@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.11.2] - 2026-08-25
+
+### Changed
+- Bound partition temp cleanup scans
+- Cover hard-linked native posts
+- Query canonical Markdown posts natively
+
 ## [0.11.1] - 2026-08-24
 
 ### Changed

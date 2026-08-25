@@ -158,6 +158,46 @@ final class WP_Markdown_Native_Runtime_Factory {
 		);
 	}
 
+	public static function comments_schema(): WP_Markdown_Native_Table_Schema {
+		$positive = static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^[1-9][0-9]*$/D', $value );
+		$nonnegative = static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value );
+		$signed = static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^-?(?:0|[1-9][0-9]*)$/D', $value );
+		$string = static fn( int $maximum ): callable => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum;
+		$unsigned_lookup = static fn( array $values ): bool => ! in_array(
+			null,
+			array_map( array( self::class, 'normalize_unsigned' ), $values ),
+			true
+		);
+		return new WP_Markdown_Native_Table_Schema(
+			array(
+				'comment_ID'           => new WP_Markdown_Native_Column( 8, false, $positive, array( self::class, 'normalize_unsigned' ), array( '=', 'IN' ), $unsigned_lookup ),
+				'comment_post_ID'      => new WP_Markdown_Native_Column( 8, false, $nonnegative, array( self::class, 'normalize_unsigned' ), array( '=', 'IN' ), $unsigned_lookup ),
+				'comment_author'       => new WP_Markdown_Native_Column( 252, false, $string( 255 ) ),
+				'comment_author_email' => new WP_Markdown_Native_Column(
+					253,
+					false,
+					$string( 100 ),
+					array( self::class, 'normalize_ascii_ci' ),
+					array( '=', 'IN' ),
+					static fn( array $values ): bool => self::all_ascii_strings( $values )
+				),
+				'comment_author_url'   => new WP_Markdown_Native_Column( 253, false, $string( 200 ) ),
+				'comment_author_IP'    => new WP_Markdown_Native_Column( 253, false, $string( 100 ) ),
+				'comment_date'         => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
+				'comment_date_gmt'     => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
+				'comment_content'      => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'comment_karma'        => new WP_Markdown_Native_Column( 3, false, $signed, array( self::class, 'normalize_signed' ) ),
+				'comment_approved'     => new WP_Markdown_Native_Column( 253, false, $string( 20 ), null, array( '=', 'IN' ) ),
+				'comment_agent'        => new WP_Markdown_Native_Column( 253, false, $string( 255 ) ),
+				'comment_type'         => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
+				'comment_parent'       => new WP_Markdown_Native_Column( 8, false, $nonnegative, array( self::class, 'normalize_unsigned' ), array( '=', 'IN' ), $unsigned_lookup ),
+				'user_id'              => new WP_Markdown_Native_Column( 8, false, $nonnegative, array( self::class, 'normalize_unsigned' ) ),
+			),
+			'comment_ID',
+			array( 'comment_date_gmt' )
+		);
+	}
+
 	public static function registry(
 		string $state_root,
 		string $prefix = 'wp_',
@@ -193,6 +233,13 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$prefix . 'posts',
 			$posts,
 			new WP_Markdown_Native_Post_Provider( $content_root, $posts )
+		);
+		self::register_json_snapshot(
+			$registry,
+			$state_root,
+			$prefix . 'comments',
+			self::comments_schema(),
+			'comments.json'
 		);
 		return $registry;
 	}

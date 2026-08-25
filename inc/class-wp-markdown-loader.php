@@ -9,6 +9,29 @@ require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
 require_once __DIR__ . '/class-wp-markdown-backend-adapter.php';
 require_once __DIR__ . '/class-wp-markdown-reconciliation-adapters.php';
 
+final class WP_Markdown_Loader_Outcome {
+	private function __construct( private string $mode, private string $status, private ?string $reason = null ) {}
+
+	public static function complete( string $mode ): self { return new self( $mode, 'complete' ); }
+	public static function retained( string $reason ): self { return new self( 'warm', 'retained_previous_index', $reason ); }
+	public function mode(): string { return $this->mode; }
+	public function status(): string { return $this->status; }
+	public function reason(): ?string { return $this->reason; }
+	/** @return array<string,string> */
+	public function stats(): array {
+		$stats = array( 'boot_mode' => $this->mode, 'sync_status' => $this->status );
+		if ( null !== $this->reason ) { $stats['sync_error'] = $this->reason; }
+		return $stats;
+	}
+}
+
+final class WP_Markdown_Loader_Exception extends \RuntimeException {
+	public function __construct( private string $diagnostic_code, \Throwable $previous ) {
+		parent::__construct( 'Markdown DB cold reconstruction failed.', 0, $previous );
+	}
+	public function diagnostic_code(): string { return $this->diagnostic_code; }
+}
+
 class WP_Markdown_Loader {
 	private const CORE_TABLE_SUFFIXES = array( 'users', 'usermeta', 'terms', 'term_taxonomy', 'termmeta', 'postmeta', 'term_relationships', 'comments', 'commentmeta', 'links' );
 	private const SNAPSHOT_TABLE_SUFFIXES = array( 'posts', 'users', 'usermeta', 'terms', 'term_taxonomy', 'termmeta', 'postmeta', 'term_relationships', 'comments', 'commentmeta', 'links' );
@@ -38,7 +61,8 @@ class WP_Markdown_Loader {
 		}
 	}
 
-	public function load_all(): void {
+	/** @return WP_Markdown_Loader_Outcome */
+	public function load_all() {
 		$start = microtime( true );
 		$this->stats = array( 'boot_mode' => 'cold' );
 		try {
@@ -50,11 +74,19 @@ class WP_Markdown_Loader {
 			$this->operations->hydrate_markdown_posts( $this->markdown_posts(), $this->json_rows( 'posts' ) );
 			$this->flush_pending_id_writes();
 			$this->hydrate_plugins();
-		} catch ( \Throwable $e ) { error_log( 'Markdown DB Loader error: ' . $e->getMessage() ); }
-		$this->timings['total'] = microtime( true ) - $start;
+		} catch ( \Throwable $e ) {
+			$this->stats = array( 'boot_mode' => 'cold', 'sync_status' => 'failed', 'sync_error' => 'cold_reconstruction_failed' );
+			throw new WP_Markdown_Loader_Exception( 'cold_reconstruction_failed', $e );
+		} finally {
+			$this->timings['total'] = microtime( true ) - $start;
+		}
+		$outcome = WP_Markdown_Loader_Outcome::complete( 'cold' );
+		$this->stats = $outcome->stats();
+		return $outcome;
 	}
 
-	public function sync_incremental(): void {
+	/** @return WP_Markdown_Loader_Outcome */
+	public function sync_incremental() {
 		$start = microtime( true );
 		$this->stats = array( 'boot_mode' => 'warm' );
 		try {
@@ -68,13 +100,16 @@ class WP_Markdown_Loader {
 			$this->flush_pending_id_writes();
 			$this->stats = array_merge( $this->stats, $result );
 		} catch ( \Throwable $e ) {
-			$this->stats['sync_status'] = 'retained_previous_index';
-			$this->stats['sync_error']  = $this->is_contention_error( $e ) ? 'canonical_store_busy' : 'canonical_sync_failed';
+			$outcome = WP_Markdown_Loader_Outcome::retained( $this->is_contention_error( $e ) ? 'canonical_store_busy' : 'canonical_sync_failed' );
+			$this->stats = $outcome->stats();
+			$this->timings['total'] = microtime( true ) - $start;
 			error_log( 'Markdown DB sync error: ' . $e->getMessage() );
-			return;
+			return $outcome;
 		}
-		$this->stats['sync_status'] = 'complete';
+		$outcome = WP_Markdown_Loader_Outcome::complete( 'warm' );
+		$this->stats = array_merge( $this->stats, $outcome->stats() );
 		$this->timings['total'] = microtime( true ) - $start;
+		return $outcome;
 	}
 	private function is_contention_error( \Throwable $error ): bool {
 		do {

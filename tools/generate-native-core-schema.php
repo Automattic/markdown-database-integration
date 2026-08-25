@@ -7,19 +7,19 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! function_exists( 'wp_get_db_schema' ) ) {
 	require_once ABSPATH . 'wp-admin/includes/schema.php';
 }
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-native-core-schema-catalog.php';
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-native-schema-catalog.php';
 
 global $wpdb, $wp_version;
 $prefixes = array( (string) $wpdb->prefix, (string) $wpdb->base_prefix );
 if ( is_multisite() || defined( 'WP_INSTALLING_NETWORK' ) ) {
 	throw new RuntimeException( 'Generate the catalog from a single-site runtime where WP_INSTALLING_NETWORK is undefined.' );
 }
-$single = WP_Markdown_Native_Core_Schema_Catalog::compile( wp_get_db_schema( 'all' ), $prefixes );
+$single = WP_Markdown_Native_Schema_Catalog::compile( wp_get_db_schema( 'all' ), $prefixes );
 define( 'WP_INSTALLING_NETWORK', true );
 foreach ( $wpdb->ms_global_tables as $table ) {
 	$wpdb->{$table} = $wpdb->base_prefix . $table;
 }
-$multisite = WP_Markdown_Native_Core_Schema_Catalog::compile( wp_get_db_schema( 'all' ), $prefixes );
+$multisite = WP_Markdown_Native_Schema_Catalog::compile( wp_get_db_schema( 'all' ), $prefixes );
 
 $output = getenv( 'MDI_NATIVE_SCHEMA_OUTPUT' );
 if ( ! is_string( $output ) || '' === $output ) {
@@ -31,8 +31,8 @@ $artifact = array(
 	'single_site'       => $single,
 	'multisite'         => $multisite,
 	'hashes'            => array(
-		'single_site' => WP_Markdown_Native_Core_Schema_Catalog::hash( $single ),
-		'multisite'   => WP_Markdown_Native_Core_Schema_Catalog::hash( $multisite ),
+		'single_site' => WP_Markdown_Native_Schema_Catalog::hash( $single ),
+		'multisite'   => WP_Markdown_Native_Schema_Catalog::hash( $multisite ),
 	),
 );
 $export = str_replace( "=> \n", "=>\n", var_export( $artifact, true ) );

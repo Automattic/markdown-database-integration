@@ -6,14 +6,15 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class WP_Markdown_Native_Column {
-	/** @param array<int,string> $lookup_operators */
+	/** @param array<int,string> $lookup_operators @param array<int,string> $filter_operators */
 	public function __construct(
 		private readonly int $type,
 		private readonly bool $nullable,
 		private readonly mixed $validator = null,
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
-		private readonly mixed $lookup_validator = null
+		private readonly mixed $lookup_validator = null,
+		private readonly array $filter_operators = array( '=', 'IN' )
 	) {
 		if ( null !== $validator && ! is_callable( $validator ) ) {
 			throw new InvalidArgumentException( 'Column validators must be callable.' );
@@ -53,7 +54,7 @@ final class WP_Markdown_Native_Column {
 
 	/** @param array<int,int|string> $values */
 	public function allows_filter( string $operator, array $values ): bool {
-		if ( ! in_array( $operator, array( '=', 'IN' ), true ) || array() === $values ) {
+		if ( ! in_array( $operator, $this->filter_operators, true ) || array() === $values ) {
 			return false;
 		}
 		foreach ( $values as $value ) {

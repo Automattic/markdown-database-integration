@@ -114,8 +114,8 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 					'The canonical table contains a row outside its declared schema.'
 				);
 			}
-			$key = serialize( $row[ $identity ] );
-			if ( isset( $identities[ $key ] ) ) {
+			$key = $this->schema->value_key( $identity, $row[ $identity ] );
+			if ( null === $key || isset( $identities[ $key ] ) ) {
 				return $this->failure(
 					'markdown_db_native_malformed_table',
 					'duplicate_natural_identity',

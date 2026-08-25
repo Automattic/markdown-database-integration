@@ -13,12 +13,12 @@ $ddl = "CREATE TABLE wp_example (\n"
 	. " PRIMARY KEY  (ID),\n"
 	. " KEY label (label(12))\n"
 	. ') ENGINE=InnoDB;';
-$prefixed = WP_Markdown_Native_Core_Schema_Catalog::compile( $ddl, array( 'wp_' ) );
-$other_prefix = WP_Markdown_Native_Core_Schema_Catalog::compile(
+$prefixed = WP_Markdown_Native_Schema_Catalog::compile( $ddl, array( 'wp_' ) );
+$other_prefix = WP_Markdown_Native_Schema_Catalog::compile(
 	str_replace( 'wp_example', 'network_2_example', $ddl ),
 	array( 'network_', 'network_2_' )
 );
-$artifact = WP_Markdown_Native_Core_Schema_Catalog::artifact();
+$artifact = WP_Markdown_Native_Schema_Catalog::artifact();
 $single = $artifact['single_site'];
 $multisite = $artifact['multisite'];
 $expected_single = array( 'users', 'usermeta', 'termmeta', 'terms', 'term_taxonomy', 'term_relationships', 'commentmeta', 'comments', 'links', 'options', 'postmeta', 'posts' );
@@ -38,8 +38,8 @@ $checks = array(
 	) === ( $prefixed['example']['columns']['ID'] ?? null )
 		&& null === ( $prefixed['example']['columns']['payload']['default'] ?? null )
 		&& 12 === ( $prefixed['example']['indexes'][1]['columns'][0]['length'] ?? null ),
-	'generated scope hashes authenticate their complete definitions' => hash_equals( $artifact['hashes']['single_site'], WP_Markdown_Native_Core_Schema_Catalog::hash( $single ) )
-		&& hash_equals( $artifact['hashes']['multisite'], WP_Markdown_Native_Core_Schema_Catalog::hash( $multisite ) ),
+	'generated scope hashes authenticate their complete definitions' => hash_equals( $artifact['hashes']['single_site'], WP_Markdown_Native_Schema_Catalog::hash( $single ) )
+		&& hash_equals( $artifact['hashes']['multisite'], WP_Markdown_Native_Schema_Catalog::hash( $multisite ) ),
 	'single-site artifact contains the exact WordPress core table inventory' => $expected_single === array_keys( $single ),
 	'multisite artifact adds the exact network table inventory' => $expected_multisite === array_keys( $multisite ),
 	'multisite users retain their two network-specific columns' => 10 === count( $single['users']['columns'] )

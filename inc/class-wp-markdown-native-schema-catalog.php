@@ -1,11 +1,11 @@
 <?php
-/** Generated WordPress core schema catalog and native descriptor builder. */
+/** DDL schema compiler, generated core catalog, and native descriptor builder. */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-final class WP_Markdown_Native_Core_Schema_Catalog {
+final class WP_Markdown_Native_Schema_Catalog {
 	private const SCHEMA = 'mdi-native-core-schema/v1';
 
 	/** @param array<int,string> $prefixes @return array<string,array<string,mixed>> */
@@ -19,25 +19,27 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 			}
 		}
 		if ( array() === $tables ) {
-			throw new InvalidArgumentException( 'WordPress core schema contains no CREATE TABLE statements.' );
+			throw new InvalidArgumentException( 'Schema DDL contains no CREATE TABLE statements.' );
 		}
 
 		$catalog = array();
 		foreach ( $tables as $table ) {
 			$name = trim( $table[1], '`' );
+			$qualified = false;
 			foreach ( $prefixes as $prefix ) {
 				if ( '' !== $prefix && str_starts_with( $name, $prefix ) ) {
 					$name = substr( $name, strlen( $prefix ) );
+					$qualified = true;
 					break;
 				}
 			}
-			if ( '' === $name || isset( $catalog[ $name ] ) ) {
-				throw new InvalidArgumentException( 'WordPress core schema contains a duplicate or unqualified table.' );
+			if ( ! $qualified || '' === $name || isset( $catalog[ $name ] ) ) {
+				throw new InvalidArgumentException( 'Schema DDL contains a duplicate or unqualified table.' );
 			}
 
 			$columns = array();
 			$indexes = array();
-			foreach ( preg_split( '/\R/', trim( $table[2] ) ) ?: array() as $line ) {
+			foreach ( self::split_definitions( $table[2] ) as $line ) {
 				$line = rtrim( trim( $line ), ',' );
 				if ( '' === $line ) {
 					continue;
@@ -46,7 +48,7 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 					$index_columns = array();
 					foreach ( explode( ',', $index[3] ) as $column ) {
 						if ( ! preg_match( '/^\s*`?([A-Za-z0-9_]+)`?(?:\(([0-9]+)\))?\s*$/', $column, $part ) ) {
-							throw new InvalidArgumentException( 'WordPress core schema contains an unsupported index expression.' );
+							throw new InvalidArgumentException( 'Schema DDL contains an unsupported index expression.' );
 						}
 						$index_columns[] = array(
 							'name'   => $part[1],
@@ -62,7 +64,7 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 					continue;
 				}
 				if ( ! preg_match( '/^`?([A-Za-z0-9_]+)`?\s+([A-Za-z]+)(?:\(([^)]*)\))?\s*(unsigned\b)?(.*)$/i', $line, $column ) ) {
-					throw new InvalidArgumentException( 'WordPress core schema contains an unsupported column definition.' );
+					throw new InvalidArgumentException( 'Schema DDL contains an unsupported column definition.' );
 				}
 				$length = null;
 				if ( '' !== ( $column[3] ?? '' ) ) {
@@ -86,13 +88,62 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 					'default'        => $default,
 					'auto_increment' => 1 === preg_match( '/\bauto_increment\b/i', $tail ),
 				);
+				if ( 1 === preg_match( '/\bPRIMARY\s+KEY\b/i', $tail ) ) {
+					$indexes[] = array(
+						'name'    => 'PRIMARY',
+						'unique'  => true,
+						'columns' => array( array( 'name' => $column[1], 'length' => null ) ),
+					);
+				}
 			}
 			if ( array() === $columns ) {
-				throw new InvalidArgumentException( 'WordPress core schema table contains no columns.' );
+				throw new InvalidArgumentException( 'Schema DDL table contains no columns.' );
 			}
 			$catalog[ $name ] = array( 'columns' => $columns, 'indexes' => $indexes );
 		}
 		return $catalog;
+	}
+
+	/** @return array<int,string> */
+	private static function split_definitions( string $body ): array {
+		$definitions = array();
+		$current = '';
+		$depth = 0;
+		$quote = null;
+		$length = strlen( $body );
+		for ( $offset = 0; $offset < $length; ++$offset ) {
+			$character = $body[ $offset ];
+			if ( null !== $quote ) {
+				$current .= $character;
+				if ( $character === $quote ) {
+					if ( "'" === $quote && $offset + 1 < $length && "'" === $body[ $offset + 1 ] ) {
+						$current .= $body[ ++$offset ];
+					} else {
+						$quote = null;
+					}
+				}
+				continue;
+			}
+			if ( in_array( $character, array( "'", '"', '`' ), true ) ) {
+				$quote = $character;
+				$current .= $character;
+				continue;
+			}
+			if ( '(' === $character ) {
+				++$depth;
+			} elseif ( ')' === $character ) {
+				--$depth;
+			} elseif ( ',' === $character && 0 === $depth ) {
+				$definitions[] = trim( $current );
+				$current = '';
+				continue;
+			}
+			$current .= $character;
+		}
+		if ( '' !== trim( $current ) ) {
+			$definitions[] = trim( $current );
+		}
+		return $definitions;
 	}
 
 	/** @return array{schema:string,wordpress_version:string,single_site:array<string,mixed>,multisite:array<string,mixed>,hashes:array<string,string>} */
@@ -126,7 +177,7 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 	}
 
 	/**
-	 * @param 'integer'|'string' $numeric_storage
+	 * @param 'integer'|'string'|'mixed' $numeric_storage
 	 * @param array{columns?:array<string,array<string,mixed>>,natural_order?:string,order_columns?:array<int,string>} $overlay
 	 */
 	public static function table_schema(
@@ -136,25 +187,73 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 		bool $multisite = false
 	): WP_Markdown_Native_Table_Schema {
 		$definitions = self::definitions( $multisite );
-		if ( ! isset( $definitions[ $table ] ) || ! in_array( $numeric_storage, array( 'integer', 'string' ), true ) ) {
+		if ( ! isset( $definitions[ $table ] ) ) {
 			throw new InvalidArgumentException( 'A generated core table and numeric storage representation are required.' );
 		}
+		return self::schema( $definitions[ $table ], $numeric_storage, $overlay );
+	}
+
+	/**
+	 * @param array<string,mixed> $definition
+	 * @param 'integer'|'string'|'mixed' $numeric_storage
+	 * @param array{columns?:array<string,array<string,mixed>>,natural_order?:string,order_columns?:array<int,string>} $overlay
+	 */
+	public static function schema(
+		array $definition,
+		string $numeric_storage,
+		array $overlay = array()
+	): WP_Markdown_Native_Table_Schema {
+		if ( ! isset( $definition['columns'], $definition['indexes'] )
+			|| ! is_array( $definition['columns'] )
+			|| ! is_array( $definition['indexes'] )
+			|| ! in_array( $numeric_storage, array( 'integer', 'string', 'mixed' ), true )
+		) {
+			throw new InvalidArgumentException( 'A compiled table definition and numeric storage representation are required.' );
+		}
 		$columns = array();
-		foreach ( $definitions[ $table ]['columns'] as $name => $definition ) {
+		foreach ( $definition['columns'] as $name => $column_definition ) {
 			$column_overlay = $overlay['columns'][ $name ] ?? array();
-			$normalizer = $column_overlay['normalizer'] ?? self::normalizer( $definition );
+			$normalizer = $column_overlay['normalizer'] ?? self::normalizer( $column_definition );
 			$columns[ $name ] = new WP_Markdown_Native_Column(
-				self::field_type( $definition['type'] ),
-				(bool) $definition['nullable'],
-				$column_overlay['validator'] ?? self::validator( $definition, $numeric_storage ),
+				self::field_type( $column_definition['type'] ),
+				(bool) $column_definition['nullable'],
+				$column_overlay['validator'] ?? self::validator( $column_definition, $numeric_storage ),
 				$normalizer,
 				$column_overlay['lookup_operators'] ?? array(),
-				$column_overlay['lookup_validator'] ?? null
+				$column_overlay['lookup_validator'] ?? null,
+				$column_overlay['filter_operators'] ?? array( '=', 'IN' )
 			);
 		}
-		$primary = array_values( array_filter( $definitions[ $table ]['indexes'], static fn( array $index ): bool => 'PRIMARY' === $index['name'] ) );
+		$primary = array_values( array_filter( $definition['indexes'], static fn( array $index ): bool => 'PRIMARY' === $index['name'] ) );
 		$natural_order = $overlay['natural_order'] ?? ( $primary[0]['columns'][0]['name'] ?? array_key_first( $columns ) );
 		return new WP_Markdown_Native_Table_Schema( $columns, $natural_order, $overlay['order_columns'] ?? array() );
+	}
+
+	/** Build the conservative execution contract supported by a generic JSON snapshot. */
+	public static function indexed_snapshot_schema( array $definition ): ?WP_Markdown_Native_Table_Schema {
+		$primary = array_values( array_filter( $definition['indexes'] ?? array(), static fn( array $index ): bool => 'PRIMARY' === ( $index['name'] ?? null ) ) );
+		$identity_columns = $primary[0]['columns'] ?? array();
+		if ( 1 !== count( $primary ) || 1 !== count( $identity_columns ) ) {
+			return null;
+		}
+		$identity = $identity_columns[0]['name'] ?? '';
+		if ( ! isset( $definition['columns'][ $identity ] ) || ! self::is_integer( $definition['columns'][ $identity ]['type'] ) ) {
+			return null;
+		}
+
+		$overlay = array( 'columns' => array(), 'natural_order' => $identity );
+		foreach ( $definition['columns'] as $name => $column ) {
+			$overlay['columns'][ $name ] = array(
+				'filter_operators' => self::is_integer( $column['type'] ) ? array( '=', 'IN' ) : array(),
+			);
+		}
+		foreach ( $definition['indexes'] as $index ) {
+			$name = $index['columns'][0]['name'] ?? '';
+			if ( isset( $definition['columns'][ $name ] ) && self::is_integer( $definition['columns'][ $name ]['type'] ) ) {
+				$overlay['columns'][ $name ]['lookup_operators'] = array( '=', 'IN' );
+			}
+		}
+		return self::schema( $definition, 'mixed', $overlay );
 	}
 
 	/** @param array<string,mixed> $definition */
@@ -164,6 +263,11 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 				return $definition['unsigned']
 					? static fn( mixed $value ): bool => is_int( $value ) && $value >= 0
 					: 'is_int';
+			}
+			if ( 'mixed' === $numeric_storage ) {
+				return $definition['unsigned']
+					? static fn( mixed $value ): bool => ( is_int( $value ) && $value >= 0 ) || ( is_string( $value ) && 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value ) )
+					: static fn( mixed $value ): bool => is_int( $value ) || ( is_string( $value ) && 1 === preg_match( '/^-?(?:0|[1-9][0-9]*)$/D', $value ) );
 			}
 			return $definition['unsigned']
 				? static fn( mixed $value ): bool => is_string( $value ) && 1 === preg_match( '/^(?:0|[1-9][0-9]*)$/D', $value )
@@ -215,7 +319,7 @@ final class WP_Markdown_Native_Core_Schema_Catalog {
 			'tinyblob', 'mediumblob', 'longblob', 'blob', 'tinytext', 'mediumtext', 'longtext', 'text' => 252,
 			'varchar', 'varbinary' => 253,
 			'char', 'binary' => 254,
-			default => throw new InvalidArgumentException( 'WordPress core schema contains an unsupported MySQL field type.' ),
+			default => throw new InvalidArgumentException( 'Schema DDL contains an unsupported SQL field type.' ),
 		};
 	}
 }

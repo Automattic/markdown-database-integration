@@ -8,7 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/class-wp-markdown-canonical-option-path.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-contracts.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-schema.php';
-require_once __DIR__ . '/class-wp-markdown-native-core-schema-catalog.php';
+require_once __DIR__ . '/class-wp-markdown-native-schema-catalog.php';
 require_once __DIR__ . '/class-wp-markdown-native-sql-tokenizer.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-ast.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
@@ -19,7 +19,7 @@ require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 final class WP_Markdown_Native_Runtime_Factory {
 
 	public static function options_schema(): WP_Markdown_Native_Table_Schema {
-		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+		return WP_Markdown_Native_Schema_Catalog::table_schema(
 			'options',
 			'integer',
 			array(
@@ -41,7 +41,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 	public static function users_schema( bool $multisite = false ): WP_Markdown_Native_Table_Schema {
 		$ascii_lookup = static fn( array $values ): bool => self::all_ascii_strings( $values );
 		$unsigned_lookup = static fn( array $values ): bool => self::all_normalized_unsigned( $values );
-		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+		return WP_Markdown_Native_Schema_Catalog::table_schema(
 			'users',
 			'string',
 			array(
@@ -57,7 +57,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 	}
 
 	public static function usermeta_schema(): WP_Markdown_Native_Table_Schema {
-		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+		return WP_Markdown_Native_Schema_Catalog::table_schema(
 			'usermeta',
 			'string',
 			array(
@@ -72,7 +72,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 	}
 
 	public static function posts_schema(): WP_Markdown_Native_Table_Schema {
-		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+		return WP_Markdown_Native_Schema_Catalog::table_schema(
 			'posts',
 			'integer',
 			array(
@@ -87,7 +87,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 
 	public static function comments_schema(): WP_Markdown_Native_Table_Schema {
 		$unsigned_lookup = static fn( array $values ): bool => self::all_normalized_unsigned( $values );
-		return WP_Markdown_Native_Core_Schema_Catalog::table_schema(
+		return WP_Markdown_Native_Schema_Catalog::table_schema(
 			'comments',
 			'string',
 			array(
@@ -150,6 +150,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			self::comments_schema(),
 			'comments.json'
 		);
+		self::register_persisted_plugin_tables( $registry, $state_root, $prefix, $multisite );
 		return $registry;
 	}
 
@@ -175,6 +176,70 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$schema,
 			new WP_Markdown_Native_JSON_Snapshot_Provider( $state_root, $schema, $filename )
 		);
+	}
+
+	private static function register_persisted_plugin_tables(
+		WP_Markdown_Native_Table_Registry $registry,
+		string $state_root,
+		string $prefix,
+		bool $multisite
+	): void {
+		$directory = rtrim( $state_root, '/\\' ) . '/_schema';
+		$root = realpath( $directory );
+		if ( is_link( $directory ) || false === $root || ! is_dir( $root ) ) {
+			return;
+		}
+		$core_tables = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
+		foreach ( glob( $root . '/*.sql' ) ?: array() as $path ) {
+			$table = basename( $path, '.sql' );
+			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $core_tables[ $table ] ) ) {
+				continue;
+			}
+			$ddl = self::read_persisted_schema( $root, $path );
+			if ( null === $ddl ) {
+				continue;
+			}
+			try {
+				$definitions = WP_Markdown_Native_Schema_Catalog::compile( $ddl, array( $prefix ) );
+				if ( array( $table ) !== array_keys( $definitions ) ) {
+					continue;
+				}
+				$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definitions[ $table ] );
+				if ( null !== $schema ) {
+					self::register_json_snapshot( $registry, $state_root, $prefix . $table, $schema, $table . '.json' );
+				}
+			} catch ( Throwable ) {
+				continue;
+			}
+		}
+	}
+
+	private static function read_persisted_schema( string $root, string $path ): ?string {
+		$real = realpath( $path );
+		if ( is_link( $path ) || false === $real || ! is_file( $real ) || dirname( $real ) !== $root ) {
+			return null;
+		}
+		$handle = @fopen( $real, 'rb' );
+		if ( false === $handle ) {
+			return null;
+		}
+		try {
+			$opened = fstat( $handle );
+			$current = @lstat( $real );
+			if ( false === $opened
+				|| false === $current
+				|| $opened['dev'] !== $current['dev']
+				|| $opened['ino'] !== $current['ino']
+				|| 1 !== ( $opened['nlink'] ?? 1 )
+				|| is_link( $real )
+			) {
+				return null;
+			}
+			$ddl = stream_get_contents( $handle );
+			return is_string( $ddl ) && '' !== trim( $ddl ) ? $ddl : null;
+		} finally {
+			fclose( $handle );
+		}
 	}
 
 	public static function normalize_unsigned( mixed $value ): ?string {

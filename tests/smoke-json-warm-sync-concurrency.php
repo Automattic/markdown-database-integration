@@ -34,7 +34,11 @@ class WP_MySQL_On_SQLite {
 	}
 }
 
-class WP_Markdown_Storage {}
+class WP_Markdown_Storage {
+	public function get_excluded_types(): array {
+		return array();
+	}
+}
 
 require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
 
@@ -109,6 +113,28 @@ $pdo->exec( 'CREATE TABLE _json_file_manifest (file_name TEXT PRIMARY KEY, file_
 $pdo->exec( "INSERT INTO wp_plugin_jobs (id, name) VALUES (99, 'stale')" );
 $pdo->exec( "INSERT INTO _json_file_manifest (file_name, file_mtime, file_size) VALUES ('_tables/plugin_jobs.json', 0, 0)" );
 
+// An unchanged snapshot must not request write ownership from a busy database.
+clearstatcache( true, $file );
+$pdo->prepare( "UPDATE _json_file_manifest SET file_mtime = ?, file_size = ? WHERE file_name = '_tables/plugin_jobs.json'" )
+	->execute( array( (int) filemtime( $file ), (int) filesize( $file ) ) );
+$pdo->exec( 'BEGIN IMMEDIATE' );
+$unchanged_pdo = mdi_concurrent_pdo( $database );
+$unchanged_pdo->exec( 'PRAGMA busy_timeout = 100' );
+[ $unchanged_loader, $unchanged_load_table ] = mdi_concurrent_loader( $unchanged_pdo, $root );
+$unchanged_error = null;
+$unchanged_start = microtime( true );
+try {
+	$unchanged_load_table->invoke( $unchanged_loader, 'plugin_jobs' );
+} catch ( Throwable $error ) {
+	$unchanged_error = $error;
+}
+$unchanged_elapsed = microtime( true ) - $unchanged_start;
+mdi_concurrent_assert( null === $unchanged_error, 'unchanged snapshot bypasses an active SQLite writer' );
+mdi_concurrent_assert( $unchanged_elapsed < 0.1, 'unchanged snapshot returns before the SQLite busy timeout' );
+$pdo->exec( 'COMMIT' );
+unset( $unchanged_pdo );
+$pdo->exec( "UPDATE _json_file_manifest SET file_mtime = 0, file_size = 0 WHERE file_name = '_tables/plugin_jobs.json'" );
+
 // Hold write ownership until both children are immediately ready to hydrate.
 $pdo->exec( 'BEGIN IMMEDIATE' );
 $workers = array();
@@ -177,6 +203,23 @@ try {
 mdi_concurrent_assert( $thrown instanceof RuntimeException, 'canonical file mutation during hydration fails deterministically' );
 mdi_concurrent_assert( array( '77:preserved' ) === $pdo->query( "SELECT id || ':' || name FROM wp_plugin_jobs" )->fetchAll( PDO::FETCH_COLUMN ), 'file mutation rolls back replacement rows' );
 mdi_concurrent_assert( '7:8' === $pdo->query( "SELECT file_mtime || ':' || file_size FROM _json_file_manifest WHERE file_name = '_tables/plugin_jobs.json'" )->fetchColumn(), 'file mutation rolls back the manifest' );
+
+// Busy warm sync retains the complete previous index instead of amplifying the
+// contention into a cold reconstruction.
+$pdo->exec( 'BEGIN IMMEDIATE' );
+$contended_pdo = mdi_concurrent_pdo( $database );
+$contended_pdo->exec( 'PRAGMA busy_timeout = 100' );
+[ $contended_loader ] = mdi_concurrent_loader( $contended_pdo, $root );
+$contended_start = microtime( true );
+$contended_loader->sync_incremental();
+$contended_elapsed = microtime( true ) - $contended_start;
+$contended_stats = $contended_loader->get_stats();
+mdi_concurrent_assert( $contended_elapsed < 1.0, 'contended warm sync remains bounded' );
+mdi_concurrent_assert( 'warm' === ( $contended_stats['boot_mode'] ?? null ), 'contended warm sync does not invoke cold reconstruction' );
+mdi_concurrent_assert( 'retained_previous_index' === ( $contended_stats['sync_status'] ?? null ), 'contended warm sync retains the previous complete index' );
+mdi_concurrent_assert( 'canonical_store_busy' === ( $contended_stats['sync_error'] ?? null ), 'contended warm sync reports typed busy evidence' );
+$pdo->exec( 'COMMIT' );
+unset( $contended_pdo );
 
 unset( $pdo );
 mdi_concurrent_remove_dir( $root );

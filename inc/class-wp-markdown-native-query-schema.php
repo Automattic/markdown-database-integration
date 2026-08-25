@@ -125,6 +125,11 @@ final class WP_Markdown_Native_Table_Schema {
 		return $this->natural_order;
 	}
 
+	/** @return array<int,string> */
+	public function identity_columns(): array {
+		return $this->identity_columns;
+	}
+
 	public function is_lookup( string $column ): bool {
 		return isset( $this->columns[ $column ] ) && $this->columns[ $column ]->supports_lookup();
 	}

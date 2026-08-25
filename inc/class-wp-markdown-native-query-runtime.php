@@ -196,10 +196,6 @@ final class WP_Markdown_Native_Runtime_Factory {
 			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $core_tables[ $table ] ) ) {
 				continue;
 			}
-			$partition_marker = rtrim( $state_root, '/\\' ) . '/_tables/' . $table . '/.mdi-partition.json';
-			if ( file_exists( $partition_marker ) || is_link( $partition_marker ) ) {
-				continue;
-			}
 			$ddl = self::read_persisted_schema( $root, $path );
 			if ( null === $ddl ) {
 				continue;
@@ -211,12 +207,62 @@ final class WP_Markdown_Native_Runtime_Factory {
 				}
 				$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definitions[ $table ] );
 				if ( null !== $schema ) {
-					self::register_json_snapshot( $registry, $state_root, $prefix . $table, $schema, $table . '.json' );
+					$partition_marker = rtrim( $state_root, '/\\' ) . '/_tables/' . $table . '/.mdi-partition.json';
+					if ( file_exists( $partition_marker ) || is_link( $partition_marker ) ) {
+						$marker = self::read_persisted_partition_marker( $state_root, $table );
+						$identity = is_array( $marker ) ? (string) ( $marker['identity_column'] ?? '' ) : '';
+						if ( array( $identity ) !== $schema->identity_columns() ) {
+							continue;
+						}
+						$registry->register(
+							$prefix . $table,
+							$schema,
+							new WP_Markdown_Native_JSON_Partition_Provider( $state_root, $schema, $table, $identity )
+						);
+					} else {
+						self::register_json_snapshot( $registry, $state_root, $prefix . $table, $schema, $table . '.json' );
+					}
 				}
 			} catch ( Throwable ) {
 				continue;
 			}
 		}
+	}
+
+	/** @return array<string,mixed>|null */
+	private static function read_persisted_partition_marker( string $state_root, string $table ): ?array {
+		$state = realpath( $state_root );
+		$tables_path = rtrim( $state_root, '/\\' ) . '/_tables';
+		$tables = realpath( $tables_path );
+		$table_path = false === $tables ? '' : $tables . '/' . $table;
+		$directory = '' === $table_path ? false : realpath( $table_path );
+		if ( false === $state
+			|| false === $tables
+			|| false === $directory
+			|| is_link( $tables_path )
+			|| is_link( $table_path )
+			|| dirname( $tables ) !== $state
+			|| dirname( $directory ) !== $tables
+		) {
+			return null;
+		}
+		$path = $directory . '/.mdi-partition.json';
+		$contents = self::read_persisted_file( $directory, $path );
+		if ( null === $contents ) {
+			return null;
+		}
+		try {
+			$marker = json_decode( $contents, true, 512, JSON_THROW_ON_ERROR );
+		} catch ( JsonException ) {
+			return null;
+		}
+		return is_array( $marker )
+			&& 1 === ( $marker['version'] ?? null )
+			&& $table === ( $marker['table'] ?? null )
+			&& is_string( $marker['identity_column'] ?? null )
+			&& 1 === preg_match( '/^generation-[a-f0-9]{24}$/D', (string) ( $marker['generation'] ?? '' ) )
+			? $marker
+			: null;
 	}
 
 	private static function register_generated_core_snapshots(
@@ -257,6 +303,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 	}
 
 	private static function read_persisted_schema( string $root, string $path ): ?string {
+		return self::read_persisted_file( $root, $path );
+	}
+
+	private static function read_persisted_file( string $root, string $path ): ?string {
 		$real = realpath( $path );
 		if ( is_link( $path ) || false === $real || ! is_file( $real ) || dirname( $real ) !== $root ) {
 			return null;

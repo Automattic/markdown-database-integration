@@ -76,6 +76,30 @@ class WP_Markdown_Loader {
 		$this->stats['sync_status'] = 'complete';
 		$this->timings['total'] = microtime( true ) - $start;
 	}
+
+	/** Run warm synchronization only when this process owns the runtime gate. */
+	public function sync_incremental_if_available( string $runtime_identity ): bool {
+		$directory = sys_get_temp_dir() . '/markdown-database-integration-locks';
+		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) {
+			throw new \RuntimeException( 'Markdown DB: Failed to create synchronization lock directory.' );
+		}
+		$lock = fopen( $directory . '/warm-sync-' . hash( 'sha256', $runtime_identity ) . '.lock', 'c+' );
+		if ( false === $lock ) {
+			throw new \RuntimeException( 'Markdown DB: Failed to open synchronization lock.' );
+		}
+		if ( ! flock( $lock, LOCK_EX | LOCK_NB ) ) {
+			fclose( $lock );
+			$this->stats = array( 'boot_mode' => 'warm', 'sync_status' => 'retained_previous_index', 'sync_error' => 'synchronizer_active' );
+			return false;
+		}
+		try {
+			$this->sync_incremental();
+			return true;
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
 	private function is_contention_error( \Throwable $error ): bool {
 		do {
 			if ( preg_match( '/(?:database|table|schema) is locked|database is busy/i', $error->getMessage() ) ) {

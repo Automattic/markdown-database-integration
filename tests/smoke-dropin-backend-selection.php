@@ -13,7 +13,7 @@ if ( 2 === $argc ) {
 	$content  = $root . '/wp-content';
 	$sqlite   = $content . '/mu-plugins/sqlite-database-integration';
 	$mdi      = $content . '/plugins/markdown-database-integration';
-	foreach ( array( $sqlite . '/wp-includes/database', $sqlite . '/wp-includes/sqlite', $mdi . '/inc', $content . '/markdown' ) as $directory ) {
+	foreach ( array( $sqlite . '/wp-includes/database', $sqlite . '/wp-includes/sqlite', $mdi . '/inc/generated', $content . '/markdown' ) as $directory ) {
 		mkdir( $directory, 0755, true );
 	}
 	register_shutdown_function( static function () use ( $root ): void {
@@ -37,9 +37,10 @@ if ( 2 === $argc ) {
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-query-observer-boundary.php', $mdi . '/inc/class-wp-markdown-query-observer-boundary.php' );
-	foreach ( array( 'class-wp-markdown-canonical-option-path.php', 'class-wp-markdown-native-query-contracts.php', 'class-wp-markdown-native-query-schema.php', 'class-wp-markdown-native-sql-tokenizer.php', 'class-wp-markdown-native-query-ast.php', 'class-wp-markdown-native-query-parser.php', 'class-wp-markdown-native-table-providers.php', 'class-wp-markdown-native-query-executor.php', 'class-wp-markdown-native-query-runtime.php', 'class-wp-markdown-query-compatibility-comparator.php', 'class-wp-markdown-wpdb-result-snapshot.php', 'class-wp-markdown-native-shadow-verifier.php' ) as $file ) {
+	foreach ( array( 'class-wp-markdown-canonical-option-path.php', 'class-wp-markdown-native-query-contracts.php', 'class-wp-markdown-native-query-schema.php', 'class-wp-markdown-native-schema-catalog.php', 'class-wp-markdown-native-sql-tokenizer.php', 'class-wp-markdown-native-query-ast.php', 'class-wp-markdown-native-query-parser.php', 'class-wp-markdown-native-table-providers.php', 'class-wp-markdown-native-query-executor.php', 'class-wp-markdown-native-query-runtime.php', 'class-wp-markdown-query-compatibility-comparator.php', 'class-wp-markdown-wpdb-result-snapshot.php', 'class-wp-markdown-native-shadow-verifier.php' ) as $file ) {
 		copy( dirname( __DIR__ ) . '/inc/' . $file, $mdi . '/inc/' . $file );
 	}
+	copy( dirname( __DIR__ ) . '/inc/generated/wp-core-schema-catalog.php', $mdi . '/inc/generated/wp-core-schema-catalog.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-outbox.php', $mdi . '/inc/class-wp-markdown-mysql-outbox.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mutation-impact.php', $mdi . '/inc/class-wp-markdown-mutation-impact.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-impact-adapter.php', $mdi . '/inc/class-wp-markdown-mysql-impact-adapter.php' );

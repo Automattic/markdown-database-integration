@@ -56,7 +56,7 @@ $database->result(
 	array( array( 'option_value' => 'https://example.test' ) ),
 	array( array( 'name' => 'option_value', 'type' => 252 ) )
 );
-$verifier = new WP_Markdown_Native_Shadow_Verifier( $runtime, 5 );
+$verifier = new WP_Markdown_Native_Shadow_Verifier( $runtime, 6 );
 $verifier->observe( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1", 1, $database );
 $verifier->observe( "UPDATE wp_options SET option_value = 'private'", 1, $database );
 $database->result( array( array( 'meta_value' => 'retained' ) ), array( array( 'name' => 'meta_value', 'type' => 252 ) ) );
@@ -64,9 +64,18 @@ $commentmeta_query = "SELECT meta_value FROM wp_commentmeta WHERE meta_key = 'pr
 $verifier->observe( $commentmeta_query, 1, $database );
 $database->result( array( array( 'term_taxonomy_id' => '7' ) ), array( array( 'name' => 'term_taxonomy_id', 'type' => 8 ) ) );
 $verifier->observe( 'SELECT term_taxonomy_id FROM wp_term_relationships WHERE object_id = 123', 1, $database );
-$database->result( array(), array( array( 'name' => 'COUNT(*)', 'type' => 8 ) ) );
-$unsupported_query = 'SELECT COUNT(*) FROM wp_term_relationships WHERE object_id = 123';
-$verifier->observe( $unsupported_query, 0, $database );
+$database->result( array( array( 'COUNT(*)' => '1' ) ), array( array( 'name' => 'COUNT(*)', 'type' => 8 ) ) );
+$verifier->observe( 'SELECT COUNT(*) FROM wp_term_relationships WHERE object_id = 123', 1, $database );
+$database->result(
+	array( array( 'object_id' => '123', 'taxonomy' => 'category', 'slug' => 'news' ) ),
+	array(
+		array( 'name' => 'object_id', 'type' => 8 ),
+		array( 'name' => 'taxonomy', 'type' => 253 ),
+		array( 'name' => 'slug', 'type' => 200 ),
+	)
+);
+$unsupported_query = 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id JOIN wp_terms t ON tt.term_id=t.term_id WHERE tr.object_id=123';
+$verifier->observe( $unsupported_query, 1, $database );
 $verifier->observe( 'SELECT ID FROM wp_posts', 0, $database );
 $report = $verifier->report();
 
@@ -134,16 +143,16 @@ $sqlite->set_native_shadow_verifier( $hostile );
 $sqlite_return = $sqlite->query( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1" );
 
 $checks = array(
-	'supported reads compare exactly without retaining observations' => 3 === $report['counts']['compatible']
+	'supported reads compare exactly without retaining observations' => 4 === $report['counts']['compatible']
 		&& 1 === $report['counts']['ignored']
 		&& 1 === $report['counts']['unsupported'],
-	'observation bounds drop later queries deterministically' => 5 === $report['observed']
+	'observation bounds drop later queries deterministically' => 6 === $report['observed']
 		&& 1 === $report['counts']['dropped'],
 	'first unsupported query retains a sanitized reproducible shape' => 'unsupported' === ( $report['first_blocker']['status'] ?? null )
-		&& hash( 'sha256', 'SELECT COUNT(*) FROM wp_term_relationships WHERE object_id = ?' ) === ( $report['first_blocker']['query_template_sha256'] ?? null )
+		&& hash( 'sha256', 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id JOIN wp_terms t ON tt.term_id=t.term_id WHERE tr.object_id=?' ) === ( $report['first_blocker']['query_template_sha256'] ?? null )
 		&& ! str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'private@example.test' )
 		&& ! str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), '123' )
-		&& str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'wp_term_relationships' ),
+		&& str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'JOIN wp_term_taxonomy' ),
 	'column metadata inspection restores lazy wpdb state' => $database->col_info_is_unloaded(),
 	'mismatches expose paths without authoritative or native values' => 'mismatched' === ( $mismatch_report['first_blocker']['status'] ?? null )
 		&& in_array( '$.rows[0].option_value', $mismatch_report['first_blocker']['mismatch_paths'] ?? array(), true )

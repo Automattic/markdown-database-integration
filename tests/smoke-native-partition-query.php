@@ -62,6 +62,10 @@ $scan = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT payload FROM w
 $conjunctive = $runtime->execute(
 	new WP_Markdown_Query_Request( "SELECT payload FROM wp_runtime_events WHERE payload = 'second' AND event_id IN (10, 2) ORDER BY event_id ASC LIMIT 1" )
 );
+$count = $runtime->execute(
+	new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_runtime_events WHERE event_id IN (10, 2) LIMIT 1' )
+);
+$count_scan = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_runtime_events' ) );
 
 $requested_malformed_path = $generation . '/' . hash( 'sha256', '3' ) . '.json';
 file_put_contents( $requested_malformed_path, '{malformed-requested' );
@@ -70,6 +74,9 @@ $limited_before_malformed = $runtime->execute(
 );
 $requested_malformed = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT payload FROM wp_runtime_events WHERE event_id IN (1, 3) ORDER BY event_id ASC' )
+);
+$malformed_count = $runtime->execute(
+	new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_runtime_events WHERE event_id IN (1, 3)' )
 );
 
 $outside = dirname( $root ) . '/mdi-native-partition-outside-' . bin2hex( random_bytes( 4 ) ) . '.json';
@@ -114,11 +121,16 @@ $checks = array(
 		&& 'unsupported_partition_access' === ( $scan->diagnostic()['reason'] ?? null ),
 	'partition identity pushes down while residual columns filter before LIMIT' => 1 === $conjunctive->return_value()
 		&& 'second' === ( $conjunctive->wpdb_state()['last_result'][0]->payload ?? null ),
+	'partition counts retain exact pushdown while aggregate LIMIT stays source-unbounded' => '2' === ( $count->wpdb_state()['last_result'][0]->{'COUNT(*)'} ?? null )
+		&& false === $count_scan->return_value()
+		&& 'unsupported_partition_access' === ( $count_scan->diagnostic()['reason'] ?? null ),
 	'identity ordering applies LIMIT before opening later requested partitions' => 1 === $limited_before_malformed->return_value()
 		&& 'first' === ( $limited_before_malformed->wpdb_state()['last_result'][0]->payload ?? null ),
 	'malformed requested partitions fail without partial rows' => false === $requested_malformed->return_value()
 		&& array() === $requested_malformed->wpdb_state()['last_result']
-		&& 'markdown_db_native_malformed_partition' === ( $requested_malformed->diagnostic()['code'] ?? null ),
+		&& 'markdown_db_native_malformed_partition' === ( $requested_malformed->diagnostic()['code'] ?? null )
+		&& false === $malformed_count->return_value()
+		&& array() === $malformed_count->wpdb_state()['last_result'],
 	'partition row links fail closed' => ( ! $symlink || false === $unsafe_symlink->return_value() )
 		&& ( ! $symlink || 'markdown_db_native_unsafe_path' === ( $unsafe_symlink->diagnostic()['code'] ?? null ) )
 		&& ( ! $hardlink || false === $unsafe_hardlink->return_value() )

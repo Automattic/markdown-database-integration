@@ -153,7 +153,7 @@ $wpdb_columns = $database->get_col_info( 'name' );
 $wpdb_alloptions = $database->get_results( $autoload_query );
 $wpdb_alloptions_fallback = $database->get_results( $alloptions_query );
 $wpdb_primed = $database->get_results( $prime_query );
-$wpdb_unsupported = $database->query( 'SELECT COUNT(*) FROM wp_term_relationships' );
+$wpdb_unsupported = $database->query( 'SELECT COUNT(option_id) FROM wp_options' );
 $wpdb_unsupported_diagnostic = $database->last_runtime_diagnostic;
 $GLOBALS['mdi_native_query_filter'] = static fn( string $sql ): string => str_replace( "'siteurl'", "'missing'", $sql );
 $wpdb_filtered = $database->query( $prepared_query );

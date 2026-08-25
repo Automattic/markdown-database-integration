@@ -54,7 +54,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly array $projection,
 		private readonly array $predicates,
 		private readonly ?string $order,
-		private readonly int $limit
+		private readonly int $limit,
+		private readonly bool $count_all = false
 	) {}
 
 	public function table(): string {
@@ -81,6 +82,10 @@ final class WP_Markdown_Native_Query_Plan {
 
 	public function limit(): int {
 		return $this->limit;
+	}
+
+	public function counts_all(): bool {
+		return $this->count_all;
 	}
 }
 

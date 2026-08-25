@@ -212,6 +212,7 @@ add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 
 if ( defined( 'WP_CLI' ) && WP_CLI ) {
+	WP_Markdown_CLI::register_db_command_boundary();
 	WP_CLI::add_command( 'markdown-db import', array( 'WP_Markdown_CLI', 'import_cli' ) );
 	WP_CLI::add_command( 'markdown-db export', array( 'WP_Markdown_CLI', 'export_cli' ) );
 	WP_CLI::add_command( 'markdown-db reconcile', array( 'WP_Markdown_CLI', 'reconcile_cli' ) );

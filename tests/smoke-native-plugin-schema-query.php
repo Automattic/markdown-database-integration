@@ -54,6 +54,9 @@ file_put_contents( $root . '/_schema/mismatch.sql', 'CREATE TABLE wp_different_n
 file_put_contents( $root . '/_schema/malformed.sql', 'not ddl' );
 file_put_contents( $root . '/_schema/inline_items.sql', "CREATE TABLE wp_inline_items (\n id INTEGER PRIMARY KEY,\n value TEXT NOT NULL\n);" );
 file_put_contents( $root . '/_tables/inline_items.json', '[{"id":4,"value":"portable"}]' );
+file_put_contents( $root . '/_schema/partitioned.sql', 'CREATE TABLE wp_partitioned (id bigint(20) unsigned NOT NULL, PRIMARY KEY (id));' );
+mkdir( $root . '/_tables/partitioned', 0755 );
+file_put_contents( $root . '/_tables/partitioned/.mdi-partition.json', '{"version":1,"table":"partitioned","identity_column":"id","generation":"generation-1234567890abcdef12345678"}' );
 file_put_contents( $outside, $schema );
 $linked = function_exists( 'symlink' ) && @symlink( $outside, $root . '/_schema/linked.sql' );
 
@@ -68,6 +71,7 @@ $composite = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT left_id F
 $unsupported = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_unsupported' ) );
 $mismatch = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_mismatch' ) );
 $inline = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT value FROM wp_inline_items WHERE id = 4' ) );
+$partitioned = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_partitioned WHERE id = 1' ) );
 $linked_result = $linked ? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_linked' ) ) : null;
 file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
@@ -107,6 +111,8 @@ $checks = array(
 		&& false === $mismatch->return_value()
 		&& 1 === $exact->return_value(),
 	'SQLite inline integer primary keys normalize into the generic execution contract' => 'portable' === ( $inline->wpdb_state()['last_result'][0]->value ?? null ),
+	'partitioned plugin tables fall through until their storage contract is registered' => false === $partitioned->return_value()
+		&& 'unsupported_table' === ( $partitioned->diagnostic()['reason'] ?? null ),
 	'cross-backend numeric representations cannot duplicate one natural identity' => false === $duplicate_identity->return_value()
 		&& 'duplicate_natural_identity' === ( $duplicate_identity->diagnostic()['reason'] ?? null ),
 	'linked persisted schemas fail closed' => ! $linked || ( false === $linked_result->return_value()

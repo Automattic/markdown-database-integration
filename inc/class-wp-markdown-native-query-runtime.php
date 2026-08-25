@@ -195,6 +195,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $core_tables[ $table ] ) ) {
 				continue;
 			}
+			$partition_marker = rtrim( $state_root, '/\\' ) . '/_tables/' . $table . '/.mdi-partition.json';
+			if ( file_exists( $partition_marker ) || is_link( $partition_marker ) ) {
+				continue;
+			}
 			$ddl = self::read_persisted_schema( $root, $path );
 			if ( null === $ddl ) {
 				continue;

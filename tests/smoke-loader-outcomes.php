@@ -29,7 +29,12 @@ class MDI_Loader_Outcome_Backend implements WP_Markdown_Backend_Operations {
 	public function delete_schema( string $table_suffix ): void {}
 	public function manifest_entries(): array { return array(); }
 	public function hydrate_markdown_posts( array $posts, ?iterable $fallback_posts ): void {}
-	public function hydrate_table_snapshot( string $table_suffix, callable $rows, ?array $identity = null, ?array $partition = null ): bool { return false; }
+	public function hydrate_table_snapshot( string $table_suffix, callable $rows, ?array $identity = null, ?array $partition = null ): bool {
+		if ( 'nested-hydration' === $this->failure && 'users' === $table_suffix ) {
+			throw new RuntimeException( 'SQLite rejected users snapshot', 0, new UnexpectedValueException( 'invalid canonical row' ) );
+		}
+		return false;
+	}
 	public function reconcile_markdown( array $files, callable $parse_file ): array { return array(); }
 	public function hydrate_options( array $rows ): void {
 		if ( 'warm' === $this->failure ) { throw new RuntimeException( 'database is locked' ); }
@@ -64,6 +69,39 @@ try { $loader->load_all(); } catch ( WP_Markdown_Loader_Exception $error ) { $co
 mdi_loader_outcome_assert( $cold_failure instanceof WP_Markdown_Loader_Exception, 'cold reconstruction failure propagates through the typed boundary' );
 mdi_loader_outcome_assert( 'cold_reconstruction_failed' === $cold_failure?->diagnostic_code() && $cold_failure?->getPrevious() instanceof RuntimeException, 'cold failure preserves bounded diagnostics and its original cause' );
 mdi_loader_outcome_assert( 'failed' === ( $loader->get_stats()['sync_status'] ?? null ), 'cold failure cannot report loader completion' );
+
+$backend->failure = 'nested-hydration';
+mkdir( $root . '/_tables', 0755, true );
+file_put_contents( $root . '/_tables/users.json', '[]' );
+$nested_failure = null;
+try { $loader->load_all(); } catch ( WP_Markdown_Loader_Exception $error ) { $nested_failure = $error; }
+$nested_diagnostic = $nested_failure?->diagnostic();
+$operator_message  = $nested_failure?->operator_message() ?? '';
+mdi_loader_outcome_assert(
+	'cold_reconstruction_failed' === ( $nested_diagnostic['code'] ?? null )
+		&& 'Cold reconstruction phase hydrate_table failed for canonical resource _tables/users.json.' === ( $nested_diagnostic['causes'][0]['message'] ?? null )
+		&& 'SQLite rejected users snapshot' === ( $nested_diagnostic['causes'][1]['message'] ?? null )
+		&& 'invalid canonical row' === ( $nested_diagnostic['causes'][2]['message'] ?? null ),
+	'nested hydration failure retains typed phase, resource, and complete causal evidence'
+);
+mdi_loader_outcome_assert(
+	str_contains( $operator_message, '[cold_reconstruction_failed]' )
+		&& str_contains( $operator_message, '_tables/users.json' )
+		&& str_contains( $operator_message, 'invalid canonical row' )
+		&& str_contains( $operator_message, 'remove the disposable Markdown DB index' ),
+	'the bounded operator diagnostic includes the root cause and remediation'
+);
+
+$deep_cause = new RuntimeException( str_repeat( 'x', 600 ) );
+for ( $depth = 0; $depth < 9; ++$depth ) { $deep_cause = new RuntimeException( 'causal layer ' . $depth, 0, $deep_cause ); }
+$deep_cause = new RuntimeException( str_repeat( 'y', 600 ), 0, $deep_cause );
+$bounded_diagnostic = ( new WP_Markdown_Loader_Exception( 'cold_reconstruction_failed', $deep_cause ) )->diagnostic();
+mdi_loader_outcome_assert(
+	8 === count( $bounded_diagnostic['causes'] )
+		&& true === $bounded_diagnostic['truncated']
+		&& 512 >= max( array_map( static fn( array $cause ): int => strlen( $cause['message'] ), $bounded_diagnostic['causes'] ) ),
+	'causal diagnostics enforce deterministic depth and message bounds'
+);
 
 $backend->failure = 'warm';
 $warm = $loader->sync_incremental();

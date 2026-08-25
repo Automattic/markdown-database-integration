@@ -135,6 +135,13 @@ class WP_Markdown_Loader {
 			fclose( $lock );
 		}
 	}
+
+	/** Retain the last complete warm index without entering reconciliation. */
+	public function retain_previous_index( string $reason ): WP_Markdown_Loader_Outcome {
+		$outcome    = WP_Markdown_Loader_Outcome::retained( $reason );
+		$this->stats = $outcome->stats();
+		return $outcome;
+	}
 	private function is_contention_error( \Throwable $error ): bool {
 		do {
 			if ( preg_match( '/(?:database|table|schema) is locked|database is busy/i', $error->getMessage() ) ) {

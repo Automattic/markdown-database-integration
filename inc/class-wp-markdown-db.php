@@ -385,14 +385,23 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		}
 
 		if ( 'sync_incremental' === $action ) {
-			$this->backend_capabilities->require( 'disposable_index_operation' );
-			$this->loader->sync_incremental_if_available( (string) $this->dbname . "\0" . $this->primary_runtime_identity );
+			$this->loader->retain_previous_index( 'deferred_synchronization' );
 			return;
 		}
 
 		$this->backend_capabilities->require( 'disposable_index_operation' );
 		$this->backend_capabilities->require( 'cold_reconstruction' );
 		$this->loader->load_all();
+	}
+
+	/** Synchronize a warm primary index from an explicit maintenance boundary. */
+	public function synchronize_primary_index(): bool {
+		if ( null === $this->loader || 'primary' !== ( defined( 'MARKDOWN_DB_MODE' ) ? MARKDOWN_DB_MODE : 'mirror' ) ) {
+			return false;
+		}
+
+		$this->backend_capabilities->require( 'disposable_index_operation' );
+		return $this->loader->sync_incremental_if_available( (string) $this->dbname . "\0" . $this->primary_runtime_identity );
 	}
 
 	/**

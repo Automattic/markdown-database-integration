@@ -36,6 +36,8 @@ if ( ! class_exists( 'WP_MySQL_On_SQLite' ) && class_exists( 'WP_PDO_MySQL_On_SQ
 }
 
 class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
+	private const POST_MUTATION_BUSY_RETRIES = 2;
+
 	/** @var string|null Canonical hydration scope owned by this adapter. */
 	private $canonical_transaction_scope = null;
 
@@ -280,7 +282,6 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		if ( null !== $op && ! $this->syncing && null !== $this->write_engine ) {
 			$this->require_mutation_capability( $op );
 		}
-		$prepared = array();
 		$pdo = $this->get_connection()->get_pdo();
 		$post_ids = $this->prepared_post_ids( $query, $op );
 		$post_mutation = null !== $op && str_ends_with( strtolower( (string) $op['table'] ), 'posts' );
@@ -289,22 +290,32 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		$wordpress_before = empty( $post_ids ) ? array() : $this->write_engine->wordpress_post_identities( $post_ids );
 		$owns_transaction = $post_mutation;
 		$adapter_transactions = $owns_transaction && $this->parent_owns_transaction_api();
-		if ( $owns_transaction ) { $adapter_transactions ? parent::beginTransaction() : $pdo->beginTransaction(); }
-		try {
-			$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
-			if ( empty( $post_ids ) && null !== $op && in_array( $op['op'], array( 'INSERT', 'REPLACE' ), true ) && str_ends_with( strtolower( (string) $op['table'] ), 'posts' ) ) {
-				$insert_id = (int) $this->get_insert_id();
-				if ( $insert_id > 0 ) { $post_ids = array( $insert_id ); $wordpress_before[ $insert_id ] = null; }
+		$attempt = 0;
+		do {
+			$prepared = array();
+			try {
+				if ( $owns_transaction ) { $adapter_transactions ? parent::beginTransaction() : $pdo->beginTransaction(); }
+				$result = $this->query_cursor( $query, $fetch_mode, ...$fetch_mode_args );
+				if ( empty( $post_ids ) && null !== $op && in_array( $op['op'], array( 'INSERT', 'REPLACE' ), true ) && str_ends_with( strtolower( (string) $op['table'] ), 'posts' ) ) {
+					$insert_id = (int) $this->get_insert_id();
+					if ( $insert_id > 0 ) { $post_ids = array( $insert_id ); $wordpress_before[ $insert_id ] = null; }
+				}
+				foreach ( $post_ids as $post_id ) {
+					$operation = $this->write_engine->prepare_post_commit( $post_id, $wordpress_before[ $post_id ] ?? null );
+					if ( null !== $operation ) { $prepared[] = $operation; }
+				}
+				if ( $owns_transaction ) { $adapter_transactions ? parent::commit() : $pdo->commit(); }
+			} catch ( \Throwable $error ) {
+				if ( $owns_transaction && ( $adapter_transactions ? parent::inTransaction() : $pdo->inTransaction() ) ) { $adapter_transactions ? parent::rollBack() : $pdo->rollBack(); }
+				if ( $post_mutation && empty( $prepared ) && $attempt < self::POST_MUTATION_BUSY_RETRIES && $this->is_sqlite_contention_error( $error ) ) {
+					++$attempt;
+					usleep( 100000 * $attempt );
+					continue;
+				}
+				throw $error;
 			}
-			foreach ( $post_ids as $post_id ) {
-				$operation = $this->write_engine->prepare_post_commit( $post_id, $wordpress_before[ $post_id ] ?? null );
-				if ( null !== $operation ) { $prepared[] = $operation; }
-			}
-			if ( $owns_transaction ) { $adapter_transactions ? parent::commit() : $pdo->commit(); }
-		} catch ( \Throwable $error ) {
-			if ( $owns_transaction && ( $adapter_transactions ? parent::inTransaction() : $pdo->inTransaction() ) ) { $adapter_transactions ? parent::rollBack() : $pdo->rollBack(); }
-			throw $error;
-		}
+			break;
+		} while ( true );
 		foreach ( $prepared as $operation ) { $this->write_engine->continue_post_commit( $operation ); }
 
 		if ( defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ) {
@@ -344,6 +355,16 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		}
 
 		return $result;
+	}
+
+	private function is_sqlite_contention_error( \Throwable $error ): bool {
+		do {
+			if ( preg_match( '/(?:database|table|schema) is locked|database is busy/i', $error->getMessage() ) ) {
+				return true;
+			}
+			$error = $error->getPrevious();
+		} while ( $error instanceof \Throwable );
+		return false;
 	}
 
 	private function prepared_post_ids( string $query, ?array $operation ): array {

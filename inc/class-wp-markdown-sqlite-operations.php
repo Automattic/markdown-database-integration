@@ -124,10 +124,14 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	public function hydrate_table_snapshot( string $table_suffix, callable $rows, ?array $identity = null, ?array $partition = null ): bool {
 		$pdo = $this->driver->get_connection()->get_pdo();
 		$table = $this->table( $table_suffix );
+		$identity = $this->current_snapshot_identity( $identity );
+		if ( $this->snapshot_is_current( $table_suffix, $identity ) ) {
+			return false;
+		}
 		$this->begin_canonical_transaction( $pdo );
 		try {
 			$identity = $this->current_snapshot_identity( $identity );
-			if ( null !== $identity && ( $this->manifest_entries()[ '_tables/' . $table_suffix . '.json' ] ?? null ) === array_intersect_key( $identity, array( 'mtime' => true, 'size' => true ) ) ) {
+			if ( $this->snapshot_is_current( $table_suffix, $identity ) ) {
 				$this->commit_canonical_transaction( $pdo );
 				return false;
 			}
@@ -150,6 +154,10 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 			if ( $this->canonical_transaction_active( $pdo ) ) { $this->rollback_canonical_transaction( $pdo ); }
 			throw new \RuntimeException( "Canonical table hydration failed for {$table_suffix}: " . $e->getMessage(), 0, $e );
 		}
+	}
+	private function snapshot_is_current( string $table_suffix, ?array $identity ): bool {
+		return null !== $identity
+			&& ( $this->manifest_entries()[ '_tables/' . $table_suffix . '.json' ] ?? null ) === array_intersect_key( $identity, array( 'mtime' => true, 'size' => true ) );
 	}
 	private function prepare_snapshot_partition( \PDO $pdo, string $table, ?array $partition ): void {
 		if ( null === $partition ) {

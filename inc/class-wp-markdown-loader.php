@@ -67,8 +67,23 @@ class WP_Markdown_Loader {
 			$result = $this->operations->reconcile_markdown( $files, fn( string $path, $parent = null ) => $this->prepare_markdown_post( $this->storage->read_file( $path, true, $parent ) ) );
 			$this->flush_pending_id_writes();
 			$this->stats = array_merge( $this->stats, $result );
-		} catch ( \Throwable $e ) { error_log( 'Markdown DB sync error: ' . $e->getMessage() ); $this->load_all(); return; }
+		} catch ( \Throwable $e ) {
+			$this->stats['sync_status'] = 'retained_previous_index';
+			$this->stats['sync_error']  = $this->is_contention_error( $e ) ? 'canonical_store_busy' : 'canonical_sync_failed';
+			error_log( 'Markdown DB sync error: ' . $e->getMessage() );
+			return;
+		}
+		$this->stats['sync_status'] = 'complete';
 		$this->timings['total'] = microtime( true ) - $start;
+	}
+	private function is_contention_error( \Throwable $error ): bool {
+		do {
+			if ( preg_match( '/(?:database|table|schema) is locked|database is busy/i', $error->getMessage() ) ) {
+				return true;
+			}
+			$error = $error->getPrevious();
+		} while ( null !== $error );
+		return false;
 	}
 
 	public function prepare_existing_cache(): void { $this->operations->ensure_reconciliation_state(); }

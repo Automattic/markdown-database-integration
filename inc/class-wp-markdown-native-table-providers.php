@@ -205,6 +205,110 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	}
 }
 
+final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Provider {
+	private WP_Markdown_Storage $storage;
+
+	public function __construct(
+		string $content_root,
+		WP_Markdown_Native_Table_Schema $schema,
+		?WP_Markdown_Storage $storage = null
+	) {
+		parent::__construct( $content_root, $schema );
+		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
+	}
+
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		try {
+			$posts = array();
+			$ids   = array();
+			foreach ( $this->storage->get_markdown_file_manifest_iterator( true ) as $file ) {
+				$post = $this->storage->read_file( $file['absolute'], true, $file['parent_id'] );
+				if ( ! $this->unchanged( $file ) || null === $post || (int) ( $post->ID ?? 0 ) < 1 ) {
+					return $this->malformed( 'invalid_post', 'A canonical Markdown post is malformed or has no durable identity.' );
+				}
+				$id = (int) $post->ID;
+				if ( isset( $ids[ $id ] ) ) {
+					return $this->malformed( 'duplicate_post_id', 'Canonical Markdown posts contain a duplicate durable identity.' );
+				}
+				$ids[ $id ] = true;
+				$row = $this->row( $post );
+				if ( true !== $this->schema->validate_row( $row ) ) {
+					return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
+				}
+				$predicate = $access->predicate();
+				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
+					continue;
+				}
+				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file );
+			}
+
+			usort(
+				$posts,
+				fn( array $left, array $right ): int => $this->schema->compare_values(
+					$access->order(),
+					$left['row'][ $access->order() ],
+					$right['row'][ $access->order() ]
+				)
+			);
+			$selected = array();
+			foreach ( $posts as $candidate ) {
+				if ( count( $selected ) >= $access->limit() ) {
+					break;
+				}
+				$row = $candidate['row'];
+				if ( in_array( 'post_content', $access->projection(), true ) ) {
+					$post = $this->storage->read_file( $candidate['file']['absolute'], false, $candidate['file']['parent_id'] );
+					if ( ! $this->unchanged( $candidate['file'] ) || null === $post ) {
+						return $this->malformed( 'changed_post', 'A canonical Markdown post changed while it was being read.' );
+					}
+					$row = $this->row( $post );
+				}
+				$projected = array();
+				foreach ( $access->projection() as $column ) {
+					$projected[ $column ] = $row[ $column ];
+				}
+				$selected[] = $projected;
+			}
+			return $selected;
+		} catch ( Throwable $error ) {
+			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
+		}
+	}
+
+	/** @param array<string,mixed> $row */
+	private function matches( array $row, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		foreach ( $predicate->values() as $value ) {
+			if ( $this->schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** @return array<string,mixed> */
+	private function row( object $post ): array {
+		$row = array();
+		foreach ( $this->schema->column_names() as $column ) {
+			$row[ $column ] = $post->{$column};
+		}
+		return $row;
+	}
+
+	private function malformed( string $reason, string $message ): WP_Markdown_Query_Result {
+		return $this->failure( 'markdown_db_native_malformed_post', $reason, $message );
+	}
+
+	/** @param array{mtime:int,size:int,absolute:string,parent_id:int|null} $file */
+	private function unchanged( array $file ): bool {
+		$stat = @lstat( $file['absolute'] );
+		return is_array( $stat )
+			&& ! is_link( $file['absolute'] )
+			&& 1 === ( $stat['nlink'] ?? 1 )
+			&& $file['mtime'] === (int) $stat['mtime']
+			&& $file['size'] === (int) $stat['size'];
+	}
+}
+
 final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native_File_Provider {
 	private bool $loaded = false;
 	private string $signature = '';

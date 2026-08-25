@@ -11,6 +11,7 @@ require_once __DIR__ . '/class-wp-markdown-native-query-schema.php';
 require_once __DIR__ . '/class-wp-markdown-native-sql-tokenizer.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-ast.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
+require_once __DIR__ . '/class-wp-markdown-storage.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
@@ -124,13 +125,48 @@ final class WP_Markdown_Native_Runtime_Factory {
 		);
 	}
 
+	public static function posts_schema(): WP_Markdown_Native_Table_Schema {
+		$unsigned = static fn( mixed $value ): bool => is_int( $value ) && $value >= 0;
+		$string   = static fn( int $maximum ): callable => static fn( mixed $value ): bool => is_string( $value ) && strlen( $value ) <= $maximum;
+		return new WP_Markdown_Native_Table_Schema(
+			array(
+				'ID'                    => new WP_Markdown_Native_Column( 8, false, $unsigned, null, array( '=', 'IN' ) ),
+				'post_author'           => new WP_Markdown_Native_Column( 8, false, $unsigned, null, array( '=', 'IN' ) ),
+				'post_date'             => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
+				'post_date_gmt'         => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
+				'post_content'          => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'post_title'            => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'post_excerpt'          => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'post_status'           => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
+				'comment_status'        => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
+				'ping_status'           => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
+				'post_password'         => new WP_Markdown_Native_Column( 253, false, $string( 255 ) ),
+				'post_name'             => new WP_Markdown_Native_Column( 253, false, $string( 200 ) ),
+				'to_ping'               => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'pinged'                => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'post_modified'         => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
+				'post_modified_gmt'     => new WP_Markdown_Native_Column( 12, false, $string( 19 ) ),
+				'post_content_filtered' => new WP_Markdown_Native_Column( 252, false, 'is_string' ),
+				'post_parent'           => new WP_Markdown_Native_Column( 8, false, $unsigned, null, array( '=', 'IN' ) ),
+				'guid'                  => new WP_Markdown_Native_Column( 253, false, $string( 255 ) ),
+				'menu_order'            => new WP_Markdown_Native_Column( 3, false, 'is_int' ),
+				'post_type'             => new WP_Markdown_Native_Column( 253, false, $string( 20 ) ),
+				'post_mime_type'        => new WP_Markdown_Native_Column( 253, false, $string( 100 ) ),
+				'comment_count'         => new WP_Markdown_Native_Column( 8, false, $unsigned ),
+			),
+			'ID'
+		);
+	}
+
 	public static function registry(
 		string $state_root,
 		string $prefix = 'wp_',
 		?string $base_prefix = null,
-		bool $multisite = false
+		bool $multisite = false,
+		?string $content_root = null
 	): WP_Markdown_Native_Table_Registry {
 		$base_prefix = $base_prefix ?? $prefix;
+		$content_root = $content_root ?? $state_root;
 		$registry = new WP_Markdown_Native_Table_Registry();
 		$options  = self::options_schema();
 		$registry->register(
@@ -152,6 +188,12 @@ final class WP_Markdown_Native_Runtime_Factory {
 			self::usermeta_schema(),
 			'usermeta.json'
 		);
+		$posts = self::posts_schema();
+		$registry->register(
+			$prefix . 'posts',
+			$posts,
+			new WP_Markdown_Native_Post_Provider( $content_root, $posts )
+		);
 		return $registry;
 	}
 
@@ -159,9 +201,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 		string $state_root,
 		string $prefix = 'wp_',
 		?string $base_prefix = null,
-		bool $multisite = false
+		bool $multisite = false,
+		?string $content_root = null
 	): WP_Markdown_Native_Query_Runtime {
-		return new WP_Markdown_Native_Query_Runtime( self::registry( $state_root, $prefix, $base_prefix, $multisite ) );
+		return new WP_Markdown_Native_Query_Runtime( self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root ) );
 	}
 
 	public static function register_json_snapshot(

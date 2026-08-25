@@ -55,13 +55,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		if ( 0 === $plan->limit() ) {
-			return $this->result( array(), $projection, $plan->table(), $schema );
+			return $plan->counts_all()
+				? $this->count_result( 0, false )
+				: $this->result( array(), $projection, $plan->table(), $schema );
 		}
 
 		$residual = array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
-		$provider_projection = $projection;
+		$provider_projection = $plan->counts_all() ? array() : $projection;
 		foreach ( $residual as $predicate ) {
 			$provider_projection[] = $predicate->column();
+		}
+		if ( array() === $provider_projection ) {
+			$provider_projection[] = $schema->natural_order();
 		}
 		$provider_projection = array_values( array_unique( $provider_projection ) );
 		$provided = $table['provider']->read(
@@ -69,27 +74,34 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$provider_projection,
 				$pushdown,
 				$plan->order() ?? $schema->natural_order(),
-				array() === $residual ? $plan->limit() : PHP_INT_MAX
+				$plan->counts_all() || array() !== $residual ? PHP_INT_MAX : $plan->limit()
 			)
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {
 			return $provided;
 		}
 
-		$rows = array();
+		$rows  = array();
+		$count = 0;
 		foreach ( $provided as $row ) {
-			if ( count( $rows ) >= $plan->limit() ) {
+			if ( ! $plan->counts_all() && count( $rows ) >= $plan->limit() ) {
 				break;
 			}
 			if ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
 			if ( $this->matches( $row, $residual, $schema ) ) {
-				$rows[] = $row;
+				if ( $plan->counts_all() ) {
+					++$count;
+				} else {
+					$rows[] = $row;
+				}
 			}
 		}
 
-		return $this->result( $rows, $projection, $plan->table(), $schema );
+		return $plan->counts_all()
+			? $this->count_result( $count, true )
+			: $this->result( $rows, $projection, $plan->table(), $schema );
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
@@ -161,6 +173,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$projection
 		);
 		return WP_Markdown_Query_Result::selected( $selected, $columns );
+	}
+
+	private function count_result( int $count, bool $include_row ): WP_Markdown_Query_Result {
+		$rows = $include_row ? array( array( 'COUNT(*)' => (string) $count ) ) : array();
+		return WP_Markdown_Query_Result::selected(
+			$rows,
+			array( array( 'name' => 'COUNT(*)', 'table' => '', 'type' => 8 ) )
+		);
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

@@ -61,6 +61,7 @@ final class WP_Markdown_Native_SQL_Select {
 	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates */
 	public function __construct(
 		private readonly bool $select_all,
+		private readonly bool $count_all,
 		private readonly array $projection,
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
 		private readonly array $predicates,
@@ -70,6 +71,10 @@ final class WP_Markdown_Native_SQL_Select {
 
 	public function selects_all(): bool {
 		return $this->select_all;
+	}
+
+	public function counts_all(): bool {
+		return $this->count_all;
 	}
 
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */

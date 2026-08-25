@@ -142,6 +142,7 @@ $reordered = $runtime->execute(
 
 file_put_contents( $users_path, json_encode( array( $users[0], $users[0] ), JSON_THROW_ON_ERROR ) );
 $malformed = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
+$malformed_count = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_users' ) );
 
 $outside = dirname( $root ) . '/mdi-native-users-outside-' . bin2hex( random_bytes( 4 ) ) . '.json';
 file_put_contents( $outside, json_encode( $users, JSON_THROW_ON_ERROR ) );
@@ -192,7 +193,9 @@ $checks = array(
 	'JSON member order is independent from schema projection order' => 'zoe' === ( $reordered->wpdb_state()['last_result'][0]->user_login ?? null )
 		&& '2' === ( $reordered->wpdb_state()['last_result'][0]->ID ?? null ),
 	'malformed snapshot rows fail without partial results' => false === $malformed->return_value()
-		&& array() === $malformed->wpdb_state()['last_result'],
+		&& array() === $malformed->wpdb_state()['last_result']
+		&& false === $malformed_count->return_value()
+		&& array() === $malformed_count->wpdb_state()['last_result'],
 	'snapshot symlink and hard-link paths fail closed' => ( ! $symlink || ( false === $unsafe_symlink->return_value()
 		&& 'markdown_db_native_unsafe_path' === ( $unsafe_symlink->diagnostic()['code'] ?? null ) ) )
 		&& ( ! $hardlink || ( false === $unsafe_hardlink->return_value()

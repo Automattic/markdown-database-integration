@@ -57,7 +57,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$projection,
 			$predicates,
 			$ast->order()?->name(),
-			$ast->limit() ?? PHP_INT_MAX
+			$ast->limit() ?? PHP_INT_MAX,
+			$ast->counts_all()
 		);
 	}
 
@@ -82,8 +83,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	public function parse(): WP_Markdown_Native_SQL_Select {
 		$this->expect_keyword( 'SELECT' );
 		$select_all = $this->match_type( WP_Markdown_Native_SQL_Token::STAR );
+		$count_all = false;
 		$projection = array();
-		if ( ! $select_all ) {
+		if ( ! $select_all && $this->matches_count_all() ) {
+			$count_all = true;
+			$this->identifier();
+			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::STAR );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		} elseif ( ! $select_all ) {
 			$projection[] = $this->identifier();
 			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
 				$projection[] = $this->identifier();
@@ -111,7 +119,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $projection, $table, $predicates, $order, $limit );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $order, $limit );
+	}
+
+	private function matches_count_all(): bool {
+		$token = $this->current();
+		return in_array( $token->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD ), true )
+			&& 0 === strcasecmp( 'COUNT', (string) $token->value() )
+			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type();
 	}
 
 	private function predicate(): WP_Markdown_Native_SQL_Predicate {

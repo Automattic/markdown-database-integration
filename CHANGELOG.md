@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.11.5] - 2026-08-25
+
+### Fixed
+- finalize invalid post reconciliation
+
 ## [0.11.4] - 2026-08-25
 
 ### Fixed

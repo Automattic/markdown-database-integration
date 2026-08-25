@@ -136,6 +136,8 @@ $escaped = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_valu
 $case_insensitive_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'SITEURL'" ) );
 $autoload_subset = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_name FROM wp_options WHERE autoload IN ('on', 'yes') LIMIT 1" ) );
 $alloptions_limited = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT option_name FROM wp_options LIMIT 2' ) );
+$conjunctive = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE autoload = 'on' AND option_name = 'siteurl' LIMIT 1" ) );
+$conjunctive_missing = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE autoload = 'off' AND option_name = 'siteurl' LIMIT 1" ) );
 $autoload_state = $autoload_result->wpdb_state();
 $autoload_unsupported = array(
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_name FROM wp_options WHERE autoload IN ('off')" ) ),
@@ -183,6 +185,9 @@ $checks = array(
 	'autoload subsets and limits remain bounded' => 1 === $autoload_subset->return_value() && 'siteurl' === ( $autoload_subset->wpdb_state()['last_result'][0]->option_name ?? null ),
 	'duplicate allowed autoload values retain SQL set semantics' => 1 === $autoload_duplicates->return_value() && 'siteurl' === ( $autoload_duplicates->wpdb_state()['last_result'][0]->option_name ?? null ),
 	'alloptions fallback remains bounded and ordered' => 2 === $alloptions_limited->return_value() && array( 'siteurl', $escaped_name ) === array_map( static fn( object $row ): string => $row->option_name, $alloptions_limited->wpdb_state()['last_result'] ),
+	'indexed option names push down while non-indexed conjunctions filter in PHP' => 'https://example.test' === ( $conjunctive->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 0 === $conjunctive_missing->return_value()
+		&& array( 'option_value' ) === array_map( static fn( object $column ): string => $column->name, $conjunctive->wpdb_state()['col_info'] ),
 	'option-name lists deduplicate, omit missing rows, and preserve option-id order' => array( 'siteurl', 'legacy' ) === array_map( static fn( object $row ): string => $row->option_name, $prime_result->wpdb_state()['last_result'] ),
 	'unsupported autoload predicates and values fail closed' => array_reduce( $autoload_unsupported, static fn( bool $valid, WP_Markdown_Query_Result $candidate ): bool => $valid && false === $candidate->return_value() && 'markdown_db_native_unsupported_query' === ( $candidate->diagnostic()['code'] ?? null ), true ),
 	'wpdb helpers consume native result state without a connection' => 'https://example.test' === ( $wpdb_row->option_value ?? null ) && 'https://example.test' === $wpdb_var && 'siteurl' === ( $wpdb_results[0]->option_name ?? null ) && array( 'option_name', 'option_value' ) === $wpdb_columns,

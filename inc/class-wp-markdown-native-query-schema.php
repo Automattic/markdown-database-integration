@@ -50,6 +50,19 @@ final class WP_Markdown_Native_Column {
 	public function supports_lookup(): bool {
 		return array() !== $this->lookup_operators;
 	}
+
+	/** @param array<int,int|string> $values */
+	public function allows_filter( string $operator, array $values ): bool {
+		if ( ! in_array( $operator, array( '=', 'IN' ), true ) || array() === $values ) {
+			return false;
+		}
+		foreach ( $values as $value ) {
+			if ( ! $this->validates( $value ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
 }
 
 final class WP_Markdown_Native_Table_Schema {
@@ -113,6 +126,11 @@ final class WP_Markdown_Native_Table_Schema {
 			return false;
 		}
 		return $this->columns[ $column ]->allows_lookup( $operator, $values );
+	}
+
+	/** @param array<int,int|string> $values */
+	public function allows_filter( string $column, string $operator, array $values ): bool {
+		return isset( $this->columns[ $column ] ) && $this->columns[ $column ]->allows_filter( $operator, $values );
 	}
 
 	public function values_match( string $column, mixed $left, mixed $right ): bool {

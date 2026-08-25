@@ -11,7 +11,7 @@ $token_sql = "SELECT `option_name`, option_value FROM wp_options WHERE option_na
 $tokens    = $tokenizer->tokenize( $token_sql );
 $parser    = new WP_Markdown_Native_Query_Parser( $tokenizer );
 
-$ast_sql = "\nseLEct `option_name`, option_value FROM `wp_options` WHERE option_name IN ('siteurl', 'tab\\tback\\\\slash', 'siteurl') ORDER BY option_id aSc LIMIT 2\t";
+$ast_sql = "\nseLEct `option_name`, option_value FROM `wp_options` WHERE option_name IN ('siteurl', 'tab\\tback\\\\slash', 'siteurl') AND autoload = 'on' ORDER BY option_id aSc LIMIT 2\t";
 $ast     = $parser->parse_ast( $ast_sql );
 $plan    = $ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $ast ) : $ast;
 
@@ -30,6 +30,8 @@ $trailing_sql  = 'SELECT value FROM example ORDER BY id ASC DESC';
 $trailing      = $parser->parse( $trailing_sql );
 $unterminated_sql = "SELECT value FROM example WHERE id = 'open";
 $unterminated     = $parser->parse( $unterminated_sql );
+$malformed_and_sql = 'SELECT value FROM example WHERE id = 1 AND ORDER BY id ASC';
+$malformed_and     = $parser->parse( $malformed_and_sql );
 
 $checks = array(
 	'tokenizer emits typed tokens with exact source offsets and decoded values' => array(
@@ -48,11 +50,15 @@ $checks = array(
 		&& 'wp_options' === $ast->table()->name()
 		&& 'IN' === $ast->predicate()?->operator()
 		&& "tab\tback\\slash" === $ast->predicate()?->values()[1]->value()
+		&& 2 === count( $ast->predicates() )
+		&& 'autoload' === $ast->predicates()[1]->column()->name()
 		&& 'option_id' === $ast->order()?->name()
 		&& 2 === $ast->limit(),
 	'AST lowering preserves the existing bounded query-plan contract' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& array( 'option_name', 'option_value' ) === $plan->projection()
 		&& array( 'siteurl', "tab\tback\\slash" ) === $plan->predicate()?->values()
+		&& 2 === count( $plan->predicates() )
+		&& array( 'on' ) === $plan->predicates()[1]->values()
 		&& 'option_id' === $plan->order()
 		&& 2 === $plan->limit(),
 	'legacy star, integer normalization, and zero LIMIT behavior are preserved' => $star instanceof WP_Markdown_Native_Query_Plan
@@ -77,7 +83,9 @@ $checks = array(
 		&& 'unsupported_grammar' === ( $trailing->diagnostic()['reason'] ?? null )
 		&& strrpos( $trailing_sql, 'DESC' ) === ( $trailing->diagnostic()['sql_offset'] ?? null )
 		&& $unterminated instanceof WP_Markdown_Query_Result
-		&& strpos( $unterminated_sql, "'open" ) === ( $unterminated->diagnostic()['sql_offset'] ?? null ),
+		&& strpos( $unterminated_sql, "'open" ) === ( $unterminated->diagnostic()['sql_offset'] ?? null )
+		&& $malformed_and instanceof WP_Markdown_Query_Result
+		&& strpos( $malformed_and_sql, 'BY' ) === ( $malformed_and->diagnostic()['sql_offset'] ?? null ),
 );
 
 $failed = 0;

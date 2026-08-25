@@ -24,10 +24,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		$schema     = $table['schema'];
-		$predicate  = $plan->predicate();
+		$predicates = $plan->predicates();
 		$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
 		$columns    = $projection;
-		if ( null !== $predicate ) {
+		foreach ( $predicates as $predicate ) {
 			$columns[] = $predicate->column();
 		}
 		if ( null !== $plan->order() ) {
@@ -39,12 +39,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 
-		if ( null !== $predicate && ! $schema->allows_lookup(
-			$predicate->column(),
-			$predicate->operator(),
-			$predicate->values()
-		) ) {
-			return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested predicate.' );
+		foreach ( $predicates as $predicate ) {
+			if ( ! $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
+				&& ! $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() )
+			) {
+				return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested predicate.' );
+			}
+		}
+		$pushdown = $this->pushdown( $predicates, $schema );
+		if ( array() !== $predicates && null === $pushdown ) {
+			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		if ( null !== $plan->order() && ! $schema->allows_order( $plan->order() ) ) {
 			return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
@@ -54,12 +58,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->result( array(), $projection, $plan->table(), $schema );
 		}
 
+		$residual = array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
+		$provider_projection = $projection;
+		foreach ( $residual as $predicate ) {
+			$provider_projection[] = $predicate->column();
+		}
+		$provider_projection = array_values( array_unique( $provider_projection ) );
 		$provided = $table['provider']->read(
 			new WP_Markdown_Native_Table_Access(
-				$projection,
-				$predicate,
+				$provider_projection,
+				$pushdown,
 				$plan->order() ?? $schema->natural_order(),
-				$plan->limit()
+				array() === $residual ? $plan->limit() : PHP_INT_MAX
 			)
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {
@@ -71,13 +81,58 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( count( $rows ) >= $plan->limit() ) {
 				break;
 			}
-			if ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $projection ) ) {
+			if ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
-			$rows[] = $row;
+			if ( $this->matches( $row, $residual, $schema ) ) {
+				$rows[] = $row;
+			}
 		}
 
 		return $this->result( $rows, $projection, $plan->table(), $schema );
+	}
+
+	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	private function pushdown( array $predicates, WP_Markdown_Native_Table_Schema $schema ): ?WP_Markdown_Native_Query_Predicate {
+		$candidates = array_values(
+			array_filter(
+				$predicates,
+				static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $schema->allows_lookup(
+					$predicate->column(),
+					$predicate->operator(),
+					$predicate->values()
+				)
+			)
+		);
+		usort(
+			$candidates,
+			static function ( WP_Markdown_Native_Query_Predicate $left, WP_Markdown_Native_Query_Predicate $right ): int {
+				$operator = ( '=' === $left->operator() ? 0 : 1 ) <=> ( '=' === $right->operator() ? 0 : 1 );
+				if ( 0 !== $operator ) {
+					return $operator;
+				}
+				$value_count = count( $left->values() ) <=> count( $right->values() );
+				return 0 !== $value_count ? $value_count : strcmp( $left->column(), $right->column() );
+			}
+		);
+		return $candidates[0] ?? null;
+	}
+
+	/** @param array<string,mixed> $row @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	private function matches( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+		foreach ( $predicates as $predicate ) {
+			$matched = false;
+			foreach ( $predicate->values() as $value ) {
+				if ( $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ) ) {
+					$matched = true;
+					break;
+				}
+			}
+			if ( ! $matched ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** @param array<int,array<string,mixed>> $rows @param array<int,string> $projection */

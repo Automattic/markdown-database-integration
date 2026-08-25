@@ -1,5 +1,33 @@
 # Changelog
 
+## [0.11.0] - 2026-08-24
+
+### Changed
+- Execute conjunctive native predicates
+- Add typed native SQL parser
+- Revert "Merge pull request #234 from Automattic/feat/233-native-mysql-sidecar"
+- Prove native MySQL sidecar protocol
+- Add exact native partition reads
+- Add bounded native provider access
+- Refactor native query contracts
+- Add native bootstrap shadow verifier
+- Preserve baselines on canonical delete failure
+- Distinguish canonical deletion outcomes
+- Isolate canonical persistence observers
+- Preserve failed canonical post writes
+- Bound canonical shutdown persistence
+- Add native usermeta cache queries
+- Prove lazy and recovery byte boundaries
+- Cover lazy post content byte boundaries
+- Preserve lazy post content bytes
+- Preserve exact canonical post body bytes
+- Add generic native canonical query engine
+- Reconcile canonical post receipt line endings
+- Use adapter-owned post transactions
+- Recognize quoted post identities
+- Harden query corpus quality gates
+- Add wpdb compatibility corpus
+
 ## [0.10.2] - 2026-08-23
 
 ### Changed

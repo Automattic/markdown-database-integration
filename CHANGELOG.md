@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.11.4] - 2026-08-25
+
+### Fixed
+- retry contended post writes
+
 ## [0.11.3] - 2026-08-25
 
 ### Changed

@@ -173,6 +173,19 @@ class WP_Markdown_Canonical_Persistence {
 	 * @var array<string, int>
 	 */
 	private $json_temp_cleanup_offsets = array();
+
+	/**
+	 * Directories whose interrupted-write recovery sweep already ran since the
+	 * current flush began.
+	 *
+	 * Temp-file reclamation is bounded to one sweep per directory per flush so
+	 * a multi-row partition write performs recovery work proportional to the
+	 * number of directories it touches, never to the number of rows it writes.
+	 * See GitHub issue #243.
+	 *
+	 * @var array<string, bool>
+	 */
+	private $json_temp_cleanup_directories = array();
 	private ?WP_Markdown_Durable_Reconciliation_Coordinator $reconciliation = null;
 	private string $reconciliation_fence_directory = '';
 
@@ -473,6 +486,7 @@ class WP_Markdown_Canonical_Persistence {
 			'canonical_paths'           => array_keys( $this->canonical_mutations ),
 			'canonical_hash_reads'      => 0,
 		);
+		$this->json_temp_cleanup_directories = array();
 		$this->writing = true;
 
 		try {
@@ -1707,13 +1721,25 @@ class WP_Markdown_Canonical_Persistence {
 	/**
 	 * Reclaim interrupted atomic JSON writes without touching live writers.
 	 *
-	 * A temp file is eligible only when it has MDI's exact destination-derived
-	 * name, exceeds the configured age, and is not exclusively locked by a
-	 * writer. The matched-candidate inspection window rotates between scans.
+	 * A temp file is eligible only when it has MDI's strict JSON temp-file name,
+	 * exceeds the configured age, and is not exclusively locked by a writer.
+	 * The matched-candidate inspection window rotates between scans.
+	 *
+	 * Within one write batch the sweep runs at most once per directory, so a
+	 * flush writing many rows into one partition directory cannot multiply
+	 * recovery scans by its row count. Each flush re-arms every directory, so
+	 * interrupted writes are still recovered on the next flush that touches
+	 * them. See GitHub issue #243.
 	 *
 	 * @param string $path Canonical JSON destination.
 	 */
 	private function cleanup_json_temp_files( string $path ): void {
+		$directory = dirname( $path );
+		if ( $this->writing && isset( $this->json_temp_cleanup_directories[ $directory ] ) ) {
+			return;
+		}
+		$this->json_temp_cleanup_directories[ $directory ] = true;
+
 		$max_age = 300;
 		$limit   = 100;
 		if ( function_exists( 'apply_filters' ) ) {
@@ -1727,17 +1753,16 @@ class WP_Markdown_Canonical_Persistence {
 			$limit = 100;
 		}
 
-		$pattern = '/\A' . preg_quote( basename( $path ), '/' ) . '\\.tmp\\.([1-9][0-9]*)\\.([a-f0-9]{8})\z/';
-		$count   = $this->count_json_temp_candidates( dirname( $path ), $pattern );
+		$pattern = '/\A.+\\.json\\.tmp\\.([1-9][0-9]*)\\.([a-f0-9]{8})\z/';
+		$count   = $this->count_json_temp_candidates( $directory, $pattern );
 		if ( 0 === $count ) {
 			return;
 		}
 
-		$offset = $this->json_temp_cleanup_offsets[ $path ] ?? 0;
+		$offset = $this->json_temp_cleanup_offsets[ $directory ] ?? 0;
 		$offset %= $count;
-		$this->json_temp_cleanup_offsets[ $path ] = ( $offset + $limit ) % $count;
-		$directory = dirname( $path );
-		$handle    = @opendir( $directory );
+		$this->json_temp_cleanup_offsets[ $directory ] = ( $offset + $limit ) % $count;
+		$handle = @opendir( $directory );
 		if ( false === $handle ) {
 			error_log( 'Markdown DB: Failed to scan JSON temp files: ' . $directory );
 			return;

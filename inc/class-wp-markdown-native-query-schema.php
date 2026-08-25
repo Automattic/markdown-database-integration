@@ -14,7 +14,8 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN' )
+		private readonly array $filter_operators = array( '=', 'IN' ),
+		private readonly mixed $filter_validator = null
 	) {
 		if ( null !== $validator && ! is_callable( $validator ) ) {
 			throw new InvalidArgumentException( 'Column validators must be callable.' );
@@ -24,6 +25,9 @@ final class WP_Markdown_Native_Column {
 		}
 		if ( null !== $lookup_validator && ! is_callable( $lookup_validator ) ) {
 			throw new InvalidArgumentException( 'Column lookup validators must be callable.' );
+		}
+		if ( null !== $filter_validator && ! is_callable( $filter_validator ) ) {
+			throw new InvalidArgumentException( 'Column filter validators must be callable.' );
 		}
 	}
 
@@ -62,7 +66,7 @@ final class WP_Markdown_Native_Column {
 				return false;
 			}
 		}
-		return true;
+		return null === $this->filter_validator || ( $this->filter_validator )( $values );
 	}
 }
 
@@ -72,11 +76,13 @@ final class WP_Markdown_Native_Table_Schema {
 	 * @param array<string,WP_Markdown_Native_Column> $columns       Column declarations.
 	 * @param string                                  $natural_order Natural row order column.
 	 * @param array<int,string>                       $order_columns Explicitly orderable columns.
+	 * @param array<int,string>                       $identity_columns Composite natural identity columns.
 	 */
 	public function __construct(
 		private array $columns,
 		private string $natural_order,
-		private array $order_columns = array()
+		private array $order_columns = array(),
+		private array $identity_columns = array()
 	) {
 		foreach ( $columns as $column ) {
 			if ( ! $column instanceof WP_Markdown_Native_Column ) {
@@ -85,6 +91,12 @@ final class WP_Markdown_Native_Table_Schema {
 		}
 		if ( ! isset( $columns[ $natural_order ] ) ) {
 			throw new InvalidArgumentException( 'The natural order column must exist.' );
+		}
+		$this->identity_columns = array() === $this->identity_columns ? array( $natural_order ) : $this->identity_columns;
+		foreach ( $this->identity_columns as $column ) {
+			if ( ! isset( $columns[ $column ] ) ) {
+				throw new InvalidArgumentException( 'Every identity column must exist in the schema.' );
+			}
 		}
 		foreach ( $order_columns as $column ) {
 			if ( ! isset( $columns[ $column ] ) ) {
@@ -142,6 +154,37 @@ final class WP_Markdown_Native_Table_Schema {
 
 	public function compare_values( string $column, mixed $left, mixed $right ): int {
 		return $this->column( $column )->normalize( $left ) <=> $this->column( $column )->normalize( $right );
+	}
+
+	/** @param array<string,mixed> $left @param array<string,mixed> $right */
+	public function compare_rows( string $column, array $left, array $right ): int {
+		$comparison = $this->compare_values( $column, $left[ $column ], $right[ $column ] );
+		if ( 0 !== $comparison || $column !== $this->natural_order ) {
+			return $comparison;
+		}
+		foreach ( $this->identity_columns as $identity ) {
+			if ( $identity === $column ) {
+				continue;
+			}
+			$comparison = $this->compare_values( $identity, $left[ $identity ], $right[ $identity ] );
+			if ( 0 !== $comparison ) {
+				return $comparison;
+			}
+		}
+		return 0;
+	}
+
+	/** @param array<string,mixed> $row */
+	public function identity_key( array $row ): ?string {
+		$identity = array();
+		foreach ( $this->identity_columns as $column ) {
+			$value = $this->column( $column )->normalize( $row[ $column ] ?? null );
+			if ( null === $value ) {
+				return null;
+			}
+			$identity[] = $value;
+		}
+		return serialize( $identity );
 	}
 
 	public function value_key( string $column, mixed $value ): ?string {

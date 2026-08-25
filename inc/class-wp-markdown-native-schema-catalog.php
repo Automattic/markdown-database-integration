@@ -221,24 +221,32 @@ final class WP_Markdown_Native_Schema_Catalog {
 				$normalizer,
 				$column_overlay['lookup_operators'] ?? array(),
 				$column_overlay['lookup_validator'] ?? null,
-				$column_overlay['filter_operators'] ?? array( '=', 'IN' )
+				$column_overlay['filter_operators'] ?? array( '=', 'IN' ),
+				$column_overlay['filter_validator'] ?? null
 			);
 		}
 		$primary = array_values( array_filter( $definition['indexes'], static fn( array $index ): bool => 'PRIMARY' === $index['name'] ) );
 		$natural_order = $overlay['natural_order'] ?? ( $primary[0]['columns'][0]['name'] ?? array_key_first( $columns ) );
-		return new WP_Markdown_Native_Table_Schema( $columns, $natural_order, $overlay['order_columns'] ?? array() );
+		$identity_columns = array_map( static fn( array $column ): string => $column['name'], $primary[0]['columns'] ?? array() );
+		return new WP_Markdown_Native_Table_Schema( $columns, $natural_order, $overlay['order_columns'] ?? array(), $identity_columns );
 	}
 
 	/** Build the conservative execution contract supported by a generic JSON snapshot. */
-	public static function indexed_snapshot_schema( array $definition ): ?WP_Markdown_Native_Table_Schema {
+	public static function indexed_snapshot_schema(
+		array $definition,
+		array $column_overlays = array()
+	): ?WP_Markdown_Native_Table_Schema {
 		$primary = array_values( array_filter( $definition['indexes'] ?? array(), static fn( array $index ): bool => 'PRIMARY' === ( $index['name'] ?? null ) ) );
 		$identity_columns = $primary[0]['columns'] ?? array();
-		if ( 1 !== count( $primary ) || 1 !== count( $identity_columns ) ) {
+		if ( 1 !== count( $primary ) || array() === $identity_columns ) {
 			return null;
 		}
 		$identity = $identity_columns[0]['name'] ?? '';
-		if ( ! isset( $definition['columns'][ $identity ] ) || ! self::is_integer( $definition['columns'][ $identity ]['type'] ) ) {
-			return null;
+		foreach ( $identity_columns as $identity_column ) {
+			$name = $identity_column['name'] ?? '';
+			if ( ! isset( $definition['columns'][ $name ] ) || ! self::is_integer( $definition['columns'][ $name ]['type'] ) ) {
+				return null;
+			}
 		}
 
 		$overlay = array( 'columns' => array(), 'natural_order' => $identity );
@@ -251,6 +259,11 @@ final class WP_Markdown_Native_Schema_Catalog {
 			$name = $index['columns'][0]['name'] ?? '';
 			if ( isset( $definition['columns'][ $name ] ) && self::is_integer( $definition['columns'][ $name ]['type'] ) ) {
 				$overlay['columns'][ $name ]['lookup_operators'] = array( '=', 'IN' );
+			}
+		}
+		foreach ( $column_overlays as $name => $column_overlay ) {
+			if ( isset( $overlay['columns'][ $name ] ) && is_array( $column_overlay ) ) {
+				$overlay['columns'][ $name ] = array_merge( $overlay['columns'][ $name ], $column_overlay );
 			}
 		}
 		return self::schema( $definition, 'mixed', $overlay );

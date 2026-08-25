@@ -150,6 +150,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			self::comments_schema(),
 			'comments.json'
 		);
+		self::register_generated_core_snapshots( $registry, $state_root, $prefix, $base_prefix, $multisite );
 		self::register_persisted_plugin_tables( $registry, $state_root, $prefix, $multisite );
 		return $registry;
 	}
@@ -214,6 +215,43 @@ final class WP_Markdown_Native_Runtime_Factory {
 				}
 			} catch ( Throwable ) {
 				continue;
+			}
+		}
+	}
+
+	private static function register_generated_core_snapshots(
+		WP_Markdown_Native_Table_Registry $registry,
+		string $state_root,
+		string $prefix,
+		string $base_prefix,
+		bool $multisite
+	): void {
+		$definitions = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
+		$handled = array( 'options', 'users', 'usermeta', 'posts', 'comments' );
+		$network = array( 'blogs', 'blogmeta', 'registration_log', 'site', 'sitemeta', 'signups' );
+		foreach ( $definitions as $table => $definition ) {
+			if ( in_array( $table, $handled, true ) ) {
+				continue;
+			}
+			$column_overlays = array();
+			foreach ( $definition['indexes'] as $index ) {
+				$column = $index['columns'][0]['name'] ?? '';
+				$type = $definition['columns'][ $column ]['type'] ?? '';
+				if ( in_array( $type, array( 'char', 'varchar' ), true ) ) {
+					$ascii = static fn( array $values ): bool => self::all_ascii_strings( $values );
+					$column_overlays[ $column ] = array(
+						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => $ascii,
+						'filter_operators' => array( '=', 'IN' ),
+						'filter_validator' => $ascii,
+					);
+				}
+			}
+			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition, $column_overlays );
+			if ( null !== $schema ) {
+				$table_prefix = $multisite && in_array( $table, $network, true ) ? $base_prefix : $prefix;
+				self::register_json_snapshot( $registry, $state_root, $table_prefix . $table, $schema, $table . '.json' );
 			}
 		}
 	}

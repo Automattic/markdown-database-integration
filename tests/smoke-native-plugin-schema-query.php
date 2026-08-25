@@ -49,6 +49,7 @@ file_put_contents(
 file_put_contents( $root . '/_schema/no_identity.sql', 'CREATE TABLE wp_no_identity (value bigint(20) unsigned NOT NULL);' );
 file_put_contents( $root . '/_tables/no_identity.json', '[{"value":1}]' );
 file_put_contents( $root . '/_schema/composite.sql', 'CREATE TABLE wp_composite (left_id bigint(20) unsigned NOT NULL, right_id bigint(20) unsigned NOT NULL, PRIMARY KEY (left_id,right_id));' );
+file_put_contents( $root . '/_tables/composite.json', '[{"left_id":3,"right_id":"9"},{"left_id":"3","right_id":7}]' );
 file_put_contents( $root . '/_schema/unsupported.sql', "CREATE TABLE wp_unsupported (id bigint(20) unsigned NOT NULL, state enum('open','done') NOT NULL, PRIMARY KEY (id));" );
 file_put_contents( $root . '/_schema/mismatch.sql', 'CREATE TABLE wp_different_name (id bigint(20) unsigned NOT NULL, PRIMARY KEY (id));' );
 file_put_contents( $root . '/_schema/malformed.sql', 'not ddl' );
@@ -67,7 +68,7 @@ $unfiltered = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM 
 $string_filter = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE status = 'QUEUED'" ) );
 $string_order = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs ORDER BY status ASC' ) );
 $no_identity = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT value FROM wp_no_identity' ) );
-$composite = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT left_id FROM wp_composite' ) );
+$composite = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT right_id FROM wp_composite WHERE left_id = 3' ) );
 $unsupported = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_unsupported' ) );
 $mismatch = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_mismatch' ) );
 $inline = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT value FROM wp_inline_items WHERE id = 4' ) );
@@ -105,8 +106,11 @@ $checks = array(
 		&& 'unsupported_lookup' === ( $string_filter->diagnostic()['reason'] ?? null )
 		&& false === $string_order->return_value()
 		&& 'unsupported_order' === ( $string_order->diagnostic()['reason'] ?? null ),
-	'schemas without one numeric primary identity remain unsupported' => false === $no_identity->return_value()
-		&& false === $composite->return_value(),
+	'schemas without a numeric primary identity remain unsupported' => false === $no_identity->return_value(),
+	'composite numeric plugin identities execute without table-specific code' => array( '7', '9' ) === array_map(
+		static fn( object $row ): string => $row->right_id,
+		$composite->wpdb_state()['last_result']
+	),
 	'unsupported DDL, mismatched names, and malformed neighbors do not weaken valid tables' => false === $unsupported->return_value()
 		&& false === $mismatch->return_value()
 		&& 1 === $exact->return_value(),

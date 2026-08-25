@@ -96,7 +96,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	}
 
 	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
-	protected function validate_rows( mixed $rows, string $identity ): array|WP_Markdown_Query_Result {
+	protected function validate_rows( mixed $rows ): array|WP_Markdown_Query_Result {
 		if ( ! is_array( $rows ) || ! array_is_list( $rows ) ) {
 			return $this->failure(
 				'markdown_db_native_malformed_table',
@@ -114,7 +114,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 					'The canonical table contains a row outside its declared schema.'
 				);
 			}
-			$key = $this->schema->value_key( $identity, $row[ $identity ] );
+			$key = $this->schema->identity_key( $row );
 			if ( null === $key || isset( $identities[ $key ] ) ) {
 				return $this->failure(
 					'markdown_db_native_malformed_table',
@@ -145,7 +145,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		foreach ( $predicate->values() as $value ) {
 			$key = $this->schema->value_key( $column, $value );
 			foreach ( null === $key ? array() : ( $this->indexes[ $column ][ $key ] ?? array() ) as $row ) {
-				$identity = $this->schema->value_key( $this->schema->natural_order(), $row[ $this->schema->natural_order() ] );
+				$identity = $this->schema->identity_key( $row );
 				if ( null !== $identity && ! isset( $seen[ $identity ] ) ) {
 					$seen[ $identity ] = true;
 					$selected[]        = $row;
@@ -159,11 +159,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access ): array {
 		usort(
 			$rows,
-			fn( array $left, array $right ): int => $this->schema->compare_values(
-				$access->order(),
-				$left[ $access->order() ],
-				$right[ $access->order() ]
-			)
+			fn( array $left, array $right ): int => $this->schema->compare_rows( $access->order(), $left, $right )
 		);
 
 		$selected = array();
@@ -244,11 +240,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 
 			usort(
 				$posts,
-				fn( array $left, array $right ): int => $this->schema->compare_values(
-					$access->order(),
-					$left['row'][ $access->order() ],
-					$right['row'][ $access->order() ]
-				)
+				fn( array $left, array $right ): int => $this->schema->compare_rows( $access->order(), $left['row'], $right['row'] )
 			);
 			$selected = array();
 			foreach ( $posts as $candidate ) {
@@ -370,7 +362,7 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		$this->signature = $this->snapshot_signature( $directory, $path, $digest );
 		return $this->snapshot = $data instanceof WP_Markdown_Query_Result
 			? $data
-			: $this->validate_rows( $data, $this->schema->natural_order() );
+			: $this->validate_rows( $data );
 	}
 
 	private function snapshot_signature( string $directory, string $path, ?string $digest = null ): string {

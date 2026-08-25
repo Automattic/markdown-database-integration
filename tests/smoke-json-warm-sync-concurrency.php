@@ -42,6 +42,18 @@ class WP_Markdown_Storage {
 
 require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
 
+class MDI_Gated_Loader extends WP_Markdown_Loader {
+	public function __construct( private bool $wait_for_release ) {}
+
+	public function sync_incremental(): void {
+		if ( $this->wait_for_release ) {
+			echo "OWNED\n";
+			flush();
+			fgets( STDIN );
+		}
+	}
+}
+
 function mdi_concurrent_pdo( string $database ): PDO {
 	$pdo = new PDO( 'sqlite:' . $database );
 	$pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
@@ -87,6 +99,13 @@ if ( 'worker' === ( $argv[1] ?? '' ) ) {
 	exit( 0 );
 }
 
+if ( 'gate-owner' === ( $argv[1] ?? '' ) ) {
+	$loader = new MDI_Gated_Loader( true );
+	$loader->sync_incremental_if_available( $argv[2] );
+	echo "RELEASED\n";
+	exit( 0 );
+}
+
 $failures = array();
 
 function mdi_concurrent_assert( bool $condition, string $message ): void {
@@ -112,6 +131,29 @@ $pdo->exec( 'CREATE TABLE hydration_attempts (id INTEGER PRIMARY KEY)' );
 $pdo->exec( 'CREATE TABLE _json_file_manifest (file_name TEXT PRIMARY KEY, file_mtime INTEGER NOT NULL, file_size INTEGER NOT NULL)' );
 $pdo->exec( "INSERT INTO wp_plugin_jobs (id, name) VALUES (99, 'stale')" );
 $pdo->exec( "INSERT INTO _json_file_manifest (file_name, file_mtime, file_size) VALUES ('_tables/plugin_jobs.json', 0, 0)" );
+
+// Primary warm synchronization has one non-blocking process owner.
+$gate_pipes = array();
+$descriptors = array( 0 => array( 'pipe', 'r' ), 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) );
+$gate_process = proc_open( array( PHP_BINARY, __FILE__, 'gate-owner', $database ), $descriptors, $gate_pipes );
+if ( ! is_resource( $gate_process ) ) { throw new RuntimeException( 'Failed to start synchronization owner.' ); }
+mdi_concurrent_assert( "OWNED\n" === fgets( $gate_pipes[1] ), 'one process acquires warm synchronization ownership' );
+$gate_contender = new MDI_Gated_Loader( false );
+$gate_start = microtime( true );
+$gate_acquired = $gate_contender->sync_incremental_if_available( $database );
+$gate_elapsed = microtime( true ) - $gate_start;
+$gate_stats = $gate_contender->get_stats();
+mdi_concurrent_assert( false === $gate_acquired && $gate_elapsed < 0.1, 'contending warm bootstrap immediately retains the previous index' );
+mdi_concurrent_assert( 'synchronizer_active' === ( $gate_stats['sync_error'] ?? null ), 'contending warm bootstrap reports active synchronizer evidence' );
+fwrite( $gate_pipes[0], "RELEASE\n" );
+fflush( $gate_pipes[0] );
+fclose( $gate_pipes[0] );
+$gate_stdout = stream_get_contents( $gate_pipes[1] );
+$gate_stderr = stream_get_contents( $gate_pipes[2] );
+fclose( $gate_pipes[1] );
+fclose( $gate_pipes[2] );
+mdi_concurrent_assert( 0 === proc_close( $gate_process ) && "RELEASED\n" === $gate_stdout, 'synchronization owner releases cleanly' . ( '' === $gate_stderr ? '' : ': ' . trim( $gate_stderr ) ) );
+mdi_concurrent_assert( true === ( new MDI_Gated_Loader( false ) )->sync_incremental_if_available( $database ), 'a later warm bootstrap can acquire released ownership' );
 
 // An unchanged snapshot must not request write ownership from a busy database.
 clearstatcache( true, $file );

@@ -41,6 +41,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 * @var string|null 'load_all' or 'sync_incremental'.
 	 */
 	private $deferred_primary_loader_action = null;
+	private string $primary_runtime_identity = '';
 
 	private mixed $native_shadow_verifier = null;
 
@@ -197,6 +198,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		string $state_dir,
 		WP_Markdown_Storage $storage
 	): void {
+		$this->primary_runtime_identity = $db_path;
 		$this->backend_capabilities = WP_Markdown_Backend_Resolver::resolve();
 		if ( class_exists( 'WP_Markdown_SQLite_Runtime_Adapter' ) ) {
 			$this->dbh = WP_Markdown_SQLite_Runtime_Adapter::create_runtime( $db_path, $pdo, $this->dbname, $storage, $this->backend_capabilities );
@@ -384,7 +386,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 		if ( 'sync_incremental' === $action ) {
 			$this->backend_capabilities->require( 'disposable_index_operation' );
-			$this->loader->sync_incremental();
+			$this->loader->sync_incremental_if_available( (string) $this->dbname . "\0" . $this->primary_runtime_identity );
 			return;
 		}
 

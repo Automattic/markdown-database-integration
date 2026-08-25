@@ -165,6 +165,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		}
 
 		if ( $this->last_error ) {
+			if ( 'primary' === $mode ) {
+				$this->bail( $this->last_error, 'db_connect_fail' );
+			}
 			return false;
 		}
 
@@ -516,8 +519,15 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		} catch ( \Throwable $e ) {
 			// Build failed — clean up.
 			$this->cleanup_index_files( $tmp_path );
-			$this->last_error = $e->getMessage();
-			error_log( 'Markdown DB: Cold boot failed: ' . $e->getMessage() . "\n" . $e->getTraceAsString() );
+			$this->dbh    = null;
+			$this->loader = null;
+			if ( $e instanceof WP_Markdown_Loader_Exception ) {
+				$GLOBALS['markdown_db_primary_bootstrap_diagnostic'] = $e->diagnostic();
+				$this->last_error = $e->operator_message();
+			} else {
+				$this->last_error = $e->getMessage();
+			}
+			error_log( 'Markdown DB: Cold boot failed: ' . $this->last_error . "\n" . $e->getTraceAsString() );
 		}
 	}
 

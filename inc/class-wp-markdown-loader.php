@@ -26,10 +26,42 @@ final class WP_Markdown_Loader_Outcome {
 }
 
 final class WP_Markdown_Loader_Exception extends \RuntimeException {
+	private const MAX_CAUSES = 8;
+	private const MAX_CAUSE_MESSAGE_BYTES = 512;
+
 	public function __construct( private string $diagnostic_code, \Throwable $previous ) {
 		parent::__construct( 'Markdown DB cold reconstruction failed.', 0, $previous );
 	}
 	public function diagnostic_code(): string { return $this->diagnostic_code; }
+	/** @return array{code:string,message:string,causes:array<int,array{class:string,message:string}>,truncated:bool} */
+	public function diagnostic(): array {
+		$causes = array();
+		$error  = $this->getPrevious();
+		while ( $error instanceof \Throwable && count( $causes ) < self::MAX_CAUSES ) {
+			$message  = preg_replace( '/\s+/', ' ', trim( $error->getMessage() ) ) ?? '';
+			$causes[] = array(
+				'class'   => get_class( $error ),
+				'message' => substr( $message, 0, self::MAX_CAUSE_MESSAGE_BYTES ),
+			);
+			$error = $error->getPrevious();
+		}
+		return array(
+			'code'      => $this->diagnostic_code,
+			'message'   => $this->getMessage(),
+			'causes'    => $causes,
+			'truncated' => $error instanceof \Throwable,
+		);
+	}
+	public function operator_message(): string {
+		$diagnostic = $this->diagnostic();
+		$parts      = array( $diagnostic['message'] . ' [' . $diagnostic['code'] . ']' );
+		foreach ( $diagnostic['causes'] as $index => $cause ) {
+			$parts[] = sprintf( 'Cause %d (%s): %s', $index + 1, $cause['class'], $cause['message'] );
+		}
+		if ( $diagnostic['truncated'] ) { $parts[] = 'Additional causes omitted.'; }
+		$parts[] = 'Fix the reported canonical resource, remove the disposable Markdown DB index, and retry.';
+		return implode( ' ', $parts );
+	}
 }
 
 class WP_Markdown_Loader {
@@ -69,9 +101,9 @@ class WP_Markdown_Loader {
 			$this->operations->ensure_reconciliation_state();
 			$this->recover_pending_operations();
 			$this->operations->ensure_tables( $this->schema_files() );
-			$this->operations->hydrate_options( $this->option_rows() );
+			$this->reconstruct( 'hydrate_options', '_options/*.json', fn() => $this->operations->hydrate_options( $this->option_rows() ) );
 			foreach ( self::CORE_TABLE_SUFFIXES as $table ) { $this->hydrate_table( $table ); }
-			$this->operations->hydrate_markdown_posts( $this->markdown_posts(), $this->json_rows( 'posts' ) );
+			$this->reconstruct( 'hydrate_markdown_posts', '*.md and _tables/posts.json', fn() => $this->operations->hydrate_markdown_posts( $this->markdown_posts(), $this->json_rows( 'posts' ) ) );
 			$this->flush_pending_id_writes();
 			$this->hydrate_plugins();
 		} catch ( \Throwable $e ) {
@@ -194,7 +226,8 @@ class WP_Markdown_Loader {
 		try {
 			$partition_marker = $this->partition_marker( $table );
 			if ( null !== $partition_marker ) {
-				$this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->partition_rows( $table, $partition_marker ), null, $incremental ? null : array( 'preserve_existing' => true ) );
+				$operation = fn() => $this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->partition_rows( $table, $partition_marker ), null, $incremental ? null : array( 'preserve_existing' => true ) );
+				$incremental ? $operation() : $this->reconstruct( 'hydrate_table', '_tables/' . $table . '/' . $partition_marker['generation'] . '/*.json', $operation );
 				return;
 			}
 			$path = '_tables/' . $table . '.json';
@@ -206,10 +239,18 @@ class WP_Markdown_Loader {
 			}
 			if ( null !== $before_hydration ) { $partition = array( 'before_hydration' => $before_hydration ); }
 			if ( ! $incremental && null === $partition ) { $partition = array( 'preserve_existing' => true ); }
-			$this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->json_rows( $table ), $identity, $partition );
+			$operation = fn() => $this->operations->hydrate_table_snapshot( $table, fn(): iterable => $this->json_rows( $table ), $identity, $partition );
+			$incremental ? $operation() : $this->reconstruct( 'hydrate_table', $path, $operation );
 		} finally {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
+		}
+	}
+	private function reconstruct( string $phase, string $resource, callable $operation ): mixed {
+		try {
+			return $operation();
+		} catch ( \Throwable $error ) {
+			throw new \RuntimeException( sprintf( 'Cold reconstruction phase %s failed for canonical resource %s.', $phase, $resource ), 0, $error );
 		}
 	}
 	private function hydrate_plugins( bool $incremental = false ): void {

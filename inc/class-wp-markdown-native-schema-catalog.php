@@ -238,7 +238,8 @@ final class WP_Markdown_Native_Schema_Catalog {
 	/** Build the conservative execution contract supported by a generic JSON snapshot. */
 	public static function indexed_snapshot_schema(
 		array $definition,
-		array $column_overlays = array()
+		array $column_overlays = array(),
+		array $order_columns = array()
 	): ?WP_Markdown_Native_Table_Schema {
 		$primary = array_values( array_filter( $definition['indexes'] ?? array(), static fn( array $index ): bool => 'PRIMARY' === ( $index['name'] ?? null ) ) );
 		$identity_columns = $primary[0]['columns'] ?? array();
@@ -253,7 +254,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 			}
 		}
 
-		$overlay = array( 'columns' => array(), 'natural_order' => $identity );
+		$overlay = array( 'columns' => array(), 'natural_order' => $identity, 'order_columns' => $order_columns );
 		foreach ( $definition['columns'] as $name => $column ) {
 			$overlay['columns'][ $name ] = array(
 				'filter_operators' => self::is_integer( $column['type'] ) ? array( '=', 'IN' ) : array(),

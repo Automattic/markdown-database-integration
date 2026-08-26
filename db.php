@@ -82,6 +82,41 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 	return;
 }
 
+// mdi-native serves bounded reads directly from canonical Markdown and JSON.
+// It must replace wpdb here because regular plugins load after database boot.
+if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) {
+	$markdown_db_native_plugin_dir = null;
+	foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $path ) {
+		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/class-wp-markdown-native-query-runtime.php' ) && is_file( $path . '/inc/class-wp-markdown-native-wpdb.php' ) ) {
+			$markdown_db_native_plugin_dir = $path;
+			break;
+		}
+	}
+	if ( null === $markdown_db_native_plugin_dir || ! class_exists( 'wpdb' ) ) {
+		throw new RuntimeException( 'mdi-native requires the MDI plugin and stock wpdb during db.php bootstrap.' );
+	}
+
+	require_once $markdown_db_native_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
+	$markdown_db_native_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
+	$markdown_db_native_backend->require( 'canonical_option_select' );
+	require_once $markdown_db_native_plugin_dir . '/inc/class-wp-markdown-native-query-runtime.php';
+	require_once $markdown_db_native_plugin_dir . '/inc/class-wp-markdown-native-wpdb.php';
+
+	$markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : WP_CONTENT_DIR . '/markdown';
+	$markdown_db_native_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : $markdown_db_native_state_dir;
+	$markdown_db_native_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
+	$markdown_db_native_runtime = WP_Markdown_Native_Runtime_Factory::runtime(
+		$markdown_db_native_state_dir,
+		$markdown_db_native_prefix,
+		$markdown_db_native_prefix,
+		function_exists( 'is_multisite' ) && is_multisite(),
+		$markdown_db_native_content_dir
+	);
+	$GLOBALS['wpdb'] = new WP_Markdown_Native_WPDB( $markdown_db_native_runtime, $markdown_db_native_prefix );
+	define( 'MARKDOWN_DB_DROPIN', true );
+	return;
+}
+
 define( 'SQLITE_DB_DROPIN_VERSION', '1.8.0' );
 define( 'MARKDOWN_DB_DROPIN', true );
 

@@ -87,6 +87,8 @@ final class WP_Markdown_Native_SQL_Join {
 	}
 }
 
+final class WP_Markdown_Native_SQL_Found_Rows {}
+
 final class WP_Markdown_Native_SQL_Select {
 	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates @param array<int,WP_Markdown_Native_SQL_Join> $joins */
 	public function __construct(
@@ -98,7 +100,11 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly ?WP_Markdown_Native_SQL_Identifier $order,
 		private readonly ?int $limit,
 		private readonly ?WP_Markdown_Native_SQL_Identifier $alias = null,
-		private readonly array $joins = array()
+		private readonly array $joins = array(),
+		private readonly bool $calculates_found_rows = false,
+		private readonly bool $order_descending = false,
+		private readonly int $limit_offset = 0,
+		private readonly bool $distinct = false
 	) {}
 
 	public function selects_all(): bool {
@@ -142,5 +148,21 @@ final class WP_Markdown_Native_SQL_Select {
 
 	public function limit(): ?int {
 		return $this->limit;
+	}
+
+	public function calculates_found_rows(): bool {
+		return $this->calculates_found_rows;
+	}
+
+	public function order_descending(): bool {
+		return $this->order_descending;
+	}
+
+	public function limit_offset(): int {
+		return $this->limit_offset;
+	}
+
+	public function is_distinct(): bool {
+		return $this->distinct;
 	}
 }

@@ -103,6 +103,16 @@ $missing = $runtime->execute(
 $ordered = $runtime->execute(
 	new WP_Markdown_Query_Request( "SELECT ID, user_login FROM wp_users WHERE user_login IN ('zoe', 'admin', 'zoe')" )
 );
+$bounded_with_total = $runtime->execute(
+	new WP_Markdown_Query_Request( "SELECT SQL_CALC_FOUND_ROWS ID FROM wp_users WHERE user_login IN ('zoe', 'admin') LIMIT 1" )
+);
+$qualified_star = $runtime->execute(
+	new WP_Markdown_Query_Request( 'SELECT wp_users.* FROM wp_users WHERE ID IN (1)' )
+);
+$grouped_bounded = $runtime->execute(
+	new WP_Markdown_Query_Request( "SELECT SQL_CALC_FOUND_ROWS ID FROM wp_users WHERE 1=1 AND ((user_login IN ('zoe', 'admin'))) ORDER BY ID DESC LIMIT 1, 1" )
+);
+$found_rows = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT FOUND_ROWS()' ) );
 $unsupported_string_order = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT user_login FROM wp_users ORDER BY user_login ASC' )
 );
@@ -180,6 +190,13 @@ $checks = array(
 		static fn( object $row ): string => $row->ID,
 		$ordered->wpdb_state()['last_result']
 	),
+	'SQL_CALC_FOUND_ROWS retains the unbounded matching count behind a bounded result' => 1 === $bounded_with_total->return_value()
+		&& '1' === ( $bounded_with_total->wpdb_state()['last_result'][0]->ID ?? null )
+		&& 2 === $runtime->last_found_rows(),
+	'qualified single-table wildcards return the complete schema-shaped row' => 10 === count( get_object_vars( $qualified_star->wpdb_state()['last_result'][0] ?? (object) array() ) )
+		&& 'admin' === ( $qualified_star->wpdb_state()['last_result'][0]->user_login ?? null ),
+	'grouped predicates, descending order, offset LIMIT, and FOUND_ROWS execute as one stateful pair' => '1' === ( $grouped_bounded->wpdb_state()['last_result'][0]->ID ?? null )
+		&& '2' === ( $found_rows->wpdb_state()['last_result'][0]->{'FOUND_ROWS()'} ?? null ),
 	'ASCII case-insensitive lookups match WordPress identifiers' => '1' === ( $case_insensitive->wpdb_state()['last_result'][0]->ID ?? null ),
 	'undeclared string ordering and unsupported Unicode collations fail closed' => false === $unsupported_string_order->return_value()
 		&& false === $unsupported_unicode->return_value(),

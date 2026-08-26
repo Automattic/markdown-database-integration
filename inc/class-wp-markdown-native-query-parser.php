@@ -170,7 +170,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$select_all = $this->match_type( WP_Markdown_Native_SQL_Token::STAR );
 		$count_all = false;
 		$projection = array();
-		if ( ! $select_all && $this->matches_count_all() ) {
+		if ( ! $select_all && $this->matches_function( 'COUNT' ) ) {
 			$count_all = true;
 			$this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
@@ -194,11 +194,8 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$joins = array();
 		while ( $this->match_join() ) {
 			$join_table = $this->unqualified_identifier();
-			if ( $this->match_keyword( 'AS' ) ) {
-				$join_alias = $this->unqualified_identifier();
-			} else {
-				$join_alias = $this->unqualified_identifier();
-			}
+			$this->match_keyword( 'AS' );
+			$join_alias = $this->unqualified_identifier();
 			$this->expect_keyword( 'ON' );
 			$left = $this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
@@ -281,10 +278,6 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			return array();
 		}
 		return array( $this->predicate() );
-	}
-
-	private function matches_count_all(): bool {
-		return $this->matches_function( 'COUNT' );
 	}
 
 	private function matches_function( string $function ): bool {

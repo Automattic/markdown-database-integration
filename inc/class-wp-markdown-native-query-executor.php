@@ -338,7 +338,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$selected_rows = array();
 		$seen = array();
-		foreach ( $rows as $row_index => $row ) {
+		foreach ( $rows as $row ) {
 			$selected_row = array();
 			foreach ( $projection as $column_index => $column ) {
 				$source = $projection_sources[ $column_index ];

@@ -12,9 +12,13 @@ final class WP_Markdown_Native_Option_Mutation {
 		private readonly string $option_name,
 		private readonly array $values
 	) {
-		if ( ! in_array( $operation, array( 'upsert', 'update', 'delete' ), true ) ) {
+		if ( ! in_array( $operation, array( 'insert', 'upsert', 'update', 'delete' ), true ) ) {
 			throw new InvalidArgumentException( 'Unsupported option mutation operation.' );
 		}
+	}
+
+	public function is_insert(): bool {
+		return 'insert' === $this->operation;
 	}
 
 	public function is_upsert(): bool {
@@ -59,13 +63,20 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 
 			$columns = $this->identifier_list();
 			$this->word( 'VALUES' );
-			$values = $this->string_list();
+			$values = $this->literal_list();
 			if ( count( $columns ) !== count( $values ) || array( 'autoload', 'option_name', 'option_value' ) !== $this->set( $columns ) ) {
 				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one complete canonical option row.' );
 			}
 			$row = array_combine( $columns, $values );
 			if ( false === $row ) {
 				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one complete canonical option row.' );
+			}
+			/** @var array{option_name:string,option_value:string,autoload:string} $row */
+			$option_name = $row['option_name'];
+			unset( $row['option_name'] );
+			if ( WP_Markdown_Native_SQL_Token::END === $this->current()->type() ) {
+				++$this->position;
+				return new WP_Markdown_Native_Option_Mutation( 'insert', $option_name, $row );
 			}
 
 			$this->word( 'ON' );
@@ -94,9 +105,6 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires deterministic VALUES assignments for an option upsert.' );
 			}
 
-			/** @var array{option_name:string,option_value:string,autoload:string} $row */
-			$option_name = $row['option_name'];
-			unset( $row['option_name'] );
 			return new WP_Markdown_Native_Option_Mutation( 'upsert', $option_name, $row );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
@@ -176,11 +184,15 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 	}
 
 	/** @return array<int,string> */
-	private function string_list(): array {
+	private function literal_list(): array {
 		$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 		$values = array();
 		do {
-			$token = $this->type( WP_Markdown_Native_SQL_Token::STRING );
+			$token = $this->current();
+			if ( ! in_array( $token->type(), array( WP_Markdown_Native_SQL_Token::STRING, WP_Markdown_Native_SQL_Token::INTEGER ), true ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_option_literal', $token->sql_offset(), 'Expected a string or non-negative integer option value.' );
+			}
+			++$this->position;
 			$values[] = (string) $token->value();
 			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
 				break;
@@ -309,8 +321,11 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 				}
 			}
 
-			if ( ! $mutation->is_upsert() && null === $existing ) {
+			if ( ! $mutation->is_insert() && ! $mutation->is_upsert() && null === $existing ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
+			}
+			if ( $mutation->is_insert() && null !== $existing ) {
+				return $this->failure( 'duplicate_key', 'The canonical option identity already exists.' );
 			}
 			if ( $mutation->is_delete() ) {
 				if ( ! @unlink( $existing['path'] ) ) {
@@ -324,7 +339,7 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			}
 			$option_id = $is_insert ? $maximum_id + 1 : (int) $existing['row']['option_id'];
 			$values = $mutation->values();
-			$row = ! $mutation->is_upsert()
+			$row = ! $mutation->is_insert() && ! $mutation->is_upsert()
 				? array_merge( $existing['row'], $values )
 				: array(
 					'option_id'    => $option_id,
@@ -339,7 +354,7 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 
-			$path = ! $mutation->is_upsert()
+			$path = ! $mutation->is_insert() && ! $mutation->is_upsert()
 				? $existing['path']
 				: $directory . '/' . WP_Markdown_Canonical_Option_Path::filename( $mutation->option_name() );
 			if ( $mutation->is_upsert() && null !== $existing && $existing['path'] !== $path ) {

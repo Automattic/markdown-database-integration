@@ -181,6 +181,8 @@ $multisite_user['deleted'] = '0';
 $multisite_schema = WP_Markdown_Native_Runtime_Factory::users_schema( true );
 
 $checks = array(
+	'native wpdb reports conservative database capabilities without mysqli' => '0.0.0-mdi-native' === $database->db_server_info()
+		&& '0.0.0' === $database->db_version(),
 	'generic users login lookup returns the core-shaped row' => 'admin' === ( $login->wpdb_state()['last_result'][0]->user_login ?? null )
 		&& 10 === count( get_object_vars( $login->wpdb_state()['last_result'][0] ?? (object) array() ) ),
 	'indexed numeric lookup and requested projection order work' => 'zoe' === ( $id->wpdb_state()['last_result'][0]->user_login ?? null )

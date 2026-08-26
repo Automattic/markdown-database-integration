@@ -77,4 +77,14 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		}
 		return $this->add_placeholder_escape( addslashes( (string) $data ) );
 	}
+
+	/** Identify the native engine without dereferencing wpdb's absent mysqli handle. */
+	public function db_server_info() {
+		return '0.0.0-mdi-native';
+	}
+
+	/** Advertise no MySQL-version-gated capabilities. */
+	public function db_version() {
+		return '0.0.0';
+	}
 }

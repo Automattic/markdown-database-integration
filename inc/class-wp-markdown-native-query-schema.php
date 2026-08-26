@@ -230,15 +230,18 @@ final class WP_Markdown_Native_Table_Registry {
 
 	/** @var array<string,array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider}> */
 	private array $tables = array();
+	/** @var array<string,array<string,mixed>> */
+	private array $definitions = array();
 
 	public function register(
 		string $table,
 		WP_Markdown_Native_Table_Schema $schema,
 		WP_Markdown_Native_Table_Provider $provider
 	): void {
-		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $this->tables[ $table ] ) ) {
+		if ( isset( $this->tables[ $table ] ) ) {
 			throw new InvalidArgumentException( 'A unique exact table identifier is required.' );
 		}
+		$this->register_definition( $table, $schema->definition() );
 		$this->tables[ $table ] = array(
 			'schema'   => $schema,
 			'provider' => $provider,
@@ -250,8 +253,23 @@ final class WP_Markdown_Native_Table_Registry {
 		return $this->tables[ $table ] ?? null;
 	}
 
+	/** @param array<string,mixed> $definition */
+	public function register_definition( string $table, array $definition ): void {
+		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table )
+			|| ( isset( $this->definitions[ $table ] ) && $definition !== $this->definitions[ $table ] )
+		) {
+			throw new InvalidArgumentException( 'A consistent exact table definition is required.' );
+		}
+		$this->definitions[ $table ] = $definition;
+	}
+
+	/** @return array<string,mixed>|null */
+	public function definition( string $table ): ?array {
+		return $this->definitions[ $table ] ?? null;
+	}
+
 	/** @return array<int,string> */
 	public function table_names(): array {
-		return array_keys( $this->tables );
+		return array_keys( $this->definitions );
 	}
 }

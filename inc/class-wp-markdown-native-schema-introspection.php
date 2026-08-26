@@ -130,13 +130,13 @@ final class WP_Markdown_Native_Schema_Introspection {
 			return $this->tables( (string) $query->pattern() );
 		}
 
-		$table = $this->registry->table( (string) $query->table() );
-		if ( null === $table || array() === $table['schema']->definition() ) {
+		$definition = $this->registry->definition( (string) $query->table() );
+		if ( null === $definition || array() === $definition ) {
 			return $this->failure( 'unsupported_table', 'mdi-native cannot inspect the requested table.' );
 		}
 		return 'columns' === $query->operation()
-			? $this->columns( (string) $query->table(), $table['schema']->definition(), $query->pattern() )
-			: $this->indexes( (string) $query->table(), $table['schema']->definition() );
+			? $this->columns( (string) $query->table(), $definition, $query->pattern() )
+			: $this->indexes( (string) $query->table(), $definition );
 	}
 
 	private function tables( string $pattern ): WP_Markdown_Query_Result {

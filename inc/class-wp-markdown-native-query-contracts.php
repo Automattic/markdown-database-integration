@@ -230,6 +230,10 @@ final class WP_Markdown_Query_Result {
 		return new self( $rows_affected, array(), array(), '', 0, null, $insert_id, $rows_affected );
 	}
 
+	public static function schema_changed(): self {
+		return new self( true, array(), array() );
+	}
+
 	/** @param array{code:string,message:string,reason:string,sql_offset?:int} $diagnostic */
 	public static function failure( array $diagnostic ): self {
 		return new self( false, array(), array(), $diagnostic['message'], $diagnostic['code'], $diagnostic );

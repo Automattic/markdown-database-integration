@@ -13,7 +13,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Query_Parser $parser = new WP_Markdown_Native_Query_Parser(),
 		private ?WP_Markdown_Native_Option_Mutation_Runtime $option_mutations = null,
-		private ?WP_Markdown_Native_Schema_Mutation_Runtime $schema_mutations = null
+		private ?WP_Markdown_Native_Schema_Mutation_Runtime $schema_mutations = null,
+		private ?WP_Markdown_Native_Table_Mutation_Runtime $table_mutations = null
 	) {
 		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
 	}
@@ -26,6 +27,15 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return null === $this->schema_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native schema mutations are unavailable.' )
 				: $this->schema_mutations->execute( $request );
+		}
+		$insert_table = null;
+		if ( 1 === preg_match( '/^\s*INSERT\s+INTO\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $insert_match ) ) {
+			$insert_table = $insert_match[1];
+		}
+		if ( null !== $insert_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $insert_table ) ) {
+			return null === $this->table_mutations
+				? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )
+				: $this->table_mutations->execute( $request );
 		}
 		if ( 1 !== preg_match( '/^\s*SELECT\b/i', $request->sql() ) ) {
 			return null === $this->option_mutations

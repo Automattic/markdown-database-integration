@@ -55,7 +55,7 @@ $checks = array(
 		&& false === $injected->return_value()
 		&& 'unsupported_grammar' === ( $injected->diagnostic()['reason'] ?? null )
 		&& $ddl . ";\n" === file_get_contents( $root . '/_schema/plugin_events.sql' ),
-	'persisted definitions restore introspection independently from bounded DML support' => 'event_key' === ( $reloaded->wpdb_state()['last_result'][0]->Field ?? null ),
+	'persisted definitions restore introspection after a cold reload' => 'event_key' === ( $reloaded->wpdb_state()['last_result'][0]->Field ?? null ),
 );
 
 $failed = false;

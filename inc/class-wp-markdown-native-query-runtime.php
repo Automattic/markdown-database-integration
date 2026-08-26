@@ -15,6 +15,7 @@ require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
 require_once __DIR__ . '/class-wp-markdown-storage.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-mutations.php';
+require_once __DIR__ . '/class-wp-markdown-native-table-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-introspection.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
@@ -172,7 +173,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$registry,
 			new WP_Markdown_Native_Query_Parser(),
 			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root ),
-			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry )
+			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry ),
+			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry )
 		);
 	}
 

@@ -159,12 +159,18 @@ $GLOBALS['mdi_native_query_filter'] = static fn( string $sql ): string => str_re
 $wpdb_filtered = $database->query( $prepared_query );
 $GLOBALS['mdi_native_query_filter'] = null;
 
+$write_option( 'spaced option', array( 'option_id' => 7, 'option_name' => 'spaced option', 'option_value' => 'spaced', 'autoload' => 'off' ) );
+$case_insensitive_hashed_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'SPACED OPTION'" ) );
+$write_option( 'other option', '{' );
+$missing_hashed_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'missing option'" ) );
 $write_option( 'broken', '{' );
 $malformed = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'broken'" ) );
 $malformed_bulk = $runtime->execute( new WP_Markdown_Query_Request( $autoload_query ) );
 $exact_list_ignores_unrelated_malformed = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_name FROM wp_options WHERE option_name IN ('siteurl','missing')" ) );
 $write_option( 'invalid-row', array( 'option_id' => -1, 'option_name' => 'invalid-row', 'option_value' => 'invalid', 'autoload' => str_repeat( 'x', 21 ) ) );
 $invalid_row = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'invalid-row'" ) );
+$write_option( 'SPACED OPTION', array( 'option_id' => 8, 'option_name' => 'SPACED OPTION', 'option_value' => 'duplicate', 'autoload' => 'off' ) );
+$duplicate_hashed_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'Spaced Option'" ) );
 $outside = dirname( $root ) . '/mdi-native-outside-' . bin2hex( random_bytes( 4 ) ) . '.json';
 file_put_contents( $outside, json_encode( array( 'option_id' => 7, 'option_name' => 'hardlinked', 'option_value' => 'unsafe', 'autoload' => 'on' ), JSON_THROW_ON_ERROR ) );
 $symlink_supported = function_exists( 'symlink' ) && @symlink( $outside, $root . '/_options/linked.json' );
@@ -181,6 +187,8 @@ $checks = array(
 	'configured table prefixes are exact' => 1 === $custom_prefix->return_value(),
 	'supported MySQL literal escapes resolve exact option names' => 'escaped' === ( $escaped->wpdb_state()['last_result'][0]->option_value ?? null ),
 	'ASCII option identities use case-insensitive WordPress collation' => 'https://example.test' === ( $case_insensitive_option->wpdb_state()['last_result'][0]->option_value ?? null ),
+	'hashed ASCII option identities use case-insensitive WordPress collation' => 'spaced' === ( $case_insensitive_hashed_option->wpdb_state()['last_result'][0]->option_value ?? null ),
+	'missing hashed ASCII option identities succeed with an empty result' => 0 === $missing_hashed_option->return_value(),
 	'bulk autoload rows preserve option-id and projection order' => array( 'siteurl', 'blogname', 'automatic', 'legacy' ) === array_map( static fn( object $row ): string => $row->option_name, $autoload_state['last_result'] ) && array( 'option_name', 'option_value' ) === array_map( static fn( object $column ): string => $column->name, $autoload_state['col_info'] ),
 	'autoload subsets and limits remain bounded' => 1 === $autoload_subset->return_value() && 'siteurl' === ( $autoload_subset->wpdb_state()['last_result'][0]->option_name ?? null ),
 	'duplicate allowed autoload values retain SQL set semantics' => 1 === $autoload_duplicates->return_value() && 'siteurl' === ( $autoload_duplicates->wpdb_state()['last_result'][0]->option_name ?? null ),
@@ -200,6 +208,7 @@ $checks = array(
 	'malformed canonical options fail exact and bulk reads explicitly' => false === $malformed->return_value() && false === $malformed_bulk->return_value() && 'markdown_db_native_malformed_option' === ( $malformed_bulk->diagnostic()['code'] ?? null ),
 	'exact option lists do not scan unrelated malformed rows' => 1 === $exact_list_ignores_unrelated_malformed->return_value(),
 	'canonical rows enforce wp_options schema constraints' => false === $invalid_row->return_value() && 'markdown_db_native_malformed_option' === ( $invalid_row->diagnostic()['code'] ?? null ),
+	'duplicate hashed collated identities fail closed' => false === $duplicate_hashed_option->return_value() && 'duplicate_collated_identity' === ( $duplicate_hashed_option->diagnostic()['reason'] ?? null ),
 	'canonical path symlinks fail closed' => ! $symlink_supported || ( false === $unsafe->return_value() && 'markdown_db_native_unsafe_path' === ( $unsafe->diagnostic()['code'] ?? null ) ),
 	'canonical path hard links fail closed' => ! $hardlink_supported || ( false === $unsafe_hardlink->return_value() && 'markdown_db_native_unsafe_path' === ( $unsafe_hardlink->diagnostic()['code'] ?? null ) ),
 );
@@ -214,7 +223,7 @@ foreach ( $checks as $label => $passed ) {
 
 @unlink( $root . '/_options/siteurl.json' );
 @unlink( $root . '/_options/' . WP_Markdown_Canonical_Option_Path::filename( $escaped_name ) );
-foreach ( array( 'blogname', 'automatic', 'legacy', 'disabled' ) as $option_name ) {
+foreach ( array( 'blogname', 'automatic', 'legacy', 'disabled', 'spaced option', 'SPACED OPTION', 'other option' ) as $option_name ) {
 	@unlink( $root . '/_options/' . WP_Markdown_Canonical_Option_Path::filename( $option_name ) );
 }
 @unlink( $root . '/_options/broken.json' );

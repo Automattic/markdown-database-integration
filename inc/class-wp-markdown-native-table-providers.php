@@ -736,19 +736,35 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		if ( file_exists( $path ) || is_link( $path ) ) {
 			return $path;
 		}
-		if ( 1 !== preg_match( '/^[A-Za-z0-9._-]+$/D', $name ) ) {
-			return $this->failure(
-				'markdown_db_native_unsupported_query',
-				'unsupported_option_collation',
-				'The native option provider cannot resolve this missing identity under the configured collation.'
-			);
+		$hashed_prefix = null;
+		if ( $filename !== $name . '.json'
+			&& 1 === preg_match( '/^(.*-)[0-9a-f]{8}\.json$/D', $filename, $expected )
+		) {
+			$hashed_prefix = $expected[1];
 		}
 
 		$matches = array();
 		try {
 			foreach ( new FilesystemIterator( $root, FilesystemIterator::SKIP_DOTS ) as $entry ) {
-				if ( 0 === strcasecmp( $entry->getFilename(), $filename ) ) {
-					$matches[] = $root . DIRECTORY_SEPARATOR . $entry->getFilename();
+				$candidate = $entry->getFilename();
+				if ( 0 === strcasecmp( $candidate, $filename ) ) {
+					$matches[] = $root . DIRECTORY_SEPARATOR . $candidate;
+					continue;
+				}
+				if ( null === $hashed_prefix
+					|| 1 !== preg_match( '/^(.*-)[0-9a-f]{8}\.json$/D', $candidate, $actual )
+					|| 0 !== strcasecmp( $hashed_prefix, $actual[1] )
+				) {
+					continue;
+				}
+				$candidate_path = $root . DIRECTORY_SEPARATOR . $candidate;
+				$signature = null;
+				$row = $this->read_option( $candidate_path, $root, null, $signature );
+				if ( $row instanceof WP_Markdown_Query_Result ) {
+					return $row;
+				}
+				if ( $this->schema->values_match( 'option_name', $name, $row['option_name'] ) ) {
+					$matches[] = $candidate_path;
 				}
 			}
 		} catch ( UnexpectedValueException $error ) {

@@ -75,7 +75,8 @@ final class WP_Markdown_Native_Table_Schema {
 		private array $columns,
 		private string $natural_order,
 		private array $order_columns = array(),
-		private array $identity_columns = array()
+		private array $identity_columns = array(),
+		private array $definition = array()
 	) {
 		foreach ( $columns as $column ) {
 			if ( ! $column instanceof WP_Markdown_Native_Column ) {
@@ -121,6 +122,11 @@ final class WP_Markdown_Native_Table_Schema {
 	/** @return array<int,string> */
 	public function identity_columns(): array {
 		return $this->identity_columns;
+	}
+
+	/** @return array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>}|array{} */
+	public function definition(): array {
+		return $this->definition;
 	}
 
 	public function is_lookup( string $column ): bool {
@@ -242,5 +248,10 @@ final class WP_Markdown_Native_Table_Registry {
 	/** @return array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider}|null */
 	public function table( string $table ): ?array {
 		return $this->tables[ $table ] ?? null;
+	}
+
+	/** @return array<int,string> */
+	public function table_names(): array {
+		return array_keys( $this->tables );
 	}
 }

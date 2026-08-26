@@ -159,6 +159,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 				't' => "\t",
 				'Z' => "\x1a",
 				'\\', "'", '"' => $escaped,
+				'%', '_' => '\\' . $escaped,
 				default => null,
 			};
 			if ( null === $escape ) {

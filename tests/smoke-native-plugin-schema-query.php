@@ -97,6 +97,13 @@ $partition_mismatch = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT 
 $partition_invalid = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_partition_invalid WHERE id = 1' ) );
 $partition_linked = $linked_marker ? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_partition_linked WHERE id = 1' ) ) : null;
 $linked_result = $linked ? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_linked' ) ) : null;
+$show_table = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp_plugin_jobs'" ) );
+$show_table_wildcard = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp_plugin_%'" ) );
+$show_table_escaped = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp\\_plugin\\_jobs'" ) );
+$show_missing_table = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp_missing'" ) );
+$describe = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE `wp_plugin_jobs`;' ) );
+$show_column = $runtime->execute( new WP_Markdown_Query_Request( "SHOW COLUMNS FROM wp_plugin_jobs LIKE 'status'" ) );
+$show_indexes = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW INDEX FROM `wp_plugin_jobs`' ) );
 file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
 	json_encode(
@@ -113,6 +120,24 @@ $checks = array(
 	'persisted plugin DDL and snapshots register without table-specific code' => 1 === $exact->return_value()
 		&& 'queued' === ( $exact->wpdb_state()['last_result'][0]->status ?? null )
 		&& '2' === ( $exact->wpdb_state()['last_result'][0]->id ?? null ),
+	'generic table introspection exposes registered tables with MySQL LIKE semantics' => 1 === $show_table->return_value()
+		&& 'wp_plugin_jobs' === ( $show_table->wpdb_state()['last_result'][0]->Table ?? null )
+		&& 1 === $show_table_wildcard->return_value()
+		&& 1 === $show_table_escaped->return_value()
+		&& 0 === $show_missing_table->return_value(),
+	'generic column introspection derives MySQL-visible schema rows from persisted DDL' => array( 'id', 'owner_id', 'status', 'payload' ) === array_map(
+		static fn( object $row ): string => $row->Field,
+		$describe->wpdb_state()['last_result']
+	)
+		&& 'bigint(20) unsigned' === ( $describe->wpdb_state()['last_result'][0]->Type ?? null )
+		&& 'PRI' === ( $describe->wpdb_state()['last_result'][0]->Key ?? null )
+		&& 'auto_increment' === ( $describe->wpdb_state()['last_result'][0]->Extra ?? null )
+		&& 'status' === ( $show_column->wpdb_state()['last_result'][0]->Field ?? null ),
+	'generic index introspection preserves names, order, uniqueness, and prefix lengths' => array( 'PRIMARY', 'owner_id' ) === array_map(
+		static fn( object $row ): string => $row->Key_name,
+		$show_indexes->wpdb_state()['last_result']
+	)
+		&& array( '0', '1' ) === array_map( static fn( object $row ): string => $row->Non_unique, $show_indexes->wpdb_state()['last_result'] ),
 	'primary and secondary numeric indexes derive bounded lookup capabilities' => array( '1', '2' ) === array_map(
 		static fn( object $row ): string => $row->id,
 		$secondary->wpdb_state()['last_result']

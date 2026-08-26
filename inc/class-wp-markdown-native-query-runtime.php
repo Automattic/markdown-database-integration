@@ -203,7 +203,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $core_tables[ $table ] ) ) {
 				continue;
 			}
-			$ddl = self::read_persisted_schema( $root, $path );
+			$ddl = self::read_persisted_file( $root, $path );
 			if ( null === $ddl ) {
 				continue;
 			}
@@ -308,10 +308,6 @@ final class WP_Markdown_Native_Runtime_Factory {
 				self::register_json_snapshot( $registry, $state_root, $table_prefix . $table, $schema, $table . '.json' );
 			}
 		}
-	}
-
-	private static function read_persisted_schema( string $root, string $path ): ?string {
-		return self::read_persisted_file( $root, $path );
 	}
 
 	private static function read_persisted_file( string $root, string $path ): ?string {

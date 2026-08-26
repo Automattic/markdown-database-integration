@@ -73,17 +73,13 @@ final class WP_Markdown_Native_Query_Parser {
 			),
 			$ast->joins()
 		);
+		$referenced_columns = $this->referenced_columns( $ast );
 		if ( array() === $joins ) {
 			if ( $ast->is_distinct() ) {
 				return $this->failure( 'unsupported_select_modifier', 'mdi-native supports DISTINCT on bounded JOIN projections only.', $ast->table()->sql_offset() );
 			}
 			$source = $ast->alias()?->name() ?? $ast->table()->name();
-			$qualified_columns = array_merge(
-				$ast->projection(),
-				array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() ),
-				null === $ast->order() ? array() : array( $ast->order() )
-			);
-			foreach ( $qualified_columns as $column ) {
+			foreach ( $referenced_columns as $column ) {
 				if ( null !== $column->qualifier() && $source !== $column->qualifier() ) {
 					return $this->failure( 'unsupported_qualifier', 'mdi-native single-table columns must use the selected table qualifier.', $column->sql_offset() );
 				}
@@ -94,7 +90,7 @@ final class WP_Markdown_Native_Query_Parser {
 			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() || $ast->calculates_found_rows() || null !== $ast->limit() || 0 !== $ast->limit_offset() ) {
 				return $this->failure( 'unsupported_join_shape', 'mdi-native supports retained bounded equality JOIN queries only.', $ast->table()->sql_offset() );
 			}
-			foreach ( array_merge( $ast->projection(), array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() ), null === $ast->order() ? array() : array( $ast->order() ) ) as $column ) {
+			foreach ( $referenced_columns as $column ) {
 				if ( null === $column->qualifier() ) {
 					return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN columns must be qualified.', $column->sql_offset() );
 				}
@@ -113,7 +109,7 @@ final class WP_Markdown_Native_Query_Parser {
 				}
 				$available[ $alias ] = true;
 			}
-			foreach ( array_merge( $ast->projection(), array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() ), null === $ast->order() ? array() : array( $ast->order() ) ) as $column ) {
+			foreach ( $referenced_columns as $column ) {
 				if ( ! isset( $available[ (string) $column->qualifier() ] ) ) {
 					return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested qualified column.', $column->sql_offset() );
 				}
@@ -136,6 +132,18 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->is_distinct(),
 			$ast->order()?->qualifier()
 		);
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	private function referenced_columns( WP_Markdown_Native_SQL_Select $ast ): array {
+		$columns = array_merge(
+			$ast->projection(),
+			array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() )
+		);
+		if ( null !== $ast->order() ) {
+			$columns[] = $ast->order();
+		}
+		return $columns;
 	}
 
 	private function failure( string $reason, string $message, int $sql_offset ): WP_Markdown_Query_Result {

@@ -58,9 +58,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		foreach ( $predicates as $predicate ) {
-			if ( ! $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
-				&& ! $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() )
-			) {
+			if ( ! $this->supports_predicate( $schema, $predicate ) ) {
 				return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested predicate.' );
 			}
 		}
@@ -178,8 +176,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$source = $predicate->source();
 			if ( null === $source || ! isset( $sources[ $source ] )
 				|| ! $sources[ $source ]['schema']->has_column( $predicate->column() )
-				|| ( ! $sources[ $source ]['schema']->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
-					&& ! $sources[ $source ]['schema']->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() ) )
+				|| ! $this->supports_predicate( $sources[ $source ]['schema'], $predicate )
 			) {
 				return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN predicate.' );
 			}
@@ -215,10 +212,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( null === $candidate ) {
 				continue;
 			}
-			if ( null === $seed_predicate
-				|| ( '=' === $candidate->operator() ? 0 : 1 ) < ( '=' === $seed_predicate->operator() ? 0 : 1 )
-				|| ( $candidate->operator() === $seed_predicate->operator() && count( $candidate->values() ) < count( $seed_predicate->values() ) )
-			) {
+			if ( null === $seed_predicate || $this->compare_pushdowns( $candidate, $seed_predicate ) < 0 ) {
 				$seed_source = $source;
 				$seed_predicate = $candidate;
 			}
@@ -373,16 +367,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		);
 		usort(
 			$candidates,
-			static function ( WP_Markdown_Native_Query_Predicate $left, WP_Markdown_Native_Query_Predicate $right ): int {
-				$operator = ( '=' === $left->operator() ? 0 : 1 ) <=> ( '=' === $right->operator() ? 0 : 1 );
-				if ( 0 !== $operator ) {
-					return $operator;
-				}
-				$value_count = count( $left->values() ) <=> count( $right->values() );
-				return 0 !== $value_count ? $value_count : strcmp( $left->column(), $right->column() );
-			}
+			$this->compare_pushdowns( ... )
 		);
 		return $candidates[0] ?? null;
+	}
+
+	private function supports_predicate( WP_Markdown_Native_Table_Schema $schema, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		return $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
+			|| $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() );
+	}
+
+	private function compare_pushdowns( WP_Markdown_Native_Query_Predicate $left, WP_Markdown_Native_Query_Predicate $right ): int {
+		$operator = ( '=' === $left->operator() ? 0 : 1 ) <=> ( '=' === $right->operator() ? 0 : 1 );
+		if ( 0 !== $operator ) {
+			return $operator;
+		}
+		$value_count = count( $left->values() ) <=> count( $right->values() );
+		return 0 !== $value_count ? $value_count : strcmp( $left->column(), $right->column() );
 	}
 
 	/** @param array<string,mixed> $row @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */

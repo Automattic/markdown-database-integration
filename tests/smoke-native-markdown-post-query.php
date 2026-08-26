@@ -21,6 +21,41 @@ final class MDI_Observed_Post_Storage extends WP_Markdown_Storage {
 	}
 }
 
+final class MDI_Replacing_Post_Storage extends WP_Markdown_Storage {
+	public string $target = '';
+	public bool $replaced = false;
+
+	public function read_file( string $file_path, bool $metadata_only = false, ?int $parent_id = null ): ?object {
+		$post = parent::read_file( $file_path, $metadata_only, $parent_id );
+		if ( $metadata_only && ! $this->replaced && $file_path === $this->target ) {
+			$stat = lstat( $file_path );
+			$raw = file_get_contents( $file_path );
+			if ( false === $stat || false === $raw ) {
+				throw new RuntimeException( 'Failed to inspect the replacement fixture.' );
+			}
+			$replacement = $file_path . '.replacement';
+			$changed = str_replace( array( 'Private title', 'Private body' ), array( 'Changed title', 'Changed body' ), $raw );
+			if ( strlen( $raw ) !== strlen( $changed )
+				|| false === file_put_contents( $replacement, $changed )
+				|| ! touch( $replacement, (int) $stat['mtime'], (int) $stat['atime'] )
+				|| ! rename( $replacement, $file_path )
+			) {
+				throw new RuntimeException( 'Failed to atomically replace the post fixture.' );
+			}
+			$current = lstat( $file_path );
+			if ( false === $current
+				|| $stat['size'] !== $current['size']
+				|| $stat['mtime'] !== $current['mtime']
+				|| ( $stat['dev'] === $current['dev'] && $stat['ino'] === $current['ino'] )
+			) {
+				throw new RuntimeException( 'The replacement fixture did not preserve weak file identity.' );
+			}
+			$this->replaced = true;
+		}
+		return $post;
+	}
+}
+
 final class MDI_Post_Shadow_DB {
 	public string $prefix = 'wp_';
 	public array $last_result = array();
@@ -84,6 +119,14 @@ $shadow = new WP_Markdown_Native_Shadow_Verifier( $runtime );
 $shadow->observe( $blocker_sql, 1, $shadow_db );
 $shadow_report = $shadow->report();
 
+$replacing_storage = new MDI_Replacing_Post_Storage( $content );
+$replacing_storage->target = $content . '/post/private.md';
+$replacing_registry = new WP_Markdown_Native_Table_Registry();
+$replacing_registry->register( 'wp_posts', $observed_schema, new WP_Markdown_Native_Post_Provider( $content, $observed_schema, $replacing_storage ) );
+$replaced = ( new WP_Markdown_Native_Query_Runtime( $replacing_registry ) )->execute(
+	new WP_Markdown_Query_Request( 'SELECT post_title, post_content FROM wp_posts WHERE ID = 41 LIMIT 1' )
+);
+
 $checks = array(
 	'conjunctive WordPress blocker executes from canonical Markdown' => 1 === $blocker->return_value()
 		&& '41' === ( $blocker->wpdb_state()['last_result'][0]->ID ?? null ),
@@ -97,6 +140,11 @@ $checks = array(
 	'metadata projections skip bodies and content hydration is bounded to selected posts' => 0 === $content_reads_before
 		&& 1 === $observed_storage->content_reads
 		&& 0 < $observed_storage->metadata_reads,
+	'same-size same-mtime atomic replacement fails closed' => $replacing_storage->replaced
+		&& false === $replaced->return_value()
+		&& array() === $replaced->wpdb_state()['last_result']
+		&& 'markdown_db_native_malformed_post' === ( $replaced->diagnostic()['code'] ?? null )
+		&& 'changed_post' === ( $replaced->diagnostic()['reason'] ?? null ),
 	'shadow verifier compares the recorded post blocker exactly' => 1 === ( $shadow_report['counts']['compatible'] ?? 0 )
 		&& null === ( $shadow_report['first_blocker'] ?? null ),
 );

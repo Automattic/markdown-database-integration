@@ -148,6 +148,10 @@ final class WP_Markdown_Native_Schema_Catalog {
 
 	/** @return array{schema:string,wordpress_version:string,single_site:array<string,mixed>,multisite:array<string,mixed>,hashes:array<string,string>} */
 	public static function artifact(): array {
+		static $artifact = null;
+		if ( null !== $artifact ) {
+			return $artifact;
+		}
 		$artifact = require __DIR__ . '/generated/wp-core-schema-catalog.php';
 		if ( ! is_array( $artifact ) || self::SCHEMA !== ( $artifact['schema'] ?? null ) ) {
 			throw new RuntimeException( 'The generated WordPress core schema catalog is invalid.' );

@@ -6,6 +6,42 @@ declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
 
+final class MDI_Native_Join_Array_Provider implements WP_Markdown_Native_Table_Provider {
+	/** @param array<int,array<string,mixed>> $rows */
+	public function __construct(
+		private array $rows,
+		private WP_Markdown_Native_Table_Schema $schema
+	) {}
+
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		$predicate = $access->predicate();
+		$wanted = array();
+		foreach ( null === $predicate ? array() : $predicate->values() as $value ) {
+			$key = $this->schema->value_key( $predicate->column(), $value );
+			if ( null !== $key ) {
+				$wanted[ $key ] = true;
+			}
+		}
+
+		$selected = array();
+		foreach ( $this->rows as $source ) {
+			$key = null === $predicate ? null : $this->schema->value_key( $predicate->column(), $source[ $predicate->column() ] );
+			if ( null !== $predicate && ( null === $key || ! isset( $wanted[ $key ] ) ) ) {
+				continue;
+			}
+			$row = array();
+			foreach ( $access->projection() as $column ) {
+				$row[ $column ] = $source[ $column ];
+			}
+			$selected[] = $row;
+			if ( count( $selected ) >= $access->limit() ) {
+				break;
+			}
+		}
+		return $selected;
+	}
+}
+
 $root = sys_get_temp_dir() . '/mdi-native-join-' . bin2hex( random_bytes( 6 ) );
 if ( ! mkdir( $root . '/_options', 0755, true ) || ! mkdir( $root . '/_tables', 0755, true ) ) {
 	throw new RuntimeException( 'Failed to create the native JOIN fixture.' );
@@ -44,6 +80,44 @@ $unqualified = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 't
 $unknown_alias = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 't.slug', 'x.slug', $query ) ) );
 $limited = $runtime->execute( new WP_Markdown_Query_Request( $query . ' LIMIT 1' ) );
 
+$unsigned = static fn( mixed $value ): ?string => WP_Markdown_Native_Runtime_Factory::normalize_unsigned( $value );
+$integer = static fn( array $lookups = array() ): WP_Markdown_Native_Column => new WP_Markdown_Native_Column(
+	8,
+	false,
+	static fn( mixed $value ): bool => is_int( $value ) && $value >= 0,
+	$unsigned,
+	$lookups
+);
+$right_normalizations = 0;
+$counted_unsigned = static function ( mixed $value ) use ( &$right_normalizations ): ?string {
+	++$right_normalizations;
+	return WP_Markdown_Native_Runtime_Factory::normalize_unsigned( $value );
+};
+$base_schema = new WP_Markdown_Native_Table_Schema(
+	array( 'id' => $integer(), 'join_id' => $integer(), 'group_id' => $integer( array( '=' ) ) ),
+	'id'
+);
+$right_schema = new WP_Markdown_Native_Table_Schema(
+	array(
+		'id' => new WP_Markdown_Native_Column( 8, false, static fn( mixed $value ): bool => is_int( $value ) && $value >= 0, $counted_unsigned, array( '=', 'IN' ) ),
+		'label' => new WP_Markdown_Native_Column( 253, false, 'is_string' ),
+	),
+	'id'
+);
+$base_rows = array();
+$right_rows = array();
+for ( $id = 1; $id <= 1000; ++$id ) {
+	$base_rows[] = array( 'id' => $id, 'join_id' => $id, 'group_id' => 1 );
+	$right_rows[] = array( 'id' => $id, 'label' => 'row-' . $id );
+}
+$scale_registry = new WP_Markdown_Native_Table_Registry();
+$scale_registry->register( 'wp_scale_base', $base_schema, new MDI_Native_Join_Array_Provider( $base_rows, $base_schema ) );
+$scale_registry->register( 'wp_scale_right', $right_schema, new MDI_Native_Join_Array_Provider( $right_rows, $right_schema ) );
+$scale_result = ( new WP_Markdown_Native_Query_Runtime( $scale_registry ) )->execute(
+	new WP_Markdown_Query_Request( 'SELECT b.id, r.label FROM wp_scale_base b JOIN wp_scale_right r ON b.join_id=r.id WHERE b.group_id=1' )
+);
+$scale_rows = $scale_result->wpdb_state()['last_result'];
+
 $checks = array(
 	'tokenizer and parser lower aliases and chained equality JOINs into typed contracts' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'tr' === $plan->table_alias()
@@ -58,6 +132,10 @@ $checks = array(
 		$state['col_info']
 	),
 	'bounded JOIN misses return an empty successful result' => 0 === $missing->return_value(),
+	'large equality JOINs scale by normalized identities rather than row pairs' => 1000 === count( $scale_rows )
+		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )
+		&& array( 'id' => '1000', 'label' => 'row-1000' ) === get_object_vars( $scale_rows[999] ?? (object) array() )
+		&& $right_normalizations < 10000,
 	'unbounded, unqualified, unknown-alias, and limited JOIN variants fail closed' => false === $unbounded->return_value()
 		&& 'unsupported_join_shape' === ( $unbounded->diagnostic()['reason'] ?? null )
 		&& false === $unqualified->return_value()

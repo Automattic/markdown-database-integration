@@ -48,8 +48,46 @@ final class WP_Markdown_Native_Query_Parser {
 			$predicates[] = new WP_Markdown_Native_Query_Predicate(
 				$predicate->column()->name(),
 				$predicate->operator(),
-				$values
+				$values,
+				$predicate->column()->qualifier()
 			);
+		}
+		$joins = array_map(
+			static fn( WP_Markdown_Native_SQL_Join $join ): WP_Markdown_Native_Query_Join => new WP_Markdown_Native_Query_Join(
+				$join->table()->name(),
+				$join->alias()->name(),
+				(string) $join->left()->qualifier(),
+				$join->left()->name(),
+				(string) $join->right()->qualifier(),
+				$join->right()->name()
+			),
+			$ast->joins()
+		);
+		if ( array() !== $joins ) {
+			$base_alias = $ast->alias()?->name();
+			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() || null !== $ast->order() || null !== $ast->limit() ) {
+				return $this->failure( 'unsupported_join_shape', 'mdi-native supports retained bounded equality JOIN queries only.', $ast->table()->sql_offset() );
+			}
+			foreach ( array_merge( $ast->projection(), array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() ) ) as $column ) {
+				if ( null === $column->qualifier() ) {
+					return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN columns must be qualified.', $column->sql_offset() );
+				}
+			}
+			foreach ( $ast->predicates() as $predicate ) {
+				if ( $base_alias !== $predicate->column()->qualifier() || '=' !== $predicate->operator() ) {
+					return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN queries require base-table equality predicates.', $predicate->column()->sql_offset() );
+				}
+			}
+			$available = array( $base_alias => true );
+			foreach ( $ast->joins() as $join ) {
+				if ( isset( $available[ $join->alias()->name() ] )
+					|| ! isset( $available[ (string) $join->left()->qualifier() ] )
+					|| $join->alias()->name() !== $join->right()->qualifier()
+				) {
+					return $this->failure( 'unsupported_join_shape', 'mdi-native JOINs must extend the bounded source chain.', $join->table()->sql_offset() );
+				}
+				$available[ $join->alias()->name() ] = true;
+			}
 		}
 
 		return new WP_Markdown_Native_Query_Plan(
@@ -58,7 +96,10 @@ final class WP_Markdown_Native_Query_Parser {
 			$predicates,
 			$ast->order()?->name(),
 			$ast->limit() ?? PHP_INT_MAX,
-			$ast->counts_all()
+			$ast->counts_all(),
+			$ast->alias()?->name(),
+			array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): ?string => $column->qualifier(), $ast->projection() ),
+			$joins
 		);
 	}
 
@@ -99,7 +140,25 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 
 		$this->expect_keyword( 'FROM' );
-		$table     = $this->identifier();
+		$table = $this->unqualified_identifier();
+		$alias = $this->matches_identifier() && $this->next_is_keyword( 'JOIN' ) ? $this->unqualified_identifier() : null;
+		$joins = array();
+		while ( $this->match_keyword( 'JOIN' ) ) {
+			$join_table = $this->unqualified_identifier();
+			$join_alias = $this->unqualified_identifier();
+			$this->expect_keyword( 'ON' );
+			$left = $this->identifier();
+			$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
+			$right = $this->identifier();
+			if ( null === $left->qualifier() || null === $right->qualifier() ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error(
+					'unsupported_join_shape',
+					$left->sql_offset(),
+					'mdi-native JOIN equality columns must be qualified.'
+				);
+			}
+			$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, $left, $right );
+		}
 		$predicates = array();
 		if ( $this->match_keyword( 'WHERE' ) ) {
 			$predicates[] = $this->predicate();
@@ -119,7 +178,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $order, $limit );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $order, $limit, $alias, $joins );
 	}
 
 	private function matches_count_all(): bool {
@@ -145,12 +204,31 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function identifier(): WP_Markdown_Native_SQL_Identifier {
+		$first = $this->unqualified_identifier();
+		if ( ! $this->match_type( WP_Markdown_Native_SQL_Token::DOT ) ) {
+			return $first;
+		}
+		$column = $this->unqualified_identifier();
+		return new WP_Markdown_Native_SQL_Identifier( $column->name(), $first->sql_offset(), $first->name() );
+	}
+
+	private function unqualified_identifier(): WP_Markdown_Native_SQL_Identifier {
 		$token = $this->current();
 		if ( ! in_array( $token->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
 			$this->unsupported( $token );
 		}
 		++$this->current;
 		return new WP_Markdown_Native_SQL_Identifier( (string) $token->value(), $token->sql_offset() );
+	}
+
+	private function matches_identifier(): bool {
+		return in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true );
+	}
+
+	private function next_is_keyword( string $keyword ): bool {
+		$token = $this->tokens[ $this->current + 1 ] ?? null;
+		return WP_Markdown_Native_SQL_Token::KEYWORD === $token?->type()
+			&& 0 === strcasecmp( $keyword, (string) $token->value() );
 	}
 
 	private function literal(): WP_Markdown_Native_SQL_Literal {

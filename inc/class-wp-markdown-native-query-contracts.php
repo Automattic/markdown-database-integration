@@ -30,7 +30,8 @@ final class WP_Markdown_Native_Query_Predicate {
 	public function __construct(
 		private readonly string $column,
 		private readonly string $operator,
-		private readonly array $values
+		private readonly array $values,
+		private readonly ?string $source = null
 	) {}
 
 	public function column(): string {
@@ -45,17 +46,59 @@ final class WP_Markdown_Native_Query_Predicate {
 	public function values(): array {
 		return $this->values;
 	}
+
+	public function source(): ?string {
+		return $this->source;
+	}
+}
+
+final class WP_Markdown_Native_Query_Join {
+	public function __construct(
+		private readonly string $table,
+		private readonly string $alias,
+		private readonly string $left_source,
+		private readonly string $left_column,
+		private readonly string $right_source,
+		private readonly string $right_column
+	) {}
+
+	public function table(): string {
+		return $this->table;
+	}
+
+	public function alias(): string {
+		return $this->alias;
+	}
+
+	public function left_source(): string {
+		return $this->left_source;
+	}
+
+	public function left_column(): string {
+		return $this->left_column;
+	}
+
+	public function right_source(): string {
+		return $this->right_source;
+	}
+
+	public function right_column(): string {
+		return $this->right_column;
+	}
 }
 
 final class WP_Markdown_Native_Query_Plan {
-	/** @param array<int,string> $projection @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	/** @param array<int,string> $projection @param array<int,WP_Markdown_Native_Query_Predicate> $predicates @param array<int,string|null> $projection_sources @param array<int,WP_Markdown_Native_Query_Join> $joins */
 	public function __construct(
 		private readonly string $table,
 		private readonly array $projection,
 		private readonly array $predicates,
 		private readonly ?string $order,
 		private readonly int $limit,
-		private readonly bool $count_all = false
+		private readonly bool $count_all = false,
+		private readonly ?string $table_alias = null,
+		private readonly array $projection_sources = array(),
+		private readonly array $joins = array()
 	) {}
 
 	public function table(): string {
@@ -86,6 +129,20 @@ final class WP_Markdown_Native_Query_Plan {
 
 	public function counts_all(): bool {
 		return $this->count_all;
+	}
+
+	public function table_alias(): ?string {
+		return $this->table_alias;
+	}
+
+	/** @return array<int,string|null> */
+	public function projection_sources(): array {
+		return $this->projection_sources;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Query_Join> */
+	public function joins(): array {
+		return $this->joins;
 	}
 }
 

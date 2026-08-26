@@ -17,6 +17,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
 			return $plan;
 		}
+		if ( array() !== $plan->joins() ) {
+			return $this->execute_join( $plan );
+		}
 
 		$table = $this->registry->table( $plan->table() );
 		if ( null === $table ) {
@@ -102,6 +105,137 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $plan->counts_all()
 			? $this->count_result( $count, true )
 			: $this->result( $rows, $projection, $plan->table(), $schema );
+	}
+
+	private function execute_join( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {
+		$base_alias = $plan->table_alias();
+		$base = $this->registry->table( $plan->table() );
+		if ( null === $base_alias || null === $base || array() === $plan->predicates() ) {
+			return $this->failure( 'unsupported_join_shape', 'mdi-native requires a registered, selectively bounded JOIN source.' );
+		}
+
+		$sources = array(
+			$base_alias => array( 'table' => $plan->table(), 'schema' => $base['schema'], 'provider' => $base['provider'] ),
+		);
+		foreach ( $plan->joins() as $join ) {
+			$table = $this->registry->table( $join->table() );
+			if ( null === $table || isset( $sources[ $join->alias() ] ) ) {
+				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested JOIN table.' );
+			}
+			$sources[ $join->alias() ] = array( 'table' => $join->table(), 'schema' => $table['schema'], 'provider' => $table['provider'] );
+		}
+
+		$needed = array_fill_keys( array_keys( $sources ), array() );
+		foreach ( $plan->projection() as $index => $column ) {
+			$source = $plan->projection_sources()[ $index ] ?? null;
+			if ( null === $source || ! isset( $sources[ $source ] ) || ! $sources[ $source ]['schema']->has_column( $column ) ) {
+				return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested qualified column.' );
+			}
+			$needed[ $source ][] = $column;
+		}
+		foreach ( $plan->predicates() as $predicate ) {
+			if ( $base_alias !== $predicate->source()
+				|| ! $base['schema']->has_column( $predicate->column() )
+				|| ! $base['schema']->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
+			) {
+				return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN predicate.' );
+			}
+			$needed[ $base_alias ][] = $predicate->column();
+		}
+		foreach ( $plan->joins() as $join ) {
+			if ( ! isset( $sources[ $join->left_source() ], $sources[ $join->right_source() ] )
+				|| $join->alias() !== $join->right_source()
+				|| ! $sources[ $join->left_source() ]['schema']->has_column( $join->left_column() )
+				|| ! $sources[ $join->right_source() ]['schema']->has_column( $join->right_column() )
+			) {
+				return $this->failure( 'unsupported_join_shape', 'mdi-native cannot apply the requested equality JOIN.' );
+			}
+			$needed[ $join->left_source() ][] = $join->left_column();
+			$needed[ $join->right_source() ][] = $join->right_column();
+		}
+		foreach ( $needed as &$columns ) {
+			$columns = array_values( array_unique( $columns ) );
+		}
+		unset( $columns );
+
+		$pushdown = $this->pushdown( $plan->predicates(), $base['schema'] );
+		if ( null === $pushdown ) {
+			return $this->failure( 'unsupported_lookup', 'mdi-native requires an indexable base predicate for a JOIN query.' );
+		}
+		$provided = $base['provider']->read(
+			new WP_Markdown_Native_Table_Access( $needed[ $base_alias ], $pushdown, $base['schema']->natural_order(), PHP_INT_MAX )
+		);
+		if ( $provided instanceof WP_Markdown_Query_Result ) {
+			return $provided;
+		}
+		$residual = array_values( array_filter( $plan->predicates(), static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
+		$rows = array();
+		foreach ( $provided as $row ) {
+			if ( ! is_array( $row ) || true !== $base['schema']->validate_projection( $row, $needed[ $base_alias ] ) ) {
+				return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
+			}
+			if ( $this->matches( $row, $residual, $base['schema'] ) ) {
+				$rows[] = array( $base_alias => $row );
+			}
+		}
+
+		foreach ( $plan->joins() as $join ) {
+			$right = $sources[ $join->right_source() ];
+			$values = array();
+			foreach ( $rows as $row ) {
+				$values[] = $row[ $join->left_source() ][ $join->left_column() ];
+			}
+			if ( array() === $values ) {
+				break;
+			}
+			$values = array_values( array_unique( $values, SORT_REGULAR ) );
+			$operator = 1 === count( $values ) ? '=' : 'IN';
+			if ( ! $right['schema']->allows_lookup( $join->right_column(), $operator, $values ) ) {
+				return $this->failure( 'unsupported_join_lookup', 'mdi-native requires an indexed equality key for each JOIN source.' );
+			}
+			$join_predicate = new WP_Markdown_Native_Query_Predicate( $join->right_column(), $operator, $values );
+			$provided = $right['provider']->read(
+				new WP_Markdown_Native_Table_Access( $needed[ $join->right_source() ], $join_predicate, $right['schema']->natural_order(), PHP_INT_MAX )
+			);
+			if ( $provided instanceof WP_Markdown_Query_Result ) {
+				return $provided;
+			}
+			$right_rows = array();
+			foreach ( $provided as $right_row ) {
+				if ( ! is_array( $right_row ) || true !== $right['schema']->validate_projection( $right_row, $needed[ $join->right_source() ] ) ) {
+					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
+				}
+				$right_rows[] = $right_row;
+			}
+			$joined = array();
+			foreach ( $rows as $row ) {
+				$left_value = $row[ $join->left_source() ][ $join->left_column() ];
+				foreach ( $right_rows as $right_row ) {
+					if ( $right['schema']->values_match( $join->right_column(), $right_row[ $join->right_column() ], $left_value ) ) {
+						$row[ $join->right_source() ] = $right_row;
+						$joined[] = $row;
+					}
+				}
+			}
+			$rows = $joined;
+		}
+
+		$selected = array();
+		foreach ( $rows as $row ) {
+			$selected_row = array();
+			foreach ( $plan->projection() as $index => $column ) {
+				$source = $plan->projection_sources()[ $index ];
+				$value = $row[ $source ][ $column ];
+				$selected_row[ $column ] = null === $value ? null : (string) $value;
+			}
+			$selected[] = $selected_row;
+		}
+		$columns = array();
+		foreach ( $plan->projection() as $index => $column ) {
+			$source = $plan->projection_sources()[ $index ];
+			$columns[] = array( 'name' => $column, 'table' => $sources[ $source ]['table'], 'type' => $sources[ $source ]['schema']->column( $column )->type() );
+		}
+		return WP_Markdown_Query_Result::selected( $selected, $columns );
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */

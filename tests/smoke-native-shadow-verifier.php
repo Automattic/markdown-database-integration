@@ -49,6 +49,14 @@ file_put_contents(
 	$root . '/_tables/term_relationships.json',
 	json_encode( array( array( 'object_id' => '123', 'term_taxonomy_id' => '7', 'term_order' => '0' ) ), JSON_THROW_ON_ERROR )
 );
+file_put_contents(
+	$root . '/_tables/term_taxonomy.json',
+	json_encode( array( array( 'term_taxonomy_id' => '7', 'term_id' => '3', 'taxonomy' => 'category', 'description' => '', 'parent' => '0', 'count' => '1' ) ), JSON_THROW_ON_ERROR )
+);
+file_put_contents(
+	$root . '/_tables/terms.json',
+	json_encode( array( array( 'term_id' => '3', 'name' => 'News', 'slug' => 'news', 'term_group' => '0' ) ), JSON_THROW_ON_ERROR )
+);
 
 $runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
 $database = new MDI_Shadow_Database();
@@ -71,11 +79,11 @@ $database->result(
 	array(
 		array( 'name' => 'object_id', 'type' => 8 ),
 		array( 'name' => 'taxonomy', 'type' => 253 ),
-		array( 'name' => 'slug', 'type' => 200 ),
+		array( 'name' => 'slug', 'type' => 253 ),
 	)
 );
-$unsupported_query = 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id JOIN wp_terms t ON tt.term_id=t.term_id WHERE tr.object_id=123';
-$verifier->observe( $unsupported_query, 1, $database );
+$taxonomy_query = 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id JOIN wp_terms t ON tt.term_id=t.term_id WHERE tr.object_id=123';
+$verifier->observe( $taxonomy_query, 1, $database );
 $verifier->observe( 'SELECT ID FROM wp_posts', 0, $database );
 $report = $verifier->report();
 
@@ -143,16 +151,12 @@ $sqlite->set_native_shadow_verifier( $hostile );
 $sqlite_return = $sqlite->query( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1" );
 
 $checks = array(
-	'supported reads compare exactly without retaining observations' => 4 === $report['counts']['compatible']
+	'supported reads compare exactly without retaining observations' => 5 === $report['counts']['compatible']
 		&& 1 === $report['counts']['ignored']
-		&& 1 === $report['counts']['unsupported'],
+		&& 0 === $report['counts']['unsupported'],
 	'observation bounds drop later queries deterministically' => 6 === $report['observed']
 		&& 1 === $report['counts']['dropped'],
-	'first unsupported query retains a sanitized reproducible shape' => 'unsupported' === ( $report['first_blocker']['status'] ?? null )
-		&& hash( 'sha256', 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id JOIN wp_terms t ON tt.term_id=t.term_id WHERE tr.object_id=?' ) === ( $report['first_blocker']['query_template_sha256'] ?? null )
-		&& ! str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'private@example.test' )
-		&& ! str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), '123' )
-		&& str_contains( (string) ( $report['first_blocker']['query_template'] ?? '' ), 'JOIN wp_term_taxonomy' ),
+	'retained taxonomy JOIN advances beyond the shadow blocker frontier' => null === $report['first_blocker'],
 	'column metadata inspection restores lazy wpdb state' => $database->col_info_is_unloaded(),
 	'mismatches expose paths without authoritative or native values' => 'mismatched' === ( $mismatch_report['first_blocker']['status'] ?? null )
 		&& in_array( '$.rows[0].option_value', $mismatch_report['first_blocker']['mismatch_paths'] ?? array(), true )
@@ -183,6 +187,8 @@ foreach ( $checks as $label => $passed ) {
 @unlink( $root . '/_options/siteurl.json' );
 @unlink( $root . '/_tables/commentmeta.json' );
 @unlink( $root . '/_tables/term_relationships.json' );
+@unlink( $root . '/_tables/term_taxonomy.json' );
+@unlink( $root . '/_tables/terms.json' );
 @rmdir( $root . '/_tables' );
 @rmdir( $root . '/_options' );
 @rmdir( $root );

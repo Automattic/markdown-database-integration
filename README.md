@@ -50,10 +50,6 @@ for test in tests/smoke-*.php; do php "$test" || exit 1; done
 
 The authoritative runtime gate boots stock WordPress in a disposable WP Codebox Playground with `mdi-native` as `db.php` and classifies every observed query.
 
-```sh
-wp eval-file wp-content/plugins/markdown-database-integration/tests/probe-native-authoritative-request.php
-```
-
 ## Development
 
 The pure-PHP engine is tracked in [issue #232](https://github.com/Automattic/markdown-database-integration/issues/232). Compatibility expands from deterministic WordPress and plugin query evidence through the tokenizer, typed AST, planner, schema catalog, canonical providers, and executor.

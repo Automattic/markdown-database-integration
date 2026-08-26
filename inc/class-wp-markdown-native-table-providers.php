@@ -160,7 +160,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access ): array {
 		usort(
 			$rows,
-			fn( array $left, array $right ): int => $this->schema->compare_rows( $access->order(), $left, $right )
+			fn( array $left, array $right ): int => ( $access->order_descending() ? -1 : 1 ) * $this->schema->compare_rows( $access->order(), $left, $right )
 		);
 
 		$selected = array();
@@ -245,7 +245,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 
 			usort(
 				$posts,
-				fn( array $left, array $right ): int => $this->schema->compare_rows( $access->order(), $left['row'], $right['row'] )
+				fn( array $left, array $right ): int => ( $access->order_descending() ? -1 : 1 ) * $this->schema->compare_rows( $access->order(), $left['row'], $right['row'] )
 			);
 			$selected = array();
 			foreach ( $posts as $candidate ) {

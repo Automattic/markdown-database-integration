@@ -37,7 +37,7 @@ if ( 2 === $argc ) {
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php', $mdi . '/inc/class-wp-markdown-backend-capabilities.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-sql-classifier.php', $mdi . '/inc/class-wp-markdown-sql-classifier.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-query-observer-boundary.php', $mdi . '/inc/class-wp-markdown-query-observer-boundary.php' );
-	foreach ( array( 'class-wp-markdown-canonical-option-path.php', 'class-wp-markdown-native-query-contracts.php', 'class-wp-markdown-native-query-schema.php', 'class-wp-markdown-native-schema-catalog.php', 'class-wp-markdown-native-sql-tokenizer.php', 'class-wp-markdown-native-query-ast.php', 'class-wp-markdown-native-query-parser.php', 'class-wp-markdown-native-table-providers.php', 'class-wp-markdown-native-query-executor.php', 'class-wp-markdown-native-query-runtime.php', 'class-wp-markdown-query-compatibility-comparator.php', 'class-wp-markdown-wpdb-result-snapshot.php', 'class-wp-markdown-native-shadow-verifier.php' ) as $file ) {
+	foreach ( array( 'class-wp-markdown-canonical-option-path.php', 'class-wp-markdown-native-query-contracts.php', 'class-wp-markdown-native-query-schema.php', 'class-wp-markdown-native-schema-catalog.php', 'class-wp-markdown-native-sql-tokenizer.php', 'class-wp-markdown-native-query-ast.php', 'class-wp-markdown-native-query-parser.php', 'class-wp-markdown-native-table-providers.php', 'class-wp-markdown-native-option-mutations.php', 'class-wp-markdown-native-query-executor.php', 'class-wp-markdown-native-query-runtime.php', 'class-wp-markdown-native-wpdb.php', 'class-wp-markdown-query-compatibility-comparator.php', 'class-wp-markdown-wpdb-result-snapshot.php', 'class-wp-markdown-native-shadow-verifier.php' ) as $file ) {
 		copy( dirname( __DIR__ ) . '/inc/' . $file, $mdi . '/inc/' . $file );
 	}
 	copy( dirname( __DIR__ ) . '/inc/generated/wp-core-schema-catalog.php', $mdi . '/inc/generated/wp-core-schema-catalog.php' );
@@ -69,6 +69,30 @@ if ( 2 === $argc ) {
 	} elseif ( 'incomplete' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
+	} elseif ( 'mdi-native' === $scenario ) {
+		define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
+		define( 'MARKDOWN_DB_STATE_DIR', $content . '/markdown' );
+		define( 'MARKDOWN_DB_CONTENT_DIR', $content . '/markdown' );
+		class wpdb {
+			public string $prefix = '';
+			public string $base_prefix = '';
+			public array $last_result = array();
+			public array $col_info = array();
+			public string $last_error = '';
+			public int $insert_id = 0;
+			public int $rows_affected = 0;
+			public int $num_rows = 0;
+			public int $num_queries = 0;
+			public bool $ready = false;
+			public bool $check_current_query = true;
+			public mixed $result = null;
+			public string $func_call = '';
+			public string $last_query = '';
+			public function set_prefix( string $prefix ): void { $this->prefix = $prefix; $this->base_prefix = $prefix; }
+			public function flush(): void {}
+			public function remove_placeholder_escape( string $query ): string { return $query; }
+			public function add_placeholder_escape( string $value ): string { return $value; }
+		}
 	}
 	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'mysql-full-prior-outbox' ), true ) ) {
 		define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
@@ -120,6 +144,10 @@ if ( 2 === $argc ) {
 			echo "PASS: mysql-full installs the MDI-owned wpdb boundary.\n";
 			exit( 0 );
 		}
+		if ( 'mdi-native' === $scenario && $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB && defined( 'MARKDOWN_DB_DROPIN' ) ) {
+			echo "PASS: mdi-native installs the filesystem-backed wpdb boundary.\n";
+			exit( 0 );
+		}
 		if ( in_array( $scenario, array( 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ), true ) && $GLOBALS['wpdb'] instanceof wpdb && str_starts_with( (string) ( $GLOBALS['markdown_db_mysql_full_diagnostic']['code'] ?? '' ), 'markdown_db_mysql_full_' ) ) {
 			echo "PASS: {$scenario} explicitly falls back to stock wpdb.\n";
 			exit( 0 );
@@ -144,7 +172,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'mdi-native', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

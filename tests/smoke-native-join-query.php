@@ -79,6 +79,11 @@ $unbounded = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0
 $unqualified = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr.object_id=41', 'object_id=41', $query ) ) );
 $unknown_alias = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 't.slug', 'x.slug', $query ) ) );
 $limited = $runtime->execute( new WP_Markdown_Query_Request( $query . ' LIMIT 1' ) );
+$core_term_ids_query = "SELECT DISTINCT t.term_id, tr.object_id FROM wp_terms AS t INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id INNER JOIN wp_term_relationships AS tr ON tr.term_taxonomy_id = tt.term_taxonomy_id WHERE tt.taxonomy IN ('category', 'post_tag', 'post_format') AND tr.object_id IN (41) ORDER BY t.name ASC";
+$core_term_ids_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $core_term_ids_query );
+$core_term_ids = $runtime->execute( new WP_Markdown_Query_Request( $core_term_ids_query ) );
+$core_terms_query = 'SELECT t.*, tt.* FROM wp_terms AS t INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id WHERE t.term_id IN (3, 4)';
+$core_terms = $runtime->execute( new WP_Markdown_Query_Request( $core_terms_query ) );
 
 $unsigned = static fn( mixed $value ): ?string => WP_Markdown_Native_Runtime_Factory::normalize_unsigned( $value );
 $integer = static fn( array $lookups = array() ): WP_Markdown_Native_Column => new WP_Markdown_Native_Column(
@@ -131,6 +136,18 @@ $checks = array(
 		static fn( object $column ): string => $column->table,
 		$state['col_info']
 	),
+	'core DISTINCT taxonomy JOIN seeds from any indexed source and orders joined rows' => $core_term_ids_plan instanceof WP_Markdown_Native_Query_Plan
+		&& $core_term_ids_plan->is_distinct()
+		&& array(
+			array( 'term_id' => '4', 'object_id' => '41' ),
+			array( 'term_id' => '3', 'object_id' => '41' ),
+		) === array_map( 'get_object_vars', $core_term_ids->wpdb_state()['last_result'] ),
+	'core qualified JOIN wildcards expand complete source schemas' => 2 === $core_terms->return_value()
+		&& array( 'News', 'Featured' ) === array_map(
+			static fn( object $row ): string => $row->name,
+			$core_terms->wpdb_state()['last_result']
+		)
+		&& 10 === count( $core_terms->wpdb_state()['col_info'] ),
 	'bounded JOIN misses return an empty successful result' => 0 === $missing->return_value(),
 	'large equality JOINs scale by normalized identities rather than row pairs' => 1000 === count( $scale_rows )
 		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )

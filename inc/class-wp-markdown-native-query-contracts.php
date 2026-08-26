@@ -87,6 +87,8 @@ final class WP_Markdown_Native_Query_Join {
 	}
 }
 
+final class WP_Markdown_Native_Found_Rows_Plan {}
+
 final class WP_Markdown_Native_Query_Plan {
 	/** @param array<int,string> $projection @param array<int,WP_Markdown_Native_Query_Predicate> $predicates @param array<int,string|null> $projection_sources @param array<int,WP_Markdown_Native_Query_Join> $joins */
 	public function __construct(
@@ -98,7 +100,12 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly bool $count_all = false,
 		private readonly ?string $table_alias = null,
 		private readonly array $projection_sources = array(),
-		private readonly array $joins = array()
+		private readonly array $joins = array(),
+		private readonly bool $calculate_found_rows = false,
+		private readonly bool $order_descending = false,
+		private readonly int $limit_offset = 0,
+		private readonly bool $distinct = false,
+		private readonly ?string $order_source = null
 	) {}
 
 	public function table(): string {
@@ -144,6 +151,26 @@ final class WP_Markdown_Native_Query_Plan {
 	public function joins(): array {
 		return $this->joins;
 	}
+
+	public function calculates_found_rows(): bool {
+		return $this->calculate_found_rows;
+	}
+
+	public function order_descending(): bool {
+		return $this->order_descending;
+	}
+
+	public function limit_offset(): int {
+		return $this->limit_offset;
+	}
+
+	public function is_distinct(): bool {
+		return $this->distinct;
+	}
+
+	public function order_source(): ?string {
+		return $this->order_source;
+	}
 }
 
 final class WP_Markdown_Native_Table_Access {
@@ -152,7 +179,8 @@ final class WP_Markdown_Native_Table_Access {
 		private readonly array $projection,
 		private readonly ?WP_Markdown_Native_Query_Predicate $predicate,
 		private readonly string $order,
-		private readonly int $limit
+		private readonly int $limit,
+		private readonly bool $order_descending = false
 	) {
 		if ( array() === $projection || $limit < 0 ) {
 			throw new InvalidArgumentException( 'Native table access requires a projection and nonnegative bound.' );
@@ -175,6 +203,10 @@ final class WP_Markdown_Native_Table_Access {
 	public function limit(): int {
 		return $this->limit;
 	}
+
+	public function order_descending(): bool {
+		return $this->order_descending;
+	}
 }
 
 final class WP_Markdown_Query_Result {
@@ -185,11 +217,17 @@ final class WP_Markdown_Query_Result {
 		private array $columns,
 		private string $last_error = '',
 		private int|string $error_code = 0,
-		private ?array $diagnostic = null
+		private ?array $diagnostic = null,
+		private int $insert_id = 0,
+		private int $rows_affected = 0
 	) {}
 
 	public static function selected( array $rows, array $columns ): self {
 		return new self( count( $rows ), $rows, $columns );
+	}
+
+	public static function mutated( int $rows_affected, int $insert_id = 0 ): self {
+		return new self( $rows_affected, array(), array(), '', 0, null, $insert_id, $rows_affected );
 	}
 
 	/** @param array{code:string,message:string,reason:string,sql_offset?:int} $diagnostic */
@@ -216,8 +254,8 @@ final class WP_Markdown_Query_Result {
 			'col_info' => array_map( static fn( array $column ): object => (object) $column, $this->columns ),
 			'last_error' => $this->last_error,
 			'last_errno' => $this->error_code,
-			'insert_id' => 0,
-			'rows_affected' => 0,
+			'insert_id' => $this->insert_id,
+			'rows_affected' => $this->rows_affected,
 			'num_rows' => count( $this->rows ),
 		);
 	}
@@ -232,8 +270,8 @@ final class WP_Markdown_Query_Result {
 			'columns' => array_map( static fn( array $column ): array => array( 'name' => $column['name'], 'type' => (string) $column['type'] ), $this->columns ),
 			'last_error' => $this->last_error,
 			'error_code' => $this->error_code,
-			'insert_id' => 0,
-			'rows_affected' => 0,
+			'insert_id' => $this->insert_id,
+			'rows_affected' => $this->rows_affected,
 			'num_rows' => count( $this->rows ),
 			'exception' => null,
 		);

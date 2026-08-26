@@ -19,6 +19,16 @@ $star = $parser->parse( 'SELECT * FROM wp_options' );
 $zero = $parser->parse( 'SELECT option_value FROM wp_options WHERE option_id = 000 LIMIT 000' );
 $count_ast = $parser->parse_ast( 'SELECT count(*) FROM wp_rows WHERE row_id = 1 LIMIT 1' );
 $count = $count_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $count_ast ) : $count_ast;
+$found_rows_ast = $parser->parse_ast( 'SELECT SQL_CALC_FOUND_ROWS row_id FROM wp_rows LIMIT 1' );
+$found_rows_plan = $found_rows_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $found_rows_ast ) : $found_rows_ast;
+$qualified_star_ast = $parser->parse_ast( 'SELECT wp_rows.* FROM wp_rows WHERE wp_rows.row_id = 1' );
+$qualified_star_plan = $qualified_star_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $qualified_star_ast ) : $qualified_star_ast;
+$wrong_qualifier_sql = 'SELECT other.* FROM wp_rows';
+$wrong_qualifier = $parser->parse( $wrong_qualifier_sql );
+$wordpress_posts_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 10" );
+$wordpress_posts_plan = $wordpress_posts_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_posts_ast ) : $wordpress_posts_ast;
+$found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
+$found_rows_query_plan = $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows ? $parser->lower( $found_rows_query_ast ) : $found_rows_query_ast;
 
 $duplicate_sql = 'SELECT first, second, first FROM example';
 $duplicate     = $parser->parse( $duplicate_sql );
@@ -89,6 +99,27 @@ $checks = array(
 		&& $count->counts_all()
 		&& array() === $count->projection()
 		&& 1 === $count->limit(),
+	'SQL_CALC_FOUND_ROWS is retained as typed AST and plan intent' => $found_rows_ast instanceof WP_Markdown_Native_SQL_Select
+		&& $found_rows_ast->calculates_found_rows()
+		&& $found_rows_plan instanceof WP_Markdown_Native_Query_Plan
+		&& $found_rows_plan->calculates_found_rows()
+		&& array( 'row_id' ) === $found_rows_plan->projection(),
+	'qualified single-table wildcards lower to the complete row projection' => $qualified_star_ast instanceof WP_Markdown_Native_SQL_Select
+		&& array( '*' ) === array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): string => $column->name(), $qualified_star_ast->projection() )
+		&& array( 'wp_rows' ) === array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): ?string => $column->qualifier(), $qualified_star_ast->projection() )
+		&& $qualified_star_plan instanceof WP_Markdown_Native_Query_Plan
+		&& array( '*' ) === $qualified_star_plan->projection(),
+	'unknown single-table qualifiers fail closed at their source position' => $wrong_qualifier instanceof WP_Markdown_Query_Result
+		&& 'unsupported_qualifier' === ( $wrong_qualifier->diagnostic()['reason'] ?? null )
+		&& strpos( $wrong_qualifier_sql, 'other' ) === ( $wrong_qualifier->diagnostic()['sql_offset'] ?? null ),
+	'WordPress posts query grammar retains grouped predicates, descending order, and offset LIMIT' => $wordpress_posts_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 2 === count( $wordpress_posts_plan->predicates() )
+		&& 'post_date' === $wordpress_posts_plan->order()
+		&& $wordpress_posts_plan->order_descending()
+		&& 0 === $wordpress_posts_plan->limit_offset()
+		&& 10 === $wordpress_posts_plan->limit(),
+	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
+		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result
 		&& 'duplicate_projection' === ( $duplicate->diagnostic()['reason'] ?? null )
 		&& strrpos( $duplicate_sql, 'first' ) === ( $duplicate->diagnostic()['sql_offset'] ?? null ),

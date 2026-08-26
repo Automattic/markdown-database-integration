@@ -14,6 +14,7 @@ require_once __DIR__ . '/class-wp-markdown-native-query-ast.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
 require_once __DIR__ . '/class-wp-markdown-storage.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
+require_once __DIR__ . '/class-wp-markdown-native-option-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
 final class WP_Markdown_Native_Runtime_Factory {
@@ -80,7 +81,9 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'ID' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_author' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_parent' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					'post_type' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 				),
+				'order_columns' => array( 'post_date' ),
 			)
 		);
 	}
@@ -162,7 +165,11 @@ final class WP_Markdown_Native_Runtime_Factory {
 		bool $multisite = false,
 		?string $content_root = null
 	): WP_Markdown_Native_Query_Runtime {
-		return new WP_Markdown_Native_Query_Runtime( self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root ) );
+		return new WP_Markdown_Native_Query_Runtime(
+			self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root ),
+			new WP_Markdown_Native_Query_Parser(),
+			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root )
+		);
 	}
 
 	public static function register_json_snapshot(
@@ -294,7 +301,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 					);
 				}
 			}
-			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition, $column_overlays );
+			$order_columns = 'terms' === $table ? array( 'name' ) : array();
+			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition, $column_overlays, $order_columns );
 			if ( null !== $schema ) {
 				$table_prefix = $multisite && in_array( $table, $network, true ) ? $base_prefix : $prefix;
 				self::register_json_snapshot( $registry, $state_root, $table_prefix . $table, $schema, $table . '.json' );

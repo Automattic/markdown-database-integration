@@ -145,6 +145,25 @@ $autoload_unsupported = array(
 );
 $autoload_duplicates = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_name FROM wp_options WHERE autoload IN ('on', 'on')" ) );
 $database = new WP_Markdown_Native_WPDB( $runtime );
+$insert_cron = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO `wp_options` (`option_name`, `option_value`, `autoload`) VALUES ('cron', 'first', 'on') ON DUPLICATE KEY UPDATE `option_name` = VALUES(`option_name`), `option_value` = VALUES(`option_value`), `autoload` = VALUES(`autoload`)" ) );
+$insert_cron_state = $insert_cron->wpdb_state();
+$read_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
+$update_cron = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_value, autoload, option_name) VALUES ('second', 'off', 'cron') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value), autoload = VALUES(autoload), option_name = VALUES(option_name)" ) );
+$noop_cron = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('cron', 'second', 'off') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value), autoload = VALUES(autoload)" ) );
+$read_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
+$direct_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE `wp_options` SET `option_value` = 'third', `autoload` = 'auto-off' WHERE `option_name` = 'cron'" ) );
+$noop_direct_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'third', autoload = 'auto-off' WHERE option_name = 'cron'" ) );
+$read_direct_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
+$reopened_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
+$read_persisted_cron = $reopened_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
+$missing_direct_update = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'missing' WHERE option_name = 'not_present'" ) );
+$unsupported_upsert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('invalid', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value)" ) );
+$cron_path = $root . '/_options/cron.json';
+$cron_temp_files = glob( $cron_path . '.tmp-*' ) ?: array();
+unlink( $cron_path );
+$wpdb_upsert = $database->query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('wpdb_native', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value), autoload = VALUES(autoload)" );
+$wpdb_upsert_state = array( 'rows_affected' => $database->rows_affected, 'insert_id' => $database->insert_id );
+unlink( $root . '/_options/wpdb_native.json' );
 $prepared_query = $database->prepare( "SELECT option_value FROM {$database->options} WHERE option_name = %s LIMIT 1", 'siteurl' );
 $wpdb_row = $database->get_row( $prepared_query );
 $wpdb_var = $database->get_var( $prepared_query );
@@ -199,6 +218,30 @@ $checks = array(
 	'option-name lists deduplicate, omit missing rows, and preserve option-id order' => array( 'siteurl', 'legacy' ) === array_map( static fn( object $row ): string => $row->option_name, $prime_result->wpdb_state()['last_result'] ),
 	'unsupported autoload predicates and values fail closed' => array_reduce( $autoload_unsupported, static fn( bool $valid, WP_Markdown_Query_Result $candidate ): bool => $valid && false === $candidate->return_value() && 'markdown_db_native_unsupported_query' === ( $candidate->diagnostic()['code'] ?? null ), true ),
 	'wpdb helpers consume native result state without a connection' => 'https://example.test' === ( $wpdb_row->option_value ?? null ) && 'https://example.test' === $wpdb_var && 'siteurl' === ( $wpdb_results[0]->option_name ?? null ) && array( 'option_name', 'option_value' ) === $wpdb_columns,
+	'canonical option upserts atomically insert, update, and retain identities' => 1 === $insert_cron->return_value()
+		&& 1 === $insert_cron_state['rows_affected']
+		&& 7 === $insert_cron_state['insert_id']
+		&& '7' === ( $read_cron->wpdb_state()['last_result'][0]->option_id ?? null )
+		&& 'first' === ( $read_cron->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 2 === $update_cron->return_value()
+		&& 0 === $noop_cron->return_value()
+		&& '7' === ( $read_updated_cron->wpdb_state()['last_result'][0]->option_id ?? null )
+		&& 'second' === ( $read_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'off' === ( $read_updated_cron->wpdb_state()['last_result'][0]->autoload ?? null )
+		&& array() === $cron_temp_files,
+	'canonical option updates mutate exact existing identities only' => 1 === $direct_update_cron->return_value()
+		&& 0 === $noop_direct_update_cron->return_value()
+		&& 0 === $missing_direct_update->return_value()
+		&& '7' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_id ?? null )
+		&& 'third' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'auto-off' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->autoload ?? null )
+		&& 'third' === ( $read_persisted_cron->wpdb_state()['last_result'][0]->option_value ?? null ),
+	'option mutations fail closed unless duplicate assignments preserve the complete row' => false === $unsupported_upsert->return_value()
+		&& 'unsupported_option_upsert' === ( $unsupported_upsert->diagnostic()['reason'] ?? null )
+		&& ! file_exists( $root . '/_options/invalid.json' ),
+	'wpdb exposes native mutation affected rows and insert identity' => 1 === $wpdb_upsert
+		&& 1 === $wpdb_upsert_state['rows_affected']
+		&& 7 === $wpdb_upsert_state['insert_id'],
 	'wpdb get_results consumes the core alloptions query' => 4 === count( $wpdb_alloptions ) && 'legacy' === ( $wpdb_alloptions[3]->option_name ?? null ),
 	'wpdb get_results consumes the core alloptions fallback' => 6 === count( $wpdb_alloptions_fallback ) && 'disabled' === ( $wpdb_alloptions_fallback[5]->option_name ?? null ),
 	'wpdb get_results consumes option cache priming queries' => 2 === count( $wpdb_primed ) && 'siteurl' === ( $wpdb_primed[0]->option_name ?? null ),

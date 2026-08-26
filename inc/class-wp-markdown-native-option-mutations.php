@@ -8,13 +8,21 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_Option_Mutation {
 	/** @param array{option_value?:string,autoload?:string} $values */
 	public function __construct(
-		private readonly bool $upsert,
+		private readonly string $operation,
 		private readonly string $option_name,
 		private readonly array $values
-	) {}
+	) {
+		if ( ! in_array( $operation, array( 'upsert', 'update', 'delete' ), true ) ) {
+			throw new InvalidArgumentException( 'Unsupported option mutation operation.' );
+		}
+	}
 
 	public function is_upsert(): bool {
-		return $this->upsert;
+		return 'upsert' === $this->operation;
+	}
+
+	public function is_delete(): bool {
+		return 'delete' === $this->operation;
 	}
 
 	public function option_name(): string {
@@ -38,6 +46,9 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 			$this->position = 0;
 			if ( 0 === strcasecmp( 'UPDATE', (string) $this->current()->value() ) ) {
 				return $this->parse_update( $request );
+			}
+			if ( 0 === strcasecmp( 'DELETE', (string) $this->current()->value() ) ) {
+				return $this->parse_delete( $request );
 			}
 			$this->word( 'INSERT' );
 			$this->word( 'INTO' );
@@ -86,7 +97,7 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 			/** @var array{option_name:string,option_value:string,autoload:string} $row */
 			$option_name = $row['option_name'];
 			unset( $row['option_name'] );
-			return new WP_Markdown_Native_Option_Mutation( true, $option_name, $row );
+			return new WP_Markdown_Native_Option_Mutation( 'upsert', $option_name, $row );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -126,7 +137,23 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 		$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
 		$option_name = (string) $this->type( WP_Markdown_Native_SQL_Token::STRING )->value();
 		$this->type( WP_Markdown_Native_SQL_Token::END );
-		return new WP_Markdown_Native_Option_Mutation( false, $option_name, $changes );
+		return new WP_Markdown_Native_Option_Mutation( 'update', $option_name, $changes );
+	}
+
+	private function parse_delete( WP_Markdown_Query_Request $request ): WP_Markdown_Native_Option_Mutation|WP_Markdown_Query_Result {
+		$this->word( 'DELETE' );
+		$this->word( 'FROM' );
+		if ( $request->table_prefix() . 'options' !== $this->identifier() ) {
+			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only the active canonical options table.' );
+		}
+		$this->word( 'WHERE' );
+		if ( 'option_name' !== $this->identifier() ) {
+			return $this->failure( 'unsupported_option_delete', 'mdi-native option deletes require one exact option_name identity.' );
+		}
+		$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+		$option_name = (string) $this->type( WP_Markdown_Native_SQL_Token::STRING )->value();
+		$this->type( WP_Markdown_Native_SQL_Token::END );
+		return new WP_Markdown_Native_Option_Mutation( 'delete', $option_name, array() );
 	}
 
 	/** @return array<int,string> */
@@ -284,6 +311,12 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 
 			if ( ! $mutation->is_upsert() && null === $existing ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
+			}
+			if ( $mutation->is_delete() ) {
+				if ( ! @unlink( $existing['path'] ) ) {
+					return $this->failure( 'option_delete_failed', 'The canonical option row could not be deleted.' );
+				}
+				return WP_Markdown_Query_Result::mutated( 1 );
 			}
 			$is_insert = null === $existing;
 			if ( $is_insert && PHP_INT_MAX === $maximum_id ) {

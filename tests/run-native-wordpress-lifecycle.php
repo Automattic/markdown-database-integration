@@ -30,6 +30,25 @@ function mdi_native_lifecycle_option( string $root, int $id, string $name, strin
 	file_put_contents( $root . '/_options/' . $name . '.json', $encoded . "\n" );
 }
 
+/** @return array{run:array<string,mixed>|null,lifecycle:array<string,mixed>|null,output:string,status:int} */
+function mdi_native_lifecycle_run( string $wp_codebox, string $recipe_path ): array {
+	$command = escapeshellarg( $wp_codebox ) . ' recipe-run --recipe ' . escapeshellarg( $recipe_path ) . ' --timeout 10m --json';
+	$output = array();
+	exec( $command, $output, $status );
+	$output_json = implode( "\n", $output );
+	$run = json_decode( $output_json, true );
+	$lifecycle = is_array( $run ) ? json_decode( (string) ( $run['executions'][0]['stdout'] ?? '' ), true ) : null;
+	if ( 0 === $status && ( 'mdi-native-wordpress-lifecycle/v1' !== ( $lifecycle['schema'] ?? null ) || true !== ( $lifecycle['passed'] ?? false ) ) ) {
+		$status = 1;
+	}
+	return array(
+		'run'       => is_array( $run ) ? $run : null,
+		'lifecycle' => is_array( $lifecycle ) ? $lifecycle : null,
+		'output'    => $output_json,
+		'status'    => $status,
+	);
+}
+
 $repo = realpath( dirname( __DIR__ ) );
 $woocommerce = realpath( (string) getenv( 'MDI_WOOCOMMERCE_DIR' ) );
 if ( false === $repo || false === $woocommerce || ! is_file( $woocommerce . '/woocommerce.php' ) ) {
@@ -121,6 +140,9 @@ $recipe = array(
 	'workflow' => array(
 		'steps' => array(
 			array( 'command' => 'wordpress.run-php', 'args' => array( 'code-file=' . $repo . '/tests/probe-native-wordpress-lifecycle.php' ) ),
+			array( 'command' => 'wordpress.wp-cli', 'args' => array( 'command=wp option get woocommerce_version' ) ),
+			array( 'command' => 'wordpress.rest-request', 'args' => array( 'method=GET', 'path=/wp/v2/types' ) ),
+			array( 'command' => 'wordpress.server-page-load', 'args' => array( 'surface=frontend', 'path=/', 'expect-status=200' ) ),
 		),
 	),
 	'artifacts' => array( 'directory' => $artifacts ),
@@ -130,17 +152,36 @@ $recipe_path = $root . '/recipe.json';
 file_put_contents( $recipe_path, json_encode( $recipe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 
 $wp_codebox = (string) ( getenv( 'MDI_WP_CODEBOX_BIN' ) ?: 'wp-codebox' );
-$command = escapeshellarg( $wp_codebox ) . ' recipe-run --recipe ' . escapeshellarg( $recipe_path ) . ' --timeout 10m --json';
-$output = array();
-exec( $command, $output, $status );
-$output_json = implode( "\n", $output );
-fwrite( STDOUT, $output_json . "\n" );
-if ( 0 === $status ) {
-	$run = json_decode( $output_json, true );
-	$lifecycle = json_decode( (string) ( $run['executions'][0]['stdout'] ?? '' ), true );
-	if ( 'mdi-native-wordpress-lifecycle/v1' !== ( $lifecycle['schema'] ?? null ) || true !== ( $lifecycle['passed'] ?? false ) ) {
-		fwrite( STDERR, "Lifecycle command did not return a passing mdi-native-wordpress-lifecycle/v1 result.\n" );
-		$status = 1;
+$first = mdi_native_lifecycle_run( $wp_codebox, $recipe_path );
+$second = null;
+if ( 0 === $first['status'] ) {
+	$recipe['runtime']['blueprint']['steps'][0]['consts']['MDI_NATIVE_LIFECYCLE_EXPECT_PERSISTED'] = true;
+	file_put_contents( $recipe_path, json_encode( $recipe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
+	$second = mdi_native_lifecycle_run( $wp_codebox, $recipe_path );
+}
+$status = 0 !== $first['status'] || null === $second || 0 !== $second['status'] ? 1 : 0;
+$summary = array(
+	'schema' => 'mdi-native-wordpress-lifecycle-run/v1',
+	'passed' => 0 === $status,
+	'boots'  => array(
+		array(
+			'phase'     => 'activation',
+			'lifecycle' => $first['lifecycle'],
+			'artifacts' => $first['run']['executions'][0]['metadata']['artifact_directory'] ?? null,
+		),
+		array(
+			'phase'     => 'restart',
+			'lifecycle' => $second['lifecycle'] ?? null,
+			'artifacts' => $second['run']['executions'][0]['metadata']['artifact_directory'] ?? null,
+		),
+	),
+);
+fwrite( 0 === $status ? STDOUT : STDERR, json_encode( $summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
+if ( 0 !== $status ) {
+	if ( 0 !== $first['status'] ) {
+		fwrite( STDERR, $first['output'] . "\n" );
+	} elseif ( null !== $second ) {
+		fwrite( STDERR, $second['output'] . "\n" );
 	}
 }
 if ( 0 === $status && '1' !== getenv( 'MDI_KEEP_LIFECYCLE_ARTIFACTS' ) ) {

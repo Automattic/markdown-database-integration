@@ -33,6 +33,11 @@ if ( ! $wpdb instanceof WP_Markdown_Native_WPDB || 'mdi-native' !== $result['bac
 }
 
 try {
+	$result['woocommerce']['before_activation'] = array(
+		'active'     => is_plugin_active( 'woocommerce/woocommerce.php' ),
+		'version'    => get_option( 'woocommerce_version', null ),
+		'db_version' => get_option( 'woocommerce_db_version', null ),
+	);
 	$activation = activate_plugin( 'woocommerce/woocommerce.php' );
 	$result['woocommerce']['activation_error'] = is_wp_error( $activation ) ? $activation->get_error_message() : null;
 	$result['woocommerce']['active'] = is_plugin_active( 'woocommerce/woocommerce.php' );
@@ -57,6 +62,13 @@ $passed = true === ( $result['woocommerce']['active'] ?? false )
 	&& ! isset( $result['woocommerce']['exception'] )
 	&& is_string( $result['woocommerce']['version'] ?? null )
 	&& is_string( $result['woocommerce']['db_version'] ?? null );
+
+if ( defined( 'MDI_NATIVE_LIFECYCLE_EXPECT_PERSISTED' ) && true === MDI_NATIVE_LIFECYCLE_EXPECT_PERSISTED ) {
+	$passed = $passed
+		&& true === ( $result['woocommerce']['before_activation']['active'] ?? false )
+		&& ( $result['woocommerce']['version'] ?? null ) === ( $result['woocommerce']['before_activation']['version'] ?? null )
+		&& ( $result['woocommerce']['db_version'] ?? null ) === ( $result['woocommerce']['before_activation']['db_version'] ?? null );
+}
 
 $result['passed'] = $passed;
 fwrite( $passed ? STDOUT : STDERR, wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n" );

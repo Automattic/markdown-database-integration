@@ -97,7 +97,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( $plan->counts_all() ) {
 					++$count;
 				} else {
-					$rows[] = $row;
+					$rows[] = $this->string_row( $row, $projection );
 				}
 			}
 		}
@@ -183,12 +183,19 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$right = $sources[ $join->right_source() ];
 			$values = array();
 			foreach ( $rows as $row ) {
-				$values[] = $row[ $join->left_source() ][ $join->left_column() ];
+				$value = $row[ $join->left_source() ][ $join->left_column() ];
+				$key = $right['schema']->value_key( $join->right_column(), $value );
+				if ( null === $key ) {
+					return $this->failure( 'unsupported_join_lookup', 'mdi-native cannot normalize the requested JOIN identity.' );
+				}
+				if ( ! isset( $values[ $key ] ) ) {
+					$values[ $key ] = $value;
+				}
 			}
 			if ( array() === $values ) {
 				break;
 			}
-			$values = array_values( array_unique( $values, SORT_REGULAR ) );
+			$values = array_values( $values );
 			$operator = 1 === count( $values ) ? '=' : 'IN';
 			if ( ! $right['schema']->allows_lookup( $join->right_column(), $operator, $values ) ) {
 				return $this->failure( 'unsupported_join_lookup', 'mdi-native requires an indexed equality key for each JOIN source.' );
@@ -205,37 +212,40 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( ! is_array( $right_row ) || true !== $right['schema']->validate_projection( $right_row, $needed[ $join->right_source() ] ) ) {
 					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
 				}
-				$right_rows[] = $right_row;
+				$key = $right['schema']->value_key( $join->right_column(), $right_row[ $join->right_column() ] );
+				if ( null === $key ) {
+					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned an invalid JOIN identity.' );
+				}
+				$right_rows[ $key ][] = $right_row;
 			}
 			$joined = array();
-			foreach ( $rows as $row ) {
+			foreach ( $rows as $index => $row ) {
+				unset( $rows[ $index ] );
 				$left_value = $row[ $join->left_source() ][ $join->left_column() ];
-				foreach ( $right_rows as $right_row ) {
-					if ( $right['schema']->values_match( $join->right_column(), $right_row[ $join->right_column() ], $left_value ) ) {
-						$row[ $join->right_source() ] = $right_row;
-						$joined[] = $row;
-					}
+				$key = $right['schema']->value_key( $join->right_column(), $left_value );
+				foreach ( null === $key ? array() : ( $right_rows[ $key ] ?? array() ) as $right_row ) {
+					$row[ $join->right_source() ] = $right_row;
+					$joined[] = $row;
 				}
 			}
 			$rows = $joined;
 		}
 
-		$selected = array();
-		foreach ( $rows as $row ) {
+		foreach ( $rows as $row_index => $row ) {
 			$selected_row = array();
-			foreach ( $plan->projection() as $index => $column ) {
-				$source = $plan->projection_sources()[ $index ];
+			foreach ( $plan->projection() as $column_index => $column ) {
+				$source = $plan->projection_sources()[ $column_index ];
 				$value = $row[ $source ][ $column ];
 				$selected_row[ $column ] = null === $value ? null : (string) $value;
 			}
-			$selected[] = $selected_row;
+			$rows[ $row_index ] = $selected_row;
 		}
 		$columns = array();
 		foreach ( $plan->projection() as $index => $column ) {
 			$source = $plan->projection_sources()[ $index ];
 			$columns[] = array( 'name' => $column, 'table' => $sources[ $source ]['table'], 'type' => $sources[ $source ]['schema']->column( $column )->type() );
 		}
-		return WP_Markdown_Query_Result::selected( $selected, $columns );
+		return WP_Markdown_Query_Result::selected( $rows, $columns );
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
@@ -288,16 +298,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		string $table,
 		WP_Markdown_Native_Table_Schema $schema
 	): WP_Markdown_Query_Result {
-		$selected = array_map(
-			static function ( array $source ) use ( $projection ): array {
-				$row = array();
-				foreach ( $projection as $column ) {
-					$row[ $column ] = null === $source[ $column ] ? null : (string) $source[ $column ];
-				}
-				return $row;
-			},
-			$rows
-		);
 		$columns = array_map(
 			static fn( string $column ): array => array(
 				'name'  => $column,
@@ -306,7 +306,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			),
 			$projection
 		);
-		return WP_Markdown_Query_Result::selected( $selected, $columns );
+		return WP_Markdown_Query_Result::selected( $rows, $columns );
+	}
+
+	/** @param array<string,mixed> $source @param array<int,string> $projection @return array<string,string|null> */
+	private function string_row( array $source, array $projection ): array {
+		$row = array();
+		foreach ( $projection as $column ) {
+			$row[ $column ] = null === $source[ $column ] ? null : (string) $source[ $column ];
+		}
+		return $row;
 	}
 
 	private function count_result( int $count, bool $include_row ): WP_Markdown_Query_Result {

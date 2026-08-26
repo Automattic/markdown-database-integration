@@ -8,7 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
 	protected string $state_root;
-	/** @var array<string,array<string,array<int,array<string,mixed>>>> */
+	/** @var array<string,array<string,array<int,int>>> */
 	private array $indexes = array();
 
 	public function __construct(
@@ -132,10 +132,10 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		$column = $predicate->column();
 		if ( ! isset( $this->indexes[ $column ] ) ) {
 			$this->indexes[ $column ] = array();
-			foreach ( $rows as $row ) {
+			foreach ( $rows as $offset => $row ) {
 				$key = $this->schema->value_key( $column, $row[ $column ] );
 				if ( null !== $key ) {
-					$this->indexes[ $column ][ $key ][] = $row;
+					$this->indexes[ $column ][ $key ][] = $offset;
 				}
 			}
 		}
@@ -144,7 +144,8 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		$seen     = array();
 		foreach ( $predicate->values() as $value ) {
 			$key = $this->schema->value_key( $column, $value );
-			foreach ( null === $key ? array() : ( $this->indexes[ $column ][ $key ] ?? array() ) as $row ) {
+			foreach ( null === $key ? array() : ( $this->indexes[ $column ][ $key ] ?? array() ) as $offset ) {
+				$row = $rows[ $offset ];
 				$identity = $this->schema->identity_key( $row );
 				if ( null !== $identity && ! isset( $seen[ $identity ] ) ) {
 					$seen[ $identity ] = true;

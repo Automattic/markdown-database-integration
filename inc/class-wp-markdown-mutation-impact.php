@@ -20,7 +20,7 @@ final class WP_Markdown_Mutation_Impact {
 			return self::conservative_intents( $query, $table, $operation, $identities, $insert_id, $ambiguous || $multi_row || $repeated_identity );
 		}
 
-		// Callers retain their pre-existing intent shape and fallback policy.
+		// SQLite callers retain their pre-existing intent shape and fallback policy.
 		return self::legacy_intents( $query, $operation, $table, $insert_id, $term_objects, $identities, $ambiguous || $multi_row || $repeated_identity );
 	}
 

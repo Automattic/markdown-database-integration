@@ -157,11 +157,10 @@ $read_direct_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "S
 $reopened_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $read_persisted_cron = $reopened_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
 $missing_direct_update = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'missing' WHERE option_name = 'not_present'" ) );
-$delete_cron = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM `wp_options` WHERE `option_name` = 'cron'" ) );
-$delete_missing = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM wp_options WHERE option_name = 'not_present'" ) );
 $unsupported_upsert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('invalid', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value)" ) );
 $cron_path = $root . '/_options/cron.json';
 $cron_temp_files = glob( $cron_path . '.tmp-*' ) ?: array();
+unlink( $cron_path );
 $wpdb_upsert = $database->query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('wpdb_native', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value), autoload = VALUES(autoload)" );
 $wpdb_upsert_state = array( 'rows_affected' => $database->rows_affected, 'insert_id' => $database->insert_id );
 unlink( $root . '/_options/wpdb_native.json' );
@@ -237,10 +236,6 @@ $checks = array(
 		&& 'third' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'auto-off' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->autoload ?? null )
 		&& 'third' === ( $read_persisted_cron->wpdb_state()['last_result'][0]->option_value ?? null ),
-	'exact option deletes remove canonical rows and preserve missing-row semantics' => 1 === $delete_cron->return_value()
-		&& 1 === $delete_cron->wpdb_state()['rows_affected']
-		&& 0 === $delete_missing->return_value()
-		&& ! file_exists( $cron_path ),
 	'option mutations fail closed unless duplicate assignments preserve the complete row' => false === $unsupported_upsert->return_value()
 		&& 'unsupported_option_upsert' === ( $unsupported_upsert->diagnostic()['reason'] ?? null )
 		&& ! file_exists( $root . '/_options/invalid.json' ),

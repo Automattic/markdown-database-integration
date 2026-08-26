@@ -23,7 +23,7 @@ try {
 	global $wpdb;
 	mdi_mysql_content_probe( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND, 'mysql-content backend is active' );
 	mdi_mysql_content_probe( $wpdb->dbh instanceof mysqli && str_contains( (string) $wpdb->get_var( 'SELECT VERSION()' ), 'MariaDB' ), 'normal WordPress mysqli runtime uses MariaDB' );
-	mdi_mysql_content_probe( ! defined( 'MARKDOWN_DB_DROPIN' ), 'no MDI drop-in is active' );
+	mdi_mysql_content_probe( ! defined( 'MARKDOWN_DB_DROPIN' ) && ! class_exists( 'WP_SQLite_DB' ), 'no SQLite drop-in or SQLite runtime class is active' );
 	$parent = wp_insert_post( array( 'post_type' => 'page', 'post_status' => 'publish', 'post_title' => 'MDI lifecycle parent', 'post_name' => 'mdi-lifecycle-parent' ), true );
 	if ( is_wp_error( $parent ) ) { throw new RuntimeException( $parent->get_error_message() ); }
 	$created[] = $parent;

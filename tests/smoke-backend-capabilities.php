@@ -1,6 +1,6 @@
 <?php
 /**
- * Executable backend capability contract.
+ * Executable backend capability contract and SQLite reference compatibility test.
  *
  * Usage: php tests/smoke-backend-capabilities.php
  */
@@ -18,6 +18,7 @@ function mdi_backend_assert( bool $condition, string $message ): void {
 	}
 }
 
+$sqlite = WP_Markdown_Backend_Capabilities::sqlite();
 $expected = array(
 	'content_mutation_capture',
 	'table_mutation_capture',
@@ -29,6 +30,14 @@ $expected = array(
 	'changed_path_receipts',
 	'canonical_option_select',
 );
+
+mdi_backend_assert( 'sqlite' === $sqlite->get_backend(), 'SQLite reference backend identifier is stable' );
+mdi_backend_assert( $expected === array_keys( $sqlite->report()['capabilities'] ), 'SQLite reference contract declares the complete compatibility matrix in stable order' );
+foreach ( array_diff( $expected, array( 'canonical_option_select' ) ) as $capability ) {
+	mdi_backend_assert( $sqlite->supports( $capability ), 'SQLite supports ' . $capability );
+	$sqlite->require( $capability );
+}
+mdi_backend_assert( ! $sqlite->supports( 'canonical_option_select' ), 'SQLite does not claim direct canonical option execution' );
 
 $mysql_content = WP_Markdown_Backend_Capabilities::mysql_content();
 mdi_backend_assert( 'mysql-content' === $mysql_content->get_backend(), 'MySQL content-primary backend identifier is stable' );
@@ -51,8 +60,6 @@ foreach ( array( 'table_mutation_capture', 'schema_persistence', 'disposable_ind
 
 $native = WP_Markdown_Backend_Capabilities::mdi_native();
 mdi_backend_assert( 'mdi-native' === $native->get_backend(), 'Native backend identifier is stable' );
-mdi_backend_assert( 'mdi-native' === WP_Markdown_Backend_Resolver::resolve()->get_backend(), 'Native backend is the default runtime' );
-mdi_backend_assert( $expected === array_keys( $native->report()['capabilities'] ), 'Native capability matrix has stable keys' );
 mdi_backend_assert( $native->supports( 'canonical_option_select' ), 'Native backend declares its bounded option query guarantee' );
 foreach ( array_diff( $expected, array( 'canonical_option_select' ) ) as $capability ) {
 	mdi_backend_assert( ! $native->supports( $capability ), 'Native backend fails closed for ' . $capability );

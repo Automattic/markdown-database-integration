@@ -46,7 +46,7 @@ class WP_Markdown_CLI {
 	/** Stop WP-CLI's MySQL-only check before it reads MySQL connection constants. */
 	public static function guard_db_check( string $command ): string {
 		$backend = self::database_backend();
-		if ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN && 'mdi-native' === $backend ) {
+		if ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN && 'sqlite' === $backend ) {
 			$error = new WP_Markdown_Unsupported_WP_CLI_DB_Command( $backend, 'wp ' . $command );
 			WP_CLI::error( $error );
 			throw $error;
@@ -62,7 +62,7 @@ class WP_Markdown_CLI {
 		if ( defined( 'DATABASE_TYPE' ) ) {
 			return strtolower( (string) DATABASE_TYPE );
 		}
-		return defined( 'MARKDOWN_DB_BACKEND' ) ? strtolower( (string) MARKDOWN_DB_BACKEND ) : 'mdi-native';
+		return defined( 'MARKDOWN_DB_BACKEND' ) ? strtolower( (string) MARKDOWN_DB_BACKEND ) : '';
 	}
 
 	/**

@@ -117,7 +117,7 @@ $checks = array(
 		static fn( object $row ): string => $row->id,
 		$secondary->wpdb_state()['last_result']
 	),
-	'mixed integer and numeric-string storage shares deterministic natural order' => array( '1', '2' ) === array_map(
+	'mixed SQLite integers and MySQL numeric strings share deterministic natural order' => array( '1', '2' ) === array_map(
 		static fn( object $row ): string => $row->id,
 		$unfiltered->wpdb_state()['last_result']
 	),
@@ -137,7 +137,7 @@ $checks = array(
 	'unsupported DDL, mismatched names, and malformed neighbors do not weaken valid tables' => false === $unsupported->return_value()
 		&& false === $mismatch->return_value()
 		&& 1 === $exact->return_value(),
-	'inline integer primary keys normalize into the generic execution contract' => 'portable' === ( $inline->wpdb_state()['last_result'][0]->value ?? null ),
+	'SQLite inline integer primary keys normalize into the generic execution contract' => 'portable' === ( $inline->wpdb_state()['last_result'][0]->value ?? null ),
 	'partitioned plugin tables compose lookup, residual filter, ordering, and limit execution' => 1 === $partitioned->return_value()
 		&& 'ready' === ( $partitioned->wpdb_state()['last_result'][0]->status ?? null )
 		&& '1' === ( $partitioned->wpdb_state()['last_result'][0]->id ?? null ),

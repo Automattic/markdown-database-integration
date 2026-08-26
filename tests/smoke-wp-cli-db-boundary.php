@@ -9,9 +9,11 @@ declare( strict_types=1 );
 
 if ( isset( $argv[1] ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );
-	if ( 'mdi-native' === $argv[1] ) {
+	if ( 'sqlite' === $argv[1] ) {
 		define( 'MARKDOWN_DB_DROPIN', true );
-		define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
+		define( 'DB_ENGINE', 'sqlite' );
+	} elseif ( 'sqlite-unowned' === $argv[1] ) {
+		define( 'DB_ENGINE', 'sqlite' );
 	} else {
 		define( 'DB_ENGINE', 'mysql' );
 	}
@@ -65,18 +67,20 @@ $run = static function ( string $backend ): array {
 	return is_array( $result ) ? $result : array();
 };
 
-$native = $run( 'mdi-native' );
-mdi_wp_cli_db_assert( true === ( $native['registered'] ?? false ), 'the exact db check invocation hook is registered' );
-mdi_wp_cli_db_assert( true === ( $native['stopped'] ?? false ), 'native runtime stops db check before the MySQL command runs' );
-mdi_wp_cli_db_assert( WP_Markdown_Unsupported_WP_CLI_DB_Command::class === ( $native['class'] ?? null ), 'native runtime emits the typed unsupported-command outcome' );
-$diagnostic = $native['diagnostic'] ?? array();
+$sqlite = $run( 'sqlite' );
+mdi_wp_cli_db_assert( true === ( $sqlite['registered'] ?? false ), 'the exact db check invocation hook is registered' );
+mdi_wp_cli_db_assert( true === ( $sqlite['stopped'] ?? false ), 'SQLite stops db check before the MySQL command runs' );
+mdi_wp_cli_db_assert( WP_Markdown_Unsupported_WP_CLI_DB_Command::class === ( $sqlite['class'] ?? null ), 'SQLite emits the typed unsupported-command outcome' );
+$diagnostic = $sqlite['diagnostic'] ?? array();
 mdi_wp_cli_db_assert( 'markdown_db_unsupported_wp_cli_db_command' === ( $diagnostic['code'] ?? null ), 'diagnostic code is stable' );
-mdi_wp_cli_db_assert( 'mdi-native' === ( $diagnostic['backend'] ?? null ) && 'wp db check' === ( $diagnostic['command'] ?? null ), 'diagnostic identifies backend and command' );
+mdi_wp_cli_db_assert( 'sqlite' === ( $diagnostic['backend'] ?? null ) && 'wp db check' === ( $diagnostic['command'] ?? null ), 'diagnostic identifies backend and command' );
 mdi_wp_cli_db_assert( 'wp markdown-db doctor' === ( $diagnostic['remediation'] ?? null ), 'diagnostic names the canonical remediation' );
 mdi_wp_cli_db_assert( str_contains( (string) ( $diagnostic['message'] ?? '' ), 'requires a MySQL backend' ), 'operator message explains the incompatibility' );
 
 $mysql = $run( 'mysql' );
-mdi_wp_cli_db_assert( 'db check' === ( $mysql['result'] ?? null ), 'MySQL runtime passes through unchanged' );
+mdi_wp_cli_db_assert( 'db check' === ( $mysql['result'] ?? null ), 'non-SQLite runtimes pass through unchanged' );
+$unowned_sqlite = $run( 'sqlite-unowned' );
+mdi_wp_cli_db_assert( 'db check' === ( $unowned_sqlite['result'] ?? null ), 'MDI does not claim another SQLite drop-in boundary' );
 
 if ( $failures ) {
 	foreach ( $failures as $failure ) {

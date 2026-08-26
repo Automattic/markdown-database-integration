@@ -11,8 +11,9 @@ if ( 2 === $argc ) {
 	$scenario = $argv[1];
 	$root     = sys_get_temp_dir() . '/mdi-dropin-backend-' . $scenario . '-' . getmypid();
 	$content  = $root . '/wp-content';
+	$sqlite   = $content . '/mu-plugins/sqlite-database-integration';
 	$mdi      = $content . '/plugins/markdown-database-integration';
-	foreach ( array( $mdi . '/inc/generated', $content . '/markdown' ) as $directory ) {
+	foreach ( array( $sqlite . '/wp-includes/database', $sqlite . '/wp-includes/sqlite', $mdi . '/inc/generated', $content . '/markdown' ) as $directory ) {
 		mkdir( $directory, 0755, true );
 	}
 	register_shutdown_function( static function () use ( $root ): void {
@@ -23,7 +24,13 @@ if ( 2 === $argc ) {
 		rmdir( $root );
 	} );
 
-	foreach ( array( 'class-wp-markdown-frontmatter-profiles.php', 'class-wp-markdown-content-layout-profiles.php', 'class-wp-markdown-storage.php' ) as $file ) {
+	file_put_contents( $sqlite . '/wp-includes/database/version.php', "<?php\n" );
+	file_put_contents( $sqlite . '/constants.php', "<?php\n" );
+	file_put_contents( $sqlite . '/wp-includes/database/load.php', "<?php\nclass WP_MySQL_On_SQLite extends PDO {}\nclass WP_SQLite_Connection {}\n" );
+	file_put_contents( $sqlite . '/wp-includes/sqlite/db.php', "<?php\n" );
+	file_put_contents( $sqlite . '/wp-includes/sqlite/class-wp-sqlite-db.php', "<?php\nclass WP_SQLite_DB {}\n" );
+	file_put_contents( $sqlite . '/wp-includes/sqlite/install-functions.php', "<?php\n" );
+	foreach ( array( 'class-wp-markdown-frontmatter-profiles.php', 'class-wp-markdown-content-layout-profiles.php', 'class-wp-markdown-storage.php', 'class-wp-markdown-search.php', 'class-wp-markdown-write-engine.php', 'class-wp-markdown-loader.php' ) as $file ) {
 		file_put_contents( $mdi . '/inc/' . $file, "<?php\n" );
 	}
 	file_put_contents( $mdi . '/inc/class-wp-markdown-storage.php', "<?php\nclass WP_Markdown_Storage { public function __construct( string \$root ) {} }\n" );
@@ -45,6 +52,8 @@ if ( 2 === $argc ) {
 	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-durable-reconciliation-operations.php', $mdi . '/inc/class-wp-markdown-durable-reconciliation-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-reconciliation-adapters.php', $mdi . '/inc/class-wp-markdown-reconciliation-adapters.php' );
+	file_put_contents( $mdi . '/inc/class-wp-markdown-driver.php', "<?php\n" );
+	file_put_contents( $mdi . '/inc/class-wp-markdown-db.php', "<?php\nclass WP_Markdown_DB { public function __construct( string \$database ) {} }\n" );
 	file_put_contents( $mdi . '/markdown-database-integration.php', "<?php\n" );
 	copy( dirname( __DIR__ ) . '/db.php', $content . '/db.php' );
 
@@ -60,8 +69,8 @@ if ( 2 === $argc ) {
 	} elseif ( 'incomplete' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
-	} elseif ( in_array( $scenario, array( 'mdi-native', 'default-native' ), true ) ) {
-		if ( 'mdi-native' === $scenario ) { define( 'MARKDOWN_DB_BACKEND', 'mdi-native' ); }
+	} elseif ( 'mdi-native' === $scenario ) {
+		define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
 		define( 'MARKDOWN_DB_STATE_DIR', $content . '/markdown' );
 		define( 'MARKDOWN_DB_CONTENT_DIR', $content . '/markdown' );
 		class wpdb {
@@ -135,7 +144,7 @@ if ( 2 === $argc ) {
 			echo "PASS: mysql-full installs the MDI-owned wpdb boundary.\n";
 			exit( 0 );
 		}
-		if ( in_array( $scenario, array( 'mdi-native', 'default-native' ), true ) && $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB && defined( 'MARKDOWN_DB_DROPIN' ) ) {
+		if ( 'mdi-native' === $scenario && $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB && defined( 'MARKDOWN_DB_DROPIN' ) ) {
 			echo "PASS: mdi-native installs the filesystem-backed wpdb boundary.\n";
 			exit( 0 );
 		}
@@ -143,7 +152,10 @@ if ( 2 === $argc ) {
 			echo "PASS: {$scenario} explicitly falls back to stock wpdb.\n";
 			exit( 0 );
 		}
-		throw new RuntimeException( 'Expected backend bootstrap result.' );
+		if ( 'sqlite' !== $scenario || ! isset( $GLOBALS['wpdb'] ) ) {
+			throw new RuntimeException( 'Expected backend bootstrap failure.' );
+		}
+		echo "PASS: SQLite remains the default drop-in backend.\n";
 	} catch ( WP_Markdown_Unknown_Backend|WP_Markdown_Unsupported_Backend_Capability $error ) {
 		$diagnostic = $error->get_diagnostic();
 		if ( 'unknown' === $scenario && 'markdown_db_unknown_backend' === $diagnostic['code'] && 'unknown' === $diagnostic['backend'] ) {
@@ -160,7 +172,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'default-native', 'mdi-native', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ) as $scenario ) {
+foreach ( array( 'sqlite', 'mdi-native', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

@@ -121,6 +121,10 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		if ( 'canonical_to_wordpress' !== $binding['direction'] ) {
 			throw new InvalidArgumentException( 'The reconciliation direction is invalid.' );
 		}
+		$pdo = $this->pdo();
+		if ( null !== $pdo ) {
+			return new WP_Markdown_PDO_Reconciliation_Adapter( $pdo, $observe, $mutate );
+		}
 		global $wpdb;
 		return new WP_Markdown_WPDB_Reconciliation_Adapter( $wpdb, $observe, $mutate );
 	}
@@ -789,4 +793,26 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		return rtrim( $base, DIRECTORY_SEPARATOR ) . '/mdi-reconciliation-fences-' . hash( 'sha256', $root );
 	}
 
+	private function pdo(): ?PDO {
+		global $pdo, $wpdb;
+		$candidates = array( $pdo ?? null, is_object( $wpdb ?? null ) ? ( $wpdb->dbh ?? null ) : null, $wpdb ?? null );
+		foreach ( $candidates as $candidate ) {
+			$resolved = $this->resolve_pdo( $candidate );
+			if ( $resolved instanceof PDO ) {
+				return $resolved;
+			}
+		}
+		return null;
+	}
+
+	private function resolve_pdo( mixed $candidate ): ?PDO {
+		for ( $depth = 0; $depth < 4 && is_object( $candidate ); ++$depth ) {
+			if ( $candidate instanceof PDO ) { return $candidate; }
+			if ( method_exists( $candidate, 'get_pdo' ) ) { $candidate = $candidate->get_pdo(); continue; }
+			if ( method_exists( $candidate, 'get_connection' ) ) { $candidate = $candidate->get_connection(); continue; }
+			if ( isset( $candidate->dbh ) ) { $candidate = $candidate->dbh; continue; }
+			break;
+		}
+		return $candidate instanceof PDO ? $candidate : null;
+	}
 }

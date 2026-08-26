@@ -16,6 +16,7 @@ require_once __DIR__ . '/class-wp-markdown-storage.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-introspection.php';
+require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
 final class WP_Markdown_Native_Runtime_Factory {
@@ -166,10 +167,12 @@ final class WP_Markdown_Native_Runtime_Factory {
 		bool $multisite = false,
 		?string $content_root = null
 	): WP_Markdown_Native_Query_Runtime {
+		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root );
 		return new WP_Markdown_Native_Query_Runtime(
-			self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root ),
+			$registry,
 			new WP_Markdown_Native_Query_Parser(),
-			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root )
+			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root ),
+			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry )
 		);
 	}
 
@@ -213,6 +216,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 				if ( array( $table ) !== array_keys( $definitions ) ) {
 					continue;
 				}
+				$registry->register_definition( $prefix . $table, $definitions[ $table ] );
 				$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definitions[ $table ] );
 				if ( null !== $schema ) {
 					$partition_marker = rtrim( $state_root, '/\\' ) . '/_tables/' . $table . '/.mdi-partition.json';

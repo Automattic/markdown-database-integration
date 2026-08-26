@@ -12,7 +12,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	public function __construct(
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Query_Parser $parser = new WP_Markdown_Native_Query_Parser(),
-		private ?WP_Markdown_Native_Option_Mutation_Runtime $option_mutations = null
+		private ?WP_Markdown_Native_Option_Mutation_Runtime $option_mutations = null,
+		private ?WP_Markdown_Native_Schema_Mutation_Runtime $schema_mutations = null
 	) {
 		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
 	}
@@ -20,6 +21,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
+		}
+		if ( 1 === preg_match( '/^\s*CREATE\s+TABLE\b/i', $request->sql() ) ) {
+			return null === $this->schema_mutations
+				? $this->failure( 'unsupported_grammar', 'mdi-native schema mutations are unavailable.' )
+				: $this->schema_mutations->execute( $request );
 		}
 		if ( 1 !== preg_match( '/^\s*SELECT\b/i', $request->sql() ) ) {
 			return null === $this->option_mutations

@@ -8,7 +8,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_SQL_Identifier {
 	public function __construct(
 		private readonly string $name,
-		private readonly int $sql_offset
+		private readonly int $sql_offset,
+		private readonly ?string $qualifier = null
 	) {}
 
 	public function name(): string {
@@ -17,6 +18,10 @@ final class WP_Markdown_Native_SQL_Identifier {
 
 	public function sql_offset(): int {
 		return $this->sql_offset;
+	}
+
+	public function qualifier(): ?string {
+		return $this->qualifier;
 	}
 }
 
@@ -57,8 +62,33 @@ final class WP_Markdown_Native_SQL_Predicate {
 	}
 }
 
+final class WP_Markdown_Native_SQL_Join {
+	public function __construct(
+		private readonly WP_Markdown_Native_SQL_Identifier $table,
+		private readonly WP_Markdown_Native_SQL_Identifier $alias,
+		private readonly WP_Markdown_Native_SQL_Identifier $left,
+		private readonly WP_Markdown_Native_SQL_Identifier $right
+	) {}
+
+	public function table(): WP_Markdown_Native_SQL_Identifier {
+		return $this->table;
+	}
+
+	public function alias(): WP_Markdown_Native_SQL_Identifier {
+		return $this->alias;
+	}
+
+	public function left(): WP_Markdown_Native_SQL_Identifier {
+		return $this->left;
+	}
+
+	public function right(): WP_Markdown_Native_SQL_Identifier {
+		return $this->right;
+	}
+}
+
 final class WP_Markdown_Native_SQL_Select {
-	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates */
+	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates @param array<int,WP_Markdown_Native_SQL_Join> $joins */
 	public function __construct(
 		private readonly bool $select_all,
 		private readonly bool $count_all,
@@ -66,7 +96,9 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
 		private readonly array $predicates,
 		private readonly ?WP_Markdown_Native_SQL_Identifier $order,
-		private readonly ?int $limit
+		private readonly ?int $limit,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $alias = null,
+		private readonly array $joins = array()
 	) {}
 
 	public function selects_all(): bool {
@@ -84,6 +116,15 @@ final class WP_Markdown_Native_SQL_Select {
 
 	public function table(): WP_Markdown_Native_SQL_Identifier {
 		return $this->table;
+	}
+
+	public function alias(): ?WP_Markdown_Native_SQL_Identifier {
+		return $this->alias;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Join> */
+	public function joins(): array {
+		return $this->joins;
 	}
 
 	public function predicate(): ?WP_Markdown_Native_SQL_Predicate {

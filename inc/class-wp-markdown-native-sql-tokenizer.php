@@ -34,6 +34,7 @@ final class WP_Markdown_Native_SQL_Token {
 	public const LEFT_PAREN = 'left_paren';
 	public const RIGHT_PAREN = 'right_paren';
 	public const EQUALS = 'equals';
+	public const DOT = 'dot';
 	public const END = 'end';
 
 	public function __construct(
@@ -78,6 +79,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 				'(' => WP_Markdown_Native_SQL_Token::LEFT_PAREN,
 				')' => WP_Markdown_Native_SQL_Token::RIGHT_PAREN,
 				'=' => WP_Markdown_Native_SQL_Token::EQUALS,
+				'.' => WP_Markdown_Native_SQL_Token::DOT,
 				default => null,
 			};
 			if ( null !== $punctuation ) {
@@ -108,7 +110,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 					++$offset;
 				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'FROM', 'WHERE', 'IN', 'AND', 'ORDER', 'BY', 'ASC', 'LIMIT' ), true )
+				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'FROM', 'JOIN', 'ON', 'WHERE', 'IN', 'AND', 'ORDER', 'BY', 'ASC', 'LIMIT' ), true )
 					? WP_Markdown_Native_SQL_Token::KEYWORD
 					: WP_Markdown_Native_SQL_Token::WORD;
 				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );

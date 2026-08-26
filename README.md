@@ -482,6 +482,19 @@ authoritative backend remains the sole source of caller-visible behavior, and
 shadow failures do not fail the query. The SHA-256 identity covers the sanitized
 template, not the literal-bearing source query.
 
+### Native Cutover Boundary
+
+SQLite remains MDI's supported default runtime while `mdi-native` expands behind
+explicit configuration and shadow verification. Native becomes eligible to
+replace SQLite only after generic SQL and `wpdb` contracts pass installation,
+activation, schema migration, CRUD, transaction, cron, REST, WP-CLI, admin, and
+front-end workflows across representative arbitrary WordPress plugins.
+
+Data Machine and WooCommerce are compatibility evidence, not implementation
+targets. Compatibility belongs in reusable grammar, typed AST, planning, schema,
+storage, transaction, and result-state primitives. Plugin names, plugin table
+names, and plugin-specific query branches are outside the native engine contract.
+
 With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
 single-root layout:
 

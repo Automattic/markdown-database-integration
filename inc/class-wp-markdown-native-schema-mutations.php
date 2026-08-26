@@ -65,7 +65,16 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
-			$this->registry->register_definition( $table, $definition );
+			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+			if ( null === $schema ) {
+				$this->registry->register_definition( $table, $definition );
+			} else {
+				$this->registry->register(
+					$table,
+					$schema,
+					new WP_Markdown_Native_JSON_Snapshot_Provider( $this->state_root, $schema, $suffix . '.json' )
+				);
+			}
 			return WP_Markdown_Query_Result::schema_changed();
 		} finally {
 			flock( $lock, LOCK_UN );

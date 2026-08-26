@@ -262,7 +262,7 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
 			}
-			$identity = $this->identity( $mutation->option_name() );
+			$identity = $this->schema->value_key( 'option_name', $mutation->option_name() );
 			if ( null === $identity ) {
 				return $this->failure( 'unsupported_option_collation', 'The option mutation requires a deterministic ASCII identity.' );
 			}
@@ -271,7 +271,7 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			foreach ( $rows as $candidate ) {
 				$candidate_id = (int) $candidate['option_id'];
 				$maximum_id = max( $maximum_id, $candidate_id );
-				if ( $identity === $this->identity( (string) $candidate['option_name'] ) ) {
+				if ( $identity === $this->schema->value_key( 'option_name', $candidate['option_name'] ) ) {
 					if ( null !== $existing ) {
 						return $this->failure( 'duplicate_collated_identity', 'Canonical option files contain duplicate collated identities.' );
 					}
@@ -372,10 +372,6 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			return $this->failure( 'option_publish_failed', 'The canonical option row could not be atomically published.' );
 		}
 		return true;
-	}
-
-	private function identity( string $name ): ?string {
-		return 1 === preg_match( '/^[\x00-\x7F]*$/D', $name ) ? strtolower( $name ) : null;
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

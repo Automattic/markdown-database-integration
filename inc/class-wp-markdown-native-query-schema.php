@@ -17,17 +17,10 @@ final class WP_Markdown_Native_Column {
 		private readonly array $filter_operators = array( '=', 'IN' ),
 		private readonly mixed $filter_validator = null
 	) {
-		if ( null !== $validator && ! is_callable( $validator ) ) {
-			throw new InvalidArgumentException( 'Column validators must be callable.' );
-		}
-		if ( null !== $normalizer && ! is_callable( $normalizer ) ) {
-			throw new InvalidArgumentException( 'Column normalizers must be callable.' );
-		}
-		if ( null !== $lookup_validator && ! is_callable( $lookup_validator ) ) {
-			throw new InvalidArgumentException( 'Column lookup validators must be callable.' );
-		}
-		if ( null !== $filter_validator && ! is_callable( $filter_validator ) ) {
-			throw new InvalidArgumentException( 'Column filter validators must be callable.' );
+		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
+			if ( null !== $callback && ! is_callable( $callback ) ) {
+				throw new InvalidArgumentException( 'Column callbacks must be callable.' );
+			}
 		}
 	}
 

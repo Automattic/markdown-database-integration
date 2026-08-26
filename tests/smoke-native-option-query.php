@@ -165,6 +165,11 @@ $cron_temp_files = glob( $cron_path . '.tmp-*' ) ?: array();
 $wpdb_upsert = $database->query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('wpdb_native', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value), autoload = VALUES(autoload)" );
 $wpdb_upsert_state = array( 'rows_affected' => $database->rows_affected, 'insert_id' => $database->insert_id );
 unlink( $root . '/_options/wpdb_native.json' );
+$plain_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('installing_lock', 123456, 'no')" ) );
+$plain_insert_state = $plain_insert->wpdb_state();
+$read_plain_insert = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'installing_lock' LIMIT 1" ) );
+$duplicate_plain_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('INSTALLING_LOCK', 654321, 'no')" ) );
+unlink( $root . '/_options/installing_lock.json' );
 $prepared_query = $database->prepare( "SELECT option_value FROM {$database->options} WHERE option_name = %s LIMIT 1", 'siteurl' );
 $wpdb_row = $database->get_row( $prepared_query );
 $wpdb_var = $database->get_var( $prepared_query );
@@ -244,6 +249,13 @@ $checks = array(
 	'option mutations fail closed unless duplicate assignments preserve the complete row' => false === $unsupported_upsert->return_value()
 		&& 'unsupported_option_upsert' === ( $unsupported_upsert->diagnostic()['reason'] ?? null )
 		&& ! file_exists( $root . '/_options/invalid.json' ),
+	'plain canonical option inserts preserve integer values and reject duplicate collated identities' => 1 === $plain_insert->return_value()
+		&& 1 === $plain_insert_state['rows_affected']
+		&& 7 === $plain_insert_state['insert_id']
+		&& '123456' === ( $read_plain_insert->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'no' === ( $read_plain_insert->wpdb_state()['last_result'][0]->autoload ?? null )
+		&& false === $duplicate_plain_insert->return_value()
+		&& 'duplicate_key' === ( $duplicate_plain_insert->diagnostic()['reason'] ?? null ),
 	'wpdb exposes native mutation affected rows and insert identity' => 1 === $wpdb_upsert
 		&& 1 === $wpdb_upsert_state['rows_affected']
 		&& 7 === $wpdb_upsert_state['insert_id'],

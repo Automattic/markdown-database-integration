@@ -25,10 +25,10 @@ function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
 }
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
-class WP_MySQL_On_SQLite {}
-require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
+require_once __DIR__ . '/stubs/stub-wp-markdown-backend-operations.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
-class MDI_Failing_Temp_Cleanup_Engine extends WP_Markdown_Write_Engine {
+class MDI_Failing_Temp_Cleanup_Engine extends WP_Markdown_Canonical_Persistence {
 	protected function remove_json_temp_file( string $path ): bool {
 		unset( $path );
 		return false;
@@ -43,9 +43,9 @@ function mdi_temp_assert( bool $condition, string $label ): void {
 	echo ( $condition ? '✓ ' : '✗ ' ) . $label . PHP_EOL;
 	$condition ? $passed++ : $failed++;
 }
-function mdi_temp_engine( string $base, bool $failing = false ): WP_Markdown_Write_Engine {
-	$class = $failing ? MDI_Failing_Temp_Cleanup_Engine::class : WP_Markdown_Write_Engine::class;
-	return new $class( $base, new WP_Markdown_Storage( $base ), new WP_MySQL_On_SQLite(), 'wp_' );
+function mdi_temp_engine( string $base, bool $failing = false ): WP_Markdown_Canonical_Persistence {
+	$class = $failing ? MDI_Failing_Temp_Cleanup_Engine::class : WP_Markdown_Canonical_Persistence::class;
+	return new $class( $base, new WP_Markdown_Storage( $base ), new WP_Markdown_Test_Backend_Operations(), 'wp_' );
 }
 function mdi_temp_file( string $path, int $pid, string $suffix, int $mtime ): string {
 	$temp = $path . '.tmp.' . $pid . '.' . $suffix;
@@ -67,7 +67,7 @@ add_filter( 'markdown_database_integration_json_temp_cleanup_max_age', static fn
 $base = sys_get_temp_dir() . '/mdi-json-temp-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $base . '/_tables', 0755, true );
 $path = $base . '/_tables/events.json';
-$write = new ReflectionMethod( WP_Markdown_Write_Engine::class, 'write_json' );
+$write = new ReflectionMethod( WP_Markdown_Canonical_Persistence::class, 'write_json' );
 
 $stale = mdi_temp_file( $path, 999999, 'deadbeef', time() - 120 );
 $fresh = mdi_temp_file( $path, 999998, 'cafebabe', time() );
@@ -86,7 +86,7 @@ flock( $active_handle, LOCK_UN );
 fclose( $active_handle );
 
 $unlocked = mdi_temp_file( $path, 999995, 'decafbad', time() - 120 );
-$cleanup = new ReflectionMethod( WP_Markdown_Write_Engine::class, 'cleanup_json_temp_files' );
+$cleanup = new ReflectionMethod( WP_Markdown_Canonical_Persistence::class, 'cleanup_json_temp_files' );
 $cleanup->invoke( mdi_temp_engine( $base ), $path );
 mdi_temp_assert( ! file_exists( $unlocked ), 'unlocked temp from a terminated writer is reclaimed without PID liveness checks' );
 

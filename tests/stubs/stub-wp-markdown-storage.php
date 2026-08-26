@@ -23,5 +23,5 @@ class Stub_WP_Markdown_Storage {
 	}
 }
 
-// Alias so the type hint on WP_Markdown_Search::__construct() matches.
+// Alias used by storage fixtures that expect the production class name.
 class_alias( Stub_WP_Markdown_Storage::class, 'WP_Markdown_Storage' );

@@ -2,7 +2,7 @@
 /**
  * Plugin Name: Markdown Database Integration
  * Plugin URI: https://github.com/chubes4/markdown-database-integration
- * Description: File-backed WordPress database with Markdown content, JSON state, plugin schemas, and a rebuildable SQLite query engine.
+ * Description: Pure-PHP WordPress database runtime backed by canonical Markdown and JSON files.
  * Version: 0.11.5
  * Author: Chris Huber
  * License: GPL v2 or later
@@ -10,15 +10,6 @@
  * Text Domain: markdown-database-integration
  * Requires at least: 6.9
  * Requires PHP: 8.1
- *
- * Requires the SQLite Database Integration plugin (sqlite-database-integration).
- *
- * Modes:
- *   - 'mirror'  (Phase 1): SQLite is primary. Markdown files are mirrored on every write.
- *                           WordPress reads from SQLite. AI agents read from markdown.
- *   - 'primary' (Phase 2): Markdown is primary. SQLite is an index rebuilt from .md files.
- *                           WordPress reads are served from the index. Writes go to markdown first.
- *
  * The markdown files are the knowledge layer:
  *   - AI agents read them directly (no API, no query, just grep)
  *   - Git syncs them across machines and people
@@ -46,9 +37,7 @@ if ( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP' ) && is_file( MARKD
 	require_once MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP;
 }
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-storage.php';
-require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-primary-storage-runtime.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-frontmatter-migration.php';
-require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-sqlite-recovery.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-backend-capabilities.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-native-query-runtime.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-native-wpdb.php';
@@ -67,7 +56,7 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
 function markdown_database_integration_ensure_mysql_reconciliation_state(): void {
 	global $wpdb;
-	if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) {
+	if ( ! defined( 'MARKDOWN_DB_BACKEND' ) || 'mysql-content' !== MARKDOWN_DB_BACKEND ) {
 		return;
 	}
 	if ( ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
@@ -98,14 +87,6 @@ if ( ! defined( 'MARKDOWN_DB_STATE_DIR' ) ) {
 }
 
 /**
- * Operating mode: 'mirror' or 'primary'.
- * Override in wp-config.php: define( 'MARKDOWN_DB_MODE', 'primary' );
- */
-if ( ! defined( 'MARKDOWN_DB_MODE' ) ) {
-	define( 'MARKDOWN_DB_MODE', 'mirror' );
-}
-
-/**
  * Post types to exclude from markdown storage. Comma-separated.
  * These go to _tables/posts.json instead of .md files.
  * Override in wp-config.php to customize.
@@ -122,88 +103,6 @@ if ( ! defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ) {
 // the post_content bytes WordPress receives; rendering/editor conversion lives
 // in the application/content-format layer above this storage plugin.
 
-// @phpstan-ignore-next-line Runtime wp-config.php constants are intentionally dynamic.
-if ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && (bool) constant( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
-	add_action( 'wp_install', 'markdown_database_integration_import_seed_posts_after_install', 20 );
-}
-
-/**
- * Import markdown seed posts after a fallback SQLite install finishes.
- *
- * A partial primary store can contain markdown posts before it contains
- * installed-site options. The db.php drop-in lets WordPress install into normal
- * SQLite for that first request, then this hook imports seed posts into the new
- * tables so the fresh environment has content immediately.
- */
-function markdown_database_integration_import_seed_posts_after_install(): void {
-	$excluded_types = array_filter( array_map( 'trim', explode( ',', MARKDOWN_DB_EXCLUDED_TYPES ) ) );
-	$storage        = new WP_Markdown_Storage( MARKDOWN_DB_CONTENT_DIR, $excluded_types );
-	$storage->set_content_layout_profile( MARKDOWN_DB_CONTENT_LAYOUT_PROFILE );
-	$posts          = $storage->get_all_posts( false );
-
-	foreach ( $posts as $post ) {
-		$post_type = (string) ( $post->post_type ?? 'post' );
-		$post_name = (string) ( $post->post_name ?? '' );
-		if ( '' !== $post_name && get_page_by_path( $post_name, OBJECT, $post_type ) ) {
-			continue;
-		}
-
-		wp_insert_post(
-			array(
-				'import_id'         => (int) ( $post->ID ?? 0 ),
-				'post_author'       => (int) ( $post->post_author ?? 1 ),
-				'post_date'         => (string) ( $post->post_date ?? '' ),
-				'post_date_gmt'     => (string) ( $post->post_date_gmt ?? '' ),
-				'post_content'      => (string) ( $post->post_content ?? '' ),
-				'post_title'        => (string) ( $post->post_title ?? '' ),
-				'post_excerpt'      => (string) ( $post->post_excerpt ?? '' ),
-				'post_status'       => (string) ( $post->post_status ?? 'publish' ),
-				'comment_status'    => (string) ( $post->comment_status ?? 'open' ),
-				'ping_status'       => (string) ( $post->ping_status ?? 'open' ),
-				'post_password'     => (string) ( $post->post_password ?? '' ),
-				'post_name'         => $post_name,
-				'post_modified'     => (string) ( $post->post_modified ?? '' ),
-				'post_modified_gmt' => (string) ( $post->post_modified_gmt ?? '' ),
-				'post_parent'       => (int) ( $post->post_parent ?? 0 ),
-				'menu_order'        => (int) ( $post->menu_order ?? 0 ),
-				'post_type'         => $post_type,
-				'post_mime_type'    => (string) ( $post->post_mime_type ?? '' ),
-				'comment_count'     => (int) ( $post->comment_count ?? 0 ),
-			),
-			true
-		);
-	}
-}
-
-/** Schedule canonical reconciliation outside the WordPress bootstrap path. */
-function markdown_database_integration_schedule_primary_sync(): void {
-	global $wpdb;
-	if ( ! defined( 'MARKDOWN_DB_MODE' ) || 'primary' !== MARKDOWN_DB_MODE || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'synchronize_primary_index' ) ) {
-		return;
-	}
-
-	if ( wp_next_scheduled( 'markdown_database_integration_sync_primary_index' ) || get_transient( 'markdown_database_integration_primary_sync_scheduled' ) ) {
-		return;
-	}
-
-	$scheduled = wp_schedule_single_event( time(), 'markdown_database_integration_sync_primary_index' );
-	if ( false !== $scheduled && ! is_wp_error( $scheduled ) ) {
-		$interval = defined( 'MARKDOWN_DB_PRIMARY_SYNC_INTERVAL' ) ? (int) MARKDOWN_DB_PRIMARY_SYNC_INTERVAL : 60;
-		set_transient( 'markdown_database_integration_primary_sync_scheduled', 1, max( 10, $interval ) );
-	}
-}
-
-/** Reconcile the primary index from the process-safe scheduled boundary. */
-function markdown_database_integration_sync_primary_index(): void {
-	global $wpdb;
-	if ( is_object( $wpdb ) && method_exists( $wpdb, 'synchronize_primary_index' ) ) {
-		$wpdb->synchronize_primary_index();
-	}
-}
-
-add_action( 'init', array( 'WP_Markdown_SQLite_Recovery', 'register' ) );
-add_action( 'init', 'markdown_database_integration_schedule_primary_sync', 0 );
-add_action( 'markdown_database_integration_sync_primary_index', 'markdown_database_integration_sync_primary_index' );
 add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'switch_blog', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Content_Runtime', 'bootstrap' ), 20 );
@@ -217,5 +116,4 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	WP_CLI::add_command( 'markdown-db export', array( 'WP_Markdown_CLI', 'export_cli' ) );
 	WP_CLI::add_command( 'markdown-db reconcile', array( 'WP_Markdown_CLI', 'reconcile_cli' ) );
 	WP_CLI::add_command( 'markdown-db doctor', array( 'WP_Markdown_CLI', 'doctor_cli' ) );
-	WP_CLI::add_command( 'markdown-db recover-sqlite-posts', array( 'WP_Markdown_SQLite_Recovery', 'cli' ) );
 }

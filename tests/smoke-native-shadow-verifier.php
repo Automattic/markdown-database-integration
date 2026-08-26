@@ -1,5 +1,5 @@
 <?php
-/** Native shadow comparison, sanitization, bounds, and SQLite attachment. */
+/** Native shadow comparison, sanitization, and bounds. */
 
 declare( strict_types=1 );
 
@@ -105,51 +105,6 @@ $failed_verifier = new WP_Markdown_Native_Shadow_Verifier( new MDI_Throwing_Runt
 $failed_verifier->observe( 'SELECT option_name FROM wp_options', 0, $database );
 $failure_report = $failed_verifier->report();
 
-class WP_SQLite_DB {
-	public string $prefix = 'wp_';
-	public string $last_query = '';
-	public string $last_error = '';
-	public int $insert_id = 0;
-	public int $rows_affected = 0;
-	public int $num_rows = 0;
-	public int $num_queries = 0;
-	public array $last_result = array();
-	public ?string $observer_added = null;
-	protected array $col_info = array();
-
-	public function query( $query ) {
-		$this->last_query = (string) $query;
-		$this->last_result = array( (object) array( 'option_value' => 'https://example.test' ) );
-		$this->col_info = array( (object) array( 'name' => 'option_value', 'type' => 252 ) );
-		$this->num_rows = 1;
-		++$this->num_queries;
-		return 1;
-	}
-
-	public function get_col_info( string $field ): array {
-		return array_map( static fn( object $column ): mixed => $column->{$field} ?? null, $this->col_info );
-	}
-}
-require_once __DIR__ . '/../inc/class-wp-markdown-db.php';
-
-final class MDI_Hostile_Shadow_Observer {
-	public int $calls = 0;
-	public function observe( string $query, mixed $return_value, object $database ): void {
-		unset( $query, $return_value );
-		++$this->calls;
-		$database->prefix = 'corrupted_';
-		$database->last_result = array( 'corrupted' );
-		$database->observer_added = 'corrupted';
-		$database->query( 'SELECT nested_observer_query' );
-		throw new RuntimeException( 'private observer failure' );
-	}
-}
-
-$sqlite = new WP_Markdown_DB();
-$hostile = new MDI_Hostile_Shadow_Observer();
-$sqlite->set_native_shadow_verifier( $hostile );
-$sqlite_return = $sqlite->query( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1" );
-
 $checks = array(
 	'supported reads compare exactly without retaining observations' => 5 === $report['counts']['compatible']
 		&& 1 === $report['counts']['ignored']
@@ -165,15 +120,6 @@ $checks = array(
 	'verifier failures retain only bounded structural diagnostics' => 1 === $failure_report['counts']['verifier_failures']
 		&& RuntimeException::class === ( $failure_report['first_blocker']['failure_class'] ?? null )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'private runtime failure' ),
-	'SQLite authoritative returns and public state survive hostile observers' => 1 === $sqlite_return
-		&& 1 === $hostile->calls
-		&& 'wp_' === $sqlite->prefix
-		&& 1 === $sqlite->num_queries
-		&& null === $sqlite->observer_added
-		&& 'https://example.test' === ( $sqlite->last_result[0]->option_value ?? null ),
-	'recursive observer queries are not observed twice' => 1 === $hostile->calls,
-	'observer exceptions expose no private message and never escape' => 'markdown_db_native_shadow_observer_failed' === ( $GLOBALS['markdown_db_native_shadow_diagnostic']['code'] ?? null )
-		&& ! isset( $GLOBALS['markdown_db_native_shadow_diagnostic']['message'] ),
 );
 
 $failed = 0;

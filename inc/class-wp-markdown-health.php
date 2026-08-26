@@ -22,11 +22,8 @@ class WP_Markdown_Health {
 	public static function diagnose( array $context = array() ): array {
 		global $wpdb;
 
-		$mode = $context['mode'] ?? ( defined( 'MARKDOWN_DB_MODE' ) ? MARKDOWN_DB_MODE : '' );
-		$mode = is_string( $mode ) ? $mode : '';
-
-		$sqlite_runtime = $context['sqlite_runtime'] ?? ( class_exists( 'WP_SQLite_DB' ) && $wpdb instanceof WP_SQLite_DB );
-		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime || ( defined( 'MARKDOWN_DB_BACKEND' ) && in_array( MARKDOWN_DB_BACKEND, array( 'mysql-content', 'mysql-full' ), true ) ) ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
+		$mode = '';
+		$backend = $context['backend_capabilities'] ?? WP_Markdown_Backend_Resolver::resolve();
 		if ( ! $backend instanceof WP_Markdown_Backend_Capabilities ) {
 			throw new InvalidArgumentException( 'backend_capabilities must be a WP_Markdown_Backend_Capabilities instance.' );
 		}
@@ -43,7 +40,6 @@ class WP_Markdown_Health {
 				), $backend );
 			}
 		}
-		if ( ! $sqlite_runtime ) {
 			if ( 'mysql-full' === $backend->get_backend() ) {
 				$boundary = $context['mysql_full_boundary'] ?? ( class_exists( 'WP_Markdown_MySQL_WPDB' ) && $wpdb instanceof WP_Markdown_MySQL_WPDB );
 				$sink = $context['mysql_full_sink'] ?? ( is_object( $wpdb ?? null ) && method_exists( $wpdb, 'has_mutation_sink' ) && $wpdb->has_mutation_sink() );
@@ -83,7 +79,7 @@ class WP_Markdown_Health {
 			if ( 'mysql-content' === $backend->get_backend() ) {
 				$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_RETAINED_DROPIN' ) || ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN ) );
 				if ( $dropin_loaded ) {
-					return self::with_backend( array( 'status' => 'mysql_content_dropin_migration_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-content runs on normal MySQL without db.php. Remove the MDI SQLite db.php drop-in, restart PHP, then rerun markdown-db doctor.' ), $backend );
+					return self::with_backend( array( 'status' => 'mysql_content_dropin_migration_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-content runs on normal MySQL without db.php. Remove the MDI db.php drop-in, restart PHP, then rerun markdown-db doctor.' ), $backend );
 				}
 				$managed_types = $context['managed_post_types'] ?? ( defined( 'MARKDOWN_DB_MANAGED_POST_TYPES' ) ? MARKDOWN_DB_MANAGED_POST_TYPES : '' );
 				if ( ! is_string( $managed_types ) || '' === trim( $managed_types ) ) {
@@ -94,58 +90,22 @@ class WP_Markdown_Health {
 				}
 				return self::with_backend( array( 'status' => 'healthy', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI MySQL content-primary lifecycle runtime is active without a db.php drop-in.' ), $backend );
 			}
+			if ( 'mdi-native' === $backend->get_backend() ) {
+				$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN );
+				$native_runtime = $context['native_runtime'] ?? ( class_exists( 'WP_Markdown_Native_WPDB' ) && $wpdb instanceof WP_Markdown_Native_WPDB );
+				return self::with_backend( array(
+					'status'  => $dropin_loaded && $native_runtime ? 'healthy' : 'dropin_missing_or_replaced',
+					'healthy' => $dropin_loaded && $native_runtime,
+					'mode'    => $mode,
+					'message' => $dropin_loaded && $native_runtime ? 'MDI native canonical runtime is active.' : 'MDI native canonical runtime requires the MDI db.php drop-in.',
+				), $backend );
+			}
 			return self::with_backend( array(
 				'status'  => 'not_applicable',
 				'healthy' => true,
 				'mode'    => $mode,
-				'message' => 'MDI drop-in health is not applicable to this non-SQLite runtime. Import/export remains available.',
+				'message' => 'MDI drop-in health is not applicable to this runtime. Import/export remains available.',
 			), $backend );
-		}
-
-		if ( ! in_array( $mode, array( 'primary', 'mirror' ), true ) ) {
-			return self::with_backend( array(
-				'status'  => 'not_configured',
-				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'No MDI primary or mirror mode is configured.',
-			), $backend );
-		}
-
-		$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN );
-		$install_fallback = $context['install_fallback'] ?? ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && MARKDOWN_DB_INSTALL_FALLBACK );
-		$runtime_classes = $context['runtime_classes'] ?? array(
-			class_exists( 'WP_Markdown_DB' ),
-			class_exists( 'WP_Markdown_Write_Engine' ),
-			class_exists( 'WP_Markdown_Loader' ),
-			class_exists( 'WP_Markdown_Storage' ),
-		);
-		$runtime_loaded = ! in_array( false, $runtime_classes, true );
-		$markdown_runtime = $context['markdown_runtime'] ?? ( class_exists( 'WP_Markdown_DB' ) && $wpdb instanceof WP_Markdown_DB );
-
-		if ( 'primary' === $mode && $dropin_loaded && $install_fallback ) {
-			return self::with_backend( array(
-				'status'  => 'install_fallback',
-				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'MDI primary install fallback is active until WordPress installation completes.',
-			), $backend );
-		}
-
-		if ( $dropin_loaded && $runtime_loaded && $markdown_runtime ) {
-			return self::with_backend( array(
-				'status'  => 'healthy',
-				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'MDI drop-in and runtime classes are active.',
-			), $backend );
-		}
-
-		return self::with_backend( array(
-			'status'  => 'dropin_missing_or_replaced',
-			'healthy' => false,
-			'mode'    => $mode,
-			'message' => 'MDI ' . $mode . ' mode is configured, but the MDI db.php drop-in and runtime are not active.',
-		), $backend );
 	}
 
 	/**

@@ -14,14 +14,10 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
+require_once __DIR__ . '/stubs/stub-wp-markdown-backend-operations.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
-if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
-	class WP_MySQL_On_SQLite {}
-}
-
-require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
-
-class MDI_Hash_Observed_Write_Engine extends WP_Markdown_Write_Engine {
+class MDI_Hash_Observed_Persistence extends WP_Markdown_Canonical_Persistence {
 	public int $canonical_hash_reads = 0;
 
 	protected function canonical_file_hash( string $path ): string {
@@ -59,11 +55,11 @@ function assert_true( bool $cond, string $label, string $detail = '' ): void {
 	$failed++;
 }
 
-function build_write_engine( string $content_dir ): WP_Markdown_Write_Engine {
-	return new WP_Markdown_Write_Engine(
+function build_write_engine( string $content_dir ): WP_Markdown_Canonical_Persistence {
+	return new WP_Markdown_Canonical_Persistence(
 		$content_dir,
 		new WP_Markdown_Storage( $content_dir ),
-		new WP_MySQL_On_SQLite(),
+		new WP_Markdown_Test_Backend_Operations(),
 		'wp_'
 	);
 }
@@ -128,7 +124,7 @@ assert_true( empty( $stale ), 'no stale temp files remain', implode( ', ', $stal
 
 // 3. Change classification uses bounded mutation facts rather than rereading
 // either side of a large atomic replacement at shutdown.
-$hash_engine  = new MDI_Hash_Observed_Write_Engine( $base, new WP_Markdown_Storage( $base ), new WP_MySQL_On_SQLite(), 'wp_' );
+$hash_engine  = new MDI_Hash_Observed_Persistence( $base, new WP_Markdown_Storage( $base ), new WP_Markdown_Test_Backend_Operations(), 'wp_' );
 $hash_path    = $base . '/_tables/hash-observed.json';
 $hash_payload = array_fill( 0, 1000, array( 'history' => str_repeat( 'x', 1024 ) ) );
 file_put_contents( $hash_path, str_repeat( 'old', 1024 * 1024 ) );
@@ -147,7 +143,7 @@ assert_true( in_array( '_tables/hash-created.json', $changes['created'] ?? array
 
 // 4. Option files use the same bounded atomic temp-path primitive as table
 // snapshots and leave no process-local temp artifacts after replacement.
-$source       = (string) file_get_contents( __DIR__ . '/../inc/class-wp-markdown-write-engine.php' );
+$source       = (string) file_get_contents( __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php' );
 $option_start = strpos( $source, 'private function write_option_file' );
 $option_end   = strpos( $source, 'private function delete_option_file', $option_start );
 $option_code  = substr( $source, $option_start, $option_end - $option_start );

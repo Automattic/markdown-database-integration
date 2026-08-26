@@ -1143,7 +1143,7 @@ class WP_Markdown_Storage {
 	 * Record that a file was renamed during parent promotion.
 	 *
 	 * Updates the in-memory index for the duration of the request AND
-	 * invokes the persistent index-writer callback so the SQLite
+	 * invokes the persistent index-writer callback so the query runtime
 	 * `_markdown_file_index` row tracks the new path. Without the
 	 * callback, warm boot would see the old path as deleted and the new
 	 * path as new, churning the promoted post through a full delete-
@@ -1471,7 +1471,7 @@ class WP_Markdown_Storage {
 	 *
 	 * When $metadata_only is true, only frontmatter is parsed — the body
 	 * content is skipped entirely (post_content set to empty string). This
-	 * is used during boot to populate the SQLite index without reading
+	 * is used during boot to populate query state without reading
 	 * file bodies. Content is lazy-loaded from disk on demand.
 	 * See: Index/Map Architecture design doc.
 	 *
@@ -1834,7 +1834,7 @@ class WP_Markdown_Storage {
 
 		$id = (int) ( $post->ID ?? 0 );
 
-		// Post meta — fetch from SQLite and include in frontmatter.
+		// Fetch post meta from the active backend and include it in frontmatter.
 		// Each post's .md file is self-contained. See GitHub issue #6.
 		if ( $id > 0 && ( null !== $this->meta_resolver || isset( $post->_frontmatter_meta ) ) ) {
 			$meta_rows = isset( $post->_frontmatter_meta ) ? $this->frontmatter_meta_rows( (array) $post->_frontmatter_meta ) : call_user_func( $this->meta_resolver, $id );
@@ -1898,7 +1898,7 @@ class WP_Markdown_Storage {
 			}
 		}
 
-		// Terms — fetch from SQLite and group by taxonomy.
+		// Fetch terms from the active backend and group them by taxonomy.
 		if ( $id > 0 && ( null !== $this->terms_resolver || isset( $post->_frontmatter_terms ) ) ) {
 			$term_rows = isset( $post->_frontmatter_terms ) ? $this->frontmatter_term_rows( (array) $post->_frontmatter_terms ) : call_user_func( $this->terms_resolver, $id );
 			if ( ! empty( $term_rows ) ) {

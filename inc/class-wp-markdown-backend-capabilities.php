@@ -86,16 +86,6 @@ class WP_Markdown_Backend_Capabilities {
 		}
 	}
 
-	/**
-	 * SQLite is the shipped reference backend. Keep this declaration complete
-	 * while future backends are extracted behind this contract.
-	 */
-	public static function sqlite(): self {
-		$capabilities = array_fill_keys( self::KNOWN, true );
-		$capabilities['canonical_option_select'] = false;
-		return new self( 'sqlite', $capabilities );
-	}
-
 	/** Content-primary MySQL deliberately excludes full-table interception. */
 	public static function mysql_content(): self {
 		return new self( 'mysql-content', array(
@@ -117,7 +107,7 @@ class WP_Markdown_Backend_Capabilities {
 		) );
 	}
 
-	/** mdi-native currently executes only bounded option reads from canonical state. */
+	/** mdi-native executes bounded queries directly against canonical state. */
 	public static function mdi_native(): self {
 		return new self( 'mdi-native', array( 'canonical_option_select' => true ) );
 	}
@@ -192,10 +182,7 @@ class WP_Markdown_Backend_Resolver {
 			}
 		}
 
-		$id = defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'sqlite';
-		if ( 'sqlite' === $id && ! isset( self::$declarations['sqlite'] ) ) {
-			self::register( WP_Markdown_Backend_Capabilities::sqlite() );
-		}
+		$id = defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'mdi-native';
 		if ( 'mysql-content' === $id && ! isset( self::$declarations['mysql-content'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::mysql_content() );
 		}
@@ -236,10 +223,7 @@ class WP_Markdown_Backend_Resolver {
 		}
 	}
 
-	/**
-	 * SQLite is the only shipped runtime backend. A supplied declaration is used
-	 * by tests and future backend adapters without coupling feature code to one.
-	 */
+	/** Resolve the active runtime declaration. */
 	public static function resolve( ?WP_Markdown_Backend_Capabilities $backend = null ): WP_Markdown_Backend_Capabilities {
 		if ( null !== $backend ) {
 			return $backend;
@@ -247,6 +231,6 @@ class WP_Markdown_Backend_Resolver {
 		if ( null !== self::$active_backend ) {
 			return self::$declarations[ self::$active_backend ];
 		}
-		return WP_Markdown_Backend_Capabilities::sqlite();
+		return WP_Markdown_Backend_Capabilities::mdi_native();
 	}
 }

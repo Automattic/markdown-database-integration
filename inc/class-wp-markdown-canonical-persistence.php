@@ -56,7 +56,7 @@ class WP_Markdown_Canonical_Persistence {
 	 *
 	 * Stored as a callable instead of a baked string so callers in boot
 	 * paths where `$table_prefix` is unset at construct time still get
-	 * the canonical prefix at query time. See WP_Markdown_DB::
+	 * the canonical prefix at query time.
 	 * boot_connection() for the deferral rationale and issue #77 for
 	 * the underlying boot-order bug.
 	 *

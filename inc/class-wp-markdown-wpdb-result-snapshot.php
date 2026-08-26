@@ -83,7 +83,7 @@ final class WP_Markdown_WPDB_Result_Snapshot {
 				return array();
 			}
 		}
-		if ( ! $load_lazy_metadata && ! $result instanceof mysqli_result && ! $result instanceof PDOStatement ) {
+		if ( ! $load_lazy_metadata && ! $result instanceof mysqli_result ) {
 			return array();
 		}
 

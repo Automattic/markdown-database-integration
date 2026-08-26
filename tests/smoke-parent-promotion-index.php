@@ -5,14 +5,14 @@
  * Exercises the hook that WP_Markdown_Storage invokes when
  * resolve_parent_dir() renames a parent's leaf file to `index.md`
  * because the parent gained a child. Without this hook the
- * `_markdown_file_index` SQLite row still points at the old path
+ * the canonical index still points at the old path
  * and warm boot churns the promoted post through a full delete +
  * reinsert on every sync. See issue #68.
  *
  * Uses a real filesystem temp dir + a capture-to-array callback
  * stand-in for the production driver's update_file_index call. The
- * storage's public set_index_writer() accepts any callable, so we
- * don't need a real PDO here.
+ * storage's public set_index_writer() accepts any callable, so the
+ * test remains independent from a database connection.
  *
  * Usage: php tests/smoke-parent-promotion-index.php
  *

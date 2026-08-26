@@ -218,9 +218,13 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$posts = array();
 			$ids   = array();
 			foreach ( $this->storage->get_markdown_file_manifest_iterator( true ) as $file ) {
+				$identity = $this->file_identity( $file['absolute'] );
 				$post = $this->storage->read_file( $file['absolute'], true, $file['parent_id'] );
-				if ( ! $this->unchanged( $file ) || null === $post || (int) ( $post->ID ?? 0 ) < 1 ) {
+				if ( null === $identity || null === $post || (int) ( $post->ID ?? 0 ) < 1 ) {
 					return $this->malformed( 'invalid_post', 'A canonical Markdown post is malformed or has no durable identity.' );
+				}
+				if ( ! $this->unchanged( $file['absolute'], $identity ) ) {
+					return $this->malformed( 'changed_post', 'A canonical Markdown post changed while it was being read.' );
 				}
 				$id = (int) $post->ID;
 				if ( isset( $ids[ $id ] ) ) {
@@ -235,7 +239,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
 					continue;
 				}
-				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file );
+				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 			}
 
 			usort(
@@ -250,7 +254,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				$row = $candidate['row'];
 				if ( in_array( 'post_content', $access->projection(), true ) ) {
 					$post = $this->storage->read_file( $candidate['file']['absolute'], false, $candidate['file']['parent_id'] );
-					if ( ! $this->unchanged( $candidate['file'] ) || null === $post ) {
+					if ( ! $this->unchanged( $candidate['file']['absolute'], $candidate['identity'] ) || null === $post ) {
 						return $this->malformed( 'changed_post', 'A canonical Markdown post changed while it was being read.' );
 					}
 					$row = $this->row( $post );
@@ -290,14 +294,27 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		return $this->failure( 'markdown_db_native_malformed_post', $reason, $message );
 	}
 
-	/** @param array{mtime:int,size:int,absolute:string,parent_id:int|null} $file */
-	private function unchanged( array $file ): bool {
-		$stat = @lstat( $file['absolute'] );
-		return is_array( $stat )
-			&& ! is_link( $file['absolute'] )
-			&& 1 === ( $stat['nlink'] ?? 1 )
-			&& $file['mtime'] === (int) $stat['mtime']
-			&& $file['size'] === (int) $stat['size'];
+	/** @return array{dev:int,ino:int,mode:int,size:int,mtime:int,ctime:int,nlink:int}|null */
+	private function file_identity( string $path ): ?array {
+		clearstatcache( true, $path );
+		$stat = @lstat( $path );
+		if ( ! is_array( $stat ) || is_link( $path ) || 1 !== ( $stat['nlink'] ?? 1 ) ) {
+			return null;
+		}
+		return array(
+			'dev'   => (int) $stat['dev'],
+			'ino'   => (int) $stat['ino'],
+			'mode'  => (int) $stat['mode'],
+			'size'  => (int) $stat['size'],
+			'mtime' => (int) $stat['mtime'],
+			'ctime' => (int) $stat['ctime'],
+			'nlink' => (int) $stat['nlink'],
+		);
+	}
+
+	/** @param array{dev:int,ino:int,mode:int,size:int,mtime:int,ctime:int,nlink:int} $identity */
+	private function unchanged( string $path, array $identity ): bool {
+		return $identity === $this->file_identity( $path );
 	}
 }
 

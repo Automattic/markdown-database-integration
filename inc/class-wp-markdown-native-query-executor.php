@@ -7,14 +7,20 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
 	private ?int $last_found_rows = null;
+	private WP_Markdown_Native_Schema_Introspection $schema_introspection;
 
 	public function __construct(
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Query_Parser $parser = new WP_Markdown_Native_Query_Parser(),
 		private ?WP_Markdown_Native_Option_Mutation_Runtime $option_mutations = null
-	) {}
+	) {
+		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
+	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
+			return $this->schema_introspection->execute( $request );
+		}
 		if ( 1 !== preg_match( '/^\s*SELECT\b/i', $request->sql() ) ) {
 			return null === $this->option_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native supports bounded SELECT queries only.' )

@@ -232,7 +232,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 		$primary = array_values( array_filter( $definition['indexes'], static fn( array $index ): bool => 'PRIMARY' === $index['name'] ) );
 		$natural_order = $overlay['natural_order'] ?? ( $primary[0]['columns'][0]['name'] ?? array_key_first( $columns ) );
 		$identity_columns = array_map( static fn( array $column ): string => $column['name'], $primary[0]['columns'] ?? array() );
-		return new WP_Markdown_Native_Table_Schema( $columns, $natural_order, $overlay['order_columns'] ?? array(), $identity_columns );
+		return new WP_Markdown_Native_Table_Schema( $columns, $natural_order, $overlay['order_columns'] ?? array(), $identity_columns, $definition );
 	}
 
 	/** Build the conservative execution contract supported by a generic JSON snapshot. */

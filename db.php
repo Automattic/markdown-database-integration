@@ -14,6 +14,20 @@
  * @package Markdown_Database_Integration
  */
 
+if ( ! function_exists( 'markdown_db_default_content_dir' ) ) {
+	function markdown_db_default_content_dir(): string {
+		if ( ! defined( 'WP_CONTENT_DIR' ) ) {
+			return '';
+		}
+		$db     = WP_CONTENT_DIR . '/db';
+		$legacy = WP_CONTENT_DIR . '/markdown';
+		if ( ! is_dir( $db ) && is_dir( $legacy ) ) {
+			return $legacy;
+		}
+		return $db;
+	}
+}
+
 if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) ) {
 	function markdown_database_integration_enable_native_shadow( object $database, string $plugin_dir ): void {
 		if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW' ) || true !== MARKDOWN_DB_NATIVE_SHADOW || ! method_exists( $database, 'set_native_shadow_verifier' ) ) {
@@ -102,8 +116,8 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) 
 	require_once $markdown_db_native_plugin_dir . '/inc/native/class-wp-markdown-native-query-runtime.php';
 	require_once $markdown_db_native_plugin_dir . '/inc/native/class-wp-markdown-native-wpdb.php';
 
-	$markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : WP_CONTENT_DIR . '/markdown';
-	$markdown_db_native_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : $markdown_db_native_state_dir;
+	$markdown_db_native_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir();
+	$markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : $markdown_db_native_content_dir;
 	$markdown_db_native_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
 	$markdown_db_native_runtime = WP_Markdown_Native_Runtime_Factory::runtime(
 		$markdown_db_native_state_dir,
@@ -222,7 +236,7 @@ if ( ! defined( 'WP_SQLITE_AST_DRIVER' ) ) {
 if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 		? MARKDOWN_DB_CONTENT_DIR
-		: WP_CONTENT_DIR . '/markdown';
+		: markdown_db_default_content_dir();
 	$markdown_db_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
 		? MARKDOWN_DB_STATE_DIR
 		: $markdown_db_content_dir;
@@ -277,7 +291,7 @@ require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/in
 if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 		? MARKDOWN_DB_CONTENT_DIR
-		: WP_CONTENT_DIR . '/markdown';
+		: markdown_db_default_content_dir();
 	$markdown_db_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
 		? MARKDOWN_DB_STATE_DIR
 		: $markdown_db_content_dir;

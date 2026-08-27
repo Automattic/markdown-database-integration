@@ -80,12 +80,14 @@ function markdown_database_integration_ensure_mysql_reconciliation_state(): void
 	update_option( '_markdown_db_mysql_reconciliation_schema', '1', false );
 }
 
+require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/markdown-db-paths.php';
+
 /**
  * The content directory where markdown files are stored.
  * Override in wp-config.php: define( 'MARKDOWN_DB_CONTENT_DIR', '/path/to/wiki' );
  */
 if ( ! defined( 'MARKDOWN_DB_CONTENT_DIR' ) ) {
-	define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/markdown' );
+	define( 'MARKDOWN_DB_CONTENT_DIR', markdown_db_default_content_dir() );
 }
 
 /**

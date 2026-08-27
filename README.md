@@ -26,7 +26,7 @@ driver with its `mysql-on-sqlite:` DSN and consumes query results as
 In primary mode, a typical single-root store looks like this:
 
 ```
-wp-content/markdown/
+wp-content/db/
   post/
     hello-markdown-world.md
     gutenberg-block-test.md
@@ -353,8 +353,9 @@ Add to `wp-config.php`:
 
 ```php
 // Where Markdown-backed posts and post-type hierarchy are stored.
-// Default: wp-content/markdown/
-define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/markdown' );
+// Default: wp-content/db/. An existing wp-content/markdown/ store is still used
+// when wp-content/db/ is absent.
+define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/db' );
 
 // Or customize the storage root for a plugin or repo-backed app:
 define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/plugins/my-world/content' );

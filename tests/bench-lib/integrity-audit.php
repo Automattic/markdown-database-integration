@@ -43,7 +43,7 @@ if (!function_exists('mdi_bench_integrity_audit')) {
      *               orphan_files, orphan_rows, meta_drift_count, errors.
      */
     function mdi_bench_integrity_audit(array $opts = []): array {
-        $markdown_dir = $opts['markdown_dir'] ?? (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/markdown' : '');
+        $markdown_dir = $opts['markdown_dir'] ?? (defined('WP_CONTENT_DIR') ? WP_CONTENT_DIR . '/db' : '');
         $post_type    = $opts['post_type'] ?? 'post';
 
         $report = [
@@ -81,7 +81,7 @@ if (!function_exists('mdi_bench_integrity_audit')) {
         }
 
         // File side. Scan recursively under markdown_dir/$post_type/. MDI's
-        // on-disk layout is wp-content/markdown/<post_type>/<slug>.md.
+        // on-disk layout is wp-content/db/<post_type>/<slug>.md.
         $type_dir = $markdown_dir . '/' . $post_type;
         $files = [];
         if (is_dir($type_dir)) {

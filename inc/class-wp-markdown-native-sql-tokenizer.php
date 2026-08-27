@@ -34,6 +34,7 @@ final class WP_Markdown_Native_SQL_Token {
 	public const LEFT_PAREN = 'left_paren';
 	public const RIGHT_PAREN = 'right_paren';
 	public const EQUALS = 'equals';
+	public const NOT_EQUALS = 'not_equals';
 	public const DOT = 'dot';
 	public const END = 'end';
 
@@ -70,6 +71,17 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 			$character = $sql[ $offset ];
 			if ( str_contains( " \t\n\r\v\f", $character ) ) {
 				++$offset;
+				continue;
+			}
+
+			if ( '<' === $character && $offset + 1 < $length && '>' === $sql[ $offset + 1 ] ) {
+				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::NOT_EQUALS, '<>', '<>', $offset );
+				$offset  += 2;
+				continue;
+			}
+			if ( '!' === $character && $offset + 1 < $length && '=' === $sql[ $offset + 1 ] ) {
+				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::NOT_EQUALS, '!=', '<>', $offset );
+				$offset  += 2;
 				continue;
 			}
 
@@ -110,7 +122,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 					++$offset;
 				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'JOIN', 'ON', 'WHERE', 'IN', 'AND', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
+				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'JOIN', 'ON', 'WHERE', 'IN', 'AND', 'OR', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
 					? WP_Markdown_Native_SQL_Token::KEYWORD
 					: WP_Markdown_Native_SQL_Token::WORD;
 				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );

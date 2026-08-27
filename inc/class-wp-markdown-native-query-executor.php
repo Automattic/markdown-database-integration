@@ -424,7 +424,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $predicates as $predicate ) {
 			$matched = false;
 			foreach ( $predicate->values() as $value ) {
-				if ( $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ) ) {
+				$compare = '<>' === $predicate->operator()
+					? $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value )
+					: $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value );
+				if ( $compare ) {
 					$matched = true;
 					break;
 				}

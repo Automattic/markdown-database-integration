@@ -219,7 +219,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$predicates = array();
 		if ( $this->match_keyword( 'WHERE' ) ) {
-			$predicates = $this->conjunction();
+			$predicates = $this->disjunction();
 		}
 		$order     = null;
 		$order_descending = false;
@@ -259,6 +259,73 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		return true;
 	}
 
+	/**
+	 * Parse a WHERE expression.
+	 *
+	 * AND binds tighter than OR, matching SQL. A disjunction is accepted only
+	 * when every alternative is equality on the same column, which is the
+	 * membership shape WordPress uses for `post_status` lists. Cross-column
+	 * OR and inequality OR stay fail-closed.
+	 *
+	 * @return array<int,WP_Markdown_Native_SQL_Predicate>
+	 */
+	private function disjunction(): array {
+		$groups = array( $this->conjunction() );
+		$offset = $this->current()->sql_offset();
+		while ( $this->match_keyword( 'OR' ) ) {
+			$groups[] = $this->conjunction();
+		}
+		return $this->coalesce_disjunction( $groups, $offset );
+	}
+
+	/**
+	 * Collapse same-column equality OR into one membership predicate.
+	 *
+	 * @param array<int,array<int,WP_Markdown_Native_SQL_Predicate>> $groups
+	 * @return array<int,WP_Markdown_Native_SQL_Predicate>
+	 */
+	private function coalesce_disjunction( array $groups, int $sql_offset ): array {
+		if ( 1 === count( $groups ) ) {
+			return $groups[0];
+		}
+		$column     = null;
+		$qualifier  = null;
+		$values     = array();
+		$identifier = null;
+		foreach ( $groups as $group ) {
+			if ( 1 !== count( $group ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error(
+					'unsupported_or',
+					$sql_offset,
+					'mdi-native supports OR only as same-column equality.'
+				);
+			}
+			$predicate = $group[0];
+			if ( ! in_array( $predicate->operator(), array( '=', 'IN' ), true ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error(
+					'unsupported_or',
+					$sql_offset,
+					'mdi-native supports OR only as same-column equality.'
+				);
+			}
+			$name = $predicate->column()->name();
+			$qual = $predicate->column()->qualifier();
+			if ( null === $column ) {
+				$column     = $name;
+				$qualifier  = $qual;
+				$identifier = $predicate->column();
+			} elseif ( $column !== $name || $qualifier !== $qual ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error(
+					'unsupported_or',
+					$sql_offset,
+					'mdi-native supports OR only as same-column equality.'
+				);
+			}
+			$values = array_merge( $values, $predicate->values() );
+		}
+		return array( new WP_Markdown_Native_SQL_Predicate( $identifier, 'IN', $values ) );
+	}
+
 	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
 	private function conjunction(): array {
 		$predicates = $this->predicate_term();
@@ -271,7 +338,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
 	private function predicate_term(): array {
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN ) ) {
-			$predicates = $this->conjunction();
+			$predicates = $this->disjunction();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return $predicates;
 		}
@@ -299,6 +366,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$column = $this->identifier();
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::EQUALS ) ) {
 			return new WP_Markdown_Native_SQL_Predicate( $column, '=', array( $this->literal() ) );
+		}
+		if ( $this->match_type( WP_Markdown_Native_SQL_Token::NOT_EQUALS ) ) {
+			return new WP_Markdown_Native_SQL_Predicate( $column, '<>', array( $this->literal() ) );
 		}
 		$this->expect_keyword( 'IN' );
 		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );

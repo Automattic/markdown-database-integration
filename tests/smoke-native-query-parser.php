@@ -36,6 +36,8 @@ $wordpress_admin_or_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_pos
 $wordpress_admin_or_plan = $wordpress_admin_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_or_ast ) : $wordpress_admin_or_ast;
 $cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'post' OR post_status = 'publish'" );
 $inequality_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status <> 'trash' OR post_status <> 'auto-draft'" );
+$composite_order_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY wp_posts.menu_order ASC, wp_posts.post_title ASC' );
+$composite_order_plan = $composite_order_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $composite_order_ast ) : $composite_order_ast;
 $found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
 $found_rows_query_plan = $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows ? $parser->lower( $found_rows_query_ast ) : $found_rows_query_ast;
 
@@ -145,6 +147,10 @@ $checks = array(
 		&& 'unsupported_or' === ( $cross_column_or->diagnostic()['reason'] ?? null ),
 	'inequality OR fails closed' => false === $inequality_or->return_value()
 		&& 'unsupported_or' === ( $inequality_or->diagnostic()['reason'] ?? null ),
+	'composite ORDER BY keeps every key' => $composite_order_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 'menu_order' === $composite_order_plan->order()
+		&& array( 'menu_order', 'post_title' ) === array_column( $composite_order_plan->order_by(), 'column' )
+		&& array( false, false ) === array_column( $composite_order_plan->order_by(), 'descending' ),
 	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
 		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result

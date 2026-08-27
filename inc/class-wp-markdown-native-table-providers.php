@@ -156,11 +156,18 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		return $selected;
 	}
 
-	/** @param array<int,array<string,mixed>> $rows @return array<int,array<string,mixed>> */
-	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access ): array {
+	/** @param array<int,array<string,mixed>> $rows @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result {
+		if ( null !== $this->schema->unsupported_order_reason( $access->order_by(), $rows ) ) {
+			return $this->failure(
+				'markdown_db_native_unsupported_query',
+				'unsupported_order',
+				'mdi-native cannot apply the requested ordering collation.'
+			);
+		}
 		usort(
 			$rows,
-			fn( array $left, array $right ): int => ( $access->order_descending() ? -1 : 1 ) * $this->schema->compare_rows( $access->order(), $left, $right )
+			fn( array $left, array $right ): int => $this->schema->compare_ordered_rows( $left, $right, $access->order_by() )
 		);
 
 		$selected = array();
@@ -267,9 +274,17 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 			}
 
+			$order_rows = array_map( static fn( array $candidate ): array => $candidate['row'], $posts );
+			if ( null !== $this->schema->unsupported_order_reason( $access->order_by(), $order_rows ) ) {
+				return $this->failure(
+					'markdown_db_native_unsupported_query',
+					'unsupported_order',
+					'mdi-native cannot apply the requested ordering collation.'
+				);
+			}
 			usort(
 				$posts,
-				fn( array $left, array $right ): int => ( $access->order_descending() ? -1 : 1 ) * $this->schema->compare_rows( $access->order(), $left['row'], $right['row'] )
+				fn( array $left, array $right ): int => $this->schema->compare_ordered_rows( $left['row'], $right['row'], $access->order_by() )
 			);
 			$selected = array();
 			foreach ( $posts as $candidate ) {

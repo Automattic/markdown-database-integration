@@ -105,7 +105,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly bool $order_descending = false,
 		private readonly int $limit_offset = 0,
 		private readonly bool $distinct = false,
-		private readonly ?string $order_source = null
+		private readonly ?string $order_source = null,
+		private readonly array $order_by = array()
 	) {}
 
 	public function table(): string {
@@ -171,6 +172,23 @@ final class WP_Markdown_Native_Query_Plan {
 	public function order_source(): ?string {
 		return $this->order_source;
 	}
+
+	/** @return array<int,array{column:string,descending:bool,source:?string}> */
+	public function order_by(): array {
+		if ( array() !== $this->order_by ) {
+			return $this->order_by;
+		}
+		if ( null === $this->order ) {
+			return array();
+		}
+		return array(
+			array(
+				'column'     => $this->order,
+				'descending' => $this->order_descending,
+				'source'     => $this->order_source,
+			),
+		);
+	}
 }
 
 final class WP_Markdown_Native_Table_Access {
@@ -180,7 +198,8 @@ final class WP_Markdown_Native_Table_Access {
 		private readonly ?WP_Markdown_Native_Query_Predicate $predicate,
 		private readonly string $order,
 		private readonly int $limit,
-		private readonly bool $order_descending = false
+		private readonly bool $order_descending = false,
+		private readonly array $order_by = array()
 	) {
 		if ( array() === $projection || $limit < 0 ) {
 			throw new InvalidArgumentException( 'Native table access requires a projection and nonnegative bound.' );
@@ -206,6 +225,19 @@ final class WP_Markdown_Native_Table_Access {
 
 	public function order_descending(): bool {
 		return $this->order_descending;
+	}
+
+	/** @return array<int,array{column:string,descending:bool}> */
+	public function order_by(): array {
+		if ( array() !== $this->order_by ) {
+			return $this->order_by;
+		}
+		return array(
+			array(
+				'column'     => $this->order,
+				'descending' => $this->order_descending,
+			),
+		);
 	}
 }
 

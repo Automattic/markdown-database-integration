@@ -116,6 +116,14 @@ final class WP_Markdown_Native_Query_Parser {
 			}
 		}
 
+		$order_by = array_map(
+			static fn( array $item ): array => array(
+				'column'     => $item['column']->name(),
+				'descending' => $item['descending'],
+				'source'     => $item['column']->qualifier(),
+			),
+			$ast->orders()
+		);
 		return new WP_Markdown_Native_Query_Plan(
 			$ast->table()->name(),
 			$projection,
@@ -130,7 +138,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->order_descending(),
 			$ast->limit_offset(),
 			$ast->is_distinct(),
-			$ast->order()?->qualifier()
+			$ast->order()?->qualifier(),
+			$order_by
 		);
 	}
 
@@ -140,8 +149,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->projection(),
 			array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() )
 		);
-		if ( null !== $ast->order() ) {
-			$columns[] = $ast->order();
+		foreach ( $ast->orders() as $item ) {
+			$columns[] = $item['column'];
 		}
 		return $columns;
 	}
@@ -221,15 +230,21 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'WHERE' ) ) {
 			$predicates = $this->disjunction();
 		}
-		$order     = null;
-		$order_descending = false;
+		$orders = array();
 		if ( $this->match_keyword( 'ORDER' ) ) {
 			$this->expect_keyword( 'BY' );
-			$order = $this->identifier();
-			if ( ! $this->match_keyword( 'ASC' ) ) {
-				$this->expect_keyword( 'DESC' );
-				$order_descending = true;
-			}
+			do {
+				$column = $this->identifier();
+				$descending = false;
+				if ( ! $this->match_keyword( 'ASC' ) ) {
+					$this->expect_keyword( 'DESC' );
+					$descending = true;
+				}
+				$orders[] = array(
+					'column'     => $column,
+					'descending' => $descending,
+				);
+			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}
 		$limit = null;
 		$limit_offset = 0;
@@ -245,7 +260,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $order, $limit, $alias, $joins, $calculate_found_rows, $order_descending, $limit_offset, $distinct );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct );
 	}
 
 	private function match_join(): bool {

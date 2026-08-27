@@ -58,6 +58,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'user_nicename' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
 					'user_email' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
 				),
+				'order_columns' => array( 'user_login' ),
 			),
 			$multisite
 		);
@@ -108,7 +109,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
 				),
-				'order_columns' => array( 'post_date' ),
+				'order_columns' => array( 'post_date', 'menu_order', 'post_title' ),
 			)
 		);
 	}

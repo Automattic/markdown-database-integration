@@ -107,7 +107,8 @@ $set = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_name IN ('index', '
 $missing = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_name = 'absent'" );
 $non_ascii = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_name = 'ind\u{00e9}x'" );
 $scoped = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_name = 'index' AND post_type = 'page'" );
-$unsupported_order = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' ORDER BY post_title ASC" );
+$title_order = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' ORDER BY post_title ASC" );
+$unsupported_order = lookup( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' ORDER BY guid ASC" );
 
 $checks = array(
 	'a slug resolves to its post' => array( '11' ) === $exact['ids'],
@@ -119,7 +120,8 @@ $checks = array(
 	'a non-ASCII slug fails closed' => false === $non_ascii['return']
 		&& 'unsupported_lookup' === $non_ascii['reason'],
 	'a slug combines with a post type restriction' => array( '11' ) === $scoped['ids'],
-	'undeclared title ordering still fails closed' => false === $unsupported_order['return']
+	'title ordering resolves ASCII titles' => array( '12', '13', '11' ) === $title_order['ids'],
+	'undeclared guid ordering still fails closed' => false === $unsupported_order['return']
 		&& 'unsupported_order' === $unsupported_order['reason'],
 );
 

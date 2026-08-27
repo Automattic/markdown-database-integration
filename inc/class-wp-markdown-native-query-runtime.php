@@ -88,6 +88,15 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'post_author' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_parent' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_type' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					// WordPress resolves a permalink by slug, so post_name is the
+					// lookup every front-end request depends on. Slugs are
+					// sanitized to ASCII, and a non-ASCII slug fails closed
+					// rather than resolving under an assumed collation.
+					'post_name' => array(
+						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
+					),
 				),
 				'order_columns' => array( 'post_date' ),
 			)

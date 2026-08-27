@@ -653,7 +653,13 @@ class WP_Markdown_Storage {
 	 *
 	 * @return \Generator<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}>
 	 */
-	public function get_markdown_file_manifest_iterator( bool $strict = false ): \Generator {
+	/**
+	 * @param bool                   $strict     Whether unsafe canonical state must raise.
+	 * @param array<int,string>|null $post_types Restrict enumeration to these post types when the
+	 *                                           layout stores one directory per type. A layout that
+	 *                                           cannot derive a type from a path ignores the hint.
+	 */
+	public function get_markdown_file_manifest_iterator( bool $strict = false, ?array $post_types = null ): \Generator {
 		if ( $strict && is_link( $this->content_dir ) ) {
 			throw new RuntimeException( 'Markdown DB: Canonical content root must not be a link.' );
 		}
@@ -701,10 +707,19 @@ class WP_Markdown_Storage {
 			return;
 		}
 
+		// One directory per post type, so a type-restricted read skips the
+		// directories it cannot match instead of parsing the whole corpus.
+		$scope = null === $post_types
+			? null
+			: array_values( array_filter( array_map( 'strval', $post_types ), static fn( string $type ): bool => '' !== $type ) );
+
 		foreach ( $dirs as $type_dir ) {
 			$dirname = basename( $type_dir );
 
 			if ( str_starts_with( $dirname, '_' ) || in_array( $dirname, $this->excluded_types, true ) ) {
+				continue;
+			}
+			if ( null !== $scope && ! in_array( $dirname, $scope, true ) ) {
 				continue;
 			}
 			if ( is_link( $type_dir ) ) {

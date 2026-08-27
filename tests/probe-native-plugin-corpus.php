@@ -35,7 +35,31 @@ foreach ( array_keys( get_plugins() ) as $candidate ) {
 }
 ksort( $corpus );
 
+// WordPress refuses a plugin whose declared dependencies are not active yet, so
+// activation is retried until a pass stops making progress.
+$pending = $corpus;
+$attempts = array();
+do {
+	$progressed = false;
+	foreach ( $pending as $slug => $file ) {
+		$attempts[ $slug ] = mdi_native_activate_plugin( $wpdb, $slug, $file );
+		if ( 'active' === $attempts[ $slug ]['status'] ) {
+			unset( $pending[ $slug ] );
+			$progressed = true;
+		}
+	}
+} while ( $progressed && array() !== $pending );
+
 foreach ( $corpus as $slug => $file ) {
+	$result['plugins'][] = $attempts[ $slug ];
+}
+
+/**
+ * Activate one plugin and capture the native diagnostic it produced.
+ *
+ * @return array<string,mixed>
+ */
+function mdi_native_activate_plugin( wpdb $wpdb, string $slug, string $file ): array {
 	$wpdb->last_runtime_diagnostic = null;
 	try {
 		$activation = activate_plugin( $file );
@@ -45,7 +69,7 @@ foreach ( $corpus as $slug => $file ) {
 	}
 
 	$active = is_plugin_active( $file );
-	$result['plugins'][] = array(
+	return array(
 		'slug'       => $slug,
 		'file'       => $file,
 		'status'     => $active && null === $error ? 'active' : 'failed',

@@ -94,7 +94,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
 		}
-		if ( '' === $sql || str_contains( $sql, ';' ) ) {
+		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one INSERT statement.' );
 		}
 
@@ -133,7 +133,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
 		}
-		if ( '' === $sql || str_contains( $sql, ';' ) ) {
+		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one UPDATE or DELETE statement.' );
 		}
 

@@ -96,6 +96,18 @@ $deleted = $runtime->execute(
 );
 $after_delete = column_values( $root, 'label' );
 
+// Serialized values carry semicolons, which must not read as a statement separator.
+$serialized = $runtime->execute(
+	new WP_Markdown_Query_Request(
+		"INSERT INTO wp_agents (instance_key, label) VALUES ('serialized', 'a:1:{s:3:\"key\";i:42;}')",
+		'wp_'
+	)
+);
+$serialized_rows = table_rows( $root );
+$semicolon_text = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_agents SET label = 'one; two' WHERE instance_key = 'serialized'", 'wp_' )
+);
+
 $unknown_column = $runtime->execute(
 	new WP_Markdown_Query_Request( "UPDATE wp_agents SET missing_column = 'x' WHERE id = 1", 'wp_' )
 );
@@ -122,13 +134,16 @@ $checks = array(
 	'an unmatched restriction reports zero affected rows' => 0 === $unmatched->return_value(),
 	'DELETE removes only the restricted rows' => 1 === $deleted->return_value()
 		&& array( 'first', 'second' ) === $after_delete,
+	'a serialized value is not read as a statement separator' => 1 === $serialized->return_value()
+		&& 'a:1:{s:3:"key";i:42;}' === ( $serialized_rows[ count( $serialized_rows ) - 1 ]['label'] ?? null ),
+	'a semicolon inside a literal survives an update' => 1 === $semicolon_text->return_value(),
 	'an unknown assignment column fails closed' => false === $unknown_column->return_value()
 		&& 'unsupported_mutation_column' === ( $unknown_column->diagnostic()['reason'] ?? null ),
 	'an unregistered table fails closed' => false === $unknown_table->return_value()
 		&& 'unsupported_mutation_table' === ( $unknown_table->diagnostic()['reason'] ?? null ),
 	'OR across columns fails closed' => false === $cross_column_or->return_value(),
 	'NULL equality fails closed' => false === $null_equality->return_value(),
-	'a rolled back generic write restores the snapshot' => array( 'first', 'second' ) === $after_rollback,
+	'a rolled back generic write restores the snapshot' => array( 'first', 'second', 'one; two' ) === $after_rollback,
 );
 
 $passed = ! in_array( false, $checks, true );

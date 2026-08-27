@@ -37,6 +37,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( 1 === preg_match( '/^\s*INSERT\s+INTO\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $insert_match ) ) {
 			$insert_table = $insert_match[1];
 		}
+		if ( 1 === preg_match( '/^\s*UPDATE\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $update_match ) ) {
+			$insert_table = $update_match[1];
+		}
+		if ( 1 === preg_match( '/^\s*DELETE\s+FROM\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $delete_match ) ) {
+			$insert_table = $delete_match[1];
+		}
 		if ( null !== $insert_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $insert_table ) ) {
 			return null === $this->table_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )

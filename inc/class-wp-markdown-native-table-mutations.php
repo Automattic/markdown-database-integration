@@ -22,6 +22,68 @@ final class WP_Markdown_Native_Table_Insert {
 	}
 }
 
+/**
+ * One column restriction in a generic DML statement.
+ *
+ * Values are disjunctive, matching the engine's SELECT predicate model, so
+ * `column IS NULL OR column = ''` is one predicate over a single column.
+ */
+final class WP_Markdown_Native_Table_Predicate {
+
+	/** @param array<int,int|string> $values */
+	public function __construct(
+		private string $column,
+		private array $values,
+		private bool $matches_null
+	) {}
+
+	public function column(): string {
+		return $this->column;
+	}
+
+	/** @return array<int,int|string> */
+	public function values(): array {
+		return $this->values;
+	}
+
+	public function matches_null(): bool {
+		return $this->matches_null;
+	}
+}
+
+/** One generic UPDATE or DELETE against a persisted snapshot table. */
+final class WP_Markdown_Native_Table_Write {
+
+	/**
+	 * @param array<string,int|string|null>              $values     Assignments for an UPDATE.
+	 * @param array<int,WP_Markdown_Native_Table_Predicate> $predicates Conjunctive restrictions.
+	 */
+	public function __construct(
+		private string $kind,
+		private string $table,
+		private array $values,
+		private array $predicates
+	) {}
+
+	public function is_update(): bool {
+		return 'update' === $this->kind;
+	}
+
+	public function table(): string {
+		return $this->table;
+	}
+
+	/** @return array<string,int|string|null> */
+	public function values(): array {
+		return $this->values;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Table_Predicate> */
+	public function predicates(): array {
+		return $this->predicates;
+	}
+}
+
 final class WP_Markdown_Native_Table_Insert_Parser {
 	/** @var array<int,WP_Markdown_Native_SQL_Token> */
 	private array $tokens = array();
@@ -63,6 +125,151 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				)
 			);
 		}
+	}
+
+	/** Parse one generic UPDATE or DELETE against a persisted snapshot table. */
+	public function parse_write( WP_Markdown_Query_Request $request ): WP_Markdown_Native_Table_Write|WP_Markdown_Query_Result {
+		$sql = trim( $request->sql() );
+		if ( str_ends_with( $sql, ';' ) ) {
+			$sql = rtrim( substr( $sql, 0, -1 ) );
+		}
+		if ( '' === $sql || str_contains( $sql, ';' ) ) {
+			return $this->failure( 'unsupported_grammar', 'mdi-native requires one UPDATE or DELETE statement.' );
+		}
+
+		try {
+			$this->tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql );
+			$this->position = 0;
+			$kind = 0 === strcasecmp( 'DELETE', (string) $this->current()->value() ) ? 'delete' : 'update';
+			$values = array();
+			if ( 'delete' === $kind ) {
+				$this->word( 'DELETE' );
+				$this->word( 'FROM' );
+				$table = $this->identifier();
+			} else {
+				$this->word( 'UPDATE' );
+				$table = $this->identifier();
+				$this->word( 'SET' );
+				$values = $this->assignments();
+			}
+			$predicates = $this->where_predicates();
+			$this->type( WP_Markdown_Native_SQL_Token::END );
+			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
+			return WP_Markdown_Query_Result::failure(
+				array(
+					'code'       => 'markdown_db_native_unsupported_query',
+					'reason'     => $error->reason(),
+					'message'    => 'mdi-native supports one bounded generic UPDATE or DELETE.',
+					'sql_offset' => $error->sql_offset(),
+				)
+			);
+		}
+	}
+
+	/** @return array<string,int|string|null> */
+	private function assignments(): array {
+		$values = array();
+		do {
+			$column = $this->identifier();
+			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+			$values[ $column ] = $this->literal();
+			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
+				break;
+			}
+			++$this->position;
+		} while ( true );
+		return $values;
+	}
+
+	/**
+	 * Parse a bounded WHERE clause into conjunctive per-column predicates.
+	 *
+	 * Disjunctions must stay within one column so the restriction keeps the
+	 * engine's existing predicate semantics instead of a second evaluator.
+	 *
+	 * @return array<int,WP_Markdown_Native_Table_Predicate>
+	 */
+	private function where_predicates(): array {
+		if ( WP_Markdown_Native_SQL_Token::END === $this->current()->type()
+			|| 0 !== strcasecmp( 'WHERE', (string) $this->current()->value() ) ) {
+			return array();
+		}
+		$this->word( 'WHERE' );
+
+		$columns = array();
+		$nulls = array();
+		$order = array();
+		$conjunction = null;
+		do {
+			$column = $this->identifier();
+			if ( ! isset( $columns[ $column ] ) ) {
+				$columns[ $column ] = array();
+				$nulls[ $column ] = false;
+				$order[] = $column;
+			}
+			$token = $this->current();
+			if ( 0 === strcasecmp( 'IS', (string) $token->value() ) ) {
+				++$this->position;
+				if ( 0 === strcasecmp( 'NOT', (string) $this->current()->value() ) ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported IS NOT restriction.' );
+				}
+				$this->word( 'NULL' );
+				$nulls[ $column ] = true;
+			} elseif ( WP_Markdown_Native_SQL_Token::EQUALS === $token->type() ) {
+				++$this->position;
+				$value = $this->literal();
+				if ( null === $value ) {
+					// `column = NULL` never matches in MySQL.
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL equality restriction.' );
+				}
+				$columns[ $column ][] = $value;
+			} elseif ( 0 === strcasecmp( 'IN', (string) $token->value() ) ) {
+				++$this->position;
+				foreach ( $this->literal_list() as $value ) {
+					if ( null === $value ) {
+						throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL IN member.' );
+					}
+					$columns[ $column ][] = $value;
+				}
+			} else {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported WHERE restriction.' );
+			}
+
+			$next = $this->current();
+			$keyword = strtoupper( (string) $next->value() );
+			if ( 'AND' !== $keyword && 'OR' !== $keyword ) {
+				break;
+			}
+			if ( null !== $conjunction && $conjunction !== $keyword ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $next->sql_offset(), 'Unsupported mixed WHERE conjunction.' );
+			}
+			$conjunction = $keyword;
+			++$this->position;
+		} while ( true );
+
+		if ( 'OR' === $conjunction && count( $order ) > 1 ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $this->current()->sql_offset(), 'Unsupported OR restriction across columns.' );
+		}
+
+		$predicates = array();
+		foreach ( $order as $column ) {
+			$predicates[] = new WP_Markdown_Native_Table_Predicate( $column, $columns[ $column ], $nulls[ $column ] );
+		}
+		return $predicates;
+	}
+
+	private function literal(): int|string|null {
+		$token = $this->current();
+		if ( WP_Markdown_Native_SQL_Token::STRING === $token->type() || WP_Markdown_Native_SQL_Token::INTEGER === $token->type() ) {
+			++$this->position;
+			return (string) $token->value();
+		}
+		if ( 0 === strcasecmp( 'NULL', (string) $token->value() ) ) {
+			++$this->position;
+			return null;
+		}
+		throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $token->sql_offset(), 'Unsupported literal.' );
 	}
 
 	/** @return array<int,string> */
@@ -169,6 +376,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		if ( 1 === preg_match( '/^\s*(?:UPDATE|DELETE)\b/i', $request->sql() ) ) {
+			return $this->execute_write( $request );
+		}
 		$insert = $this->parser->parse( $request );
 		if ( $insert instanceof WP_Markdown_Query_Result ) {
 			return $insert;
@@ -305,6 +515,117 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	}
 
 	/** @param array<string,mixed> $definition */
+	/** Apply one generic UPDATE or DELETE to a persisted snapshot table. */
+	private function execute_write( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$write = $this->parser->parse_write( $request );
+		if ( $write instanceof WP_Markdown_Query_Result ) {
+			return $write;
+		}
+
+		$prefix = $request->table_prefix();
+		if ( ! str_starts_with( $write->table(), $prefix ) ) {
+			return $this->failure( 'unsupported_mutation_table', 'mdi-native requires a table in the active prefix.' );
+		}
+		$suffix = substr( $write->table(), strlen( $prefix ) );
+		$table = $this->registry->table( $write->table() );
+		$definition = $this->registry->definition( $write->table() );
+		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $suffix )
+			|| null === $table
+			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
+			|| ! is_array( $definition )
+			|| ! $this->is_persisted_definition( $suffix, $definition, $prefix )
+		) {
+			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
+		}
+
+		$schema = $table['schema'];
+		foreach ( $write->predicates() as $predicate ) {
+			if ( ! $schema->has_column( $predicate->column() ) ) {
+				return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
+			}
+		}
+		foreach ( array_keys( $write->values() ) as $column ) {
+			if ( ! $schema->has_column( (string) $column ) ) {
+				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the persisted table schema.' );
+			}
+		}
+
+		$directory = $this->tables_directory();
+		if ( $directory instanceof WP_Markdown_Query_Result ) {
+			return $directory;
+		}
+		$lock = @fopen( $directory . '/.mdi-native.lock', 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			return $this->failure( 'mutation_lock_failed', 'The canonical table mutation lock could not be acquired.' );
+		}
+
+		try {
+			$rows = $table['provider']->read( new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX ) );
+			if ( $rows instanceof WP_Markdown_Query_Result ) {
+				return $rows;
+			}
+			$rows = is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
+
+			$retained = array();
+			$affected = 0;
+			foreach ( $rows as $row ) {
+				if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
+					$retained[] = $row;
+					continue;
+				}
+				++$affected;
+				if ( ! $write->is_update() ) {
+					continue;
+				}
+				$updated = array_merge( $row, $write->values() );
+				if ( true !== $schema->validate_row( $updated ) ) {
+					return $this->failure( 'invalid_update_row', 'The UPDATE row is outside the persisted table schema.' );
+				}
+				$retained[] = $updated;
+			}
+
+			if ( 0 === $affected ) {
+				return WP_Markdown_Query_Result::mutated( 0 );
+			}
+			$written = $this->write( $directory . '/' . $suffix . '.json', $retained );
+			if ( $written instanceof WP_Markdown_Query_Result ) {
+				return $written;
+			}
+			return WP_Markdown_Query_Result::mutated( $affected );
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/**
+	 * Decide whether one row satisfies every conjunctive restriction.
+	 *
+	 * @param array<string,mixed>                          $row        Canonical row.
+	 * @param array<int,WP_Markdown_Native_Table_Predicate> $predicates Restrictions.
+	 */
+	private function restricts( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+		foreach ( $predicates as $predicate ) {
+			$value = $row[ $predicate->column() ] ?? null;
+			$matched = $predicate->matches_null() && null === $value;
+			if ( ! $matched ) {
+				foreach ( $predicate->values() as $candidate ) {
+					if ( $schema->values_match( $predicate->column(), $value, $candidate ) ) {
+						$matched = true;
+						break;
+					}
+				}
+			}
+			if ( ! $matched ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	private function supports_unique_indexes( array $definition ): bool {
 		$integer_types = array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' );
 		foreach ( $definition['indexes'] as $index ) {

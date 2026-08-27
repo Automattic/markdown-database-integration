@@ -97,8 +97,13 @@ $metadata = $database->get_col_info( 'type' );
 $missing = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT user_id, meta_key, meta_value FROM wp_usermeta WHERE user_id IN (99) ORDER BY umeta_id ASC' )
 );
-$unsupported_equals = $runtime->execute(
+// WordPress reads and writes user meta with an equality predicate, so this
+// resolves rather than failing closed.
+$equality_predicate = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT meta_value FROM wp_usermeta WHERE user_id = 1 ORDER BY umeta_id ASC' )
+);
+$meta_key_predicate = $runtime->execute(
+	new WP_Markdown_Query_Request( "SELECT meta_value FROM wp_usermeta WHERE meta_key = 'session_tokens' AND user_id = 1 ORDER BY umeta_id ASC" )
 );
 $unsupported_order = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT meta_value FROM wp_usermeta WHERE user_id IN (1) ORDER BY meta_key ASC' )
@@ -143,8 +148,9 @@ $checks = array(
 		&& null === $cached_rows[4]['meta_key'],
 	'wpdb exposes MySQL field metadata without a connection' => array( 8, 253, 252 ) === $metadata,
 	'missing users produce an empty successful cache result' => 0 === $missing->return_value(),
-	'undeclared predicates and string ordering fail closed' => false === $unsupported_equals->return_value()
-		&& false === $unsupported_order->return_value(),
+	'an equality predicate resolves user meta' => 3 === $equality_predicate->return_value(),
+	'a meta_key predicate locates the existing rows' => 2 === $meta_key_predicate->return_value(),
+	'string ordering still fails closed' => false === $unsupported_order->return_value(),
 	'multisite composition keeps global identity tables on base_prefix' => 3 === $global_usermeta->return_value()
 		&& false === $site_usermeta->return_value()
 		&& 0 === $site_options->return_value(),

@@ -97,12 +97,11 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly array $projection,
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
 		private readonly array $predicates,
-		private readonly ?WP_Markdown_Native_SQL_Identifier $order,
+		private readonly array $orders,
 		private readonly ?int $limit,
 		private readonly ?WP_Markdown_Native_SQL_Identifier $alias = null,
 		private readonly array $joins = array(),
 		private readonly bool $calculates_found_rows = false,
-		private readonly bool $order_descending = false,
 		private readonly int $limit_offset = 0,
 		private readonly bool $distinct = false
 	) {}
@@ -143,7 +142,12 @@ final class WP_Markdown_Native_SQL_Select {
 	}
 
 	public function order(): ?WP_Markdown_Native_SQL_Identifier {
-		return $this->order;
+		return $this->orders[0]['column'] ?? null;
+	}
+
+	/** @return array<int,array{column:WP_Markdown_Native_SQL_Identifier,descending:bool}> */
+	public function orders(): array {
+		return $this->orders;
 	}
 
 	public function limit(): ?int {
@@ -155,7 +159,7 @@ final class WP_Markdown_Native_SQL_Select {
 	}
 
 	public function order_descending(): bool {
-		return $this->order_descending;
+		return $this->orders[0]['descending'] ?? false;
 	}
 
 	public function limit_offset(): int {

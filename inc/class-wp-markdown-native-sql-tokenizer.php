@@ -34,6 +34,7 @@ final class WP_Markdown_Native_SQL_Token {
 	public const LEFT_PAREN = 'left_paren';
 	public const RIGHT_PAREN = 'right_paren';
 	public const EQUALS = 'equals';
+	public const NOT_EQUALS = 'not_equals';
 	public const DOT = 'dot';
 	public const END = 'end';
 
@@ -70,6 +71,17 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 			$character = $sql[ $offset ];
 			if ( str_contains( " \t\n\r\v\f", $character ) ) {
 				++$offset;
+				continue;
+			}
+
+			if ( '<' === $character && $offset + 1 < $length && '>' === $sql[ $offset + 1 ] ) {
+				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::NOT_EQUALS, '<>', '<>', $offset );
+				$offset  += 2;
+				continue;
+			}
+			if ( '!' === $character && $offset + 1 < $length && '=' === $sql[ $offset + 1 ] ) {
+				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::NOT_EQUALS, '!=', '<>', $offset );
+				$offset  += 2;
 				continue;
 			}
 
@@ -110,7 +122,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 					++$offset;
 				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'JOIN', 'ON', 'WHERE', 'IN', 'AND', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
+				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'JOIN', 'ON', 'WHERE', 'IN', 'AND', 'OR', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
 					? WP_Markdown_Native_SQL_Token::KEYWORD
 					: WP_Markdown_Native_SQL_Token::WORD;
 				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );
@@ -177,6 +189,44 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 			$start,
 			'mdi-native supports bounded single-table SELECT queries only.'
 		);
+	}
+
+	/**
+	 * Report whether a statement separator appears outside a quoted literal.
+	 *
+	 * Serialized values carry semicolons, so a raw substring test rejects an
+	 * ordinary single statement. Quoting is honoured here so only a real
+	 * separator between statements is refused.
+	 */
+	public static function contains_statement_separator( string $sql ): bool {
+		$length = strlen( $sql );
+		$quote  = null;
+		for ( $offset = 0; $offset < $length; $offset++ ) {
+			$character = $sql[ $offset ];
+			if ( null !== $quote ) {
+				if ( '\\' === $character && '`' !== $quote ) {
+					++$offset;
+					continue;
+				}
+				if ( $character === $quote ) {
+					// A doubled quote escapes itself and stays inside the literal.
+					if ( $offset + 1 < $length && $sql[ $offset + 1 ] === $quote ) {
+						++$offset;
+						continue;
+					}
+					$quote = null;
+				}
+				continue;
+			}
+			if ( "'" === $character || '"' === $character || '`' === $character ) {
+				$quote = $character;
+				continue;
+			}
+			if ( ';' === $character ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private function quoted_identifier( string $sql, int &$offset ): WP_Markdown_Native_SQL_Token {

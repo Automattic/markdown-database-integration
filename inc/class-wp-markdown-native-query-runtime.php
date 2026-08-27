@@ -58,6 +58,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'user_nicename' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
 					'user_email' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci' ), 'lookup_operators' => array( '=', 'IN' ), 'lookup_validator' => $ascii_lookup ),
 				),
+				'order_columns' => array( 'user_login' ),
 			),
 			$multisite
 		);
@@ -70,8 +71,18 @@ final class WP_Markdown_Native_Runtime_Factory {
 			array(
 				'columns' => array(
 					'user_id' => array(
-						'lookup_operators' => array( 'IN' ),
+						'lookup_operators' => array( '=', 'IN' ),
 						'lookup_validator' => static fn( array $values ): bool => self::all_normalized_unsigned( $values ),
+					),
+					// WordPress locates an existing meta row by key before it
+					// writes, so a missing meta_key lookup silently duplicates
+					// the row instead of updating it. Keys are case-insensitive
+					// ASCII in practice, and a non-ASCII key fails closed rather
+					// than matching under an assumed collation.
+					'meta_key' => array(
+						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
 				),
 			)
@@ -98,7 +109,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
 				),
-				'order_columns' => array( 'post_date' ),
+				'order_columns' => array( 'post_date', 'menu_order', 'post_title' ),
 			)
 		);
 	}

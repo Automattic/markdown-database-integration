@@ -81,8 +81,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $predicates as $predicate ) {
 			$columns[] = $predicate->column();
 		}
-		if ( null !== $plan->order() ) {
-			$columns[] = $plan->order();
+		foreach ( $plan->order_by() as $item ) {
+			$columns[] = $item['column'];
 		}
 		foreach ( $columns as $column ) {
 			if ( ! $schema->has_column( $column ) ) {
@@ -99,8 +99,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() !== $predicates && null === $pushdown ) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
-		if ( null !== $plan->order() && ! $schema->allows_order( $plan->order() ) ) {
-			return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
+		foreach ( $plan->order_by() as $item ) {
+			if ( ! $schema->allows_order( $item['column'] ) ) {
+				return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
+			}
 		}
 
 		if ( 0 === $plan->limit() && ! $plan->calculates_found_rows() ) {
@@ -118,13 +120,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$provider_projection[] = $schema->natural_order();
 		}
 		$provider_projection = array_values( array_unique( $provider_projection ) );
+		$order_by = $plan->order_by();
+		if ( array() === $order_by ) {
+			$order_by = array(
+				array(
+					'column'     => $schema->natural_order(),
+					'descending' => false,
+				),
+			);
+		}
 		$provided = $table['provider']->read(
 			new WP_Markdown_Native_Table_Access(
 				$provider_projection,
 				$pushdown,
-				$plan->order() ?? $schema->natural_order(),
+				$order_by[0]['column'],
 				$plan->counts_all() || $plan->calculates_found_rows() || array() !== $residual ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
-				$plan->order_descending()
+				$order_by[0]['descending'],
+				$order_by
 			)
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {
@@ -226,12 +238,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$needed[ $join->left_source() ][] = $join->left_column();
 			$needed[ $join->right_source() ][] = $join->right_column();
 		}
-		if ( null !== $plan->order() ) {
-			$order_source = $plan->order_source();
-			if ( null === $order_source || ! isset( $sources[ $order_source ] ) || ! $sources[ $order_source ]['schema']->allows_order( $plan->order() ) ) {
+		foreach ( $plan->order_by() as $item ) {
+			$order_source = $item['source'] ?? $plan->order_source();
+			if ( null === $order_source || ! isset( $sources[ $order_source ] ) || ! $sources[ $order_source ]['schema']->allows_order( $item['column'] ) ) {
 				return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN ordering collation.' );
 			}
-			$needed[ $order_source ][] = $plan->order();
+			$needed[ $order_source ][] = $item['column'];
 		}
 		foreach ( $needed as &$columns ) {
 			$columns = array_values( array_unique( $columns ) );
@@ -355,12 +367,26 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$joined_sources[ $target_source ] = true;
 		}
 
-		if ( null !== $plan->order() ) {
-			$order_source = (string) $plan->order_source();
-			$order = $plan->order();
+		if ( array() !== $plan->order_by() ) {
+			foreach ( $plan->order_by() as $item ) {
+				$order_source = (string) ( $item['source'] ?? $plan->order_source() );
+				$extracted = array_map( static fn( array $row ): array => $row[ $order_source ], $rows );
+				if ( null !== $sources[ $order_source ]['schema']->unsupported_order_reason( array( $item ), $extracted ) ) {
+					return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN ordering collation.' );
+				}
+			}
 			usort(
 				$rows,
-				fn( array $left, array $right ): int => ( $plan->order_descending() ? -1 : 1 ) * $sources[ $order_source ]['schema']->compare_rows( $order, $left[ $order_source ], $right[ $order_source ] )
+				function ( array $left, array $right ) use ( $plan, $sources ): int {
+					foreach ( $plan->order_by() as $item ) {
+						$source = (string) ( $item['source'] ?? $plan->order_source() );
+						$comparison = ( $item['descending'] ? -1 : 1 ) * $sources[ $source ]['schema']->compare_rows( $item['column'], $left[ $source ], $right[ $source ] );
+						if ( 0 !== $comparison ) {
+							return $comparison;
+						}
+					}
+					return 0;
+				}
 			);
 		}
 		$selected_rows = array();
@@ -424,7 +450,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $predicates as $predicate ) {
 			$matched = false;
 			foreach ( $predicate->values() as $value ) {
-				if ( $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ) ) {
+				$compare = '<>' === $predicate->operator()
+					? $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value )
+					: $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value );
+				if ( $compare ) {
 					$matched = true;
 					break;
 				}

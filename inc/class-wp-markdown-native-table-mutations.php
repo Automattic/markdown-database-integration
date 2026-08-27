@@ -94,7 +94,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
 		}
-		if ( '' === $sql || str_contains( $sql, ';' ) ) {
+		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one INSERT statement.' );
 		}
 
@@ -133,7 +133,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
 		}
-		if ( '' === $sql || str_contains( $sql, ';' ) ) {
+		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one UPDATE or DELETE statement.' );
 		}
 
@@ -396,7 +396,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			|| null === $table
 			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			|| ! is_array( $definition )
-			|| ! $this->is_persisted_definition( $suffix, $definition, $prefix )
+			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix )
 		) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can insert only into a persisted generic snapshot table.' );
 		}
@@ -647,7 +647,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			|| null === $table
 			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			|| ! is_array( $definition )
-			|| ! $this->is_persisted_definition( $suffix, $definition, $prefix )
+			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix )
 		) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
 		}
@@ -763,6 +763,32 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	}
 
 	/** @param array<string,mixed> $definition */
+	/**
+	 * Report whether a definition is authoritative enough to mutate.
+	 *
+	 * A plugin table earns trust from its persisted schema file. A core table
+	 * carries no such file because its definition is generated from WordPress
+	 * core itself and verified against a recorded hash, which is the stronger
+	 * provenance of the two.
+	 *
+	 * @param array<string,mixed> $definition
+	 */
+	private function is_authoritative_definition( string $suffix, array $definition, string $prefix ): bool {
+		return $this->is_persisted_definition( $suffix, $definition, $prefix )
+			|| $this->is_generated_core_definition( $suffix, $definition );
+	}
+
+	/** @param array<string,mixed> $definition */
+	private function is_generated_core_definition( string $suffix, array $definition ): bool {
+		foreach ( array( false, true ) as $multisite ) {
+			$definitions = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
+			if ( isset( $definitions[ $suffix ] ) && $definitions[ $suffix ] === $definition ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private function is_persisted_definition( string $suffix, array $definition, string $prefix ): bool {
 		$directory = realpath( $this->state_root . '/_schema' );
 		$path = false === $directory ? '' : $directory . '/' . $suffix . '.sql';

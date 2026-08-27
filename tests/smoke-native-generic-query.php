@@ -113,8 +113,11 @@ $grouped_bounded = $runtime->execute(
 	new WP_Markdown_Query_Request( "SELECT SQL_CALC_FOUND_ROWS ID FROM wp_users WHERE 1=1 AND ((user_login IN ('zoe', 'admin'))) ORDER BY ID DESC LIMIT 1, 1" )
 );
 $found_rows = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT FOUND_ROWS()' ) );
-$unsupported_string_order = $runtime->execute(
+$login_order = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT user_login FROM wp_users ORDER BY user_login ASC' )
+);
+$unsupported_string_order = $runtime->execute(
+	new WP_Markdown_Query_Request( 'SELECT user_login FROM wp_users ORDER BY display_name ASC' )
 );
 $case_insensitive = $runtime->execute(
 	new WP_Markdown_Query_Request( "SELECT ID FROM wp_users WHERE user_login = 'ADMIN'" )
@@ -200,6 +203,10 @@ $checks = array(
 	'grouped predicates, descending order, offset LIMIT, and FOUND_ROWS execute as one stateful pair' => '1' === ( $grouped_bounded->wpdb_state()['last_result'][0]->ID ?? null )
 		&& '2' === ( $found_rows->wpdb_state()['last_result'][0]->{'FOUND_ROWS()'} ?? null ),
 	'ASCII case-insensitive lookups match WordPress identifiers' => '1' === ( $case_insensitive->wpdb_state()['last_result'][0]->ID ?? null ),
+	'user login ordering is ASCII case-insensitive' => array( 'admin', 'zoe' ) === array_map(
+		static fn( object $row ): string => $row->user_login,
+		$login_order->wpdb_state()['last_result']
+	),
 	'undeclared string ordering and unsupported Unicode collations fail closed' => false === $unsupported_string_order->return_value()
 		&& false === $unsupported_unicode->return_value(),
 	'configured email lookup and overflowing numeric literals fail correctly' => '2' === ( $email->wpdb_state()['last_result'][0]->ID ?? null )

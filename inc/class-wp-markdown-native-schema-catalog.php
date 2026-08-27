@@ -225,7 +225,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 				$normalizer,
 				$column_overlay['lookup_operators'] ?? array(),
 				$column_overlay['lookup_validator'] ?? null,
-				$column_overlay['filter_operators'] ?? array( '=', 'IN' ),
+				$column_overlay['filter_operators'] ?? array( '=', 'IN', '<>' ),
 				$column_overlay['filter_validator'] ?? null
 			);
 		}
@@ -257,7 +257,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 		$overlay = array( 'columns' => array(), 'natural_order' => $identity, 'order_columns' => $order_columns );
 		foreach ( $definition['columns'] as $name => $column ) {
 			$overlay['columns'][ $name ] = array(
-				'filter_operators' => self::is_integer( $column['type'] ) ? array( '=', 'IN' ) : array(),
+				'filter_operators' => self::is_integer( $column['type'] ) ? array( '=', 'IN', '<>' ) : array(),
 			);
 		}
 		foreach ( $definition['indexes'] as $index ) {

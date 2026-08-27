@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN' ),
+		private readonly array $filter_operators = array( '=', 'IN', '<>' ),
 		private readonly mixed $filter_validator = null
 	) {
 		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
@@ -156,8 +156,20 @@ final class WP_Markdown_Native_Table_Schema {
 		return null !== $left && null !== $right && $left === $right;
 	}
 
+	public function values_differ( string $column, mixed $left, mixed $right ): bool {
+		$left  = $this->column( $column )->normalize( $left );
+		$right = $this->column( $column )->normalize( $right );
+		return null !== $left && null !== $right && $left !== $right;
+	}
+
 	public function compare_values( string $column, mixed $left, mixed $right ): int {
-		return $this->column( $column )->normalize( $left ) <=> $this->column( $column )->normalize( $right );
+		$left  = $this->column( $column )->normalize( $left );
+		$right = $this->column( $column )->normalize( $right );
+		if ( $this->orders_textually( $column ) ) {
+			$left  = is_string( $left ) ? strtolower( $left ) : $left;
+			$right = is_string( $right ) ? strtolower( $right ) : $right;
+		}
+		return $left <=> $right;
 	}
 
 	/** @param array<string,mixed> $left @param array<string,mixed> $right */
@@ -176,6 +188,51 @@ final class WP_Markdown_Native_Table_Schema {
 			}
 		}
 		return 0;
+	}
+
+	/**
+	 * @param array<int,array{column:string,descending:bool}> $order_by
+	 * @param array<int,array<string,mixed>>                  $rows
+	 */
+	public function unsupported_order_reason( array $order_by, array $rows ): ?string {
+		foreach ( $order_by as $item ) {
+			$column = $item['column'];
+			if ( ! $this->allows_order( $column ) ) {
+				return 'unsupported_order';
+			}
+			if ( ! $this->orders_textually( $column ) ) {
+				continue;
+			}
+			foreach ( $rows as $row ) {
+				$value = $row[ $column ] ?? null;
+				if ( null === $value ) {
+					continue;
+				}
+				if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
+					return 'unsupported_order';
+				}
+			}
+		}
+		return null;
+	}
+
+	/**
+	 * @param array<string,mixed>                             $left
+	 * @param array<string,mixed>                             $right
+	 * @param array<int,array{column:string,descending:bool}> $order_by
+	 */
+	public function compare_ordered_rows( array $left, array $right, array $order_by ): int {
+		foreach ( $order_by as $item ) {
+			$comparison = ( $item['descending'] ? -1 : 1 ) * $this->compare_rows( $item['column'], $left, $right );
+			if ( 0 !== $comparison ) {
+				return $comparison;
+			}
+		}
+		return 0;
+	}
+
+	private function orders_textually( string $column ): bool {
+		return in_array( $this->column( $column )->type(), array( 252, 253, 254 ), true );
 	}
 
 	/** @param array<string,mixed> $row */

@@ -361,6 +361,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 
 final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private string $state_root;
+	private WP_Markdown_Native_Table_Index $index;
 
 	public function __construct(
 		string $state_root,
@@ -373,6 +374,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
 		}
 		$this->state_root = rtrim( $root, DIRECTORY_SEPARATOR );
+		$this->index = new WP_Markdown_Native_Table_Index( $this->state_root . DIRECTORY_SEPARATOR . '_tables' );
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -416,6 +418,35 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( ! $this->supports_unique_indexes( $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 			}
+			$path = $directory . '/' . $suffix . '.json';
+			$index = WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
+				? null
+				: $this->index->load( $suffix, $path );
+			if ( null !== $index ) {
+				// The index answers identity and uniqueness, so the snapshot is
+				// appended to rather than read, decoded, and republished.
+				$row = $this->complete_row( $insert->values(), $definition, array(), $index['max'] );
+				if ( $row instanceof WP_Markdown_Query_Result ) {
+					return $row;
+				}
+				if ( true !== $schema->validate_row( $row ) ) {
+					return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );
+				}
+				if ( WP_Markdown_Native_Table_Index::duplicates( $index, $row, $definition, $schema ) ) {
+					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+				}
+				$appended = $this->append_row( $path, $row, 0 === $index['row_count'] );
+				if ( $appended instanceof WP_Markdown_Query_Result ) {
+					return $appended;
+				}
+				if ( ! $this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ), $this->transactions ) ) {
+					// A snapshot without a current index stays correct and simply
+					// costs a rebuild on the next insert.
+					$this->index->forget( $suffix, $this->transactions );
+				}
+				return $this->insert_result( $row, $definition );
+			}
+
 			$rows = $table['provider']->read( new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX ) );
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
@@ -432,10 +463,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 			}
 			$rows[] = $row;
-			$written = $this->write( $directory . '/' . $suffix . '.json', $rows );
+			$written = $this->write( $path, $rows );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
+			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
 			$insert_id = 0;
 			foreach ( $definition['columns'] as $name => $column ) {
 				if ( true === ( $column['auto_increment'] ?? false ) ) {
@@ -450,8 +482,87 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		}
 	}
 
-	/** @param array<string,int|string|null> $provided @param array<string,mixed> $definition @param array<int,array<string,mixed>> $rows */
-	private function complete_row( array $provided, array $definition, array $rows ): array|WP_Markdown_Query_Result {
+	/**
+	 * Resolve the auto-increment identifier assigned to a completed row.
+	 *
+	 * @param array<string,mixed> $row        Completed row.
+	 * @param array<string,mixed> $definition Compiled definition.
+	 */
+	private function insert_result( array $row, array $definition ): WP_Markdown_Query_Result {
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( true === ( $column['auto_increment'] ?? false ) ) {
+				return WP_Markdown_Query_Result::mutated( 1, (int) $row[ $name ] );
+			}
+		}
+		return WP_Markdown_Query_Result::mutated( 1, 0 );
+	}
+
+	/**
+	 * Append one encoded row inside the snapshot's JSON array.
+	 *
+	 * The existing rows are never decoded or re-encoded, so the cost of an
+	 * insert does not grow with the size of the snapshot.
+	 *
+	 * @param array<string,mixed> $row Row to append.
+	 */
+	private function append_row( string $path, array $row, bool $empty ): true|WP_Markdown_Query_Result {
+		if ( is_link( $path ) || ! is_file( $path ) ) {
+			return $this->failure( 'unsafe_table_file', 'The canonical table file is unavailable or unsafe.' );
+		}
+		if ( null !== $this->transactions ) {
+			$recorded = $this->transactions->record( $path );
+			if ( true !== $recorded ) {
+				return $this->failure( 'transaction_journal_failed', $recorded );
+			}
+		}
+		try {
+			$encoded = json_encode( $row, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );
+		} catch ( Throwable ) {
+			return $this->failure( 'table_encoding_failed', 'The canonical table row could not be encoded.' );
+		}
+
+		$handle = @fopen( $path, 'c+b' );
+		if ( false === $handle ) {
+			return $this->failure( 'table_append_failed', 'The canonical table file could not be opened for append.' );
+		}
+		try {
+			$size = fstat( $handle )['size'] ?? 0;
+			$window = (int) min( $size, 4096 );
+			if ( 0 === $window || -1 === fseek( $handle, $size - $window ) ) {
+				return $this->failure( 'table_append_failed', 'The canonical table file could not be positioned.' );
+			}
+			$tail = (string) fread( $handle, $window );
+			$close = strrpos( $tail, ']' );
+			if ( false === $close ) {
+				return $this->failure( 'table_append_failed', 'The canonical table file has no array terminator.' );
+			}
+			$offset = $size - $window + $close;
+			if ( -1 === fseek( $handle, $offset ) ) {
+				return $this->failure( 'table_append_failed', 'The canonical table file could not be positioned.' );
+			}
+			$payload = ( $empty ? '' : ',' ) . $encoded . ']';
+			if ( strlen( $payload ) !== fwrite( $handle, $payload ) ) {
+				return $this->failure( 'table_append_failed', 'The canonical table row could not be appended.' );
+			}
+			if ( ! ftruncate( $handle, $offset + strlen( $payload ) ) ) {
+				return $this->failure( 'table_append_failed', 'The canonical table file could not be truncated.' );
+			}
+			if ( ! fflush( $handle ) || ( function_exists( 'fsync' ) && ! fsync( $handle ) ) ) {
+				return $this->failure( 'table_append_failed', 'The canonical table row could not be flushed.' );
+			}
+		} finally {
+			fclose( $handle );
+		}
+		return true;
+	}
+
+	/**
+	 * @param array<string,int|string|null>   $provided   Supplied columns.
+	 * @param array<string,mixed>             $definition Compiled definition.
+	 * @param array<int,array<string,mixed>>  $rows       Snapshot rows, empty when maxima are supplied.
+	 * @param array<string,int>|null          $maxima     Known auto-increment maxima.
+	 */
+	private function complete_row( array $provided, array $definition, array $rows, ?array $maxima = null ): array|WP_Markdown_Query_Result {
 		if ( array_diff_key( $provided, $definition['columns'] ) ) {
 			return $this->failure( 'unsupported_column', 'The INSERT references an undeclared column.' );
 		}
@@ -464,9 +575,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				continue;
 			}
 			if ( $generate_identity ) {
-				$maximum = 0;
-				foreach ( $rows as $existing ) {
-					$maximum = max( $maximum, (int) $existing[ $name ] );
+				$maximum = $maxima[ $name ] ?? null;
+				if ( null === $maximum ) {
+					$maximum = 0;
+					foreach ( $rows as $existing ) {
+						$maximum = max( $maximum, (int) $existing[ $name ] );
+					}
 				}
 				if ( PHP_INT_MAX === $maximum ) {
 					return $this->failure( 'auto_increment_exhausted', 'The persisted auto-increment range is exhausted.' );
@@ -590,10 +704,14 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( 0 === $affected ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
-			$written = $this->write( $directory . '/' . $suffix . '.json', $retained );
+			$path = $directory . '/' . $suffix . '.json';
+			$written = $this->write( $path, $retained );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
+			// The republished snapshot invalidates the previous index, so it is
+			// refreshed from the rows already in memory.
+			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ), $this->transactions );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
 			flock( $lock, LOCK_UN );

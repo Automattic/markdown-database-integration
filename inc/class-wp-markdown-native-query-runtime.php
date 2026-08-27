@@ -15,6 +15,7 @@ require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
 require_once __DIR__ . '/class-wp-markdown-storage.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-mutations.php';
+require_once __DIR__ . '/class-wp-markdown-native-table-index.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-introspection.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';

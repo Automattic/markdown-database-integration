@@ -117,9 +117,17 @@ class WP_Markdown_Backend_Capabilities {
 		) );
 	}
 
-	/** mdi-native currently executes only bounded option reads from canonical state. */
+	/** mdi-native executes canonical options, persisted schema, and generic snapshot tables. */
 	public static function mdi_native(): self {
-		return new self( 'mdi-native', array( 'canonical_option_select' => true ) );
+		return new self(
+			'mdi-native',
+			array(
+				'canonical_option_select'      => true,
+				'schema_persistence'           => true,
+				'table_mutation_capture'       => true,
+				'lazy_post_content_resolution' => true,
+			)
+		);
 	}
 
 	public function get_backend(): string {

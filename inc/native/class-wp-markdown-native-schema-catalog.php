@@ -261,9 +261,25 @@ final class WP_Markdown_Native_Schema_Catalog {
 			);
 		}
 		foreach ( $definition['indexes'] as $index ) {
-			$name = $index['columns'][0]['name'] ?? '';
-			if ( isset( $definition['columns'][ $name ] ) && self::is_integer( $definition['columns'][ $name ]['type'] ) ) {
-				$overlay['columns'][ $name ]['lookup_operators'] = array( '=', 'IN' );
+			$unique = true === ( $index['unique'] ?? false );
+			foreach ( $index['columns'] as $index_column ) {
+				$name = $index_column['name'] ?? '';
+				if ( ! isset( $definition['columns'][ $name ] ) ) {
+					continue;
+				}
+				$type = $definition['columns'][ $name ]['type'];
+				if ( self::is_integer( $type ) ) {
+					$overlay['columns'][ $name ]['lookup_operators'] = array( '=', 'IN' );
+					continue;
+				}
+				if ( $unique && in_array( $type, array( 'char', 'varchar' ), true ) ) {
+					$overlay['columns'][ $name ]['lookup_operators']  = array( '=', 'IN' );
+					$overlay['columns'][ $name ]['filter_operators'] = array( '=', 'IN', '<>' );
+					$overlay['columns'][ $name ]['lookup_validator'] = static fn( array $values ): bool => array() === array_filter(
+						$values,
+						static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )
+					);
+				}
 			}
 		}
 		foreach ( $column_overlays as $name => $column_overlay ) {

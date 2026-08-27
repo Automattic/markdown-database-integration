@@ -49,6 +49,9 @@ $prefix_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO 
 $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_scope (id bigint unsigned NOT NULL auto_increment, agent_slug varchar(200) NOT NULL, owner_id bigint unsigned NOT NULL, instance_key_hash char(64) NOT NULL, PRIMARY KEY (id), UNIQUE KEY agent_identity_scope_hash (agent_slug, owner_id, instance_key_hash))' ) );
 $scope = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_scope (agent_slug, owner_id, instance_key_hash) VALUES ('admin', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')" ) );
 $scope_duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_scope (agent_slug, owner_id, instance_key_hash) VALUES ('admin', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')" ) );
+$ascii_lookup = $runtime->execute( new WP_Markdown_Query_Request( "SELECT name FROM wp_plugin_unique_names WHERE name = 'CaseSensitive'" ) );
+$unicode_lookup = $runtime->execute( new WP_Markdown_Query_Request( "SELECT name FROM wp_plugin_unique_names WHERE name = 'Café'" ) );
+$scope_lookup = $runtime->execute( new WP_Markdown_Query_Request( "SELECT agent_slug FROM wp_plugin_unique_scope WHERE agent_slug = 'admin' AND owner_id = 1 AND instance_key_hash = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'" ) );
 
 $checks = array(
 	'generic INSERT fills defaults and applies MySQL zero auto-increment semantics' => 1 === $first->return_value()
@@ -78,6 +81,11 @@ $checks = array(
 	'composite ASCII unique keys match WordPress identity scopes' => 1 === $scope->return_value()
 		&& false === $scope_duplicate->return_value()
 		&& 'duplicate_key' === ( $scope_duplicate->diagnostic()['reason'] ?? null ),
+	'a unique varchar column is an equality lookup' => 1 === $ascii_lookup->return_value()
+		&& 'CaseSensitive' === ( $ascii_lookup->wpdb_state()['last_result'][0]->name ?? null )
+		&& false === $unicode_lookup->return_value()
+		&& 'unsupported_lookup' === ( $unicode_lookup->diagnostic()['reason'] ?? null ),
+	'a composite unique scope is an equality lookup' => 1 === $scope_lookup->return_value(),
 	'inserted rows remain queryable after a cold runtime reload' => array( 'first_job', 'second_job' ) === array_map( static fn( object $row ): string => $row->hook, $reloaded->wpdb_state()['last_result'] ),
 );
 

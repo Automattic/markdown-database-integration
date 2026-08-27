@@ -214,11 +214,35 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
 	}
 
+	/**
+	 * Resolve the post types a read may restrict itself to.
+	 *
+	 * A post type restriction maps directly onto canonical layout, so the
+	 * read can skip the types it cannot match. Any other restriction reads
+	 * the full corpus, which is the behaviour that existed before.
+	 *
+	 * @return array<int,string>|null
+	 */
+	private function post_type_scope( WP_Markdown_Native_Table_Access $access ): ?array {
+		$predicate = $access->predicate();
+		if ( null === $predicate || 'post_type' !== $predicate->column() ) {
+			return null;
+		}
+		$types = array();
+		foreach ( $predicate->values() as $value ) {
+			if ( ! is_string( $value ) || '' === $value ) {
+				return null;
+			}
+			$types[] = $value;
+		}
+		return array() === $types ? null : $types;
+	}
+
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
 		try {
 			$posts = array();
 			$ids   = array();
-			foreach ( $this->storage->get_markdown_file_manifest_iterator( true ) as $file ) {
+			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $this->post_type_scope( $access ) ) as $file ) {
 				$identity = $this->file_identity( $file['absolute'] );
 				$post = $this->storage->read_file( $file['absolute'], true, $file['parent_id'] );
 				if ( null === $identity || null === $post || (int) ( $post->ID ?? 0 ) < 1 ) {

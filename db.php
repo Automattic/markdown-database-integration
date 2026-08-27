@@ -21,7 +21,7 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 		}
 
 		try {
-			require_once $plugin_dir . '/inc/class-wp-markdown-native-shadow-verifier.php';
+			require_once $plugin_dir . '/inc/native/class-wp-markdown-native-shadow-verifier.php';
 			$verifier = WP_Markdown_Native_Shadow_Factory::from_globals( $database );
 			$database->set_native_shadow_verifier( $verifier );
 			$GLOBALS['markdown_db_native_shadow_verifier'] = $verifier;
@@ -45,7 +45,7 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND
 if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) {
 	$markdown_db_mysql_plugin_dir = null;
 	foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $path ) {
-		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/class-wp-markdown-sql-classifier.php' ) && is_file( $path . '/inc/class-wp-markdown-mysql-wpdb.php' ) && is_file( $path . '/inc/class-wp-markdown-mysql-outbox.php' ) ) {
+		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/class-wp-markdown-sql-classifier.php' ) && is_file( $path . '/inc/mysql/class-wp-markdown-mysql-wpdb.php' ) && is_file( $path . '/inc/mysql/class-wp-markdown-mysql-outbox.php' ) ) {
 			$markdown_db_mysql_plugin_dir = $path;
 			break;
 		}
@@ -58,10 +58,10 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
 		$markdown_db_mysql_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
 		$markdown_db_mysql_backend->require( 'table_mutation_capture' );
-		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-outbox.php';
-		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-impact-adapter.php';
-		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-semantic-drain.php';
-		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-mysql-wpdb.php';
+		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-outbox.php';
+		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-impact-adapter.php';
+		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-semantic-drain.php';
+		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-wpdb.php';
 		if ( 2 !== WP_Markdown_MySQL_WPDB::BOOTSTRAP_ABI ) {
 			throw new RuntimeException( 'Incompatible mysql-full bootstrap ABI.' );
 		}
@@ -87,7 +87,7 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) {
 	$markdown_db_native_plugin_dir = null;
 	foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $path ) {
-		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/class-wp-markdown-native-query-runtime.php' ) && is_file( $path . '/inc/class-wp-markdown-native-wpdb.php' ) ) {
+		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/native/class-wp-markdown-native-query-runtime.php' ) && is_file( $path . '/inc/native/class-wp-markdown-native-wpdb.php' ) ) {
 			$markdown_db_native_plugin_dir = $path;
 			break;
 		}
@@ -99,8 +99,8 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) 
 	require_once $markdown_db_native_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
 	$markdown_db_native_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
 	$markdown_db_native_backend->require( 'canonical_option_select' );
-	require_once $markdown_db_native_plugin_dir . '/inc/class-wp-markdown-native-query-runtime.php';
-	require_once $markdown_db_native_plugin_dir . '/inc/class-wp-markdown-native-wpdb.php';
+	require_once $markdown_db_native_plugin_dir . '/inc/native/class-wp-markdown-native-query-runtime.php';
+	require_once $markdown_db_native_plugin_dir . '/inc/native/class-wp-markdown-native-wpdb.php';
 
 	$markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : WP_CONTENT_DIR . '/markdown';
 	$markdown_db_native_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : $markdown_db_native_state_dir;

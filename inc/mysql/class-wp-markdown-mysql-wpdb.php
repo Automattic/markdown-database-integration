@@ -5,8 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/class-wp-markdown-sql-classifier.php';
-require_once __DIR__ . '/class-wp-markdown-query-observer-boundary.php';
+require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
+require_once __DIR__ . '/../class-wp-markdown-query-observer-boundary.php';
 
 class WP_Markdown_MySQL_WPDB extends wpdb {
 	public const BOOTSTRAP_ABI = 2;

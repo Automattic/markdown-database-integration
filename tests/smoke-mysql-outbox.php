@@ -3,7 +3,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-outbox.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-outbox.php';
 
 class MDI_Test_MySQL_Outbox extends WP_Markdown_MySQL_Outbox {
 	/** @var array<int,array<string,mixed>> */

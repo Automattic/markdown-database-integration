@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) || ! isset( $GLOBALS['wpdb'] ) || ! $GLOBALS['wpdb']
 	fwrite( STDERR, "SKIP: requires WordPress on native MySQL/MariaDB.\n" );
 	exit( 0 );
 }
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-query-compatibility-corpus.php';
+require_once dirname( __DIR__ ) . '/inc/compatibility/class-wp-markdown-query-compatibility-corpus.php';
 
 $db = new wpdb( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
 $db->set_prefix( (string) ( $GLOBALS['table_prefix'] ?? 'wp_' ) );

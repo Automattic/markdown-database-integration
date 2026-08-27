@@ -6,8 +6,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/class-wp-markdown-query-compatibility-comparator.php';
-require_once __DIR__ . '/class-wp-markdown-wpdb-result-snapshot.php';
+require_once __DIR__ . '/../compatibility/class-wp-markdown-query-compatibility-comparator.php';
+require_once __DIR__ . '/../class-wp-markdown-wpdb-result-snapshot.php';
 
 final class WP_Markdown_Native_Shadow_Factory {
 	public static function from_globals( object $database ): WP_Markdown_Native_Shadow_Verifier {

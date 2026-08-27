@@ -5,8 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
-require_once __DIR__ . '/class-wp-markdown-mutation-impact.php';
+require_once __DIR__ . '/../interface-wp-markdown-backend-operations.php';
+require_once __DIR__ . '/../class-wp-markdown-mutation-impact.php';
 
 final class WP_Markdown_MySQL_Operations implements WP_Markdown_Backend_Operations {
 	private const GLOBAL_TABLES = array( 'blogs', 'blogmeta', 'registration_log', 'signups', 'site', 'sitemeta', 'usermeta', 'users' );

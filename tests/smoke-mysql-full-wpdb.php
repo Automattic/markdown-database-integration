@@ -41,7 +41,7 @@ class wpdb {
 	}
 }
 
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-wpdb.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-wpdb.php';
 
 add_filter( 'query', static function ( string $query ): string {
 	return match ( $query ) {

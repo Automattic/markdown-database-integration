@@ -5,7 +5,7 @@ declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/class-wp-markdown-reconciliation-adapters.php';
 require_once __DIR__ . '/../inc/interface-wp-markdown-backend-operations.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-sqlite-operations.php';
+require_once __DIR__ . '/../inc/sqlite/class-wp-markdown-sqlite-operations.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-frontmatter-profiles.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-storage.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';

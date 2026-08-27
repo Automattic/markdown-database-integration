@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/class-wp-markdown-mutation-impact.php';
+require_once __DIR__ . '/../class-wp-markdown-mutation-impact.php';
 
 final class WP_Markdown_MySQL_Impact_Adapter {
 	private const GLOBAL_TABLES = array( 'blogs', 'blogmeta', 'registration_log', 'signups', 'site', 'sitemeta', 'usermeta', 'users' );

@@ -4,7 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 function mdi_native_partition_write( string $generation, string $identity, array $row ): string {
 	$path = $generation . '/' . hash( 'sha256', $identity ) . '.json';

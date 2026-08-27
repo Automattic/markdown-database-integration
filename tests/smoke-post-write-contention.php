@@ -62,7 +62,7 @@ class WP_Markdown_Write_Engine {
 	public function persist_mutation( array $mutation ): void { unset( $mutation ); }
 }
 
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-sqlite-runtime-adapter.php';
+require_once dirname( __DIR__ ) . '/inc/sqlite/class-wp-markdown-sqlite-runtime-adapter.php';
 
 function mdi_contention_adapter( WP_Markdown_Write_Engine $engine ): array {
 	$pdo = new PDO( 'sqlite::memory:' );

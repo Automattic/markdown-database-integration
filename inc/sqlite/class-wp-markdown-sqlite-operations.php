@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
+require_once __DIR__ . '/../interface-wp-markdown-backend-operations.php';
 
 class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	private $driver;
@@ -312,7 +312,7 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 	}
 	private function file_receipt( string $path ): ?array { return is_file( $path ) ? array( 'path' => $path, 'hash' => hash_file( 'sha256', $path ) ) : null; }
 	public function mutations_for_query( string $query, array $operation ): array {
-		require_once __DIR__ . '/class-wp-markdown-mutation-impact.php';
+		require_once __DIR__ . '/../class-wp-markdown-mutation-impact.php';
 		$table = $operation['table'];
 		$insert_id = method_exists( $this->driver, 'get_insert_id' ) ? (int) $this->driver->get_insert_id() : 0;
 		return WP_Markdown_Mutation_Impact::for_query( $query, $operation, $table, $insert_id, function ( int $term_id ): array { return array_map( static fn( $row ): int => (int) $row->object_id, $this->rows( 'SELECT object_id FROM `' . $this->table( 'term_relationships' ) . '` WHERE term_taxonomy_id = ' . $term_id ) ); }, false );
@@ -333,7 +333,7 @@ function wp_markdown_backend_operations_from_legacy( $driver, $prefix = 'wp_' ):
 
 function wp_markdown_runtime_adapter( $connection, string $database, WP_Markdown_Storage $storage, $prefix = 'wp_', ?WP_Markdown_Backend_Capabilities $capabilities = null ): array {
 	if ( ! class_exists( 'WP_Markdown_SQLite_Runtime_Adapter' ) ) {
-		require_once __DIR__ . '/class-wp-markdown-driver.php';
+		require_once __DIR__ . '/../class-wp-markdown-driver.php';
 	}
 	$driver = new WP_Markdown_SQLite_Runtime_Adapter( $connection, $database, $storage, $capabilities );
 	return array( $driver->operations( $prefix ), $driver );

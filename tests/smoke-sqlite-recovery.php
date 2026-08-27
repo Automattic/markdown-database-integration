@@ -49,7 +49,7 @@ define( 'MARKDOWN_DB_CONTENT_DIR', sys_get_temp_dir() . '/mdi-sqlite-recovery-' 
 define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,auto-draft' );
 
 require_once __DIR__ . '/../inc/class-wp-markdown-storage.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-sqlite-recovery.php';
+require_once __DIR__ . '/../inc/sqlite/class-wp-markdown-sqlite-recovery.php';
 
 $passed = 0;
 $failed = 0;

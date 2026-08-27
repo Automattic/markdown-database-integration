@@ -12,7 +12,7 @@ if ( ! defined( 'SAVEQUERIES' ) ) {
 	define( 'SAVEQUERIES', true );
 }
 
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-mysql-wpdb.php';
+require_once dirname( __DIR__ ) . '/inc/mysql/class-wp-markdown-mysql-wpdb.php';
 
 if ( ! $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB ) {
 	throw new RuntimeException( 'mysql-full db.php bootstrap did not install the MDI wpdb boundary.' );

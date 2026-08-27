@@ -52,7 +52,7 @@ final class WP_Markdown_CLI {
 	}
 }
 
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-content-runtime.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-content-runtime.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-frontmatter-profiles.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-content-layout-profiles.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-storage.php';

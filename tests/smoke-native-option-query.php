@@ -3,8 +3,8 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-query-compatibility-comparator.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/compatibility/class-wp-markdown-query-compatibility-comparator.php';
 
 $GLOBALS['mdi_native_query_filter'] = null;
 function apply_filters( string $hook, mixed $value ): mixed {
@@ -51,7 +51,7 @@ class wpdb {
 	public function get_results( string $query ): array { $this->query( $query ); return $this->last_result; }
 	public function get_col_info( string $type ): array { return array_map( static fn( object $column ): mixed => $column->{$type} ?? null, $this->col_info ); }
 }
-require_once __DIR__ . '/../inc/class-wp-markdown-native-wpdb.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-wpdb.php';
 
 $root = sys_get_temp_dir() . '/mdi-native-option-' . bin2hex( random_bytes( 6 ) );
 if ( ! mkdir( $root . '/_options', 0777, true ) ) {

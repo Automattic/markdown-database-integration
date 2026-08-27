@@ -15,7 +15,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private ?WP_Markdown_Native_Option_Mutation_Runtime $option_mutations = null,
 		private ?WP_Markdown_Native_Schema_Mutation_Runtime $schema_mutations = null,
 		private ?WP_Markdown_Native_Table_Mutation_Runtime $table_mutations = null,
-		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
+		private ?WP_Markdown_Native_Post_Mutation_Runtime $post_mutations = null
 	) {
 		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
 	}
@@ -44,6 +45,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$insert_table = $delete_match[1];
 		}
 		if ( null !== $insert_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $insert_table ) ) {
+			if ( 0 === strcasecmp( $request->table_prefix() . 'posts', $insert_table ) ) {
+				return null === $this->post_mutations
+					? $this->failure( 'unsupported_grammar', 'mdi-native post mutations are unavailable.' )
+					: $this->post_mutations->execute( $request );
+			}
 			return null === $this->table_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )
 				: $this->table_mutations->execute( $request );

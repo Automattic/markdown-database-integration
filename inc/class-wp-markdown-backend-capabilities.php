@@ -125,6 +125,7 @@ class WP_Markdown_Backend_Capabilities {
 				'canonical_option_select'      => true,
 				'schema_persistence'           => true,
 				'table_mutation_capture'       => true,
+				'content_mutation_capture'     => true,
 				'lazy_post_content_resolution' => true,
 			)
 		);

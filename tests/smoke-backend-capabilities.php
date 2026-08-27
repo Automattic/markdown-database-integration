@@ -61,10 +61,10 @@ foreach ( array( 'table_mutation_capture', 'schema_persistence', 'disposable_ind
 $native = WP_Markdown_Backend_Capabilities::mdi_native();
 mdi_backend_assert( 'mdi-native' === $native->get_backend(), 'Native backend identifier is stable' );
 mdi_backend_assert( $native->supports( 'canonical_option_select' ), 'Native backend declares its bounded option query guarantee' );
-foreach ( array( 'schema_persistence', 'table_mutation_capture', 'lazy_post_content_resolution' ) as $capability ) {
+foreach ( array( 'schema_persistence', 'table_mutation_capture', 'content_mutation_capture', 'lazy_post_content_resolution' ) as $capability ) {
 	mdi_backend_assert( $native->supports( $capability ), 'Native backend declares ' . $capability );
 }
-foreach ( array( 'content_mutation_capture', 'cold_reconstruction', 'disposable_index_operation', 'explicit_flush', 'changed_path_receipts' ) as $capability ) {
+foreach ( array( 'cold_reconstruction', 'disposable_index_operation', 'explicit_flush', 'changed_path_receipts' ) as $capability ) {
 	mdi_backend_assert( ! $native->supports( $capability ), 'Native backend fails closed for ' . $capability );
 }
 try {

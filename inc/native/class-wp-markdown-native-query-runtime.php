@@ -17,6 +17,7 @@ require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-index.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-mutations.php';
+require_once __DIR__ . '/class-wp-markdown-native-post-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-introspection.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
@@ -196,13 +197,19 @@ final class WP_Markdown_Native_Runtime_Factory {
 		// runtime serves its first query, so canonical state never boots torn.
 		$transactions->recover();
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root );
+		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		return new WP_Markdown_Native_Query_Runtime(
 			$registry,
 			new WP_Markdown_Native_Query_Parser(),
 			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root, new WP_Markdown_Native_Option_Mutation_Parser(), $transactions ),
 			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions ),
-			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, new WP_Markdown_Native_Table_Insert_Parser(), $transactions ),
-			$transactions
+			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, $parser, $transactions ),
+			$transactions,
+			new WP_Markdown_Native_Post_Mutation_Runtime(
+				$registry,
+				$parser,
+				new WP_Markdown_Storage( $content_root ?? $state_root )
+			)
 		);
 	}
 

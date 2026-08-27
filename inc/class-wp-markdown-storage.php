@@ -245,7 +245,7 @@ class WP_Markdown_Storage {
 	 * @param object $post A post row object with WordPress column names.
 	 * @return string|false The file path written, or false on failure.
 	 */
-	public function write_post( object $post ): string|false {
+	public function write_post( object $post, bool $persist_auto_draft = false ): string|false {
 		$post_type = $post->post_type ?? 'post';
 
 		// Skip excluded post types.
@@ -255,7 +255,7 @@ class WP_Markdown_Storage {
 
 		// Skip auto-drafts — they're ephemeral.
 		$status = $post->post_status ?? '';
-		if ( 'auto-draft' === $status ) {
+		if ( 'auto-draft' === $status && ! $persist_auto_draft ) {
 			return false;
 		}
 

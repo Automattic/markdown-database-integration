@@ -268,6 +268,30 @@ final class WP_Markdown_Native_Table_Registry {
 		return $this->definitions[ $table ] ?? null;
 	}
 
+	/**
+	 * Replace a registered table after its schema is altered.
+	 *
+	 * Registration is otherwise append-only so a table cannot be shadowed. A
+	 * persisted schema alteration is the one lifecycle event that legitimately
+	 * changes an existing definition.
+	 */
+	public function reregister(
+		string $table,
+		?WP_Markdown_Native_Table_Schema $schema,
+		?WP_Markdown_Native_Table_Provider $provider,
+		array $definition
+	): void {
+		if ( ! isset( $this->definitions[ $table ] ) ) {
+			throw new InvalidArgumentException( 'An altered table must already be registered.' );
+		}
+		unset( $this->tables[ $table ], $this->definitions[ $table ] );
+		if ( null === $schema || null === $provider ) {
+			$this->register_definition( $table, $definition );
+			return;
+		}
+		$this->register( $table, $schema, $provider );
+	}
+
 	/** @return array<int,string> */
 	public function table_names(): array {
 		return array_keys( $this->definitions );

@@ -40,7 +40,15 @@ $multi = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugi
 $selected = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT * FROM wp_plugin_jobs ORDER BY job_id ASC' ) );
 $reloaded = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( "SELECT hook, priority FROM wp_plugin_jobs WHERE job_id IN (1, 8) ORDER BY job_id ASC" ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_names (id bigint unsigned NOT NULL auto_increment, name varchar(191) NOT NULL, PRIMARY KEY (id), UNIQUE KEY name (name))' ) );
-$ambiguous_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('CaseSensitive')" ) );
+$ascii_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('CaseSensitive')" ) );
+$ascii_duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('CaseSensitive')" ) );
+$ascii_distinct = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('casesensitive')" ) );
+$unicode_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('Café')" ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_prefix (id bigint unsigned NOT NULL auto_increment, name varchar(191) NOT NULL, PRIMARY KEY (id), UNIQUE KEY name (name(32)))' ) );
+$prefix_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_prefix (name) VALUES ('prefix')" ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_scope (id bigint unsigned NOT NULL auto_increment, agent_slug varchar(200) NOT NULL, owner_id bigint unsigned NOT NULL, instance_key_hash char(64) NOT NULL, PRIMARY KEY (id), UNIQUE KEY agent_identity_scope_hash (agent_slug, owner_id, instance_key_hash))' ) );
+$scope = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_scope (agent_slug, owner_id, instance_key_hash) VALUES ('admin', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')" ) );
+$scope_duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_scope (agent_slug, owner_id, instance_key_hash) VALUES ('admin', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')" ) );
 
 $checks = array(
 	'generic INSERT fills defaults and applies MySQL zero auto-increment semantics' => 1 === $first->return_value()
@@ -59,8 +67,17 @@ $checks = array(
 	'multi-statement INSERT fails closed without temporary files' => false === $multi->return_value()
 		&& 'unsupported_grammar' === ( $multi->diagnostic()['reason'] ?? null )
 		&& array() === ( glob( $root . '/_tables/*.tmp-*' ) ?: array() ),
-	'string unique keys fail closed until exact collation semantics are retained' => false === $ambiguous_unique->return_value()
-		&& 'unsupported_unique_collation' === ( $ambiguous_unique->diagnostic()['reason'] ?? null ),
+	'ASCII unique keys use exact identity' => 1 === $ascii_unique->return_value()
+		&& false === $ascii_duplicate->return_value()
+		&& 'duplicate_key' === ( $ascii_duplicate->diagnostic()['reason'] ?? null )
+		&& 1 === $ascii_distinct->return_value(),
+	'non-ASCII unique keys fail closed' => false === $unicode_unique->return_value()
+		&& 'unsupported_unique_collation' === ( $unicode_unique->diagnostic()['reason'] ?? null ),
+	'prefix unique keys still fail closed' => false === $prefix_unique->return_value()
+		&& 'unsupported_unique_collation' === ( $prefix_unique->diagnostic()['reason'] ?? null ),
+	'composite ASCII unique keys match WordPress identity scopes' => 1 === $scope->return_value()
+		&& false === $scope_duplicate->return_value()
+		&& 'duplicate_key' === ( $scope_duplicate->diagnostic()['reason'] ?? null ),
 	'inserted rows remain queryable after a cold runtime reload' => array( 'first_job', 'second_job' ) === array_map( static fn( object $row ): string => $row->hook, $reloaded->wpdb_state()['last_result'] ),
 );
 

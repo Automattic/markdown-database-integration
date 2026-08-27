@@ -28,7 +28,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
 		}
-		if ( 1 === preg_match( '/^\s*CREATE\s+TABLE\b/i', $request->sql() ) ) {
+		if ( 1 === preg_match( '/^\s*(?:CREATE|ALTER)\s+TABLE\b/i', $request->sql() ) ) {
 			return null === $this->schema_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native schema mutations are unavailable.' )
 				: $this->schema_mutations->execute( $request );

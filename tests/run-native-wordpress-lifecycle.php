@@ -118,8 +118,8 @@ $recipe = array(
 					'step' => 'defineWpConfigConsts',
 					'consts' => array(
 						'MARKDOWN_DB_BACKEND' => 'mdi-native',
-						'MARKDOWN_DB_STATE_DIR' => '/wordpress/wp-content/markdown',
-						'MARKDOWN_DB_CONTENT_DIR' => '/wordpress/wp-content/markdown',
+						'MARKDOWN_DB_STATE_DIR' => '/wordpress/wp-content/db',
+						'MARKDOWN_DB_CONTENT_DIR' => '/wordpress/wp-content/db',
 						'SAVEQUERIES' => true,
 						'WP_DEBUG' => true,
 						'WP_DEBUG_LOG' => true,
@@ -134,7 +134,7 @@ $recipe = array(
 			array( 'type' => 'directory', 'source' => $bootstrap_content, 'target' => '/wordpress/wp-content', 'mode' => 'readonly', 'phase' => 'pre-install' ),
 			array( 'type' => 'directory', 'source' => $repo, 'target' => '/wordpress/wp-content/plugins/markdown-database-integration', 'mode' => 'readonly', 'phase' => 'pre-install' ),
 			array( 'type' => 'directory', 'source' => $woocommerce, 'target' => '/wordpress/wp-content/plugins/woocommerce', 'mode' => 'readonly' ),
-			array( 'type' => 'directory', 'source' => $state, 'target' => '/wordpress/wp-content/markdown', 'mode' => 'readwrite', 'phase' => 'pre-install' ),
+			array( 'type' => 'directory', 'source' => $state, 'target' => '/wordpress/wp-content/db', 'mode' => 'readwrite', 'phase' => 'pre-install' ),
 		),
 	),
 	'workflow' => array(

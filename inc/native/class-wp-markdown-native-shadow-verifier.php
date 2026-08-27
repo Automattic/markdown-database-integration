@@ -13,10 +13,10 @@ final class WP_Markdown_Native_Shadow_Factory {
 	public static function from_globals( object $database ): WP_Markdown_Native_Shadow_Verifier {
 		$state_root = defined( 'MARKDOWN_DB_STATE_DIR' )
 			? (string) MARKDOWN_DB_STATE_DIR
-			: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown' );
+			: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir() );
 		$prefix = (string) ( $database->prefix ?? ( $GLOBALS['table_prefix'] ?? 'wp_' ) );
 		$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? $prefix ) );
-		$content_root = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown';
+		$content_root = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir();
 		$runtime = WP_Markdown_Native_Runtime_Factory::runtime(
 			$state_root,
 			$prefix,

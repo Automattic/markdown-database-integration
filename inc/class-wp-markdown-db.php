@@ -98,6 +98,9 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		}
 
 		$mode = defined( 'MARKDOWN_DB_MODE' ) ? MARKDOWN_DB_MODE : 'mirror';
+		if ( ! function_exists( 'markdown_db_default_content_dir' ) ) {
+			require_once __DIR__ . '/markdown-db-paths.php';
+		}
 
 		// Determine the SQLite path.
 		if ( 'primary' === $mode ) {
@@ -105,7 +108,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			// Stored alongside the content directory for co-location.
 			$content_dir_for_path = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 				? MARKDOWN_DB_CONTENT_DIR
-				: WP_CONTENT_DIR . '/markdown';
+				: markdown_db_default_content_dir();
 			$state_dir_for_path = defined( 'MARKDOWN_DB_STATE_DIR' )
 				? MARKDOWN_DB_STATE_DIR
 				: $content_dir_for_path;
@@ -129,7 +132,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		// Create the markdown storage engine.
 		$content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 			? MARKDOWN_DB_CONTENT_DIR
-			: WP_CONTENT_DIR . '/markdown';
+			: markdown_db_default_content_dir();
 		$state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
 			? MARKDOWN_DB_STATE_DIR
 			: $content_dir;

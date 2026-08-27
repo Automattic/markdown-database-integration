@@ -75,7 +75,7 @@ final class WP_Markdown_MySQL_Canonical_Publisher {
 	public function last_changes(): array { return $this->last_changes; }
 
 	private function roots( int $root_blog_id, int $captured_blog_id, array $intents ): array {
-		$content = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : WP_CONTENT_DIR . '/markdown';
+		$content = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir();
 		$state = defined( 'MARKDOWN_DB_STATE_DIR' ) ? (string) MARKDOWN_DB_STATE_DIR : $content;
 		if ( $root_blog_id > 1 ) {
 			$content = rtrim( $content, '/\\' ) . '/sites/' . $root_blog_id;

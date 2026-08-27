@@ -291,34 +291,40 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 		}
 
 		try {
-			$rows = $this->provider->read(
-				new WP_Markdown_Native_Table_Access(
-					$this->schema->column_names(),
-					null,
-					$this->schema->natural_order(),
-					PHP_INT_MAX
-				)
-			);
-			if ( $rows instanceof WP_Markdown_Query_Result ) {
-				return $rows;
-			}
 			$identity = $this->schema->value_key( 'option_name', $mutation->option_name() );
 			if ( null === $identity ) {
 				return $this->failure( 'unsupported_option_collation', 'The option mutation requires a deterministic ASCII identity.' );
 			}
-			$existing = null;
+
+			// A canonical option resolves to a deterministic path, so the common
+			// mutation reads one row rather than the whole options directory.
+			$existing = $this->existing_at_canonical_path( $directory, $mutation->option_name(), $identity );
 			$maximum_id = 0;
-			foreach ( $rows as $candidate ) {
-				$candidate_id = (int) $candidate['option_id'];
-				$maximum_id = max( $maximum_id, $candidate_id );
-				if ( $identity === $this->schema->value_key( 'option_name', $candidate['option_name'] ) ) {
-					if ( null !== $existing ) {
-						return $this->failure( 'duplicate_collated_identity', 'Canonical option files contain duplicate collated identities.' );
+			if ( null === $existing ) {
+				// A miss still has to prove the identity is absent under any other
+				// canonical filename, and creating a row needs the next identifier.
+				$rows = $this->provider->read(
+					new WP_Markdown_Native_Table_Access(
+						$this->schema->column_names(),
+						null,
+						$this->schema->natural_order(),
+						PHP_INT_MAX
+					)
+				);
+				if ( $rows instanceof WP_Markdown_Query_Result ) {
+					return $rows;
+				}
+				foreach ( $rows as $candidate ) {
+					$maximum_id = max( $maximum_id, (int) $candidate['option_id'] );
+					if ( $identity === $this->schema->value_key( 'option_name', $candidate['option_name'] ) ) {
+						if ( null !== $existing ) {
+							return $this->failure( 'duplicate_collated_identity', 'Canonical option files contain duplicate collated identities.' );
+						}
+						$existing = array(
+							'path' => $directory . '/' . WP_Markdown_Canonical_Option_Path::filename( (string) $candidate['option_name'] ),
+							'row'  => $candidate,
+						);
 					}
-					$existing = array(
-						'path' => $directory . '/' . WP_Markdown_Canonical_Option_Path::filename( (string) $candidate['option_name'] ),
-						'row'  => $candidate,
-					);
 				}
 			}
 
@@ -387,6 +393,35 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 	}
 
 	/** @param array<string,mixed> $row */
+	/**
+	 * Resolve one canonical option row by its deterministic path.
+	 *
+	 * @return array{path:string,row:array<string,mixed>}|null
+	 */
+	private function existing_at_canonical_path( string $directory, string $name, string $identity ): ?array {
+		$path = $directory . '/' . WP_Markdown_Canonical_Option_Path::filename( $name );
+		if ( ! is_file( $path ) || is_link( $path ) ) {
+			return null;
+		}
+		$contents = @file_get_contents( $path );
+		if ( false === $contents ) {
+			return null;
+		}
+		$row = json_decode( $contents, true );
+		if ( ! is_array( $row ) || ! isset( $row['option_name'] ) ) {
+			return null;
+		}
+		if ( $identity !== $this->schema->value_key( 'option_name', $row['option_name'] ) ) {
+			return null;
+		}
+		foreach ( $this->schema->column_names() as $column ) {
+			if ( ! array_key_exists( $column, $row ) ) {
+				return null;
+			}
+		}
+		return array( 'path' => $path, 'row' => $row );
+	}
+
 	/** Journal a canonical path so an open transaction can restore it. */
 	private function journal( string $path ): true|WP_Markdown_Query_Result {
 		if ( null === $this->transactions ) {

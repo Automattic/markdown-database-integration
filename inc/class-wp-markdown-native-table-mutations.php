@@ -158,7 +158,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	public function __construct(
 		string $state_root,
 		private WP_Markdown_Native_Table_Registry $registry,
-		private WP_Markdown_Native_Table_Insert_Parser $parser = new WP_Markdown_Native_Table_Insert_Parser()
+		private WP_Markdown_Native_Table_Insert_Parser $parser = new WP_Markdown_Native_Table_Insert_Parser(),
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
 	) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
@@ -353,6 +354,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private function write( string $path, array $rows ): true|WP_Markdown_Query_Result {
 		if ( is_link( $path ) || ( file_exists( $path ) && ! is_file( $path ) ) ) {
 			return $this->failure( 'unsafe_table_file', 'The canonical table file is unavailable or unsafe.' );
+		}
+		if ( null !== $this->transactions ) {
+			$recorded = $this->transactions->record( $path );
+			if ( true !== $recorded ) {
+				return $this->failure( 'transaction_journal_failed', $recorded );
+			}
 		}
 		try {
 			$json = json_encode( $rows, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );

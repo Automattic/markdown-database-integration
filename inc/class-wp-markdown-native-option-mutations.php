@@ -257,7 +257,8 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 
 	public function __construct(
 		string $state_root,
-		private WP_Markdown_Native_Option_Mutation_Parser $parser = new WP_Markdown_Native_Option_Mutation_Parser()
+		private WP_Markdown_Native_Option_Mutation_Parser $parser = new WP_Markdown_Native_Option_Mutation_Parser(),
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
 	) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
@@ -328,6 +329,10 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 				return $this->failure( 'duplicate_key', 'The canonical option identity already exists.' );
 			}
 			if ( $mutation->is_delete() ) {
+				$journaled = $this->journal( $existing['path'] );
+				if ( true !== $journaled ) {
+					return $journaled;
+				}
 				if ( ! @unlink( $existing['path'] ) ) {
 					return $this->failure( 'option_delete_failed', 'The canonical option row could not be deleted.' );
 				}
@@ -382,7 +387,20 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 	}
 
 	/** @param array<string,mixed> $row */
+	/** Journal a canonical path so an open transaction can restore it. */
+	private function journal( string $path ): true|WP_Markdown_Query_Result {
+		if ( null === $this->transactions ) {
+			return true;
+		}
+		$recorded = $this->transactions->record( $path );
+		return true === $recorded ? true : $this->failure( 'transaction_journal_failed', $recorded );
+	}
+
 	private function write( string $path, array $row ): true|WP_Markdown_Query_Result {
+		$journaled = $this->journal( $path );
+		if ( true !== $journaled ) {
+			return $journaled;
+		}
 		try {
 			$json = json_encode( $row, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );
 			$temp = $path . '.tmp-' . getmypid() . '-' . bin2hex( random_bytes( 8 ) );

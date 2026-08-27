@@ -7,7 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 if ( ! function_exists( 'wp_get_db_schema' ) ) {
 	require_once ABSPATH . 'wp-admin/includes/schema.php';
 }
-require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-native-schema-catalog.php';
+require_once dirname( __DIR__ ) . '/inc/native/class-wp-markdown-native-schema-catalog.php';
 
 global $wpdb, $wp_version;
 $prefixes = array( (string) $wpdb->prefix, (string) $wpdb->base_prefix );

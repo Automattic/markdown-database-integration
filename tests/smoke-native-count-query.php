@@ -4,7 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 final class MDI_Count_Provider implements WP_Markdown_Native_Table_Provider {
 	/** @var array<int,WP_Markdown_Native_Table_Access> */

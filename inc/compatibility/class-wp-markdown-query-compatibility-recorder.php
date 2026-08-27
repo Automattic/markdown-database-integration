@@ -5,7 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/class-wp-markdown-wpdb-result-snapshot.php';
+require_once __DIR__ . '/../class-wp-markdown-wpdb-result-snapshot.php';
 
 final class WP_Markdown_Query_Compatibility_Recorder {
 	public const SCHEMA = 'mdi-query-compatibility-corpus/v1';

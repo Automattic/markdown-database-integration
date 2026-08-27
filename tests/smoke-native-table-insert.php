@@ -4,7 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 function mdi_native_insert_remove_tree( string $root ): void {
 	if ( ! is_dir( $root ) ) {

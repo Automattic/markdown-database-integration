@@ -45,7 +45,7 @@ function wp_has_ability( string $name ): bool {
 	return isset( $GLOBALS['mdi_abilities'][ $name ] );
 }
 
-require_once __DIR__ . '/../inc/class-wp-markdown-sqlite-recovery.php';
+require_once __DIR__ . '/../inc/sqlite/class-wp-markdown-sqlite-recovery.php';
 
 $passed = 0;
 $failed = 0;

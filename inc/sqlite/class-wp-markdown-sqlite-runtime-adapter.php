@@ -22,8 +22,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
-require_once __DIR__ . '/class-wp-markdown-sql-classifier.php';
+require_once __DIR__ . '/../class-wp-markdown-backend-capabilities.php';
+require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
 require_once __DIR__ . '/class-wp-markdown-sqlite-operations.php';
 
 // Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO

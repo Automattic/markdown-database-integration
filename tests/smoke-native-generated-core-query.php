@@ -4,7 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 $root = sys_get_temp_dir() . '/mdi-native-generated-core-' . bin2hex( random_bytes( 6 ) );
 mkdir( $root . '/_options', 0755, true );

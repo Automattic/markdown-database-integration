@@ -4,7 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 class wpdb {
 	public string $prefix = '';
@@ -43,7 +43,7 @@ class wpdb {
 		return $value;
 	}
 }
-require_once __DIR__ . '/../inc/class-wp-markdown-native-wpdb.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-wpdb.php';
 
 $root = sys_get_temp_dir() . '/mdi-native-alter-' . bin2hex( random_bytes( 6 ) );
 if ( ! mkdir( $root . '/_options', 0777, true ) || ! mkdir( $root . '/_tables', 0777, true ) ) {

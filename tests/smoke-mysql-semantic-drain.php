@@ -3,9 +3,9 @@
 declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/class-wp-markdown-mutation-impact.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-impact-adapter.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-outbox.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-semantic-drain.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-impact-adapter.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-outbox.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-semantic-drain.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-sql-classifier.php';
 
 $failures = array();

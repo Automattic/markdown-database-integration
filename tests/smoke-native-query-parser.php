@@ -4,7 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 $tokenizer = new WP_Markdown_Native_SQL_Tokenizer();
 $token_sql = "SELECT `option_name`, option_value FROM wp_options WHERE option_name = 'tab\\tback\\\\slash' LIMIT 1";

@@ -4,8 +4,8 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-native-shadow-verifier.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/../inc/native/class-wp-markdown-native-shadow-verifier.php';
 
 final class MDI_Comment_Shadow_DB {
 	public string $prefix = 'wp_';

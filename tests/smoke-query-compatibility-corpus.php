@@ -3,7 +3,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', '/private/runtime/wordpress/' );
-require_once __DIR__ . '/../inc/class-wp-markdown-query-compatibility-corpus.php';
+require_once __DIR__ . '/../inc/compatibility/class-wp-markdown-query-compatibility-corpus.php';
 
 final class MDI_Query_Corpus_DB {
 	public array $last_result = array();

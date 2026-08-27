@@ -24,8 +24,8 @@ require_once __DIR__ . '/../inc/class-wp-markdown-storage.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-durable-reconciliation-operations.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-reconciliation-adapters.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-operations.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-mysql-canonical-publisher.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-operations.php';
+require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-canonical-publisher.php';
 
 final class MDI_Publication_Result {
 	private int $offset = 0;

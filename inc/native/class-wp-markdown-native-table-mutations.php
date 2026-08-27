@@ -432,6 +432,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( true !== $schema->validate_row( $row ) ) {
 					return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );
 				}
+				if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
+					return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
+				}
 				if ( WP_Markdown_Native_Table_Index::duplicates( $index, $row, $definition, $schema ) ) {
 					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 				}
@@ -458,6 +461,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 			if ( true !== $schema->validate_row( $row ) ) {
 				return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );
+			}
+			if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
+				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 			}
 			if ( $this->duplicates_unique_index( $row, $rows, $definition, $schema ) ) {
 				return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
@@ -653,6 +659,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		}
 
 		$schema = $table['schema'];
+		if ( ! $this->supports_unique_indexes( $definition ) ) {
+			return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
+		}
 		foreach ( $write->predicates() as $predicate ) {
 			if ( ! $schema->has_column( $predicate->column() ) ) {
 				return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
@@ -704,6 +713,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( 0 === $affected ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
+			$violation = $this->unique_set_violation( $retained, $definition, $schema );
+			if ( $violation instanceof WP_Markdown_Query_Result ) {
+				return $violation;
+			}
 			$path = $directory . '/' . $suffix . '.json';
 			$written = $this->write( $path, $retained );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
@@ -745,7 +758,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	}
 
 	private function supports_unique_indexes( array $definition ): bool {
-		$integer_types = array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' );
 		foreach ( $definition['indexes'] as $index ) {
 			if ( true !== ( $index['unique'] ?? false ) ) {
 				continue;
@@ -753,13 +765,60 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			foreach ( $index['columns'] as $column ) {
 				$name = $column['name'] ?? '';
 				if ( null !== ( $column['length'] ?? null )
-					|| ! in_array( $definition['columns'][ $name ]['type'] ?? '', $integer_types, true )
+					|| ! $this->unique_column_type_supported( (string) ( $definition['columns'][ $name ]['type'] ?? '' ) )
 				) {
 					return false;
 				}
 			}
 		}
 		return true;
+	}
+
+	private function unique_column_type_supported( string $type ): bool {
+		return $this->is_integer_type( $type ) || in_array( $type, array( 'char', 'varchar' ), true );
+	}
+
+	private function is_integer_type( string $type ): bool {
+		return in_array( $type, array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' ), true );
+	}
+
+	/** @param array<string,mixed> $row @param array<string,mixed> $definition */
+	private function unique_values_enforceable( array $row, array $definition ): bool {
+		foreach ( $definition['indexes'] as $index ) {
+			if ( true !== ( $index['unique'] ?? false ) ) {
+				continue;
+			}
+			foreach ( $index['columns'] as $column ) {
+				$name  = (string) ( $column['name'] ?? '' );
+				$value = $row[ $name ] ?? null;
+				$type  = (string) ( $definition['columns'][ $name ]['type'] ?? '' );
+				if ( null === $value || $this->is_integer_type( $type ) ) {
+					continue;
+				}
+				if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * @param array<int,array<string,mixed>> $rows
+	 * @param array<string,mixed>            $definition
+	 */
+	private function unique_set_violation( array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): ?WP_Markdown_Query_Result {
+		$seen = array();
+		foreach ( $rows as $row ) {
+			if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
+				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
+			}
+			if ( $this->duplicates_unique_index( $row, $seen, $definition, $schema ) ) {
+				return $this->failure( 'duplicate_key', 'The UPDATE row duplicates a persisted unique key.' );
+			}
+			$seen[] = $row;
+		}
+		return null;
 	}
 
 	/** @param array<string,mixed> $definition */

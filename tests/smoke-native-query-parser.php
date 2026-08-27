@@ -27,6 +27,15 @@ $wrong_qualifier_sql = 'SELECT other.* FROM wp_rows';
 $wrong_qualifier = $parser->parse( $wrong_qualifier_sql );
 $wordpress_posts_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 10" );
 $wordpress_posts_plan = $wordpress_posts_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_posts_ast ) : $wordpress_posts_ast;
+$wordpress_admin_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND wp_posts.post_type = 'page' AND ((wp_posts.post_status <> 'trash' AND wp_posts.post_status <> 'auto-draft')) ORDER BY wp_posts.post_date DESC LIMIT 0, 20" );
+$wordpress_admin_plan = $wordpress_admin_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_ast ) : $wordpress_admin_ast;
+$not_equals_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_status != 'trash'" );
+$not_equals_plan = $not_equals_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $not_equals_ast ) : $not_equals_ast;
+$unsupported_gt = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status > 'trash'" );
+$wordpress_admin_or_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish' OR wp_posts.post_status = 'future' OR wp_posts.post_status = 'draft' OR wp_posts.post_status = 'pending' OR wp_posts.post_status = 'private'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 20" );
+$wordpress_admin_or_plan = $wordpress_admin_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_or_ast ) : $wordpress_admin_or_ast;
+$cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'post' OR post_status = 'publish'" );
+$inequality_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status <> 'trash' OR post_status <> 'auto-draft'" );
 $found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
 $found_rows_query_plan = $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows ? $parser->lower( $found_rows_query_ast ) : $found_rows_query_ast;
 
@@ -118,6 +127,24 @@ $checks = array(
 		&& $wordpress_posts_plan->order_descending()
 		&& 0 === $wordpress_posts_plan->limit_offset()
 		&& 10 === $wordpress_posts_plan->limit(),
+	'WordPress admin list inequality parses as conjunctive not-equals' => $wordpress_admin_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 3 === count( $wordpress_admin_plan->predicates() )
+		&& '<>' === $wordpress_admin_plan->predicates()[1]->operator()
+		&& '<>' === $wordpress_admin_plan->predicates()[2]->operator()
+		&& array( 'trash' ) === $wordpress_admin_plan->predicates()[1]->values()
+		&& array( 'auto-draft' ) === $wordpress_admin_plan->predicates()[2]->values(),
+	'bang-equals is the same operator as angle not-equals' => $not_equals_plan instanceof WP_Markdown_Native_Query_Plan
+		&& '<>' === $not_equals_plan->predicates()[0]->operator(),
+	'ordering comparisons stay fail-closed' => false === $unsupported_gt->return_value()
+		&& 'unsupported_grammar' === ( $unsupported_gt->diagnostic()['reason'] ?? null ),
+	'WordPress admin status OR collapses to same-column membership' => $wordpress_admin_or_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 2 === count( $wordpress_admin_or_plan->predicates() )
+		&& 'IN' === $wordpress_admin_or_plan->predicates()[1]->operator()
+		&& array( 'publish', 'future', 'draft', 'pending', 'private' ) === $wordpress_admin_or_plan->predicates()[1]->values(),
+	'cross-column OR fails closed' => false === $cross_column_or->return_value()
+		&& 'unsupported_or' === ( $cross_column_or->diagnostic()['reason'] ?? null ),
+	'inequality OR fails closed' => false === $inequality_or->return_value()
+		&& 'unsupported_or' === ( $inequality_or->diagnostic()['reason'] ?? null ),
 	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
 		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result

@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN' ),
+		private readonly array $filter_operators = array( '=', 'IN', '<>' ),
 		private readonly mixed $filter_validator = null
 	) {
 		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
@@ -154,6 +154,12 @@ final class WP_Markdown_Native_Table_Schema {
 		$left  = $this->column( $column )->normalize( $left );
 		$right = $this->column( $column )->normalize( $right );
 		return null !== $left && null !== $right && $left === $right;
+	}
+
+	public function values_differ( string $column, mixed $left, mixed $right ): bool {
+		$left  = $this->column( $column )->normalize( $left );
+		$right = $this->column( $column )->normalize( $right );
+		return null !== $left && null !== $right && $left !== $right;
 	}
 
 	public function compare_values( string $column, mixed $left, mixed $right ): int {

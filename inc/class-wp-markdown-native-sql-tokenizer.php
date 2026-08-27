@@ -179,6 +179,44 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 		);
 	}
 
+	/**
+	 * Report whether a statement separator appears outside a quoted literal.
+	 *
+	 * Serialized values carry semicolons, so a raw substring test rejects an
+	 * ordinary single statement. Quoting is honoured here so only a real
+	 * separator between statements is refused.
+	 */
+	public static function contains_statement_separator( string $sql ): bool {
+		$length = strlen( $sql );
+		$quote  = null;
+		for ( $offset = 0; $offset < $length; $offset++ ) {
+			$character = $sql[ $offset ];
+			if ( null !== $quote ) {
+				if ( '\\' === $character && '`' !== $quote ) {
+					++$offset;
+					continue;
+				}
+				if ( $character === $quote ) {
+					// A doubled quote escapes itself and stays inside the literal.
+					if ( $offset + 1 < $length && $sql[ $offset + 1 ] === $quote ) {
+						++$offset;
+						continue;
+					}
+					$quote = null;
+				}
+				continue;
+			}
+			if ( "'" === $character || '"' === $character || '`' === $character ) {
+				$quote = $character;
+				continue;
+			}
+			if ( ';' === $character ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	private function quoted_identifier( string $sql, int &$offset ): WP_Markdown_Native_SQL_Token {
 		$start  = $offset++;
 		$length = strlen( $sql );

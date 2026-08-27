@@ -25,7 +25,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
 		}
-		if ( '' === $sql || str_contains( $sql, ';' ) ) {
+		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one bounded CREATE TABLE statement.' );
 		}
 		if ( 1 === preg_match( '/^\s*ALTER\s+TABLE\b/i', $sql ) ) {

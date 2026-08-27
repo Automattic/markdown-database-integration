@@ -119,17 +119,77 @@ $after_rollback = probe_statement(
 
 $canonical_after_rollback = json_decode( (string) file_get_contents( $root . '/_options/probe_option.json' ), true );
 
+/** Read one canonical option value straight from disk. */
+function probe_canonical_value( string $root, string $option ): ?string {
+	$path = $root . '/_options/' . $option . '.json';
+	if ( ! is_file( $path ) ) {
+		return null;
+	}
+	$row = json_decode( (string) file_get_contents( $path ), true );
+	return is_array( $row ) ? ( $row['option_value'] ?? null ) : null;
+}
+
+// COMMIT must publish the mutation durably.
+probe_statement( $runtime, 'START TRANSACTION' );
+probe_statement( $runtime, "UPDATE wp_options SET option_value = 'committed-value' WHERE option_name = 'probe_option'" );
+probe_statement( $runtime, 'COMMIT' );
+$commit_durability = probe_canonical_value( $root, 'probe_option' );
+
+// A savepoint rewind must discard only the work after the savepoint.
+probe_statement( $runtime, 'START TRANSACTION' );
+probe_statement( $runtime, "UPDATE wp_options SET option_value = 'before-savepoint' WHERE option_name = 'probe_option'" );
+probe_statement( $runtime, 'SAVEPOINT stage_one' );
+probe_statement( $runtime, "UPDATE wp_options SET option_value = 'after-savepoint' WHERE option_name = 'probe_option'" );
+probe_statement( $runtime, 'ROLLBACK TO SAVEPOINT stage_one' );
+$savepoint_rewind = probe_canonical_value( $root, 'probe_option' );
+probe_statement( $runtime, 'COMMIT' );
+$savepoint_committed = probe_canonical_value( $root, 'probe_option' );
+
+// An INSERT rolled back must leave no canonical row behind.
+probe_statement( $runtime, 'START TRANSACTION' );
+probe_statement( $runtime, "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('probe_created','created','on')" );
+$insert_visible_in_transaction = probe_canonical_value( $root, 'probe_created' );
+probe_statement( $runtime, 'ROLLBACK' );
+$insert_after_rollback = probe_canonical_value( $root, 'probe_created' );
+
+// Terminating mid-transaction must leave a journal that the next boot rolls back.
+probe_statement( $runtime, 'START TRANSACTION' );
+probe_statement( $runtime, "UPDATE wp_options SET option_value = 'torn-write' WHERE option_name = 'probe_option'" );
+$journal_present = is_file( $root . '/_journal/native-transaction.json' );
+$torn_value      = probe_canonical_value( $root, 'probe_option' );
+unset( $runtime );
+$recovered_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
+$recovered_value   = probe_canonical_value( $root, 'probe_option' );
+$journal_cleared   = ! is_file( $root . '/_journal/native-transaction.json' );
+
+$control_executes = array_reduce(
+	$observations,
+	static fn( bool $carry, array $observation ): bool => $carry && 0 === $observation['return_value'],
+	true
+);
+
 $report = array(
 	'schema'                   => 'mdi-native-transaction-probe/v1',
 	'control_statements'       => $observations,
 	'rollback_sequence'        => $mutation,
 	'select_after_rollback'    => $after_rollback,
 	'canonical_after_rollback' => $canonical_after_rollback['option_value'] ?? null,
-	'durability_preserved'     => 'committed' === ( $canonical_after_rollback['option_value'] ?? null ),
+	'assertions'               => array(
+		'transaction control statements execute'        => $control_executes,
+		'rollback restores the canonical pre-image'     => 'committed' === ( $canonical_after_rollback['option_value'] ?? null ),
+		'commit publishes the mutation durably'         => 'committed-value' === $commit_durability,
+		'savepoint rewind discards only later work'     => 'before-savepoint' === $savepoint_rewind,
+		'commit after a rewind keeps the kept work'     => 'before-savepoint' === $savepoint_committed,
+		'a rolled back insert leaves no canonical row'  => 'created' === $insert_visible_in_transaction
+			&& null === $insert_after_rollback,
+		'an interrupted transaction journals its undo'  => $journal_present && 'torn-write' === $torn_value,
+		'the next boot rolls back a surviving journal'  => 'before-savepoint' === $recovered_value,
+		'recovery clears the canonical journal'         => $journal_cleared,
+	),
 );
+$report['durability_preserved'] = 'committed' === ( $canonical_after_rollback['option_value'] ?? null );
 
-// A failed ROLLBACK must not leave a mutation published in canonical state.
-$passed = true === $report['durability_preserved'];
+$passed = ! in_array( false, $report['assertions'], true );
 $report['passed'] = $passed;
 
 fwrite(

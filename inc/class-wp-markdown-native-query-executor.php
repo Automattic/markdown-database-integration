@@ -14,12 +14,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private WP_Markdown_Native_Query_Parser $parser = new WP_Markdown_Native_Query_Parser(),
 		private ?WP_Markdown_Native_Option_Mutation_Runtime $option_mutations = null,
 		private ?WP_Markdown_Native_Schema_Mutation_Runtime $schema_mutations = null,
-		private ?WP_Markdown_Native_Table_Mutation_Runtime $table_mutations = null
+		private ?WP_Markdown_Native_Table_Mutation_Runtime $table_mutations = null,
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
 	) {
 		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$transaction_control = WP_Markdown_SQL_Classifier::transaction_control( $request->sql() );
+		if ( null !== $transaction_control ) {
+			return $this->execute_transaction_control( $transaction_control );
+		}
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
 		}
@@ -458,6 +463,41 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$rows,
 			array( array( 'name' => 'COUNT(*)', 'table' => '', 'type' => 8 ) )
 		);
+	}
+
+	/**
+	 * Apply one MySQL transaction-control statement to the canonical journal.
+	 *
+	 * @param array{action:string,savepoint?:string} $control Classified statement.
+	 */
+	private function execute_transaction_control( array $control ): WP_Markdown_Query_Result {
+		if ( null === $this->transactions ) {
+			return $this->failure( 'unsupported_transaction', 'mdi-native transaction control is unavailable.' );
+		}
+
+		$savepoint = $control['savepoint'] ?? '';
+		$outcome   = match ( $control['action'] ) {
+			'begin' => $this->transactions->begin(),
+			'commit', 'commit_chain' => $this->transactions->commit(),
+			'rollback', 'rollback_chain' => $this->transactions->rollback(),
+			'savepoint' => $this->transactions->savepoint( $savepoint ),
+			'rollback_to' => $this->transactions->rollback_to( $savepoint ),
+			'release_savepoint' => $this->transactions->release_savepoint( $savepoint ),
+			'autocommit_0' => $this->transactions->set_autocommit( false ),
+			'autocommit_1' => $this->transactions->set_autocommit( true ),
+			default => 'mdi-native does not support the requested transaction control statement.',
+		};
+		if ( true !== $outcome ) {
+			return $this->failure( 'transaction_control_failed', $outcome );
+		}
+		if ( 'commit_chain' === $control['action'] || 'rollback_chain' === $control['action'] ) {
+			$chained = $this->transactions->begin();
+			if ( true !== $chained ) {
+				return $this->failure( 'transaction_control_failed', $chained );
+			}
+		}
+
+		return WP_Markdown_Query_Result::mutated( 0 );
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

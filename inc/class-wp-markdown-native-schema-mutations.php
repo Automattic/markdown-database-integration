@@ -10,7 +10,8 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 
 	public function __construct(
 		string $state_root,
-		private WP_Markdown_Native_Table_Registry $registry
+		private WP_Markdown_Native_Table_Registry $registry,
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
 	) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
@@ -95,6 +96,12 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	}
 
 	private function write( string $path, string $contents ): true|WP_Markdown_Query_Result {
+		if ( null !== $this->transactions ) {
+			$recorded = $this->transactions->record( $path );
+			if ( true !== $recorded ) {
+				return $this->failure( 'transaction_journal_failed', $recorded );
+			}
+		}
 		try {
 			$temp = $path . '.tmp-' . getmypid() . '-' . bin2hex( random_bytes( 8 ) );
 		} catch ( Throwable ) {

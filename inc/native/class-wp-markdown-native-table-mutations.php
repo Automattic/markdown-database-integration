@@ -775,11 +775,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	}
 
 	private function unique_column_type_supported( string $type ): bool {
-		return $this->is_integer_type( $type ) || in_array( $type, array( 'char', 'varchar' ), true );
-	}
-
-	private function is_integer_type( string $type ): bool {
-		return in_array( $type, array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' ), true );
+		return WP_Markdown_Native_Schema_Catalog::is_integer( $type ) || in_array( $type, array( 'char', 'varchar' ), true );
 	}
 
 	/** @param array<string,mixed> $row @param array<string,mixed> $definition */
@@ -792,7 +788,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				$name  = (string) ( $column['name'] ?? '' );
 				$value = $row[ $name ] ?? null;
 				$type  = (string) ( $definition['columns'][ $name ]['type'] ?? '' );
-				if ( null === $value || $this->is_integer_type( $type ) ) {
+				if ( null === $value || WP_Markdown_Native_Schema_Catalog::is_integer( $type ) ) {
 					continue;
 				}
 				if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {

@@ -333,7 +333,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 			: array( WP_Markdown_Native_Runtime_Factory::class, 'normalize_signed' );
 	}
 
-	private static function is_integer( string $type ): bool {
+	public static function is_integer( string $type ): bool {
 		return in_array( $type, array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' ), true );
 	}
 

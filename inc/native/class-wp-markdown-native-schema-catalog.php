@@ -250,7 +250,15 @@ final class WP_Markdown_Native_Schema_Catalog {
 		$identity = $identity_columns[0]['name'] ?? '';
 		foreach ( $identity_columns as $identity_column ) {
 			$name = $identity_column['name'] ?? '';
-			if ( ! isset( $definition['columns'][ $name ] ) || ! self::is_integer( $definition['columns'][ $name ]['type'] ) ) {
+			if ( ! isset( $definition['columns'][ $name ] ) ) {
+				return null;
+			}
+			$identity_type = $definition['columns'][ $name ]['type'];
+			// A primary key is an identity. Integers are exact, and a declared
+			// prefix-free string key is exact ASCII, which is the same identity
+			// rule unique string keys already use.
+			if ( ! self::is_integer( $identity_type )
+				&& ( ! in_array( $identity_type, array( 'char', 'varchar' ), true ) || null !== ( $identity_column['length'] ?? null ) ) ) {
 				return null;
 			}
 		}

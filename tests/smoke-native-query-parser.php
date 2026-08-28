@@ -36,6 +36,8 @@ $wordpress_admin_or_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_pos
 $wordpress_admin_or_plan = $wordpress_admin_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_or_ast ) : $wordpress_admin_or_ast;
 $cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'post' OR post_status = 'publish'" );
 $inequality_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status <> 'trash' OR post_status <> 'auto-draft'" );
+$like_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_title LIKE '%Hello%'" );
+$like_plan = $like_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $like_ast ) : $like_ast;
 $composite_order_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY wp_posts.menu_order ASC, wp_posts.post_title ASC' );
 $composite_order_plan = $composite_order_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $composite_order_ast ) : $composite_order_ast;
 $found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
@@ -151,6 +153,9 @@ $checks = array(
 		&& 'menu_order' === $composite_order_plan->order()
 		&& array( 'menu_order', 'post_title' ) === array_column( $composite_order_plan->order_by(), 'column' )
 		&& array( false, false ) === array_column( $composite_order_plan->order_by(), 'descending' ),
+	'LIKE lowers to a string-pattern predicate' => $like_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 'LIKE' === $like_plan->predicates()[0]->operator()
+		&& array( '%Hello%' ) === $like_plan->predicates()[0]->values(),
 	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
 		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result

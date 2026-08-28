@@ -385,6 +385,13 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::NOT_EQUALS ) ) {
 			return new WP_Markdown_Native_SQL_Predicate( $column, '<>', array( $this->literal() ) );
 		}
+		if ( $this->match_keyword( 'LIKE' ) ) {
+			$pattern = $this->literal();
+			if ( ! is_string( $pattern->value() ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $pattern->sql_offset(), 'mdi-native LIKE requires a string pattern.' );
+			}
+			return new WP_Markdown_Native_SQL_Predicate( $column, 'LIKE', array( $pattern ) );
+		}
 		$this->expect_keyword( 'IN' );
 		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 		$values = array( $this->literal() );

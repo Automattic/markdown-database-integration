@@ -103,7 +103,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$pushdown = $this->pushdown( $predicates, $schema );
 		if ( array() !== $predicates && null === $pushdown ) {
-			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
+			$likes = array_filter(
+				$predicates,
+				static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => 'LIKE' === $predicate->operator()
+			);
+			if ( array() === $likes ) {
+				return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
+			}
 		}
 		foreach ( $plan->order_by() as $item ) {
 			if ( ! $schema->allows_order( $item['column'] ) ) {
@@ -456,9 +462,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $predicates as $predicate ) {
 			$matched = false;
 			foreach ( $predicate->values() as $value ) {
-				$compare = '<>' === $predicate->operator()
-					? $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value )
-					: $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value );
+				$compare = match ( $predicate->operator() ) {
+					'<>' => $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value ),
+					'LIKE' => is_string( $value ) && $schema->value_matches_like( $predicate->column(), $row[ $predicate->column() ], $value ),
+					default => $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ),
+				};
 				if ( $compare ) {
 					$matched = true;
 					break;

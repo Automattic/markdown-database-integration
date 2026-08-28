@@ -34,25 +34,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				? $this->failure( 'unsupported_grammar', 'mdi-native schema mutations are unavailable.' )
 				: $this->schema_mutations->execute( $request );
 		}
-		$insert_table = null;
-		if ( 1 === preg_match( '/^\s*INSERT\s+INTO\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $insert_match ) ) {
-			$insert_table = $insert_match[1];
-		}
-		if ( 1 === preg_match( '/^\s*UPDATE\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $update_match ) ) {
-			$insert_table = $update_match[1];
-		}
-		if ( 1 === preg_match( '/^\s*DELETE\s+FROM\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $delete_match ) ) {
-			$insert_table = $delete_match[1];
-		}
-		if ( null !== $insert_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $insert_table ) ) {
-			if ( 0 === strcasecmp( $request->table_prefix() . 'posts', $insert_table ) ) {
-				return null === $this->post_mutations
-					? $this->failure( 'unsupported_grammar', 'mdi-native post mutations are unavailable.' )
-					: $this->post_mutations->execute( $request );
-			}
-			return null === $this->table_mutations
-				? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )
-				: $this->table_mutations->execute( $request );
+		$dml_table = $this->dml_table( $request );
+		if ( null !== $dml_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $dml_table ) ) {
+			return $this->execute_table_dml( $request, $dml_table );
 		}
 		if ( 1 !== preg_match( '/^\s*SELECT\b/i', $request->sql() ) ) {
 			return null === $this->option_mutations
@@ -581,6 +565,24 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		return WP_Markdown_Query_Result::mutated( 0 );
+	}
+
+	private function dml_table( WP_Markdown_Query_Request $request ): ?string {
+		if ( 1 === preg_match( '/^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $match ) ) {
+			return $match[1];
+		}
+		return null;
+	}
+
+	private function execute_table_dml( WP_Markdown_Query_Request $request, string $table ): WP_Markdown_Query_Result {
+		if ( 0 === strcasecmp( $request->table_prefix() . 'posts', $table ) ) {
+			return null === $this->post_mutations
+				? $this->failure( 'unsupported_grammar', 'mdi-native post mutations are unavailable.' )
+				: $this->post_mutations->execute( $request );
+		}
+		return null === $this->table_mutations
+			? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )
+			: $this->table_mutations->execute( $request );
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

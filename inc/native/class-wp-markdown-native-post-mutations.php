@@ -150,7 +150,7 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				$row[ $name ] = null;
 				continue;
 			}
-			$row[ $name ] = $this->is_integer_type( (string) ( $column['type'] ?? '' ) ) ? 0 : '';
+			$row[ $name ] = WP_Markdown_Native_Schema_Catalog::is_integer( (string) ( $column['type'] ?? '' ) ) ? 0 : '';
 		}
 		return $row;
 	}
@@ -160,11 +160,7 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		if ( null === $value ) {
 			return null;
 		}
-		return $this->is_integer_type( (string) ( $column['type'] ?? '' ) ) ? (int) $value : $value;
-	}
-
-	private function is_integer_type( string $type ): bool {
-		return in_array( $type, array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' ), true );
+		return WP_Markdown_Native_Schema_Catalog::is_integer( (string) ( $column['type'] ?? '' ) ) ? (int) $value : $value;
 	}
 
 	/**

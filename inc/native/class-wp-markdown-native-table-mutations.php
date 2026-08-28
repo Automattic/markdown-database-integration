@@ -14,7 +14,8 @@ final class WP_Markdown_Native_Table_Insert {
 		private readonly string $table,
 		private readonly array $values,
 		private readonly ?array $unless_exists = null,
-		private readonly bool $ignore_duplicate = false
+		private readonly bool $ignore_duplicate = false,
+		private readonly ?array $upsert_columns = null
 	) {}
 
 	public function table(): string {
@@ -33,6 +34,11 @@ final class WP_Markdown_Native_Table_Insert {
 
 	public function ignores_duplicate(): bool {
 		return $this->ignore_duplicate;
+	}
+
+	/** @return array<int,string>|null */
+	public function upsert_columns(): ?array {
+		return $this->upsert_columns;
 	}
 }
 
@@ -134,6 +140,13 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				$values = $this->literal_list();
 				$unless_exists = null;
 			}
+			$upsert_columns = null;
+			if ( 0 === strcasecmp( 'ON', (string) $this->current()->value() ) ) {
+				if ( $ignore_duplicate || null !== $unless_exists ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native cannot combine INSERT IGNORE or INSERT SELECT FROM DUAL with ON DUPLICATE KEY UPDATE.' );
+				}
+				$upsert_columns = $this->upsert_assignments( $columns );
+			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
 			if ( count( $columns ) !== count( $values ) ) {
 				return $this->failure( 'invalid_insert_row', 'mdi-native requires one value for every INSERT column.' );
@@ -141,7 +154,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			$row = array_combine( $columns, $values );
 			return false === $row
 				? $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' )
-				: new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate );
+				: new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_columns );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -316,6 +329,33 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		} while ( true );
 		$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 		return array_values( $columns );
+	}
+
+	/** @param array<int,string> $columns @return array<int,string> */
+	private function upsert_assignments( array $columns ): array {
+		$this->word( 'ON' );
+		$this->word( 'DUPLICATE' );
+		$this->word( 'KEY' );
+		$this->word( 'UPDATE' );
+		$assignments = array();
+		$available = array_fill_keys( $columns, true );
+		do {
+			$target = $this->identifier();
+			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+			$this->word( 'VALUES' );
+			$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$source = $this->identifier();
+			$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			if ( $target !== $source || isset( $assignments[ $target ] ) || ! isset( $available[ $target ] ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native requires deterministic VALUES assignments for ON DUPLICATE KEY UPDATE.' );
+			}
+			$assignments[ $target ] = $target;
+			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
+				break;
+			}
+			++$this->position;
+		} while ( true );
+		return array_values( $assignments );
 	}
 
 	/** @return array<int,int|string|null> */
@@ -502,7 +542,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 			}
 			$path = $directory . '/' . $suffix . '.json';
-			$index = WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
+			$index = null !== $insert->upsert_columns() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
 				? null
 				: $this->index->load( $suffix, $path );
 			if ( null !== $index ) {
@@ -550,10 +590,41 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 			}
-			if ( $this->duplicates_unique_index( $row, $rows, $definition, $schema ) ) {
-				return $insert->ignores_duplicate()
-					? WP_Markdown_Query_Result::mutated( 0 )
-					: $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+			$duplicate = $this->duplicate_row_offset( $row, $rows, $definition, $schema );
+			if ( null !== $duplicate ) {
+				if ( $insert->ignores_duplicate() ) {
+					return WP_Markdown_Query_Result::mutated( 0 );
+				}
+				$upsert_columns = $insert->upsert_columns();
+				if ( null === $upsert_columns ) {
+					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+				}
+				$updated = $rows[ $duplicate ];
+				foreach ( $upsert_columns as $column ) {
+					$updated[ $column ] = $row[ $column ];
+				}
+				if ( true !== $schema->validate_row( $updated ) ) {
+					return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );
+				}
+				$others = $rows;
+				unset( $others[ $duplicate ] );
+				if ( $this->duplicate_row_offset( $updated, array_values( $others ), $definition, $schema ) !== null ) {
+					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+				}
+				$rows[ $duplicate ] = $updated;
+				$written = $this->write( $path, array_values( $rows ) );
+				if ( $written instanceof WP_Markdown_Query_Result ) {
+					return $written;
+				}
+				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
+				$insert_id = 0;
+				foreach ( $definition['columns'] as $name => $column ) {
+					if ( true === ( $column['auto_increment'] ?? false ) ) {
+						$insert_id = (int) $updated[ $name ];
+						break;
+					}
+				}
+				return WP_Markdown_Query_Result::mutated( 2, $insert_id );
 			}
 			$rows[] = $row;
 			$written = $this->write( $path, $rows );
@@ -700,6 +771,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 	/** @param array<string,mixed> $row @param array<int,array<string,mixed>> $rows @param array<string,mixed> $definition */
 	private function duplicates_unique_index( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): bool {
+		return null !== $this->duplicate_row_offset( $row, $rows, $definition, $schema );
+	}
+
+	/** @param array<string,mixed> $row @param array<int,array<string,mixed>> $rows @param array<string,mixed> $definition */
+	private function duplicate_row_offset( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): ?int {
 		foreach ( $definition['indexes'] as $index ) {
 			if ( true !== ( $index['unique'] ?? false ) ) {
 				continue;
@@ -709,7 +785,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( array() === $names || array_filter( $names, static fn( string $column ): bool => null === $row[ $column ] ) ) {
 				continue;
 			}
-			foreach ( $rows as $existing ) {
+			foreach ( $rows as $offset => $existing ) {
 				$matches = true;
 				foreach ( $columns as $column ) {
 					$name   = (string) ( $column['name'] ?? '' );
@@ -721,11 +797,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					);
 				}
 				if ( $matches ) {
-					return true;
+					return (int) $offset;
 				}
 			}
 		}
-		return false;
+		return null;
 	}
 
 	/** @param array<string,mixed> $definition */

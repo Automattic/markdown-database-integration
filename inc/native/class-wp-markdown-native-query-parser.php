@@ -33,9 +33,8 @@ final class WP_Markdown_Native_Query_Parser {
 		if ( $ast instanceof WP_Markdown_Native_SQL_Found_Rows ) {
 			return new WP_Markdown_Native_Found_Rows_Plan();
 		}
-		if ( $ast->calculates_found_rows() && $ast->counts_all() ) {
-			return $this->failure( 'unsupported_select_modifier', 'SQL_CALC_FOUND_ROWS requires a row projection.', $ast->table()->sql_offset() );
-		}
+		// SQL_CALC_FOUND_ROWS COUNT(*) asks for the same number twice. The
+		// aggregate is the unbounded match count, so FOUND_ROWS() answers it.
 		if ( $ast->is_distinct() && $ast->counts_all() ) {
 			return $this->failure( 'unsupported_select_modifier', 'DISTINCT requires a row projection.', $ast->table()->sql_offset() );
 		}

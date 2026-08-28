@@ -128,7 +128,19 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 	private array $tokens = array();
 	private int $position = 0;
 
+	/** Parse the single row a caller requires, rejecting a multi-row statement. */
 	public function parse( WP_Markdown_Query_Request $request ): WP_Markdown_Native_Table_Insert|WP_Markdown_Query_Result {
+		$rows = $this->parse_rows( $request );
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
+		}
+		return 1 === count( $rows )
+			? $rows[0]
+			: $this->failure( 'unsupported_grammar', 'mdi-native requires one INSERT row for this table.' );
+	}
+
+	/** @return array<int,WP_Markdown_Native_Table_Insert>|WP_Markdown_Query_Result */
+	public function parse_rows( WP_Markdown_Query_Request $request ): array|WP_Markdown_Query_Result {
 		$sql = trim( $request->sql() );
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
@@ -150,13 +162,22 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			$columns = $this->identifier_list();
 			if ( 0 === strcasecmp( 'SELECT', (string) $this->current()->value() ) ) {
 				$this->word( 'SELECT' );
-				$values = $this->select_literals();
+				$rows = array( $this->select_literals() );
 				$this->word( 'FROM' );
 				$this->word( 'DUAL' );
 				$unless_exists = $this->dual_absent_predicates( $table );
 			} else {
 				$this->word( 'VALUES' );
-				$values = $this->literal_list();
+				// One statement may carry many rows, which is how WordPress
+				// writes a fresh site's options in a single INSERT.
+				$rows = array();
+				do {
+					$rows[] = $this->literal_list();
+					if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
+						break;
+					}
+					++$this->position;
+				} while ( true );
 				$unless_exists = null;
 			}
 			$upsert_columns = null;
@@ -167,13 +188,18 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				$upsert_columns = $this->upsert_assignments( $columns );
 			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
-			if ( count( $columns ) !== count( $values ) ) {
-				return $this->failure( 'invalid_insert_row', 'mdi-native requires one value for every INSERT column.' );
+			$inserts = array();
+			foreach ( $rows as $values ) {
+				if ( count( $columns ) !== count( $values ) ) {
+					return $this->failure( 'invalid_insert_row', 'mdi-native requires one value for every INSERT column.' );
+				}
+				$row = array_combine( $columns, $values );
+				if ( false === $row ) {
+					return $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' );
+				}
+				$inserts[] = new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_columns );
 			}
-			$row = array_combine( $columns, $values );
-			return false === $row
-				? $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' )
-				: new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_columns );
+			return $inserts;
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -546,10 +572,53 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( 1 === preg_match( '/^\s*(?:UPDATE|DELETE)\b/i', $request->sql() ) ) {
 			return $this->execute_write( $request );
 		}
-		$insert = $this->parser->parse( $request );
-		if ( $insert instanceof WP_Markdown_Query_Result ) {
-			return $insert;
+		$inserts = $this->parser->parse_rows( $request );
+		if ( $inserts instanceof WP_Markdown_Query_Result ) {
+			return $inserts;
 		}
+		if ( 1 !== count( $inserts ) ) {
+			return $this->execute_rows( $request, $inserts );
+		}
+		return $this->execute_insert( $request, $inserts[0] );
+	}
+
+	/**
+	 * Apply every row of a multi-row INSERT as one statement.
+	 *
+	 * MySQL reports the rows it affected and the identifier of the first row
+	 * it inserted, and a statement that fails part way through leaves nothing
+	 * behind, so the rows are applied inside a transaction.
+	 *
+	 * @param array<int,WP_Markdown_Native_Table_Insert> $inserts
+	 */
+	private function execute_rows( WP_Markdown_Query_Request $request, array $inserts ): WP_Markdown_Query_Result {
+		$owns_transaction = null !== $this->transactions && ! $this->transactions->is_active();
+		if ( $owns_transaction && true !== $this->transactions->begin() ) {
+			return $this->failure( 'mutation_transaction_failed', 'The canonical multi-row INSERT could not be isolated.' );
+		}
+		$affected = 0;
+		$insert_id = 0;
+		foreach ( $inserts as $insert ) {
+			$result = $this->execute_insert( $request, $insert );
+			if ( false === $result->return_value() ) {
+				if ( $owns_transaction ) {
+					$this->transactions->rollback();
+				}
+				return $result;
+			}
+			$affected += (int) $result->return_value();
+			$row_id = (int) ( $result->wpdb_state()['insert_id'] ?? 0 );
+			if ( 0 === $insert_id && 0 !== $row_id ) {
+				$insert_id = $row_id;
+			}
+		}
+		if ( $owns_transaction && true !== $this->transactions->commit() ) {
+			return $this->failure( 'mutation_transaction_failed', 'The canonical multi-row INSERT could not be committed.' );
+		}
+		return WP_Markdown_Query_Result::mutated( $affected, $insert_id );
+	}
+
+	private function execute_insert( WP_Markdown_Query_Request $request, WP_Markdown_Native_Table_Insert $insert ): WP_Markdown_Query_Result {
 		$prefix = $request->table_prefix();
 		if ( ! str_starts_with( $insert->table(), $prefix ) ) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native requires a table in the active prefix.' );

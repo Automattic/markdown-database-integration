@@ -141,7 +141,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$provider_projection,
 				$pushdown,
 				$order_by[0]['column'],
-				$plan->counts_all() || $plan->calculates_found_rows() || array() !== $residual ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
+				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_count_alias() || array() !== $residual ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by
 			)
@@ -154,8 +154,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$count = 0;
 		$found_rows = 0;
 		$matched_rows = 0;
+		$groups = array();
 		foreach ( $provided as $row ) {
-			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && count( $rows ) >= $plan->limit() ) {
+			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_count_alias() && count( $rows ) >= $plan->limit() ) {
 				break;
 			}
 			if ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) {
@@ -164,6 +165,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( $this->matches( $row, $residual, $schema ) ) {
 				if ( $plan->calculates_found_rows() ) {
 					++$found_rows;
+				}
+				if ( null !== $plan->group_count_alias() ) {
+					$value = $row[ $projection[0] ] ?? null;
+					$key = null === $value ? '' : (string) $value;
+					$groups[ $key ] = ( $groups[ $key ] ?? 0 ) + 1;
+					continue;
 				}
 				if ( $plan->counts_all() ) {
 					++$count;
@@ -176,6 +183,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( $plan->calculates_found_rows() ) {
 			$this->last_found_rows = $found_rows;
+		}
+		if ( null !== $plan->group_count_alias() ) {
+			$alias = $plan->group_count_alias();
+			$grouped_rows = array();
+			foreach ( $groups as $value => $total ) {
+				$grouped_rows[] = array( $projection[0] => (string) $value, $alias => (string) $total );
+			}
+			return WP_Markdown_Query_Result::selected(
+				$grouped_rows,
+				array(
+					array( 'name' => $projection[0], 'table' => $plan->table(), 'type' => $schema->column( $projection[0] )->type() ),
+					array( 'name' => $alias, 'table' => '', 'type' => 8 ),
+				)
+			);
 		}
 
 		return $plan->counts_all()

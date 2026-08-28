@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN', '<>', 'LIKE' ),
+		private readonly array $filter_operators = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ),
 		private readonly mixed $filter_validator = null
 	) {
 		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
@@ -54,7 +54,7 @@ final class WP_Markdown_Native_Column {
 		if ( ! in_array( $operator, $this->filter_operators, true ) || array() === $values ) {
 			return false;
 		}
-		if ( 'LIKE' === $operator ) {
+		if ( 'LIKE' === $operator || 'NOT LIKE' === $operator ) {
 			foreach ( $values as $value ) {
 				if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
 					return false;

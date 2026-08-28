@@ -136,7 +136,7 @@ final class WP_Markdown_Native_Query_Parser {
 
 	private function lower_predicate( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate {
 		$values = array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
-		if ( 'IN' === $predicate->operator() ) {
+		if ( 'IN' === $predicate->operator() || 'NOT IN' === $predicate->operator() ) {
 			$values = array_values( array_unique( $values, SORT_REGULAR ) );
 		}
 		return new WP_Markdown_Native_Query_Predicate(
@@ -409,20 +409,36 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			return new WP_Markdown_Native_SQL_Predicate( $column, '<>', array( $this->literal() ) );
 		}
 		if ( $this->match_keyword( 'LIKE' ) ) {
-			$pattern = $this->literal();
-			if ( ! is_string( $pattern->value() ) ) {
-				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $pattern->sql_offset(), 'mdi-native LIKE requires a string pattern.' );
+			return $this->like_predicate( $column, 'LIKE' );
+		}
+		if ( $this->match_keyword( 'NOT' ) ) {
+			if ( $this->match_keyword( 'LIKE' ) ) {
+				return $this->like_predicate( $column, 'NOT LIKE' );
 			}
-			return new WP_Markdown_Native_SQL_Predicate( $column, 'LIKE', array( $pattern ) );
+			$this->expect_keyword( 'IN' );
+			return new WP_Markdown_Native_SQL_Predicate( $column, 'NOT IN', $this->in_list() );
 		}
 		$this->expect_keyword( 'IN' );
+		return new WP_Markdown_Native_SQL_Predicate( $column, 'IN', $this->in_list() );
+	}
+
+	private function like_predicate( WP_Markdown_Native_SQL_Identifier $column, string $operator ): WP_Markdown_Native_SQL_Predicate {
+		$pattern = $this->literal();
+		if ( ! is_string( $pattern->value() ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $pattern->sql_offset(), 'mdi-native LIKE requires a string pattern.' );
+		}
+		return new WP_Markdown_Native_SQL_Predicate( $column, $operator, array( $pattern ) );
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Literal> */
+	private function in_list(): array {
 		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 		$values = array( $this->literal() );
 		while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
 			$values[] = $this->literal();
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-		return new WP_Markdown_Native_SQL_Predicate( $column, 'IN', $values );
+		return $values;
 	}
 
 	private function identifier(): WP_Markdown_Native_SQL_Identifier {

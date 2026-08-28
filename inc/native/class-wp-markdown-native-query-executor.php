@@ -484,17 +484,21 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			return false;
 		}
+		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
+		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {
+			return false;
+		}
 		foreach ( $predicate->values() as $value ) {
 			$compare = match ( $predicate->operator() ) {
 				'<>' => $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value ),
-				'LIKE' => is_string( $value ) && $schema->value_matches_like( $predicate->column(), $row[ $predicate->column() ], $value ),
+				'LIKE', 'NOT LIKE' => is_string( $value ) && $schema->value_matches_like( $predicate->column(), $row[ $predicate->column() ], $value ),
 				default => $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ),
 			};
 			if ( $compare ) {
-				return true;
+				return ! $negated;
 			}
 		}
-		return false;
+		return $negated;
 	}
 
 	/** @param array<int,array<string,mixed>> $rows @param array<int,string> $projection */

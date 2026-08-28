@@ -126,6 +126,7 @@ $admin_or = ids(
 	"SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'page' AND (wp_posts.post_status = 'publish' OR wp_posts.post_status = 'future' OR wp_posts.post_status = 'draft' OR wp_posts.post_status = 'pending' OR wp_posts.post_status = 'private'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 20"
 );
 $cross_or = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' OR post_status = 'publish'" );
+$not_in = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' AND post_status NOT IN ('trash', 'auto-draft') ORDER BY post_date DESC" );
 
 $checks = array(
 	'admin list inequality excludes trash and auto-draft' => array( '21', '22' ) === $admin['ids']
@@ -139,6 +140,8 @@ $checks = array(
 		&& null === $admin_or['reason'],
 	'cross-column OR fails closed' => false === $cross_or['return']
 		&& 'unsupported_or' === $cross_or['reason'],
+	'NOT IN excludes the listed statuses' => array( '21', '22' ) === $not_in['ids']
+		&& null === $not_in['reason'],
 );
 
 $failed = false;

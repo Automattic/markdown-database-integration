@@ -338,7 +338,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
 						'lookup_operators' => array( '=', 'IN' ),
 						'lookup_validator' => $ascii,
-						'filter_operators' => array( '=', 'IN', 'LIKE' ),
+						'filter_operators' => array( '=', 'IN', 'NOT IN', 'LIKE', 'NOT LIKE' ),
 						'filter_validator' => $ascii,
 					);
 				}

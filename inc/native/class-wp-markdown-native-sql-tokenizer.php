@@ -36,6 +36,10 @@ final class WP_Markdown_Native_SQL_Token {
 	public const RIGHT_PAREN = 'right_paren';
 	public const EQUALS = 'equals';
 	public const NOT_EQUALS = 'not_equals';
+	public const LESS_THAN = 'less_than';
+	public const LESS_EQUALS = 'less_equals';
+	public const GREATER_THAN = 'greater_than';
+	public const GREATER_EQUALS = 'greater_equals';
 	public const DOT = 'dot';
 	public const PLUS = 'plus';
 	public const END = 'end';
@@ -79,6 +83,22 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 			if ( '<' === $character && $offset + 1 < $length && '>' === $sql[ $offset + 1 ] ) {
 				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::NOT_EQUALS, '<>', '<>', $offset );
 				$offset  += 2;
+				continue;
+			}
+			foreach ( array( '<=', '>=' ) as $pair ) {
+				if ( $character === $pair[0] && $offset + 1 < $length && $pair[1] === $sql[ $offset + 1 ] ) {
+					$type = '<=' === $pair ? WP_Markdown_Native_SQL_Token::LESS_EQUALS : WP_Markdown_Native_SQL_Token::GREATER_EQUALS;
+					$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $pair, $pair, $offset );
+					$offset  += 2;
+					continue 2;
+				}
+			}
+			if ( '<' === $character ) {
+				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::LESS_THAN, '<', '<', $offset++ );
+				continue;
+			}
+			if ( '>' === $character ) {
+				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::GREATER_THAN, '>', '>', $offset++ );
 				continue;
 			}
 			if ( '!' === $character && $offset + 1 < $length && '=' === $sql[ $offset + 1 ] ) {

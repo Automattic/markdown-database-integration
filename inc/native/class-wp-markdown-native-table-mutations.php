@@ -54,7 +54,8 @@ final class WP_Markdown_Native_Table_Predicate {
 	public function __construct(
 		private string $column,
 		private array $values,
-		private bool $matches_null
+		private bool $matches_null,
+		private string $operator = '='
 	) {}
 
 	public function column(): string {
@@ -68,6 +69,24 @@ final class WP_Markdown_Native_Table_Predicate {
 
 	public function matches_null(): bool {
 		return $this->matches_null;
+	}
+
+	public function operator(): string {
+		return $this->operator;
+	}
+}
+
+/** One OR group of restrictions, evaluated as a disjunction per row. */
+final class WP_Markdown_Native_Table_Predicate_Group {
+
+	/** @param array<int,WP_Markdown_Native_Table_Predicate|self> $any */
+	public function __construct(
+		private readonly array $any
+	) {}
+
+	/** @return array<int,WP_Markdown_Native_Table_Predicate|self> */
+	public function any(): array {
+		return $this->any;
 	}
 }
 
@@ -230,6 +249,11 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 	 *
 	 * @return array<int,WP_Markdown_Native_Table_Predicate>
 	 */
+	/**
+	 * Parse a bounded WHERE clause with SQL precedence: AND binds tighter than OR.
+	 *
+	 * @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group>
+	 */
 	private function where_predicates(): array {
 		if ( WP_Markdown_Native_SQL_Token::END === $this->current()->type()
 			|| 0 !== strcasecmp( 'WHERE', (string) $this->current()->value() ) ) {
@@ -237,66 +261,96 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		}
 		$this->word( 'WHERE' );
 
-		$columns = array();
-		$nulls = array();
-		$order = array();
-		$conjunction = null;
-		do {
-			$column = $this->identifier();
-			if ( ! isset( $columns[ $column ] ) ) {
-				$columns[ $column ] = array();
-				$nulls[ $column ] = false;
-				$order[] = $column;
-			}
-			$token = $this->current();
-			if ( 0 === strcasecmp( 'IS', (string) $token->value() ) ) {
-				++$this->position;
-				if ( 0 === strcasecmp( 'NOT', (string) $this->current()->value() ) ) {
-					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported IS NOT restriction.' );
-				}
-				$this->word( 'NULL' );
-				$nulls[ $column ] = true;
-			} elseif ( WP_Markdown_Native_SQL_Token::EQUALS === $token->type() ) {
-				++$this->position;
-				$value = $this->literal();
-				if ( null === $value ) {
-					// `column = NULL` never matches in MySQL.
-					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL equality restriction.' );
-				}
-				$columns[ $column ][] = $value;
-			} elseif ( 0 === strcasecmp( 'IN', (string) $token->value() ) ) {
-				++$this->position;
-				foreach ( $this->literal_list() as $value ) {
-					if ( null === $value ) {
-						throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL IN member.' );
-					}
-					$columns[ $column ][] = $value;
-				}
-			} else {
-				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported WHERE restriction.' );
-			}
-
-			$next = $this->current();
-			$keyword = strtoupper( (string) $next->value() );
-			if ( 'AND' !== $keyword && 'OR' !== $keyword ) {
-				break;
-			}
-			if ( null !== $conjunction && $conjunction !== $keyword ) {
-				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $next->sql_offset(), 'Unsupported mixed WHERE conjunction.' );
-			}
-			$conjunction = $keyword;
+		$predicates = array( $this->where_disjunction() );
+		while ( $this->is_word( 'AND' ) ) {
 			++$this->position;
-		} while ( true );
-
-		if ( 'OR' === $conjunction && count( $order ) > 1 ) {
-			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $this->current()->sql_offset(), 'Unsupported OR restriction across columns.' );
+			$predicates[] = $this->where_disjunction();
 		}
+		return array_filter( $predicates );
+	}
 
-		$predicates = array();
-		foreach ( $order as $column ) {
-			$predicates[] = new WP_Markdown_Native_Table_Predicate( $column, $columns[ $column ], $nulls[ $column ] );
+	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|null */
+	private function where_disjunction() {
+		$alternatives = array( $this->where_factor() );
+		while ( $this->is_word( 'OR' ) ) {
+			++$this->position;
+			$alternatives[] = $this->where_factor();
 		}
-		return $predicates;
+		$alternatives = array_values( array_filter( $alternatives ) );
+		if ( array() === $alternatives ) {
+			return null;
+		}
+		return 1 === count( $alternatives )
+			? $alternatives[0]
+			: new WP_Markdown_Native_Table_Predicate_Group( $alternatives );
+	}
+
+	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|null */
+	private function where_factor() {
+		if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type() ) {
+			++$this->position;
+			$group = $this->where_disjunction();
+			$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return $group;
+		}
+		$column = $this->identifier();
+		$token = $this->current();
+		if ( 0 === strcasecmp( 'IS', (string) $token->value() ) ) {
+			++$this->position;
+			if ( 0 === strcasecmp( 'NOT', (string) $this->current()->value() ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported IS NOT restriction.' );
+			}
+			$this->word( 'NULL' );
+			return new WP_Markdown_Native_Table_Predicate( $column, array(), true );
+		}
+		$comparison = $this->comparison_operator();
+		if ( null !== $comparison ) {
+			$value = $this->literal();
+			if ( null === $value ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Comparisons with NULL never match.' );
+			}
+			return new WP_Markdown_Native_Table_Predicate( $column, array( $value ), false, $comparison );
+		}
+		if ( 0 === strcasecmp( 'IN', (string) $token->value() ) ) {
+			++$this->position;
+			$values = array();
+			foreach ( $this->literal_list() as $value ) {
+				if ( null === $value ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL IN member.' );
+				}
+				$values[] = $value;
+			}
+			return new WP_Markdown_Native_Table_Predicate( $column, $values, false );
+		}
+		if ( WP_Markdown_Native_SQL_Token::EQUALS !== $token->type() ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported WHERE restriction.' );
+		}
+		++$this->position;
+		$value = $this->literal();
+		if ( null === $value ) {
+			// `column = NULL` never matches in MySQL.
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL equality restriction.' );
+		}
+		return new WP_Markdown_Native_Table_Predicate( $column, array( $value ), false );
+	}
+
+	/** @return '<'|'<='|'>'|'>='|null */
+	private function comparison_operator(): ?string {
+		$type = $this->current()->type();
+		if ( in_array( $type, array( WP_Markdown_Native_SQL_Token::LESS_THAN, WP_Markdown_Native_SQL_Token::LESS_EQUALS, WP_Markdown_Native_SQL_Token::GREATER_THAN, WP_Markdown_Native_SQL_Token::GREATER_EQUALS ), true ) ) {
+			++$this->position;
+			return match ( $type ) {
+				WP_Markdown_Native_SQL_Token::LESS_THAN => '<',
+				WP_Markdown_Native_SQL_Token::LESS_EQUALS => '<=',
+				WP_Markdown_Native_SQL_Token::GREATER_THAN => '>',
+				default => '>=',
+			};
+		}
+		return null;
+	}
+
+	private function is_word( string $expected ): bool {
+		return 0 === strcasecmp( $expected, (string) $this->current()->value() );
 	}
 
 	private function literal(): int|string|null {
@@ -754,8 +808,20 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 			$default = $column['default'] ?? null;
 			if ( null !== $default ) {
-				if ( 1 === preg_match( '/^(?:CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME)(?:\(\))?$/i', (string) $default ) ) {
-					return $this->failure( 'unsupported_default', 'mdi-native cannot evaluate a dynamic column default.' );
+				// MySQL evaluates dynamic defaults at write time. The canonical
+				// store has no session time zone, so UTC is the honest clock.
+				$dynamic = strtoupper( (string) $default );
+				if ( 1 === preg_match( '/^CURRENT_TIMESTAMP(?:\(\))?$/i', (string) $default ) ) {
+					$row[ $name ] = gmdate( 'Y-m-d H:i:s' );
+					continue;
+				}
+				if ( 1 === preg_match( '/^CURRENT_DATE(?:\(\))?$/i', (string) $default ) ) {
+					$row[ $name ] = gmdate( 'Y-m-d' );
+					continue;
+				}
+				if ( 1 === preg_match( '/^CURRENT_TIME(?:\(\))?$/i', (string) $default ) ) {
+					$row[ $name ] = gmdate( 'H:i:s' );
+					continue;
 				}
 				$row[ $name ] = (string) $default;
 				continue;
@@ -833,8 +899,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 		}
 		foreach ( $write->predicates() as $predicate ) {
-			if ( ! $schema->has_column( $predicate->column() ) ) {
-				return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
+			foreach ( $this->predicate_columns( $predicate ) as $column ) {
+				if ( ! $schema->has_column( $column ) ) {
+					return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
+				}
 			}
 		}
 		foreach ( array_keys( $write->values() ) as $column ) {
@@ -908,23 +976,66 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 * @param array<string,mixed>                          $row        Canonical row.
 	 * @param array<int,WP_Markdown_Native_Table_Predicate> $predicates Restrictions.
 	 */
+	/**
+	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group> $predicates
+	 */
 	private function restricts( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
 		foreach ( $predicates as $predicate ) {
-			$value = $row[ $predicate->column() ] ?? null;
-			$matched = $predicate->matches_null() && null === $value;
-			if ( ! $matched ) {
-				foreach ( $predicate->values() as $candidate ) {
-					if ( $schema->values_match( $predicate->column(), $value, $candidate ) ) {
-						$matched = true;
-						break;
-					}
-				}
-			}
-			if ( ! $matched ) {
+			if ( ! $this->restricts_predicate( $row, $predicate, $schema ) ) {
 				return false;
 			}
 		}
 		return true;
+	}
+
+	/** @param WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group $predicate */
+	private function restricts_predicate( array $row, $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
+		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+			foreach ( $predicate->any() as $alternative ) {
+				if ( $this->restricts_predicate( $row, $alternative, $schema ) ) {
+					return true;
+				}
+			}
+			return array() === $predicate->any();
+		}
+		$value = $row[ $predicate->column() ] ?? null;
+		if ( $predicate->matches_null() && null === $value ) {
+			return true;
+		}
+		$operator = $predicate->operator();
+		if ( in_array( $operator, array( '<', '<=', '>', '>=' ), true ) ) {
+			// A comparison with NULL is unknown, which never restricts.
+			if ( null === $value ) {
+				return false;
+			}
+			$comparison = $schema->compare_values( $predicate->column(), $value, $predicate->values()[0] ?? null );
+			return match ( $operator ) {
+				'<' => $comparison < 0,
+				'<=' => $comparison <= 0,
+				'>' => $comparison > 0,
+				default => $comparison >= 0,
+			};
+		}
+		foreach ( $predicate->values() as $candidate ) {
+			if ( $schema->values_match( $predicate->column(), $value, $candidate ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** @param WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group $predicate @return array<int,string> */
+	private function predicate_columns( $predicate ): array {
+		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+			$columns = array();
+			foreach ( $predicate->any() as $alternative ) {
+				foreach ( $this->predicate_columns( $alternative ) as $column ) {
+					$columns[] = $column;
+				}
+			}
+			return array_values( array_unique( $columns ) );
+		}
+		return array( $predicate->column() );
 	}
 
 	private function supports_unique_indexes( array $definition ): bool {

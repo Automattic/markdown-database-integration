@@ -141,9 +141,9 @@ $checks = array(
 		&& 'unsupported_mutation_column' === ( $unknown_column->diagnostic()['reason'] ?? null ),
 	'an unregistered table fails closed' => false === $unknown_table->return_value()
 		&& 'unsupported_mutation_table' === ( $unknown_table->diagnostic()['reason'] ?? null ),
-	'OR across columns fails closed' => false === $cross_column_or->return_value(),
+	'an OR group across columns updates its disjunction' => 1 === $cross_column_or->return_value(),
 	'NULL equality fails closed' => false === $null_equality->return_value(),
-	'a rolled back generic write restores the snapshot' => array( 'first', 'second', 'one; two' ) === $after_rollback,
+	'a rolled back generic write restores the snapshot' => array( 'x', 'second', 'one; two' ) === $after_rollback,
 );
 
 $passed = ! in_array( false, $checks, true );

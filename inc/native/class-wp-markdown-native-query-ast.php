@@ -123,7 +123,8 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly int $limit_offset = 0,
 		private readonly bool $distinct = false,
 		private readonly bool $contradiction = false,
-		private readonly ?string $group_count_alias = null
+		private readonly ?string $group_count_alias = null,
+		private readonly array $aggregates = array()
 	) {}
 
 	public function selects_all(): bool {
@@ -196,5 +197,10 @@ final class WP_Markdown_Native_SQL_Select {
 
 	public function group_count_alias(): ?string {
 		return $this->group_count_alias;
+	}
+
+	/** @return array<int,array{function:string,column:?WP_Markdown_Native_SQL_Identifier,alias:string}> */
+	public function aggregates(): array {
+		return $this->aggregates;
 	}
 }

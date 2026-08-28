@@ -135,7 +135,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly ?string $order_source = null,
 		private readonly array $order_by = array(),
 		private readonly bool $unsatisfiable = false,
-		private readonly ?string $group_count_alias = null
+		private readonly ?string $group_count_alias = null,
+		private readonly array $aggregates = array()
 	) {}
 
 	public function table(): string {
@@ -225,6 +226,11 @@ final class WP_Markdown_Native_Query_Plan {
 
 	public function group_count_alias(): ?string {
 		return $this->group_count_alias;
+	}
+
+	/** @return array<int,array{function:string,column:?string,source:?string,alias:string}> */
+	public function aggregates(): array {
+		return $this->aggregates;
 	}
 }
 

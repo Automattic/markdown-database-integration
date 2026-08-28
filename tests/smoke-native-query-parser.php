@@ -202,7 +202,7 @@ $checks = array(
 		&& $distinct_count instanceof WP_Markdown_Query_Result
 		&& strpos( $distinct_count_sql, 'DISTINCT' ) === ( $distinct_count->diagnostic()['sql_offset'] ?? null )
 		&& $unsupported_function instanceof WP_Markdown_Query_Result
-		&& strpos( $unsupported_function_sql, '(' ) === ( $unsupported_function->diagnostic()['sql_offset'] ?? null )
+		&& strpos( $unsupported_function_sql, 'FROM' ) === ( $unsupported_function->diagnostic()['sql_offset'] ?? null )
 		&& array_reduce(
 			array( $count_column, $mixed_count, $aliased_count, $grouped_count, $distinct_count, $unsupported_function ),
 			static fn( bool $valid, WP_Markdown_Query_Result $result ): bool => $valid && 'unsupported_grammar' === ( $result->diagnostic()['reason'] ?? null ),

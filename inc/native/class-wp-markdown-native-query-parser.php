@@ -130,7 +130,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->limit_offset(),
 			$ast->is_distinct(),
 			$ast->order()?->qualifier(),
-			$order_by
+			$order_by,
+			$ast->is_contradiction()
 		);
 	}
 
@@ -183,6 +184,7 @@ final class WP_Markdown_Native_Query_Parser {
 
 final class WP_Markdown_Native_Select_AST_Parser {
 	private int $current = 0;
+	private bool $contradiction = false;
 
 	/** @param array<int,WP_Markdown_Native_SQL_Token> $tokens */
 	public function __construct( private readonly array $tokens ) {}
@@ -244,6 +246,29 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'WHERE' ) ) {
 			$predicates = $this->disjunction();
 		}
+		if ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
+			&& 0 === strcasecmp( 'GROUP', (string) $this->current()->value() ) ) {
+			if ( $count_all || $select_all || $distinct ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_keyword( 'GROUP' );
+			$this->expect_keyword( 'BY' );
+			$group = $this->identifier();
+			if ( WP_Markdown_Native_SQL_Token::COMMA === $this->current()->type() ) {
+				$this->unsupported( $this->current() );
+			}
+			if ( ! $this->contradiction ) {
+				if ( 1 !== count( $projection )
+					|| $projection[0]->name() !== $group->name()
+					|| $projection[0]->qualifier() !== $group->qualifier() ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error(
+						'unsupported_group',
+						$group->sql_offset(),
+						'mdi-native supports GROUP BY only as identity grouping of the selected column.'
+					);
+				}
+			}
+		}
 		$orders = array();
 		if ( $this->match_keyword( 'ORDER' ) ) {
 			$this->expect_keyword( 'BY' );
@@ -274,7 +299,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction );
 	}
 
 	private function match_join(): bool {
@@ -386,7 +411,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
 			$right = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
 			if ( $left !== $right ) {
-				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_constant_predicate', $offset, 'mdi-native supports only neutral constant predicates.' );
+				$this->contradiction = true;
 			}
 			return array();
 		}

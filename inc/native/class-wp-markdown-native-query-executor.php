@@ -55,6 +55,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					array( array( 'name' => 'FOUND_ROWS()', 'table' => '', 'type' => 8 ) )
 				);
 		}
+		if ( $plan->is_unsatisfiable() ) {
+			$table = $this->registry->table( $plan->table() );
+			if ( null === $table ) {
+				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
+			}
+			$schema = $table['schema'];
+			$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
+			$this->last_found_rows = 0;
+			return $plan->counts_all()
+				? $this->count_result( 0, false )
+				: $this->result( array(), $projection, $plan->table(), $schema );
+		}
 		if ( array() !== $plan->joins() ) {
 			return $this->execute_join( $plan );
 		}

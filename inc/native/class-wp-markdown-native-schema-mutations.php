@@ -66,8 +66,10 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 
 		// A core table is generated from WordPress itself, so creating it
 		// registers its canonical provider rather than persisting a schema
-		// file that would shadow the definition core already supplies.
-		if ( WP_Markdown_Native_Schema_Catalog::is_generated_core_definition( $suffix, $definition ) ) {
+		// file that would shadow the definition core already supplies. The
+		// name identifies it, because the release being installed states its
+		// own column list and that varies independently of canonical form.
+		if ( WP_Markdown_Native_Schema_Catalog::is_core_table( $suffix ) ) {
 			if ( null === $this->core_registrar || true !== ( $this->core_registrar )( $suffix ) ) {
 				return $this->failure( 'unsupported_schema', 'mdi-native cannot create the requested core table.' );
 			}

@@ -1126,13 +1126,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 	/** @param array<string,mixed> $definition */
 	private function is_generated_core_definition( string $suffix, array $definition ): bool {
-		foreach ( array( false, true ) as $multisite ) {
-			$definitions = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
-			if ( isset( $definitions[ $suffix ] ) && $definitions[ $suffix ] === $definition ) {
-				return true;
-			}
-		}
-		return false;
+		return WP_Markdown_Native_Schema_Catalog::is_generated_core_definition( $suffix, $definition );
 	}
 
 	private function is_persisted_definition( string $suffix, array $definition, string $prefix ): bool {

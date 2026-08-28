@@ -385,6 +385,11 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 
 	private function options_directory(): string|WP_Markdown_Query_Result {
 		$path = $this->state_root . '/_options';
+		// The first option written to a site creates its store, which is how
+		// an installation takes hold in an empty directory.
+		if ( ! file_exists( $path ) && ! @mkdir( $path, 0755 ) && ! is_dir( $path ) ) {
+			return $this->failure( 'options_directory_failed', 'The canonical options directory could not be created.' );
+		}
 		$root = realpath( $path );
 		if ( false === $root || ! is_dir( $root ) || is_link( $path ) || dirname( $root ) !== $this->state_root ) {
 			return $this->failure( 'unsafe_options_directory', 'The canonical options directory is unavailable or unsafe.' );

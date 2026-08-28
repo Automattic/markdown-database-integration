@@ -254,7 +254,7 @@ final class WP_Markdown_Native_Schema_Introspection {
 	private function server_values( string $operation, ?string $pattern, array $names ): WP_Markdown_Query_Result {
 		$values = 'variables' === $operation
 			? array(
-				'version' => '0.0.0-mdi-native',
+				'version' => WP_Markdown_Native_Schema_Catalog::SERVER_VERSION,
 				'version_comment' => 'Markdown Database Integration native engine',
 				'sql_mode' => '',
 				'character_set_server' => 'utf8mb4',

@@ -22,6 +22,8 @@ function mdi_native_alter_index_remove_tree( string $root ): void {
 
 $root = sys_get_temp_dir() . '/mdi-native-alter-index-' . bin2hex( random_bytes( 6 ) );
 mkdir( $root, 0755 );
+// Core tables belong to an installed site, so canonical storage holds one.
+mkdir( $root . '/_options', 0755 );
 $runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
 
 $index_create = $runtime->execute(

@@ -147,42 +147,70 @@ final class WP_Markdown_Native_Runtime_Factory {
 		$base_prefix = $base_prefix ?? $prefix;
 		$content_root = $content_root ?? $state_root;
 		$registry = new WP_Markdown_Native_Table_Registry();
-		$options  = self::options_schema();
-		$registry->register(
-			$prefix . 'options',
-			$options,
-			new WP_Markdown_Native_Option_Provider( $state_root, $options )
-		);
-		self::register_json_snapshot(
-			$registry,
-			$state_root,
-			$base_prefix . 'users',
-			self::users_schema( $multisite ),
-			'users.json'
-		);
-		self::register_json_snapshot(
-			$registry,
-			$state_root,
-			$base_prefix . 'usermeta',
-			self::usermeta_schema(),
-			'usermeta.json'
-		);
-		$posts = self::posts_schema();
-		$registry->register(
-			$prefix . 'posts',
-			$posts,
-			new WP_Markdown_Native_Post_Provider( $content_root, $posts )
-		);
-		self::register_json_snapshot(
-			$registry,
-			$state_root,
-			$prefix . 'comments',
-			self::comments_schema(),
-			'comments.json'
-		);
-		self::register_generated_core_snapshots( $registry, $state_root, $prefix, $base_prefix, $multisite );
+		// Untouched storage holds no site, so it reports no tables and leaves
+		// WordPress free to install one here.
+		if ( self::holds_canonical_site( $state_root, $content_root ) ) {
+			foreach ( array_keys( WP_Markdown_Native_Schema_Catalog::definitions( $multisite ) ) as $suffix ) {
+				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, $multisite, (string) $suffix );
+			}
+		}
 		self::register_persisted_plugin_tables( $registry, $state_root, $prefix, $multisite );
 		return $registry;
+	}
+
+	/**
+	 * Register one generated core table against canonical storage.
+	 *
+	 * Creating a core table has to reach the provider that reads its canonical
+	 * form, so posts stay Markdown and options stay their own store, rather
+	 * than the generic snapshot a plugin table would earn.
+	 */
+	public static function register_core_table(
+		WP_Markdown_Native_Table_Registry $registry,
+		string $state_root,
+		string $content_root,
+		string $prefix,
+		string $base_prefix,
+		bool $multisite,
+		string $suffix
+	): bool {
+		$definitions = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
+		if ( ! isset( $definitions[ $suffix ] ) ) {
+			return false;
+		}
+		$network = array( 'blogs', 'blogmeta', 'registration_log', 'site', 'sitemeta', 'signups' );
+		$table_prefix = $multisite && in_array( $suffix, $network, true ) ? $base_prefix : $prefix;
+		if ( in_array( $suffix, array( 'users', 'usermeta' ), true ) ) {
+			$table_prefix = $base_prefix;
+		}
+		if ( null !== $registry->definition( $table_prefix . $suffix ) ) {
+			return false;
+		}
+		if ( 'options' === $suffix ) {
+			$options = self::options_schema();
+			$registry->register( $prefix . 'options', $options, new WP_Markdown_Native_Option_Provider( $state_root, $options ) );
+			return true;
+		}
+		if ( 'posts' === $suffix ) {
+			$posts = self::posts_schema();
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $content_root, $posts ) );
+			return true;
+		}
+		$bespoke = array(
+			'users' => static fn(): WP_Markdown_Native_Table_Schema => self::users_schema( $multisite ),
+			'usermeta' => static fn(): WP_Markdown_Native_Table_Schema => self::usermeta_schema(),
+			'comments' => static fn(): WP_Markdown_Native_Table_Schema => self::comments_schema(),
+		);
+		if ( isset( $bespoke[ $suffix ] ) ) {
+			self::register_json_snapshot( $registry, $state_root, $table_prefix . $suffix, ( $bespoke[ $suffix ] )(), $suffix . '.json' );
+			return true;
+		}
+		$schema = self::generated_core_schema( $suffix, $definitions[ $suffix ] );
+		if ( null === $schema ) {
+			return false;
+		}
+		self::register_json_snapshot( $registry, $state_root, $table_prefix . $suffix, $schema, $suffix . '.json' );
+		return true;
 	}
 
 	public static function runtime(
@@ -198,11 +226,22 @@ final class WP_Markdown_Native_Runtime_Factory {
 		$transactions->recover();
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root );
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
+		$resolved_base = $base_prefix ?? $prefix;
+		$resolved_content = $content_root ?? $state_root;
+		$core_registrar = static fn( string $suffix ): bool => self::register_core_table(
+			$registry,
+			$state_root,
+			$resolved_content,
+			$prefix,
+			$resolved_base,
+			$multisite,
+			$suffix
+		);
 		return new WP_Markdown_Native_Query_Runtime(
 			$registry,
 			new WP_Markdown_Native_Query_Parser(),
 			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root, new WP_Markdown_Native_Option_Mutation_Parser(), $transactions ),
-			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions ),
+			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions, $core_registrar ),
 			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, $parser, $transactions ),
 			$transactions,
 			new WP_Markdown_Native_Post_Mutation_Runtime(
@@ -211,6 +250,27 @@ final class WP_Markdown_Native_Runtime_Factory {
 				new WP_Markdown_Storage( $content_root ?? $state_root )
 			)
 		);
+	}
+
+	/**
+	 * Report whether canonical storage holds a site yet.
+	 *
+	 * Core tables are generated from WordPress rather than persisted, so they
+	 * would otherwise be described even in an empty directory, and WordPress
+	 * reads a described core table as proof a site is already installed.
+	 *
+	 * The options store is the signal because no WordPress site can exist
+	 * without one, and installation writes it. A plugin table alone leaves
+	 * canonical storage without a site in it.
+	 */
+	private static function holds_canonical_site( string $state_root, string $content_root ): bool {
+		foreach ( array_unique( array( $state_root, $content_root ) ) as $root ) {
+			$path = rtrim( $root, '/\\' ) . DIRECTORY_SEPARATOR . '_options';
+			if ( is_dir( $path ) && ! is_link( $path ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	public static function register_json_snapshot(
@@ -314,42 +374,25 @@ final class WP_Markdown_Native_Runtime_Factory {
 			: null;
 	}
 
-	private static function register_generated_core_snapshots(
-		WP_Markdown_Native_Table_Registry $registry,
-		string $state_root,
-		string $prefix,
-		string $base_prefix,
-		bool $multisite
-	): void {
-		$definitions = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
-		$handled = array( 'options', 'users', 'usermeta', 'posts', 'comments' );
-		$network = array( 'blogs', 'blogmeta', 'registration_log', 'site', 'sitemeta', 'signups' );
-		foreach ( $definitions as $table => $definition ) {
-			if ( in_array( $table, $handled, true ) ) {
-				continue;
-			}
-			$column_overlays = array();
-			foreach ( $definition['indexes'] as $index ) {
-				$column = $index['columns'][0]['name'] ?? '';
-				$type = $definition['columns'][ $column ]['type'] ?? '';
-				if ( in_array( $type, array( 'char', 'varchar' ), true ) ) {
-					$ascii = static fn( array $values ): bool => self::all_ascii_strings( $values );
-					$column_overlays[ $column ] = array(
-						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
-						'lookup_operators' => array( '=', 'IN' ),
-						'lookup_validator' => $ascii,
-						'filter_operators' => array( '=', 'IN', 'NOT IN', 'LIKE', 'NOT LIKE' ),
-						'filter_validator' => $ascii,
-					);
-				}
-			}
-			$order_columns = 'terms' === $table ? array( 'name' ) : array();
-			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition, $column_overlays, $order_columns );
-			if ( null !== $schema ) {
-				$table_prefix = $multisite && in_array( $table, $network, true ) ? $base_prefix : $prefix;
-				self::register_json_snapshot( $registry, $state_root, $table_prefix . $table, $schema, $table . '.json' );
+	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition */
+	private static function generated_core_schema( string $table, array $definition ): ?WP_Markdown_Native_Table_Schema {
+		$column_overlays = array();
+		foreach ( $definition['indexes'] as $index ) {
+			$column = $index['columns'][0]['name'] ?? '';
+			$type = $definition['columns'][ $column ]['type'] ?? '';
+			if ( in_array( $type, array( 'char', 'varchar' ), true ) ) {
+				$ascii = static fn( array $values ): bool => self::all_ascii_strings( $values );
+				$column_overlays[ $column ] = array(
+					'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+					'lookup_operators' => array( '=', 'IN' ),
+					'lookup_validator' => $ascii,
+					'filter_operators' => array( '=', 'IN', 'NOT IN', 'LIKE', 'NOT LIKE' ),
+					'filter_validator' => $ascii,
+				);
 			}
 		}
+		$order_columns = 'terms' === $table ? array( 'name' ) : array();
+		return WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition, $column_overlays, $order_columns );
 	}
 
 	private static function read_persisted_file( string $root, string $path ): ?string {

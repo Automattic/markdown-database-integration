@@ -78,7 +78,7 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 		if ( array() !== $joins ) {
 			$base_alias = $ast->alias()?->name();
-			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() || $ast->calculates_found_rows() || null !== $ast->limit() || 0 !== $ast->limit_offset() ) {
+			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() || $ast->calculates_found_rows() ) {
 				return $this->failure( 'unsupported_join_shape', 'mdi-native supports retained bounded equality JOIN queries only.', $ast->table()->sql_offset() );
 			}
 			foreach ( $referenced_columns as $column ) {

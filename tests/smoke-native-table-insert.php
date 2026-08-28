@@ -44,8 +44,12 @@ $ascii_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO w
 $ascii_duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('CaseSensitive')" ) );
 $ascii_distinct = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('casesensitive')" ) );
 $unicode_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_names (name) VALUES ('Café')" ) );
-$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_prefix (id bigint unsigned NOT NULL auto_increment, name varchar(191) NOT NULL, PRIMARY KEY (id), UNIQUE KEY name (name(32)))' ) );
-$prefix_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_prefix (name) VALUES ('prefix')" ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_prefix (id bigint unsigned NOT NULL auto_increment, name varchar(191) NOT NULL, PRIMARY KEY (id), UNIQUE KEY name (name(8)))' ) );
+$prefix_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_prefix (name) VALUES ('abcdefgh-one')" ) );
+$prefix_collision = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_prefix (name) VALUES ('abcdefgh-two')" ) );
+$prefix_distinct = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_prefix (name) VALUES ('abcdefgx-one')" ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_int_prefix (id bigint unsigned NOT NULL auto_increment, n bigint unsigned NOT NULL, PRIMARY KEY (id), UNIQUE KEY n (n(4)))' ) );
+$int_prefix = $runtime->execute( new WP_Markdown_Query_Request( 'INSERT INTO wp_plugin_unique_int_prefix (n) VALUES (12)' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_unique_scope (id bigint unsigned NOT NULL auto_increment, agent_slug varchar(200) NOT NULL, owner_id bigint unsigned NOT NULL, instance_key_hash char(64) NOT NULL, PRIMARY KEY (id), UNIQUE KEY agent_identity_scope_hash (agent_slug, owner_id, instance_key_hash))' ) );
 $scope = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_scope (agent_slug, owner_id, instance_key_hash) VALUES ('admin', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')" ) );
 $scope_duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_unique_scope (agent_slug, owner_id, instance_key_hash) VALUES ('admin', 1, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')" ) );
@@ -76,8 +80,12 @@ $checks = array(
 		&& 1 === $ascii_distinct->return_value(),
 	'non-ASCII unique keys fail closed' => false === $unicode_unique->return_value()
 		&& 'unsupported_unique_collation' === ( $unicode_unique->diagnostic()['reason'] ?? null ),
-	'prefix unique keys still fail closed' => false === $prefix_unique->return_value()
-		&& 'unsupported_unique_collation' === ( $prefix_unique->diagnostic()['reason'] ?? null ),
+	'ASCII prefix unique keys collide on the indexed prefix' => 1 === $prefix_unique->return_value()
+		&& false === $prefix_collision->return_value()
+		&& 'duplicate_key' === ( $prefix_collision->diagnostic()['reason'] ?? null )
+		&& 1 === $prefix_distinct->return_value(),
+	'integer prefix unique keys still fail closed' => false === $int_prefix->return_value()
+		&& 'unsupported_unique_collation' === ( $int_prefix->diagnostic()['reason'] ?? null ),
 	'composite ASCII unique keys match WordPress identity scopes' => 1 === $scope->return_value()
 		&& false === $scope_duplicate->return_value()
 		&& 'duplicate_key' === ( $scope_duplicate->diagnostic()['reason'] ?? null ),

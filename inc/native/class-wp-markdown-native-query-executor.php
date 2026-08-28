@@ -584,7 +584,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function dml_table( WP_Markdown_Query_Request $request ): ?string {
-		if ( 1 === preg_match( '/^\s*(?:INSERT\s+INTO|UPDATE|DELETE\s+FROM)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $match ) ) {
+		if ( 1 === preg_match( '/^\s*(?:INSERT(?:\s+IGNORE)?\s+INTO|UPDATE|DELETE\s+FROM)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $request->sql(), $match ) ) {
 			return $match[1];
 		}
 		return null;

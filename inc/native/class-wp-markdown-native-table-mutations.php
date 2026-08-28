@@ -13,7 +13,8 @@ final class WP_Markdown_Native_Table_Insert {
 	public function __construct(
 		private readonly string $table,
 		private readonly array $values,
-		private readonly ?array $unless_exists = null
+		private readonly ?array $unless_exists = null,
+		private readonly bool $ignore_duplicate = false
 	) {}
 
 	public function table(): string {
@@ -28,6 +29,10 @@ final class WP_Markdown_Native_Table_Insert {
 	/** @return array<int,WP_Markdown_Native_Table_Predicate>|null */
 	public function unless_exists(): ?array {
 		return $this->unless_exists;
+	}
+
+	public function ignores_duplicate(): bool {
+		return $this->ignore_duplicate;
 	}
 }
 
@@ -111,6 +116,10 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			$this->tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql );
 			$this->position = 0;
 			$this->word( 'INSERT' );
+			$ignore_duplicate = 0 === strcasecmp( 'IGNORE', (string) $this->current()->value() );
+			if ( $ignore_duplicate ) {
+				++$this->position;
+			}
 			$this->word( 'INTO' );
 			$table = $this->identifier();
 			$columns = $this->identifier_list();
@@ -132,7 +141,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			$row = array_combine( $columns, $values );
 			return false === $row
 				? $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' )
-				: new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists );
+				: new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -510,7 +519,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 				}
 				if ( WP_Markdown_Native_Table_Index::duplicates( $index, $row, $definition, $schema ) ) {
-					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+					return $insert->ignores_duplicate()
+						? WP_Markdown_Query_Result::mutated( 0 )
+						: $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 				}
 				$appended = $this->append_row( $path, $row, 0 === $index['row_count'] );
 				if ( $appended instanceof WP_Markdown_Query_Result ) {
@@ -540,7 +551,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 			}
 			if ( $this->duplicates_unique_index( $row, $rows, $definition, $schema ) ) {
-				return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+				return $insert->ignores_duplicate()
+					? WP_Markdown_Query_Result::mutated( 0 )
+					: $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 			}
 			$rows[] = $row;
 			$written = $this->write( $path, $rows );

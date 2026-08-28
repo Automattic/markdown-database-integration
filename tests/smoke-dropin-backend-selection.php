@@ -48,6 +48,8 @@ if ( 2 === $argc ) {
 		'native/class-wp-markdown-native-table-providers.php',
 		'native/class-wp-markdown-native-option-mutations.php',
 		'native/class-wp-markdown-native-table-index.php',
+		'native/class-wp-markdown-native-table-statements.php',
+		'native/class-wp-markdown-native-table-insert-parser.php',
 		'native/class-wp-markdown-native-table-mutations.php',
 		'native/class-wp-markdown-native-post-mutations.php',
 		'native/class-wp-markdown-native-schema-introspection.php',

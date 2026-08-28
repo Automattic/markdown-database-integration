@@ -29,6 +29,7 @@ final class WP_Markdown_Native_SQL_Token {
 	public const QUOTED_IDENTIFIER = 'quoted_identifier';
 	public const STRING = 'string';
 	public const INTEGER = 'integer';
+	public const DECIMAL = 'decimal';
 	public const STAR = 'star';
 	public const COMMA = 'comma';
 	public const LEFT_PAREN = 'left_paren';
@@ -112,8 +113,16 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 				while ( $offset < $length && $sql[ $offset ] >= '0' && $sql[ $offset ] <= '9' ) {
 					++$offset;
 				}
+				$type = WP_Markdown_Native_SQL_Token::INTEGER;
+				if ( $offset + 1 < $length && '.' === $sql[ $offset ] && $sql[ $offset + 1 ] >= '0' && $sql[ $offset + 1 ] <= '9' ) {
+					++$offset;
+					while ( $offset < $length && $sql[ $offset ] >= '0' && $sql[ $offset ] <= '9' ) {
+						++$offset;
+					}
+					$type = WP_Markdown_Native_SQL_Token::DECIMAL;
+				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$tokens[] = new WP_Markdown_Native_SQL_Token( WP_Markdown_Native_SQL_Token::INTEGER, $lexeme, $lexeme, $start );
+				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );
 				continue;
 			}
 			if ( $this->is_identifier_start( $character ) ) {

@@ -257,7 +257,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 		$overlay = array( 'columns' => array(), 'natural_order' => $identity, 'order_columns' => $order_columns );
 		foreach ( $definition['columns'] as $name => $column ) {
 			$overlay['columns'][ $name ] = array(
-				'filter_operators' => self::is_integer( $column['type'] )
+				'filter_operators' => self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] )
 					? array( '=', 'IN', 'NOT IN', '<>' )
 					: ( in_array( $column['type'], array( 'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ? array( 'LIKE', 'NOT LIKE' ) : array() ),
 			);
@@ -335,6 +335,10 @@ final class WP_Markdown_Native_Schema_Catalog {
 
 	public static function is_integer( string $type ): bool {
 		return in_array( $type, array( 'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint' ), true );
+	}
+
+	public static function is_decimal( string $type ): bool {
+		return in_array( $type, array( 'float', 'double', 'real', 'decimal', 'numeric' ), true );
 	}
 
 	private static function field_type( string $type ): int {

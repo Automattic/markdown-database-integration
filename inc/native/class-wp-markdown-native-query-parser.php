@@ -78,7 +78,7 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 		if ( array() !== $joins ) {
 			$base_alias = $ast->alias()?->name();
-			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() || $ast->calculates_found_rows() ) {
+			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() ) {
 				return $this->failure( 'unsupported_join_shape', 'mdi-native supports retained bounded equality JOIN queries only.', $ast->table()->sql_offset() );
 			}
 			foreach ( $referenced_columns as $column ) {
@@ -221,18 +221,26 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$alias = null;
 		if ( $this->match_keyword( 'AS' ) ) {
 			$alias = $this->unqualified_identifier();
-		} elseif ( $this->matches_identifier() && ( $this->next_is_keyword( 'JOIN' ) || $this->next_is_keyword( 'INNER' ) ) ) {
+		} elseif ( $this->matches_identifier() && ( $this->next_is_keyword( 'JOIN' ) || $this->next_is_keyword( 'INNER' ) || $this->next_is_keyword( 'LEFT' ) ) ) {
 			$alias = $this->unqualified_identifier();
 		}
 		$joins = array();
 		while ( $this->match_join() ) {
 			$join_table = $this->unqualified_identifier();
 			$this->match_keyword( 'AS' );
-			$join_alias = $this->unqualified_identifier();
+			if ( $this->is_on() ) {
+				$join_alias = $join_table;
+			} else {
+				$join_alias = $this->unqualified_identifier();
+			}
 			$this->expect_keyword( 'ON' );
+			$wrapped = $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 			$left = $this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
 			$right = $this->identifier();
+			if ( $wrapped ) {
+				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			}
 			if ( null === $left->qualifier() || null === $right->qualifier() ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_join_shape',
@@ -241,6 +249,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				);
 			}
 			$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, $left, $right );
+		}
+		if ( null === $alias && array() !== $joins ) {
+			$alias = $table;
 		}
 		$predicates = array();
 		if ( $this->match_keyword( 'WHERE' ) ) {
@@ -266,6 +277,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 						$group->sql_offset(),
 						'mdi-native supports GROUP BY only as identity grouping of the selected column.'
 					);
+				}
+				if ( array() !== $joins ) {
+					$distinct = true;
 				}
 			}
 		}
@@ -306,11 +320,21 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'JOIN' ) ) {
 			return true;
 		}
-		if ( ! $this->match_keyword( 'INNER' ) ) {
+		if ( $this->match_keyword( 'INNER' ) ) {
+			$this->expect_keyword( 'JOIN' );
+			return true;
+		}
+		if ( ! $this->match_keyword( 'LEFT' ) ) {
 			return false;
 		}
+		$this->match_keyword( 'OUTER' );
 		$this->expect_keyword( 'JOIN' );
 		return true;
+	}
+
+	private function is_on(): bool {
+		return WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
+			&& 0 === strcasecmp( 'ON', (string) $this->current()->value() );
 	}
 
 	/**

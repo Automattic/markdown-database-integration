@@ -37,6 +37,7 @@ final class WP_Markdown_Native_SQL_Token {
 	public const EQUALS = 'equals';
 	public const NOT_EQUALS = 'not_equals';
 	public const DOT = 'dot';
+	public const PLUS = 'plus';
 	public const END = 'end';
 
 	public function __construct(
@@ -93,6 +94,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 				')' => WP_Markdown_Native_SQL_Token::RIGHT_PAREN,
 				'=' => WP_Markdown_Native_SQL_Token::EQUALS,
 				'.' => WP_Markdown_Native_SQL_Token::DOT,
+				'+' => WP_Markdown_Native_SQL_Token::PLUS,
 				default => null,
 			};
 			if ( null !== $punctuation ) {
@@ -131,7 +133,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 					++$offset;
 				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'LEFT', 'OUTER', 'JOIN', 'ON', 'WHERE', 'IN', 'LIKE', 'NOT', 'AND', 'OR', 'GROUP', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
+				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'LEFT', 'OUTER', 'JOIN', 'ON', 'WHERE', 'IN', 'LIKE', 'NOT', 'AND', 'OR', 'IS', 'NULL', 'GROUP', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
 					? WP_Markdown_Native_SQL_Token::KEYWORD
 					: WP_Markdown_Native_SQL_Token::WORD;
 				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );

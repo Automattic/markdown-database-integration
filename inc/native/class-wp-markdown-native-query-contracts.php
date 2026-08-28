@@ -68,13 +68,16 @@ final class WP_Markdown_Native_Query_Predicate {
 }
 
 final class WP_Markdown_Native_Query_Join {
+	/** @param array<int,WP_Markdown_Native_Query_Predicate> $on_filters */
 	public function __construct(
 		private readonly string $table,
 		private readonly string $alias,
 		private readonly string $left_source,
 		private readonly string $left_column,
 		private readonly string $right_source,
-		private readonly string $right_column
+		private readonly string $right_column,
+		private readonly bool $outer = false,
+		private readonly array $on_filters = array()
 	) {}
 
 	public function table(): string {
@@ -99,6 +102,15 @@ final class WP_Markdown_Native_Query_Join {
 
 	public function right_column(): string {
 		return $this->right_column;
+	}
+
+	public function is_outer(): bool {
+		return $this->outer;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
+	public function on_filters(): array {
+		return $this->on_filters;
 	}
 }
 

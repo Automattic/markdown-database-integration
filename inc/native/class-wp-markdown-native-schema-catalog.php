@@ -275,13 +275,17 @@ final class WP_Markdown_Native_Schema_Catalog {
 					$overlay['columns'][ $name ]['lookup_operators'] = array( '=', 'IN' );
 					continue;
 				}
-				if ( $unique && in_array( $type, array( 'char', 'varchar' ), true ) ) {
-					$overlay['columns'][ $name ]['lookup_operators']  = array( '=', 'IN' );
-					$overlay['columns'][ $name ]['filter_operators'] = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' );
-					$overlay['columns'][ $name ]['lookup_validator'] = static fn( array $values ): bool => array() === array_filter(
+				if ( in_array( $type, array( 'char', 'varchar' ), true ) ) {
+					$ascii = static fn( array $values ): bool => array() === array_filter(
 						$values,
 						static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )
 					);
+					$overlay['columns'][ $name ]['filter_operators'] = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' );
+					$overlay['columns'][ $name ]['filter_validator'] = $ascii;
+					if ( $unique ) {
+						$overlay['columns'][ $name ]['lookup_operators']  = array( '=', 'IN' );
+						$overlay['columns'][ $name ]['lookup_validator'] = $ascii;
+					}
 				}
 			}
 		}

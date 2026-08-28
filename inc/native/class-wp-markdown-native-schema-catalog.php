@@ -171,6 +171,18 @@ final class WP_Markdown_Native_Schema_Catalog {
 	public const SERVER_VERSION = '8.0.0-mdi-native';
 
 	/**
+	 * Report whether a table name belongs to WordPress core.
+	 *
+	 * A core table is identified by name because its definition varies
+	 * between WordPress releases while the canonical form it maps to does
+	 * not. Matching on the definition would let a core table created by a
+	 * different release be mistaken for a plugin's own table.
+	 */
+	public static function is_core_table( string $suffix ): bool {
+		return isset( self::definitions()[ $suffix ] ) || isset( self::definitions( true )[ $suffix ] );
+	}
+
+	/**
 	 * Report whether a compiled definition is one WordPress core generates.
 	 *
 	 * @param array<string,mixed> $definition

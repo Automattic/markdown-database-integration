@@ -482,6 +482,10 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$value = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
 			return new WP_Markdown_Native_SQL_Literal( $value, $token->sql_offset() );
 		}
+		if ( WP_Markdown_Native_SQL_Token::DECIMAL === $token->type() ) {
+			++$this->current;
+			return new WP_Markdown_Native_SQL_Literal( (string) $token->value(), $token->sql_offset() );
+		}
 		$this->unsupported( $token );
 	}
 

@@ -261,7 +261,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 
 	private function literal(): int|string|null {
 		$token = $this->current();
-		if ( WP_Markdown_Native_SQL_Token::STRING === $token->type() || WP_Markdown_Native_SQL_Token::INTEGER === $token->type() ) {
+		if ( WP_Markdown_Native_SQL_Token::STRING === $token->type() || WP_Markdown_Native_SQL_Token::INTEGER === $token->type() || WP_Markdown_Native_SQL_Token::DECIMAL === $token->type() ) {
 			++$this->position;
 			return (string) $token->value();
 		}
@@ -300,7 +300,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			if ( WP_Markdown_Native_SQL_Token::STRING === $token->type() ) {
 				$values[] = (string) $token->value();
 				++$this->position;
-			} elseif ( WP_Markdown_Native_SQL_Token::INTEGER === $token->type() ) {
+			} elseif ( WP_Markdown_Native_SQL_Token::INTEGER === $token->type() || WP_Markdown_Native_SQL_Token::DECIMAL === $token->type() ) {
 				$values[] = (string) $token->value();
 				++$this->position;
 			} elseif ( 0 === strcasecmp( 'NULL', (string) $token->value() ) ) {

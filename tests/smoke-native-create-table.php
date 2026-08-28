@@ -35,7 +35,11 @@ $created = $runtime->execute( new WP_Markdown_Query_Request( $ddl . ';' ) );
 $shown = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp_plugin_events'" ) );
 $described = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_plugin_events' ) );
 $indexed = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW INDEX FROM wp_plugin_events' ) );
-$unexecutable = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT event_key FROM wp_plugin_events' ) );
+$executable = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT event_key FROM wp_plugin_events' ) );
+$runtime->execute(
+	new WP_Markdown_Query_Request( 'CREATE TABLE wp_plugin_keyless (label varchar(64) NOT NULL, payload longtext DEFAULT NULL)' )
+);
+$unexecutable = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT label FROM wp_plugin_keyless' ) );
 $duplicate = $runtime->execute( new WP_Markdown_Query_Request( $ddl ) );
 $injected = $runtime->execute( new WP_Markdown_Query_Request( $ddl . '; DROP TABLE wp_options' ) );
 $reloaded = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_plugin_events' ) );
@@ -48,7 +52,8 @@ $checks = array(
 	'created tables are immediately visible through generic introspection' => 'wp_plugin_events' === ( $shown->wpdb_state()['last_result'][0]->Table ?? null )
 		&& array( 'event_key', 'owner_id', 'payload' ) === array_map( static fn( object $row ): string => $row->Field, $described->wpdb_state()['last_result'] )
 		&& array( 'PRIMARY', 'owner_id' ) === array_map( static fn( object $row ): string => $row->Key_name, $indexed->wpdb_state()['last_result'] ),
-	'introspection registration does not overstate unsupported table execution' => false === $unexecutable->return_value()
+	'an exact string primary key is executable while a keyless table is not' => 0 === $executable->return_value()
+		&& false === $unexecutable->return_value()
 		&& 'unsupported_table' === ( $unexecutable->diagnostic()['reason'] ?? null ),
 	'duplicate and multi-statement schema mutations fail closed without changing canonical state' => false === $duplicate->return_value()
 		&& 'table_exists' === ( $duplicate->diagnostic()['reason'] ?? null )

@@ -80,11 +80,11 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 
 	/** Identify the native engine without dereferencing wpdb's absent mysqli handle. */
 	public function db_server_info() {
-		return '0.0.0-mdi-native';
+		return WP_Markdown_Native_Schema_Catalog::SERVER_VERSION;
 	}
 
-	/** Advertise no MySQL-version-gated capabilities. */
+	/** Report the MySQL semantics the engine implements, from that same identity. */
 	public function db_version() {
-		return '0.0.0';
+		return (string) preg_replace( '/[^0-9.].*/', '', WP_Markdown_Native_Schema_Catalog::SERVER_VERSION );
 	}
 }

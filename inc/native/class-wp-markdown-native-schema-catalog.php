@@ -160,6 +160,31 @@ final class WP_Markdown_Native_Schema_Catalog {
 		return $artifact;
 	}
 
+	/**
+	 * The server identity the engine reports to WordPress.
+	 *
+	 * The numeric part states which MySQL semantics the engine implements,
+	 * which is what WordPress reads the version for: utf8mb4 storage and
+	 * modern collation behaviour are what canonical files actually provide.
+	 * The suffix keeps the engine identifiable as itself.
+	 */
+	public const SERVER_VERSION = '8.0.0-mdi-native';
+
+	/**
+	 * Report whether a compiled definition is one WordPress core generates.
+	 *
+	 * @param array<string,mixed> $definition
+	 */
+	public static function is_generated_core_definition( string $suffix, array $definition ): bool {
+		foreach ( array( false, true ) as $multisite ) {
+			$definitions = self::definitions( $multisite );
+			if ( isset( $definitions[ $suffix ] ) && $definitions[ $suffix ] === $definition ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
 	/** @return array<string,array<string,mixed>> */
 	public static function definitions( bool $multisite = false ): array {
 		$artifact = self::artifact();

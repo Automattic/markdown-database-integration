@@ -26,7 +26,7 @@ $database = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT DATABASE()
 $columns = array_map( static fn( object $column ): string => $column->name, $named->wpdb_state()['col_info'] );
 
 $checks = array(
-	'named variables report engine identity' => '0.0.0-mdi-native' === ( $variables['version'] ?? null )
+	'named variables report engine identity' => WP_Markdown_Native_Schema_Catalog::SERVER_VERSION === ( $variables['version'] ?? null )
 		&& array_key_exists( 'sql_mode', $variables ),
 	'a client/server tuning knob is absent rather than invented' => ! array_key_exists( 'max_allowed_packet', $variables ),
 	'LIKE selects matching variables' => array( 'character_set_server' ) === $liked_names,

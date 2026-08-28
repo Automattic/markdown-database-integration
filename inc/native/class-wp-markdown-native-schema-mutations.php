@@ -8,11 +8,17 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	private string $state_root;
 
+	/** @var null|callable(string):bool */
+	private $core_registrar;
+
+	/** @param null|callable(string):bool $core_registrar Registers a generated core table by suffix. */
 	public function __construct(
 		string $state_root,
 		private WP_Markdown_Native_Table_Registry $registry,
-		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
+		?callable $core_registrar = null
 	) {
+		$this->core_registrar = $core_registrar;
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
 			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
@@ -56,6 +62,16 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			return $tolerates_existing
 				? WP_Markdown_Query_Result::schema_changed()
 				: $this->failure( 'table_exists', 'mdi-native cannot create a table that already exists.' );
+		}
+
+		// A core table is generated from WordPress itself, so creating it
+		// registers its canonical provider rather than persisting a schema
+		// file that would shadow the definition core already supplies.
+		if ( WP_Markdown_Native_Schema_Catalog::is_generated_core_definition( $suffix, $definition ) ) {
+			if ( null === $this->core_registrar || true !== ( $this->core_registrar )( $suffix ) ) {
+				return $this->failure( 'unsupported_schema', 'mdi-native cannot create the requested core table.' );
+			}
+			return WP_Markdown_Query_Result::schema_changed();
 		}
 
 		$directory = $this->schema_directory();

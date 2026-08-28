@@ -100,14 +100,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		$pushdown = $this->pushdown( $predicates, $schema );
-		if ( array() !== $predicates && null === $pushdown ) {
-			$likes = array_filter(
-				$predicates,
-				fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $this->predicate_uses_like( $predicate )
-			);
-			if ( array() === $likes ) {
-				return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
-			}
+		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema ) ) {
+			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
 			if ( ! $schema->allows_order( $item['column'] ) ) {
@@ -464,6 +458,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$columns[] = array( 'name' => $column, 'table' => $sources[ $source ]['table'], 'type' => $sources[ $source ]['schema']->column( $column )->type() );
 		}
 		return WP_Markdown_Query_Result::selected( $selected_rows, $columns );
+	}
+
+	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+		foreach ( $predicates as $predicate ) {
+			if ( $this->predicate_uses_like( $predicate ) ) {
+				continue;
+			}
+			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'NOT IN', '<>' ), true ) ) {
+				return false;
+			}
+			$type = $schema->column( $predicate->column() )->type();
+			if ( ! in_array( $type, array( 1, 2, 3, 4, 5, 8, 9, 246 ), true ) ) {
+				return false;
+			}
+		}
+		return array() !== $predicates;
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */

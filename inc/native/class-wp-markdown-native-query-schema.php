@@ -384,6 +384,16 @@ final class WP_Markdown_Native_Table_Registry {
 		}
 	}
 
+	/**
+	 * Forget a dropped table.
+	 *
+	 * Registration is otherwise append-only. A persisted DROP is the one
+	 * lifecycle event that legitimately removes a table from the catalog.
+	 */
+	public function unregister( string $table ): void {
+		unset( $this->tables[ $table ], $this->definitions[ $table ] );
+	}
+
 	/** @return array<int,string> */
 	public function table_names(): array {
 		return array_keys( $this->definitions );

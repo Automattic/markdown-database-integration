@@ -51,7 +51,7 @@ file_put_contents( $root . '/_schema/no_identity.sql', 'CREATE TABLE wp_no_ident
 file_put_contents( $root . '/_tables/no_identity.json', '[{"value":1}]' );
 file_put_contents( $root . '/_schema/composite.sql', 'CREATE TABLE wp_composite (left_id bigint(20) unsigned NOT NULL, right_id bigint(20) unsigned NOT NULL, PRIMARY KEY (left_id,right_id));' );
 file_put_contents( $root . '/_tables/composite.json', '[{"left_id":3,"right_id":"9"},{"left_id":"3","right_id":7}]' );
-file_put_contents( $root . '/_schema/unsupported.sql', "CREATE TABLE wp_unsupported (id bigint(20) unsigned NOT NULL, state enum('open','done') NOT NULL, PRIMARY KEY (id));" );
+file_put_contents( $root . '/_schema/unsupported.sql', 'CREATE TABLE wp_unsupported (id bigint(20) unsigned NOT NULL, region geometry NOT NULL, PRIMARY KEY (id));' );
 file_put_contents( $root . '/_schema/mismatch.sql', 'CREATE TABLE wp_different_name (id bigint(20) unsigned NOT NULL, PRIMARY KEY (id));' );
 file_put_contents( $root . '/_schema/malformed.sql', 'not ddl' );
 file_put_contents( $root . '/_schema/inline_items.sql', "CREATE TABLE wp_inline_items (\n id INTEGER PRIMARY KEY,\n value TEXT NOT NULL\n);" );

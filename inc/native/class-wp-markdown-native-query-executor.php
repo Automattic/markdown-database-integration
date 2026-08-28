@@ -249,10 +249,19 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			$needed[ $join->left_source() ][] = $join->left_column();
 			$needed[ $join->right_source() ][] = $join->right_column();
+			foreach ( $join->on_filters() as $filter ) {
+				$filter_source = $filter->source();
+				if ( null === $filter_source || ! isset( $sources[ $filter_source ] ) || ! $this->supports_predicate( $sources[ $filter_source ]['schema'], $filter ) ) {
+					return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN ON predicate.' );
+				}
+				$needed[ $filter_source ][] = $filter->column();
+			}
 		}
 		foreach ( $plan->order_by() as $item ) {
 			$order_source = $item['source'] ?? $plan->order_source();
-			if ( null === $order_source || ! isset( $sources[ $order_source ] ) || ! $sources[ $order_source ]['schema']->allows_order( $item['column'] ) ) {
+			$numeric = true === ( $item['numeric'] ?? false );
+			if ( null === $order_source || ! isset( $sources[ $order_source ] )
+				|| ( $numeric ? ! $sources[ $order_source ]['schema']->has_column( $item['column'] ) : ! $sources[ $order_source ]['schema']->allows_order( $item['column'] ) ) ) {
 				return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN ordering collation.' );
 			}
 			$needed[ $order_source ][] = $item['column'];
@@ -357,7 +366,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( ! is_array( $target_row ) || true !== $target['schema']->validate_projection( $target_row, $needed[ $target_source ] ) ) {
 					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
 				}
-				if ( ! $this->matches( $target_row, $predicates[ $target_source ], $target['schema'] ) ) {
+				if ( ! $this->matches( $target_row, array_merge( $predicates[ $target_source ], $join->on_filters() ), $target['schema'] ) ) {
 					continue;
 				}
 				$key = $target['schema']->value_key( $target_column, $target_row[ $target_column ] );
@@ -367,10 +376,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$target_rows[ $key ][] = $target_row;
 			}
 			$joined = array();
+			$null_row = array_fill_keys( $needed[ $target_source ], null );
 			foreach ( $rows as $row ) {
 				$value = $row[ $known_source ][ $known_column ];
 				$key = $target['schema']->value_key( $target_column, $value );
-				foreach ( null === $key ? array() : ( $target_rows[ $key ] ?? array() ) as $target_row ) {
+				$matched = null === $key ? array() : ( $target_rows[ $key ] ?? array() );
+				if ( array() === $matched && $join->is_outer() ) {
+					$row[ $target_source ] = $null_row;
+					$joined[] = $row;
+					continue;
+				}
+				foreach ( $matched as $target_row ) {
 					$row[ $target_source ] = $target_row;
 					$joined[] = $row;
 				}
@@ -381,6 +397,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 		if ( array() !== $plan->order_by() ) {
 			foreach ( $plan->order_by() as $item ) {
+				if ( true === ( $item['numeric'] ?? false ) ) {
+					continue;
+				}
 				$order_source = (string) ( $item['source'] ?? $plan->order_source() );
 				$extracted = array_map( static fn( array $row ): array => $row[ $order_source ], $rows );
 				if ( null !== $sources[ $order_source ]['schema']->unsupported_order_reason( array( $item ), $extracted ) ) {
@@ -392,7 +411,24 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				function ( array $left, array $right ) use ( $plan, $sources ): int {
 					foreach ( $plan->order_by() as $item ) {
 						$source = (string) ( $item['source'] ?? $plan->order_source() );
-						$comparison = ( $item['descending'] ? -1 : 1 ) * $sources[ $source ]['schema']->compare_rows( $item['column'], $left[ $source ], $right[ $source ] );
+						$column = $item['column'];
+						$left_value = $left[ $source ][ $column ] ?? null;
+						$right_value = $right[ $source ][ $column ] ?? null;
+						if ( true === ( $item['numeric'] ?? false ) ) {
+							if ( null === $left_value && null === $right_value ) {
+								continue;
+							}
+							if ( null === $left_value ) {
+								return $item['descending'] ? 1 : -1;
+							}
+							if ( null === $right_value ) {
+								return $item['descending'] ? -1 : 1;
+							}
+							$comparison = ( (float) $left_value ) <=> ( (float) $right_value );
+						} else {
+							$comparison = $sources[ $source ]['schema']->compare_rows( $column, $left[ $source ], $right[ $source ] );
+						}
+						$comparison = ( $item['descending'] ? -1 : 1 ) * $comparison;
 						if ( 0 !== $comparison ) {
 							return $comparison;
 						}
@@ -458,6 +494,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			return array() !== $predicate->any();
 		}
+		if ( 'IS NULL' === $predicate->operator() ) {
+			return $schema->has_column( $predicate->column() );
+		}
 		return $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
 			|| $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() );
 	}
@@ -501,6 +540,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}
 			}
 			return false;
+		}
+		if ( 'IS NULL' === $predicate->operator() ) {
+			return null === ( $row[ $predicate->column() ] ?? null );
 		}
 		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
 		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {

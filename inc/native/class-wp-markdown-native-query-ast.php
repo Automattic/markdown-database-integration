@@ -69,11 +69,14 @@ final class WP_Markdown_Native_SQL_Predicate {
 }
 
 final class WP_Markdown_Native_SQL_Join {
+	/** @param array<int,WP_Markdown_Native_SQL_Predicate> $on_predicates */
 	public function __construct(
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
 		private readonly WP_Markdown_Native_SQL_Identifier $alias,
 		private readonly WP_Markdown_Native_SQL_Identifier $left,
-		private readonly WP_Markdown_Native_SQL_Identifier $right
+		private readonly WP_Markdown_Native_SQL_Identifier $right,
+		private readonly bool $outer = false,
+		private readonly array $on_predicates = array()
 	) {}
 
 	public function table(): WP_Markdown_Native_SQL_Identifier {
@@ -90,6 +93,15 @@ final class WP_Markdown_Native_SQL_Join {
 
 	public function right(): WP_Markdown_Native_SQL_Identifier {
 		return $this->right;
+	}
+
+	public function is_outer(): bool {
+		return $this->outer;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
+	public function on_predicates(): array {
+		return $this->on_predicates;
 	}
 }
 

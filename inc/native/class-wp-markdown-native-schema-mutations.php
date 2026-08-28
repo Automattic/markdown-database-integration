@@ -31,6 +31,9 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		if ( 1 === preg_match( '/^\s*ALTER\s+TABLE\b/i', $sql ) ) {
 			return $this->execute_alter( $request, $sql );
 		}
+		if ( 1 === preg_match( '/^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b/i', $sql ) ) {
+			return $this->execute_create_index( $request, $sql );
+		}
 
 		try {
 			$definitions = WP_Markdown_Native_Schema_Catalog::compile( $sql, array( $request->table_prefix() ) );
@@ -185,6 +188,23 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	private function execute_create_index( WP_Markdown_Query_Request $request, string $sql ): WP_Markdown_Query_Result {
+		if ( 1 !== preg_match( '/^\s*CREATE\s+(UNIQUE\s+)?INDEX\s+`?([A-Za-z0-9_]+)`?\s+ON\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)\s*$/is', $sql, $matched ) ) {
+			return $this->failure( 'unsupported_schema', 'mdi-native supports one bounded CREATE INDEX statement.' );
+		}
+		$unique = '' !== trim( (string) $matched[1] );
+		$name = $matched[2];
+		$table = $matched[3];
+		$columns = $matched[4];
+		$prefix = $request->table_prefix();
+		if ( ! str_starts_with( $table, $prefix ) ) {
+			return $this->failure( 'unsupported_schema', 'mdi-native requires a table in the active prefix.' );
+		}
+		$suffix = substr( $table, strlen( $prefix ) );
+		$action = ( $unique ? 'ADD UNIQUE INDEX ' : 'ADD INDEX ' ) . '`' . $name . '` (' . $columns . ')';
+		return $this->execute_add_index( $table, $suffix, $action );
 	}
 
 	private function execute_add_index( string $table, string $suffix, string $action ): WP_Markdown_Query_Result {

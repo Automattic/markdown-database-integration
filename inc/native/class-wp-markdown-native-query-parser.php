@@ -134,7 +134,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->is_distinct(),
 			$ast->order()?->qualifier(),
 			$order_by,
-			$ast->is_contradiction()
+			$ast->is_contradiction(),
+			$ast->group_count_alias()
 		);
 	}
 
@@ -212,6 +213,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$distinct = $this->match_keyword( 'DISTINCT' );
 		$select_all = $this->match_type( WP_Markdown_Native_SQL_Token::STAR );
 		$count_all = false;
+		$group_count_alias = null;
 		$projection = array();
 		if ( ! $select_all && $this->matches_function( 'COUNT' ) ) {
 			$count_all = true;
@@ -222,6 +224,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		} elseif ( ! $select_all ) {
 			$projection[] = $this->identifier();
 			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				if ( $this->matches_function( 'COUNT' ) ) {
+					$this->identifier();
+					$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+					$this->expect_type( WP_Markdown_Native_SQL_Token::STAR );
+					$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+					$this->expect_keyword( 'AS' );
+					$group_count_alias = $this->unqualified_identifier()->name();
+					break;
+				}
 				$projection[] = $this->identifier();
 			}
 		}
@@ -271,8 +282,12 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'WHERE' ) ) {
 			$predicates = $this->disjunction();
 		}
-		if ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
-			&& 0 === strcasecmp( 'GROUP', (string) $this->current()->value() ) ) {
+		$grouped = WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
+			&& 0 === strcasecmp( 'GROUP', (string) $this->current()->value() );
+		if ( null !== $group_count_alias && ( ! $grouped || array() !== $joins ) ) {
+			$this->unsupported( $this->current() );
+		}
+		if ( $grouped ) {
 			if ( $count_all || $select_all || $distinct ) {
 				$this->unsupported( $this->current() );
 			}
@@ -333,7 +348,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group_count_alias );
 	}
 
 	private function match_join_kind(): ?string {

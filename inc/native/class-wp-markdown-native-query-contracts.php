@@ -134,7 +134,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly bool $distinct = false,
 		private readonly ?string $order_source = null,
 		private readonly array $order_by = array(),
-		private readonly bool $unsatisfiable = false
+		private readonly bool $unsatisfiable = false,
+		private readonly ?string $group_count_alias = null
 	) {}
 
 	public function table(): string {
@@ -220,6 +221,10 @@ final class WP_Markdown_Native_Query_Plan {
 
 	public function is_unsatisfiable(): bool {
 		return $this->unsatisfiable;
+	}
+
+	public function group_count_alias(): ?string {
+		return $this->group_count_alias;
 	}
 }
 

@@ -255,6 +255,17 @@ final class WP_Markdown_Native_Schema_Catalog {
 			}
 		}
 
+		// An index exists to order and seek on its columns, so every indexed
+		// column is orderable. Textual ordering still validates ASCII at read
+		// time, so an unexpected collation fails closed rather than guessing.
+		foreach ( $definition['indexes'] as $index ) {
+			foreach ( $index['columns'] as $index_column ) {
+				$name = $index_column['name'] ?? '';
+				if ( '' !== $name && isset( $definition['columns'][ $name ] ) && ! in_array( $name, $order_columns, true ) ) {
+					$order_columns[] = $name;
+				}
+			}
+		}
 		$overlay = array( 'columns' => array(), 'natural_order' => $identity, 'order_columns' => $order_columns );
 		foreach ( $definition['columns'] as $name => $column ) {
 			$overlay['columns'][ $name ] = array(

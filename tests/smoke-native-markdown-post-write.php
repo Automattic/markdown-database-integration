@@ -41,6 +41,14 @@ $after_update = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT post_t
 $delete = $runtime->execute( new WP_Markdown_Query_Request( 'DELETE FROM wp_posts WHERE ID = 1', 'wp_' ) );
 $after_delete = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID = 1', 'wp_' ) );
 $files_after_delete = $markdown_files( $content );
+$wp_insert = $runtime->execute(
+	new WP_Markdown_Query_Request(
+		"INSERT INTO `wp_posts` (`post_author`, `post_date`, `post_date_gmt`, `post_content`, `post_content_filtered`, `post_title`, `post_excerpt`, `post_status`, `post_type`, `comment_status`, `ping_status`, `post_password`, `post_name`, `to_ping`, `pinged`, `post_modified`, `post_modified_gmt`, `post_parent`, `menu_order`, `post_mime_type`, `guid`) VALUES (1, '2026-08-28 00:03:38', '2026-08-28 00:03:38', 'Written by native wp_insert_post.', '', 'Native Save Probe', '', 'publish', 'post', 'open', 'open', '', 'native-save-probe', '', '', '2026-08-28 00:03:38', '2026-08-28 00:03:38', 0, 0, '', '')",
+		'wp_'
+	)
+);
+$wp_id = (int) $wp_insert->wpdb_state()['insert_id'];
+$wp_read = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT post_title, comment_count FROM wp_posts WHERE ID = ' . $wp_id, 'wp_' ) );
 
 $checks = array(
 	'an INSERT assigns an identity and writes markdown' => 1 === $insert->return_value()
@@ -54,6 +62,10 @@ $checks = array(
 	'a DELETE removes the canonical file' => 1 === $delete->return_value()
 		&& 0 === $after_delete->return_value()
 		&& array() === $files_after_delete,
+	'a WordPress wp_insert_post row fills integer defaults' => 1 === $wp_insert->return_value()
+		&& $wp_id > 0
+		&& 'Native Save Probe' === ( $wp_read->wpdb_state()['last_result'][0]->post_title ?? null )
+		&& '0' === (string) ( $wp_read->wpdb_state()['last_result'][0]->comment_count ?? '' ),
 );
 
 $failed = false;

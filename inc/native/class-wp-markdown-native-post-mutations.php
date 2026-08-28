@@ -35,8 +35,9 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		if ( $row instanceof WP_Markdown_Query_Result ) {
 			return $row;
 		}
-		if ( true !== $schema->validate_row( $row ) ) {
-			return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the wp_posts schema.' );
+		$valid = $schema->validate_row( $row );
+		if ( true !== $valid ) {
+			return $this->failure( 'invalid_insert_row', is_string( $valid ) ? $valid : 'The INSERT row is outside the wp_posts schema.' );
 		}
 		if ( false === $this->storage->write_post( (object) $row, true ) ) {
 			return $this->failure( 'post_write_failed', 'The canonical Markdown post could not be written.' );
@@ -139,9 +140,10 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 			}
 			$default = $column['default'] ?? null;
 			if ( null !== $default ) {
-				$row[ $name ] = 1 === preg_match( '/^(?:CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME)(?:\(\))?$/i', (string) $default )
+				$value = 1 === preg_match( '/^(?:CURRENT_TIMESTAMP|CURRENT_DATE|CURRENT_TIME)(?:\(\))?$/i', (string) $default )
 					? gmdate( 'Y-m-d H:i:s' )
-					: (string) $default;
+					: $default;
+				$row[ $name ] = $this->typed_value( $value, $column );
 				continue;
 			}
 			if ( true === ( $column['nullable'] ?? false ) ) {

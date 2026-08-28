@@ -69,7 +69,11 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
-			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+			try {
+				$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+			} catch ( InvalidArgumentException ) {
+				return $this->failure( 'unsupported_schema', 'mdi-native cannot compile the requested table definition.' );
+			}
 			if ( null === $schema ) {
 				$this->registry->register_definition( $table, $definition );
 			} else {
@@ -106,6 +110,10 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		$suffix = substr( $table, strlen( $prefix ) );
 		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $suffix ) || null === $this->registry->definition( $table ) ) {
 			return $this->failure( 'unknown_table', 'mdi-native cannot alter a table it does not persist.' );
+		}
+
+		if ( 1 === preg_match( '/^ADD\s+(?:UNIQUE\s+)?(?:INDEX|KEY)\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)$/is', $action ) ) {
+			return $this->execute_add_index( $table, $suffix, $action );
 		}
 
 		if ( 1 === preg_match( '/^(MODIFY|ADD|DROP)\s+(?:COLUMN\s+)?`?([A-Za-z_][A-Za-z0-9_]*)`?\s*(.*)$/is', $action, $parts ) ) {
@@ -151,7 +159,11 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				return $this->failure( 'unsupported_schema', 'The altered table definition did not resolve to one prefixed table.' );
 			}
 			$definition = $definitions[ $suffix ];
-			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+			try {
+				$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+			} catch ( InvalidArgumentException ) {
+				return $this->failure( 'unsupported_schema', 'The altered table definition could not be compiled.' );
+			}
 
 			$reconciled = $this->reconcile_rows( $suffix, $operation, $column, $schema );
 			if ( $reconciled instanceof WP_Markdown_Query_Result ) {
@@ -173,6 +185,129 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	private function execute_add_index( string $table, string $suffix, string $action ): WP_Markdown_Query_Result {
+		if ( 1 !== preg_match( '/^ADD\s+(UNIQUE\s+)?(?:INDEX|KEY)\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)$/is', $action, $matched ) ) {
+			return $this->failure( 'unsupported_schema', 'mdi-native supports bounded ADD INDEX statements.' );
+		}
+		$unique = '' !== trim( (string) $matched[1] );
+		$name = $matched[2];
+		$index_columns = array();
+		foreach ( explode( ',', $matched[3] ) as $column ) {
+			if ( ! preg_match( '/^\s*`?([A-Za-z0-9_]+)`?(?:\(([0-9]+)\))?\s*$/', $column, $part ) ) {
+				return $this->failure( 'unsupported_schema', 'mdi-native cannot add an unsupported index expression.' );
+			}
+			$index_columns[] = array(
+				'name'   => $part[1],
+				'length' => isset( $part[2] ) ? (int) $part[2] : null,
+			);
+		}
+		$definition = $this->registry->definition( $table );
+		if ( ! is_array( $definition ) ) {
+			return $this->failure( 'unknown_table', 'mdi-native cannot alter a table it does not persist.' );
+		}
+		foreach ( $index_columns as $column ) {
+			if ( ! isset( $definition['columns'][ $column['name'] ] ) ) {
+				return $this->failure( 'unknown_column', 'mdi-native cannot index a column the table does not define.' );
+			}
+		}
+		foreach ( $definition['indexes'] as $index ) {
+			if ( 0 === strcasecmp( (string) $index['name'], $name ) ) {
+				return WP_Markdown_Query_Result::schema_changed();
+			}
+		}
+		$definition['indexes'][] = array(
+			'name'    => $name,
+			'unique'  => $unique,
+			'columns' => $index_columns,
+		);
+
+		$directory = $this->schema_directory();
+		if ( $directory instanceof WP_Markdown_Query_Result ) {
+			return $directory;
+		}
+		$lock = @fopen( $directory . '/.mdi-native.lock', 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			return $this->failure( 'mutation_lock_failed', 'The canonical schema mutation lock could not be acquired.' );
+		}
+
+		try {
+			$path = $directory . '/' . $suffix . '.sql';
+			if ( is_file( $path ) && ! is_link( $path ) ) {
+				$persisted = (string) file_get_contents( $path );
+				$rewritten = $this->append_index( $persisted, $unique, $name, $index_columns );
+				if ( $rewritten instanceof WP_Markdown_Query_Result ) {
+					return $rewritten;
+				}
+				try {
+					$compiled = WP_Markdown_Native_Schema_Catalog::compile( $rewritten, array( $this->table_prefix_from( $table, $suffix ) ) );
+				} catch ( InvalidArgumentException ) {
+					return $this->failure( 'unsupported_schema', 'The altered table definition could not be compiled.' );
+				}
+				if ( array( $suffix ) !== array_keys( $compiled ) ) {
+					return $this->failure( 'unsupported_schema', 'The altered table definition did not resolve to one prefixed table.' );
+				}
+				$definition = $compiled[ $suffix ];
+				try {
+					$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+				} catch ( InvalidArgumentException ) {
+					return $this->failure( 'unsupported_schema', 'The altered table definition could not be compiled.' );
+				}
+				$written = $this->write( $path, $rewritten );
+				if ( $written instanceof WP_Markdown_Query_Result ) {
+					return $written;
+				}
+				$this->registry->reregister(
+					$table,
+					$schema,
+					null === $schema ? null : new WP_Markdown_Native_JSON_Snapshot_Provider( $this->state_root, $schema, $suffix . '.json' ),
+					$definition
+				);
+				return WP_Markdown_Query_Result::schema_changed();
+			}
+
+			$existing = $this->registry->table( $table );
+			$this->registry->reregister(
+				$table,
+				$existing['schema'] ?? null,
+				$existing['provider'] ?? null,
+				$definition
+			);
+			return WP_Markdown_Query_Result::schema_changed();
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/** @param array<int,array{name:string,length:int|null}> $index_columns */
+	private function append_index( string $persisted, bool $unique, string $name, array $index_columns ): string|WP_Markdown_Query_Result {
+		if ( 1 !== preg_match( '/CREATE\s+TABLE\s+`?[A-Za-z0-9_]+`?\s*\(/is', $persisted, $header, PREG_OFFSET_CAPTURE ) ) {
+			return $this->failure( 'unsupported_schema', 'The persisted table definition could not be parsed.' );
+		}
+		$open = $header[0][1] + strlen( $header[0][0] );
+		$close = $this->matching_paren( $persisted, $open - 1 );
+		if ( null === $close ) {
+			return $this->failure( 'unsupported_schema', 'The persisted table definition is unbalanced.' );
+		}
+		$entries = $this->split_entries( substr( $persisted, $open, $close - $open ) );
+		$columns = implode(
+			', ',
+			array_map(
+				static fn( array $column ): string => '`' . $column['name'] . '`' . ( null === $column['length'] ? '' : '(' . $column['length'] . ')' ),
+				$index_columns
+			)
+		);
+		$entries[] = ( $unique ? 'UNIQUE KEY' : 'KEY' ) . ' `' . $name . '` (' . $columns . ')';
+		return substr( $persisted, 0, $open ) . "\n\t" . implode( ",\n\t", $entries ) . "\n" . substr( $persisted, $close );
+	}
+
+	private function table_prefix_from( string $table, string $suffix ): string {
+		return substr( $table, 0, strlen( $table ) - strlen( $suffix ) );
 	}
 
 	/** Rewrite the persisted CREATE TABLE body for one column alteration. */

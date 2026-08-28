@@ -6,10 +6,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class WP_Markdown_Native_Schema_Query {
+	/** @param array<string,string> $predicates */
 	public function __construct(
 		private readonly string $operation,
 		private readonly ?string $table = null,
-		private readonly ?string $pattern = null
+		private readonly ?string $pattern = null,
+		private readonly array $predicates = array()
 	) {}
 
 	public function operation(): string {
@@ -22,6 +24,11 @@ final class WP_Markdown_Native_Schema_Query {
 
 	public function pattern(): ?string {
 		return $this->pattern;
+	}
+
+	/** @return array<string,string> */
+	public function predicates(): array {
+		return $this->predicates;
 	}
 }
 
@@ -50,8 +57,26 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 				return new WP_Markdown_Native_Schema_Query( 'tables', null, $pattern );
 			}
 
-			$operation = $this->is_word( 'COLUMNS' ) ? 'columns' : 'indexes';
-			$this->word( 'columns' === $operation ? 'COLUMNS' : 'INDEX' );
+			if ( $this->is_word( 'COLUMNS' ) ) {
+				$this->word( 'COLUMNS' );
+				$this->word( 'FROM' );
+				$table = $this->identifier();
+				$pattern = null;
+				if ( $this->is_word( 'LIKE' ) ) {
+					$this->word( 'LIKE' );
+					$pattern = $this->string();
+				}
+				$this->end();
+				return new WP_Markdown_Native_Schema_Query( 'columns', $table, $pattern );
+			}
+
+			if ( $this->is_word( 'INDEX' ) ) {
+				$this->word( 'INDEX' );
+			} elseif ( $this->is_word( 'KEYS' ) ) {
+				$this->word( 'KEYS' );
+			} else {
+				$this->word( 'KEY' );
+			}
 			$this->word( 'FROM' );
 			$table = $this->identifier();
 			$pattern = null;
@@ -59,8 +84,13 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 				$this->word( 'LIKE' );
 				$pattern = $this->string();
 			}
+			$predicates = array();
+			if ( $this->is_word( 'WHERE' ) ) {
+				$this->word( 'WHERE' );
+				$predicates = $this->index_predicates();
+			}
 			$this->end();
-			return new WP_Markdown_Native_Schema_Query( $operation, $table, $pattern );
+			return new WP_Markdown_Native_Schema_Query( 'indexes', $table, $pattern, $predicates );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -71,6 +101,28 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 				)
 			);
 		}
+	}
+
+	/** @return array<string,string> */
+	private function index_predicates(): array {
+		$predicates = array();
+		do {
+			$column = strtolower( $this->identifier() );
+			if ( ! in_array( $column, array( 'key_name', 'column_name' ), true ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'Expected Key_name or Column_name.' );
+			}
+			$token = $this->current();
+			if ( WP_Markdown_Native_SQL_Token::EQUALS !== $token->type() ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $token->sql_offset(), 'Expected = in SHOW INDEX WHERE.' );
+			}
+			++$this->position;
+			$predicates[ $column ] = $this->string();
+			if ( ! $this->is_word( 'AND' ) ) {
+				break;
+			}
+			$this->word( 'AND' );
+		} while ( true );
+		return $predicates;
 	}
 
 	private function identifier(): string {
@@ -136,7 +188,7 @@ final class WP_Markdown_Native_Schema_Introspection {
 		}
 		return 'columns' === $query->operation()
 			? $this->columns( (string) $query->table(), $definition, $query->pattern() )
-			: $this->indexes( (string) $query->table(), $definition );
+			: $this->indexes( (string) $query->table(), $definition, $query->predicates() );
 	}
 
 	private function tables( string $pattern ): WP_Markdown_Query_Result {
@@ -169,12 +221,15 @@ final class WP_Markdown_Native_Schema_Introspection {
 		return WP_Markdown_Query_Result::selected( $rows, $this->metadata( array( 'Field', 'Type', 'Null', 'Key', 'Default', 'Extra' ), $table ) );
 	}
 
-	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition */
-	private function indexes( string $table, array $definition ): WP_Markdown_Query_Result {
+	/**
+	 * @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition
+	 * @param array<string,string> $predicates
+	 */
+	private function indexes( string $table, array $definition, array $predicates ): WP_Markdown_Query_Result {
 		$rows = array();
 		foreach ( $definition['indexes'] as $index ) {
 			foreach ( $index['columns'] as $offset => $column ) {
-				$rows[] = array(
+				$row = array(
 					'Table'        => $table,
 					'Non_unique'   => $index['unique'] ? '0' : '1',
 					'Key_name'     => $index['name'],
@@ -183,6 +238,13 @@ final class WP_Markdown_Native_Schema_Introspection {
 					'Sub_part'     => null === $column['length'] ? null : (string) $column['length'],
 					'Index_type'   => 'BTREE',
 				);
+				if ( isset( $predicates['key_name'] ) && 0 !== strcasecmp( (string) $row['Key_name'], $predicates['key_name'] ) ) {
+					continue;
+				}
+				if ( isset( $predicates['column_name'] ) && 0 !== strcasecmp( (string) $row['Column_name'], $predicates['column_name'] ) ) {
+					continue;
+				}
+				$rows[] = $row;
 			}
 		}
 		return WP_Markdown_Query_Result::selected( $rows, $this->metadata( array( 'Table', 'Non_unique', 'Key_name', 'Seq_in_index', 'Column_name', 'Sub_part', 'Index_type' ), $table ) );

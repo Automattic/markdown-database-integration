@@ -109,7 +109,8 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly array $joins = array(),
 		private readonly bool $calculates_found_rows = false,
 		private readonly int $limit_offset = 0,
-		private readonly bool $distinct = false
+		private readonly bool $distinct = false,
+		private readonly bool $contradiction = false
 	) {}
 
 	public function selects_all(): bool {
@@ -174,5 +175,9 @@ final class WP_Markdown_Native_SQL_Select {
 
 	public function is_distinct(): bool {
 		return $this->distinct;
+	}
+
+	public function is_contradiction(): bool {
+		return $this->contradiction;
 	}
 }

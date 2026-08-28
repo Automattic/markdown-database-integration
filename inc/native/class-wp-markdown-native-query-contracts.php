@@ -121,7 +121,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly int $limit_offset = 0,
 		private readonly bool $distinct = false,
 		private readonly ?string $order_source = null,
-		private readonly array $order_by = array()
+		private readonly array $order_by = array(),
+		private readonly bool $unsatisfiable = false
 	) {}
 
 	public function table(): string {
@@ -203,6 +204,10 @@ final class WP_Markdown_Native_Query_Plan {
 				'source'     => $this->order_source,
 			),
 		);
+	}
+
+	public function is_unsatisfiable(): bool {
+		return $this->unsatisfiable;
 	}
 }
 

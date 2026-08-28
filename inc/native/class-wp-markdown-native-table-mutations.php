@@ -6,10 +6,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class WP_Markdown_Native_Table_Insert {
-	/** @param array<string,int|string|null> $values */
+	/**
+	 * @param array<string,int|string|null> $values
+	 * @param array<int,WP_Markdown_Native_Table_Predicate>|null $unless_exists
+	 */
 	public function __construct(
 		private readonly string $table,
-		private readonly array $values
+		private readonly array $values,
+		private readonly ?array $unless_exists = null
 	) {}
 
 	public function table(): string {
@@ -19,6 +23,11 @@ final class WP_Markdown_Native_Table_Insert {
 	/** @return array<string,int|string|null> */
 	public function values(): array {
 		return $this->values;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Table_Predicate>|null */
+	public function unless_exists(): ?array {
+		return $this->unless_exists;
 	}
 }
 
@@ -105,8 +114,17 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			$this->word( 'INTO' );
 			$table = $this->identifier();
 			$columns = $this->identifier_list();
-			$this->word( 'VALUES' );
-			$values = $this->literal_list();
+			if ( 0 === strcasecmp( 'SELECT', (string) $this->current()->value() ) ) {
+				$this->word( 'SELECT' );
+				$values = $this->select_literals();
+				$this->word( 'FROM' );
+				$this->word( 'DUAL' );
+				$unless_exists = $this->dual_absent_predicates( $table );
+			} else {
+				$this->word( 'VALUES' );
+				$values = $this->literal_list();
+				$unless_exists = null;
+			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
 			if ( count( $columns ) !== count( $values ) ) {
 				return $this->failure( 'invalid_insert_row', 'mdi-native requires one value for every INSERT column.' );
@@ -114,7 +132,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			$row = array_combine( $columns, $values );
 			return false === $row
 				? $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' )
-				: new WP_Markdown_Native_Table_Insert( $table, $row );
+				: new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -292,6 +310,50 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 	}
 
 	/** @return array<int,int|string|null> */
+	private function select_literals(): array {
+		$values = array();
+		do {
+			$values[] = $this->literal();
+			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
+				break;
+			}
+			++$this->position;
+		} while ( true );
+		return $values;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Table_Predicate>|null */
+	private function dual_absent_predicates( string $table ): ?array {
+		$this->word( 'WHERE' );
+		$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$this->word( 'SELECT' );
+		if ( 0 === strcasecmp( 'NULL', (string) $this->current()->value() ) ) {
+			$this->word( 'NULL' );
+			$this->word( 'FROM' );
+			$this->word( 'DUAL' );
+			$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			$this->word( 'IS' );
+			$this->word( 'NULL' );
+			return null;
+		}
+		$this->identifier();
+		$this->word( 'FROM' );
+		$from = $this->identifier();
+		if ( 0 !== strcasecmp( $from, $table ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'INSERT SELECT FROM DUAL can only absent-check the target table.' );
+		}
+		$predicates = $this->where_predicates();
+		if ( 0 === strcasecmp( 'LIMIT', (string) $this->current()->value() ) ) {
+			$this->word( 'LIMIT' );
+			$this->type( WP_Markdown_Native_SQL_Token::INTEGER );
+		}
+		$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		$this->word( 'IS' );
+		$this->word( 'NULL' );
+		return $predicates;
+	}
+
+	/** @return array<int,int|string|null> */
 	private function literal_list(): array {
 		$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 		$values = array();
@@ -417,6 +479,18 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$schema = $table['schema'];
 			if ( ! $this->supports_unique_indexes( $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
+			}
+			if ( null !== $insert->unless_exists() ) {
+				$existing = $table['provider']->read( new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX ) );
+				if ( $existing instanceof WP_Markdown_Query_Result ) {
+					return $existing;
+				}
+				$existing = is_array( $existing ) ? $existing : iterator_to_array( $existing, false );
+				foreach ( $existing as $row ) {
+					if ( is_array( $row ) && $this->restricts( $row, $insert->unless_exists(), $schema ) ) {
+						return WP_Markdown_Query_Result::mutated( 0 );
+					}
+				}
 			}
 			$path = $directory . '/' . $suffix . '.json';
 			$index = WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )

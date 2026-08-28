@@ -11,8 +11,14 @@ final class WP_Markdown_Native_Schema_Query {
 		private readonly string $operation,
 		private readonly ?string $table = null,
 		private readonly ?string $pattern = null,
-		private readonly array $predicates = array()
+		private readonly array $predicates = array(),
+		private readonly array $names = array()
 	) {}
+
+	/** @return array<int,string> */
+	public function names(): array {
+		return $this->names;
+	}
 
 	public function operation(): string {
 		return $this->operation;
@@ -49,6 +55,31 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 			}
 
 			$this->word( 'SHOW' );
+			// Scope qualifiers do not change what a file-backed engine reports.
+			if ( $this->is_word( 'GLOBAL' ) || $this->is_word( 'SESSION' ) ) {
+				++$this->position;
+			}
+			if ( $this->is_word( 'VARIABLES' ) || $this->is_word( 'STATUS' ) ) {
+				$operation = $this->is_word( 'VARIABLES' ) ? 'variables' : 'status';
+				++$this->position;
+				$names = array();
+				$pattern = null;
+				if ( $this->is_word( 'LIKE' ) ) {
+					$this->word( 'LIKE' );
+					$pattern = $this->string();
+				} elseif ( $this->is_word( 'WHERE' ) ) {
+					$this->word( 'WHERE' );
+					$this->identifier();
+					$this->word( 'IN' );
+					$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+					do {
+						$names[] = $this->string();
+					} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
+					$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+				}
+				$this->end();
+				return new WP_Markdown_Native_Schema_Query( $operation, null, $pattern, array(), $names );
+			}
 			if ( $this->is_word( 'TABLES' ) ) {
 				$this->word( 'TABLES' );
 				$this->word( 'LIKE' );
@@ -143,6 +174,23 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 		return (string) $token->value();
 	}
 
+	private function type( string $expected ): WP_Markdown_Native_SQL_Token {
+		$token = $this->current();
+		if ( $expected !== $token->type() ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $token->sql_offset(), 'Unexpected schema introspection token.' );
+		}
+		++$this->position;
+		return $token;
+	}
+
+	private function match_type( string $expected ): bool {
+		if ( $expected !== $this->current()->type() ) {
+			return false;
+		}
+		++$this->position;
+		return true;
+	}
+
 	private function word( string $expected ): void {
 		$token = $this->current();
 		if ( 0 !== strcasecmp( $expected, (string) $token->value() ) ) {
@@ -181,6 +229,9 @@ final class WP_Markdown_Native_Schema_Introspection {
 		if ( 'tables' === $query->operation() ) {
 			return $this->tables( (string) $query->pattern() );
 		}
+		if ( 'variables' === $query->operation() || 'status' === $query->operation() ) {
+			return $this->server_values( $query->operation(), $query->pattern(), $query->names() );
+		}
 
 		$definition = $this->registry->definition( (string) $query->table() );
 		if ( null === $definition || array() === $definition ) {
@@ -189,6 +240,44 @@ final class WP_Markdown_Native_Schema_Introspection {
 		return 'columns' === $query->operation()
 			? $this->columns( (string) $query->table(), $definition, $query->pattern() )
 			: $this->indexes( (string) $query->table(), $definition, $query->predicates() );
+	}
+
+	/**
+	 * Report the server variables a file-backed engine can answer honestly.
+	 *
+	 * A tuning knob that describes a client/server database has no meaning
+	 * here, so only the settings that remain true are reported. Anything else
+	 * is absent rather than invented.
+	 *
+	 * @param array<int,string> $names
+	 */
+	private function server_values( string $operation, ?string $pattern, array $names ): WP_Markdown_Query_Result {
+		$values = 'variables' === $operation
+			? array(
+				'version' => '0.0.0-mdi-native',
+				'version_comment' => 'Markdown Database Integration native engine',
+				'sql_mode' => '',
+				'character_set_server' => 'utf8mb4',
+				'collation_server' => 'utf8mb4_general_ci',
+				'foreign_key_checks' => 'ON',
+				'autocommit' => 'ON',
+			)
+			: array( 'Uptime' => '0', 'Threads_connected' => '1', 'Queries' => '0' );
+		$wanted = array_map( 'strtolower', $names );
+		$rows = array();
+		foreach ( $values as $name => $value ) {
+			if ( array() !== $wanted && ! in_array( strtolower( $name ), $wanted, true ) ) {
+				continue;
+			}
+			if ( null !== $pattern && ! $this->matches( $name, $pattern ) ) {
+				continue;
+			}
+			$rows[] = array( 'Variable_name' => $name, 'Value' => $value );
+		}
+		return WP_Markdown_Query_Result::selected(
+			$rows,
+			$this->metadata( array( 'Variable_name', 'Value' ), '' )
+		);
 	}
 
 	private function tables( string $pattern ): WP_Markdown_Query_Result {

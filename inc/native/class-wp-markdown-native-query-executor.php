@@ -29,6 +29,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
 		}
+		// The canonical store is a directory, not a named server database.
+		if ( 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $request->sql() ) ) {
+			return WP_Markdown_Query_Result::selected(
+				array( array( 'DATABASE()' => defined( 'DB_NAME' ) ? (string) DB_NAME : '' ) ),
+				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
+			);
+		}
 		if ( 1 === preg_match( '/^\s*(?:CREATE|ALTER)\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
 			|| 1 === preg_match( '/^\s*DROP\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
 			|| 1 === preg_match( '/^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b/i', $request->sql() ) ) {

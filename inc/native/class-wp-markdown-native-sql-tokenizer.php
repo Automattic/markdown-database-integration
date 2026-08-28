@@ -122,7 +122,7 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 					++$offset;
 				}
 				$lexeme = substr( $sql, $start, $offset - $start );
-				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'JOIN', 'ON', 'WHERE', 'IN', 'AND', 'OR', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
+				$type = in_array( strtoupper( $lexeme ), array( 'SELECT', 'DISTINCT', 'SQL_CALC_FOUND_ROWS', 'FROM', 'AS', 'INNER', 'JOIN', 'ON', 'WHERE', 'IN', 'LIKE', 'AND', 'OR', 'ORDER', 'BY', 'ASC', 'DESC', 'LIMIT' ), true )
 					? WP_Markdown_Native_SQL_Token::KEYWORD
 					: WP_Markdown_Native_SQL_Token::WORD;
 				$tokens[] = new WP_Markdown_Native_SQL_Token( $type, $lexeme, $lexeme, $start );

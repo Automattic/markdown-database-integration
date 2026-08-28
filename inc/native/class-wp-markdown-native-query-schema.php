@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN', '<>' ),
+		private readonly array $filter_operators = array( '=', 'IN', '<>', 'LIKE' ),
 		private readonly mixed $filter_validator = null
 	) {
 		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
@@ -53,6 +53,14 @@ final class WP_Markdown_Native_Column {
 	public function allows_filter( string $operator, array $values ): bool {
 		if ( ! in_array( $operator, $this->filter_operators, true ) || array() === $values ) {
 			return false;
+		}
+		if ( 'LIKE' === $operator ) {
+			foreach ( $values as $value ) {
+				if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
+					return false;
+				}
+			}
+			return true;
 		}
 		foreach ( $values as $value ) {
 			if ( ! $this->validates( $value ) ) {
@@ -154,6 +162,31 @@ final class WP_Markdown_Native_Table_Schema {
 		$left  = $this->column( $column )->normalize( $left );
 		$right = $this->column( $column )->normalize( $right );
 		return null !== $left && null !== $right && $left === $right;
+	}
+
+	public function value_matches_like( string $column, mixed $value, string $pattern ): bool {
+		if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
+			return false;
+		}
+		$regex = '';
+		$length = strlen( $pattern );
+		for ( $offset = 0; $offset < $length; $offset++ ) {
+			$character = $pattern[ $offset ];
+			if ( '\\' === $character && $offset + 1 < $length ) {
+				$regex .= preg_quote( $pattern[ ++$offset ], '/' );
+				continue;
+			}
+			if ( '%' === $character ) {
+				$regex .= '.*';
+				continue;
+			}
+			if ( '_' === $character ) {
+				$regex .= '.';
+				continue;
+			}
+			$regex .= preg_quote( $character, '/' );
+		}
+		return 1 === preg_match( '/^' . $regex . '$/is', $value );
 	}
 
 	public function values_differ( string $column, mixed $left, mixed $right ): bool {

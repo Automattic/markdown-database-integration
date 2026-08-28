@@ -126,12 +126,12 @@ $zero_limit = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_v
 $unsupported = array(
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT unsupported_column FROM wp_options WHERE option_name = 'siteurl'" ) ),
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_posts WHERE option_name = 'siteurl'" ) ),
-	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name LIKE 'site%'" ) ),
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 0" ) ),
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'site\\qurl'" ) ),
 );
 $custom_prefix_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root, 'wp_2_' );
 $custom_prefix = $custom_prefix_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_2_options WHERE option_name = 'siteurl'", 'wp_2_' ) );
+$like_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name LIKE 'site%'" ) );
 $escaped = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'tab\\tback\\\\slash'" ) );
 $case_insensitive_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'SITEURL'" ) );
 $autoload_subset = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_name FROM wp_options WHERE autoload IN ('on', 'yes') LIMIT 1" ) );
@@ -264,6 +264,7 @@ $checks = array(
 	'wpdb get_results consumes option cache priming queries' => 2 === count( $wpdb_primed ) && 'siteurl' === ( $wpdb_primed[0]->option_name ?? null ),
 	'wpdb facade exposes structured unsupported-query failures' => false === $wpdb_unsupported && 'markdown_db_native_unsupported_query' === ( $wpdb_unsupported_diagnostic['code'] ?? null ),
 	'wpdb query filters run before execution and last_query capture' => 0 === $wpdb_filtered && str_contains( (string) $database->last_query, "'missing'" ),
+	'option_name LIKE scans ASCII prefixes' => 'https://example.test' === ( $like_option->wpdb_state()['last_result'][0]->option_value ?? null ),
 	'unsupported queries fail without partial results' => array_reduce( $unsupported, static fn( bool $valid, WP_Markdown_Query_Result $candidate ): bool => $valid && false === $candidate->return_value() && array() === $candidate->wpdb_state()['last_result'] && 'markdown_db_native_unsupported_query' === ( $candidate->diagnostic()['code'] ?? null ), true ),
 	'malformed canonical options fail exact and bulk reads explicitly' => false === $malformed->return_value() && false === $malformed_bulk->return_value() && 'markdown_db_native_malformed_option' === ( $malformed_bulk->diagnostic()['code'] ?? null ),
 	'exact option lists do not scan unrelated malformed rows' => 1 === $exact_list_ignores_unrelated_malformed->return_value(),

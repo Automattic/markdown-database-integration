@@ -17,6 +17,12 @@ final class WP_Markdown_Native_Query_Parser {
 
 	public function parse_ast( string $sql ): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows|WP_Markdown_Query_Result {
 		try {
+			// A single trailing statement terminator is not a second statement.
+			// Offsets stay source-accurate because only the tail is removed.
+			$terminated = rtrim( $sql );
+			if ( str_ends_with( $terminated, ';' ) ) {
+				$sql = rtrim( substr( $terminated, 0, -1 ) );
+			}
 			return ( new WP_Markdown_Native_Select_AST_Parser( $this->tokenizer->tokenize( $sql ) ) )->parse();
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return $this->failure( $error->reason(), $error->getMessage(), $error->sql_offset() );
@@ -329,8 +335,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					$numeric = true;
 				}
 				$descending = false;
-				if ( ! $this->match_keyword( 'ASC' ) ) {
-					$this->expect_keyword( 'DESC' );
+				if ( ! $this->match_keyword( 'ASC' ) && $this->match_keyword( 'DESC' ) ) {
 					$descending = true;
 				}
 				$orders[] = array(

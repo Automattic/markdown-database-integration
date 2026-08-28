@@ -617,14 +617,21 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( true !== ( $index['unique'] ?? false ) ) {
 				continue;
 			}
-			$columns = array_column( $index['columns'], 'name' );
-			if ( array() === $columns || array_filter( $columns, static fn( string $column ): bool => null === $row[ $column ] ) ) {
+			$columns = $index['columns'];
+			$names   = array_column( $columns, 'name' );
+			if ( array() === $names || array_filter( $names, static fn( string $column ): bool => null === $row[ $column ] ) ) {
 				continue;
 			}
 			foreach ( $rows as $existing ) {
 				$matches = true;
 				foreach ( $columns as $column ) {
-					$matches = $matches && $schema->values_match( $column, $existing[ $column ], $row[ $column ] );
+					$name   = (string) ( $column['name'] ?? '' );
+					$length = $column['length'] ?? null;
+					$matches = $matches && $schema->values_match(
+						$name,
+						$this->unique_index_value( $existing[ $name ] ?? null, $length ),
+						$this->unique_index_value( $row[ $name ] ?? null, $length )
+					);
 				}
 				if ( $matches ) {
 					return true;
@@ -763,15 +770,25 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				continue;
 			}
 			foreach ( $index['columns'] as $column ) {
-				$name = $column['name'] ?? '';
-				if ( null !== ( $column['length'] ?? null )
-					|| ! $this->unique_column_type_supported( (string) ( $definition['columns'][ $name ]['type'] ?? '' ) )
-				) {
+				$name   = $column['name'] ?? '';
+				$type   = (string) ( $definition['columns'][ $name ]['type'] ?? '' );
+				$length = $column['length'] ?? null;
+				if ( ! $this->unique_column_type_supported( $type ) ) {
+					return false;
+				}
+				if ( null !== $length && ( ! is_int( $length ) || $length < 1 || WP_Markdown_Native_Schema_Catalog::is_integer( $type ) ) ) {
 					return false;
 				}
 			}
 		}
 		return true;
+	}
+
+	private function unique_index_value( mixed $value, mixed $length ): mixed {
+		if ( null === $value || ! is_int( $length ) ) {
+			return $value;
+		}
+		return is_string( $value ) ? substr( $value, 0, $length ) : $value;
 	}
 
 	private function unique_column_type_supported( string $type ): bool {

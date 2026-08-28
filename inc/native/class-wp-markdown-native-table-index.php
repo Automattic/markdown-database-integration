@@ -204,8 +204,9 @@ final class WP_Markdown_Native_Table_Index {
 			if ( true !== ( $index['unique'] ?? false ) ) {
 				continue;
 			}
-			$columns = array_column( $index['columns'] ?? array(), 'name' );
-			if ( array() === $columns || array() === array_diff( $columns, $generated ) ) {
+			$columns = $index['columns'] ?? array();
+			$names   = array_column( $columns, 'name' );
+			if ( array() === $names || array() === array_diff( $names, $generated ) ) {
 				continue;
 			}
 			$indexes[ (string) ( $index['name'] ?? $position ) ] = $columns;
@@ -237,15 +238,21 @@ final class WP_Markdown_Native_Table_Index {
 
 	/**
 	 * @param array<string,mixed> $row     Row to key.
-	 * @param array<int,string>   $columns Index columns.
+	 * @param array<int,array{name?:string,length?:int|null}> $columns Index columns.
 	 */
 	private static function unique_key( array $row, array $columns, WP_Markdown_Native_Table_Schema $schema ): ?string {
 		$parts = array();
 		foreach ( $columns as $column ) {
-			if ( ! array_key_exists( $column, $row ) || null === $row[ $column ] ) {
+			$name = (string) ( $column['name'] ?? '' );
+			if ( ! array_key_exists( $name, $row ) || null === $row[ $name ] ) {
 				return null;
 			}
-			$key = $schema->value_key( $column, $row[ $column ] );
+			$value  = $row[ $name ];
+			$length = $column['length'] ?? null;
+			if ( is_int( $length ) && is_string( $value ) ) {
+				$value = substr( $value, 0, $length );
+			}
+			$key = $schema->value_key( $name, $value );
 			if ( null === $key ) {
 				return null;
 			}

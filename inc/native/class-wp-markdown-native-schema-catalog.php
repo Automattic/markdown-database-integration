@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 		usort( $prefixes, static fn( string $left, string $right ): int => strlen( $right ) <=> strlen( $left ) );
 		$tables = array();
 		foreach ( explode( ';', $ddl ) as $statement ) {
-			if ( preg_match( '/CREATE\s+TABLE\s+(`?[A-Za-z0-9_]+`?)\s*\((.*)\)\s*.*$/is', trim( $statement ), $table ) ) {
+			if ( preg_match( '/CREATE\s+(?:TEMPORARY\s+)?TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?(`?[A-Za-z0-9_]+`?)\s*\((.*)\)\s*.*$/is', trim( $statement ), $table ) ) {
 				$tables[] = $table;
 			}
 		}
@@ -271,7 +271,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 			$overlay['columns'][ $name ] = array(
 				'filter_operators' => self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] )
 					? array( '=', 'IN', 'NOT IN', '<>' )
-					: ( in_array( $column['type'], array( 'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ? array( 'LIKE', 'NOT LIKE' ) : array() ),
+					: ( in_array( $column['type'], array( 'char', 'varchar', 'enum', 'set', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ? array( 'LIKE', 'NOT LIKE' ) : array() ),
 			);
 		}
 		foreach ( $definition['indexes'] as $index ) {
@@ -286,7 +286,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 					$overlay['columns'][ $name ]['lookup_operators'] = array( '=', 'IN' );
 					continue;
 				}
-				if ( in_array( $type, array( 'char', 'varchar' ), true ) ) {
+				if ( in_array( $type, array( 'char', 'varchar', 'enum', 'set' ), true ) ) {
 					$ascii = static fn( array $values ): bool => array() === array_filter(
 						$values,
 						static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )
@@ -374,7 +374,8 @@ final class WP_Markdown_Native_Schema_Catalog {
 			'decimal', 'numeric' => 246,
 			'tinyblob', 'mediumblob', 'longblob', 'blob', 'tinytext', 'mediumtext', 'longtext', 'text' => 252,
 			'varchar', 'varbinary' => 253,
-			'char', 'binary' => 254,
+			// MySQL reports ENUM and SET over the wire as string field types.
+			'char', 'binary', 'enum', 'set' => 254,
 			default => throw new InvalidArgumentException( 'Schema DDL contains an unsupported SQL field type.' ),
 		};
 	}

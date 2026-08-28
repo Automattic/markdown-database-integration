@@ -212,7 +212,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	private function execute_join( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {
 		$base_alias = $plan->table_alias();
 		$base = $this->registry->table( $plan->table() );
-		if ( null === $base_alias || null === $base || array() === $plan->predicates() ) {
+		$reports_over_outer_join = array() !== $plan->aggregates()
+			&& array_reduce( $plan->joins(), static fn( bool $outer, WP_Markdown_Native_Query_Join $join ): bool => $outer && $join->is_outer(), true );
+		if ( null === $base_alias || null === $base || ( array() === $plan->predicates() && ! $reports_over_outer_join ) ) {
 			return $this->failure( 'unsupported_join_shape', 'mdi-native requires a registered, selectively bounded JOIN source.' );
 		}
 
@@ -257,6 +259,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$predicates[ $source ][] = $predicate;
 			$needed[ $source ][] = $predicate->column();
 		}
+		foreach ( $plan->aggregates() as $aggregate ) {
+			if ( null === $aggregate['column'] ) {
+				continue;
+			}
+			$aggregate_source = (string) $aggregate['source'];
+			if ( ! isset( $sources[ $aggregate_source ] ) || ! $sources[ $aggregate_source ]['schema']->has_column( $aggregate['column'] ) ) {
+				return $this->failure( 'unsupported_column', 'mdi-native cannot aggregate the requested qualified column.' );
+			}
+			$needed[ $aggregate_source ][] = $aggregate['column'];
+		}
 		foreach ( $plan->joins() as $join ) {
 			if ( ! isset( $sources[ $join->left_source() ], $sources[ $join->right_source() ] )
 				|| ! $sources[ $join->left_source() ]['schema']->has_column( $join->left_column() )
@@ -300,7 +312,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$seed_predicate = $candidate;
 			}
 		}
-		if ( null === $seed_source || null === $seed_predicate ) {
+		if ( null === $seed_source ) {
+			// A grouped aggregate over an outer JOIN reports on every base row,
+			// so the base table is the seed and the scan is the whole point.
+			if ( $reports_over_outer_join ) {
+				$seed_source = $base_alias;
+			}
+		}
+		if ( null === $seed_source ) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate to seed a JOIN query.' );
 		}
 		$seed = $sources[ $seed_source ];
@@ -467,10 +486,48 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$selected_row[ $column ] = null === $value ? null : (string) $value;
 			}
 			$key = serialize( $selected_row );
-			if ( ! $plan->is_distinct() || ! isset( $seen[ $key ] ) ) {
+			if ( array() !== $plan->aggregates() || ! $plan->is_distinct() || ! isset( $seen[ $key ] ) ) {
 				$seen[ $key ] = true;
 				$selected_rows[] = $selected_row;
 			}
+		}
+		$aggregates = $plan->aggregates();
+		if ( array() !== $aggregates ) {
+			$grouped_rows = array();
+			$totals = array();
+			foreach ( $rows as $index => $row ) {
+				$key = serialize( $selected_rows[ $index ] ?? array() );
+				if ( ! isset( $grouped_rows[ $key ] ) ) {
+					$grouped_rows[ $key ] = $selected_rows[ $index ] ?? array();
+					$totals[ $key ] = array_fill_keys( array_column( $aggregates, 'alias' ), null );
+				}
+				foreach ( $aggregates as $aggregate ) {
+					$alias = $aggregate['alias'];
+					$value = null === $aggregate['column'] ? null : ( $row[ (string) $aggregate['source'] ][ $aggregate['column'] ] ?? null );
+					if ( 'COUNT' === $aggregate['function'] ) {
+						// COUNT(*) counts rows; COUNT(col) skips NULL, which is
+						// how an unmatched outer row contributes nothing.
+						if ( null === $aggregate['column'] || null !== $value ) {
+							$totals[ $key ][ $alias ] = (int) ( $totals[ $key ][ $alias ] ?? 0 ) + 1;
+						} elseif ( null === $totals[ $key ][ $alias ] ) {
+							$totals[ $key ][ $alias ] = 0;
+						}
+						continue;
+					}
+					if ( null !== $value ) {
+						$totals[ $key ][ $alias ] = ( $totals[ $key ][ $alias ] ?? 0 ) + ( is_numeric( $value ) ? $value + 0 : 0 );
+					}
+				}
+			}
+			$selected_rows = array();
+			foreach ( $grouped_rows as $key => $grouped_row ) {
+				foreach ( $aggregates as $aggregate ) {
+					$total = $totals[ $key ][ $aggregate['alias'] ] ?? null;
+					$grouped_row[ $aggregate['alias'] ] = null === $total ? null : (string) $total;
+				}
+				$selected_rows[] = $grouped_row;
+			}
+			$selected_rows = array_values( $selected_rows );
 		}
 		if ( $plan->calculates_found_rows() ) {
 			$this->last_found_rows = count( $selected_rows );
@@ -482,6 +539,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $projection as $index => $column ) {
 			$source = $projection_sources[ $index ];
 			$columns[] = array( 'name' => $column, 'table' => $sources[ $source ]['table'], 'type' => $sources[ $source ]['schema']->column( $column )->type() );
+		}
+		foreach ( $aggregates as $aggregate ) {
+			$columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 8 );
 		}
 		return WP_Markdown_Query_Result::selected( $selected_rows, $columns );
 	}

@@ -139,7 +139,16 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->order()?->qualifier(),
 			$order_by,
 			$ast->is_contradiction(),
-			$ast->group_count_alias()
+			$ast->group_count_alias(),
+			array_map(
+				static fn( array $aggregate ): array => array(
+					'function' => $aggregate['function'],
+					'column'   => $aggregate['column']?->name(),
+					'source'   => $aggregate['column']?->qualifier() ?? $base_source,
+					'alias'    => $aggregate['alias'],
+				),
+				$ast->aggregates()
+			)
 		);
 	}
 
@@ -165,6 +174,11 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 		foreach ( $ast->orders() as $item ) {
 			$columns[] = $item['column'];
+		}
+		foreach ( $ast->aggregates() as $aggregate ) {
+			if ( null !== $aggregate['column'] ) {
+				$columns[] = $aggregate['column'];
+			}
 		}
 		foreach ( $ast->joins() as $join ) {
 			$columns[] = $join->left();
@@ -218,6 +232,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$select_all = $this->match_type( WP_Markdown_Native_SQL_Token::STAR );
 		$count_all = false;
 		$group_count_alias = null;
+		$aggregates = array();
 		$projection = array();
 		if ( ! $select_all && $this->matches_function( 'COUNT' ) ) {
 			$count_all = true;
@@ -226,19 +241,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::STAR );
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 		} elseif ( ! $select_all ) {
-			$projection[] = $this->identifier();
-			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
-				if ( $this->matches_function( 'COUNT' ) ) {
-					$this->identifier();
-					$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
-					$this->expect_type( WP_Markdown_Native_SQL_Token::STAR );
-					$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-					$this->expect_keyword( 'AS' );
-					$group_count_alias = $this->unqualified_identifier()->name();
-					break;
+			do {
+				$aggregate = $this->match_aggregate();
+				if ( null !== $aggregate ) {
+					$aggregates[] = $aggregate;
+					continue;
 				}
 				$projection[] = $this->identifier();
-			}
+			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}
 
 		$this->expect_keyword( 'FROM' );
@@ -295,7 +305,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$grouped = WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
 			&& 0 === strcasecmp( 'GROUP', (string) $this->current()->value() );
-		if ( null !== $group_count_alias && ( ! $grouped || array() !== $joins ) ) {
+		if ( array() !== $aggregates && ! $grouped ) {
 			$this->unsupported( $this->current() );
 		}
 		if ( $grouped ) {
@@ -309,17 +319,26 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				$this->unsupported( $this->current() );
 			}
 			if ( ! $this->contradiction ) {
-				if ( 1 !== count( $projection )
-					|| $projection[0]->name() !== $group->name()
-					|| $projection[0]->qualifier() !== $group->qualifier() ) {
-					throw new WP_Markdown_Native_SQL_Parse_Error(
-						'unsupported_group',
-						$group->sql_offset(),
-						'mdi-native supports GROUP BY only as identity grouping of the selected column.'
-					);
+				// Every projected column must be functionally dependent on the
+				// grouping column. A wildcard over the grouped table qualifies
+				// because its identity is the group.
+				foreach ( $projection as $column ) {
+					$same_column = $column->name() === $group->name() && $column->qualifier() === $group->qualifier();
+					$grouped_wildcard = '*' === $column->name() && null !== $group->qualifier() && $column->qualifier() === $group->qualifier();
+					if ( ! $same_column && ! $grouped_wildcard ) {
+						throw new WP_Markdown_Native_SQL_Parse_Error(
+							'unsupported_group',
+							$group->sql_offset(),
+							'mdi-native supports GROUP BY only as identity grouping of the selected column.'
+						);
+					}
 				}
-				if ( array() !== $joins ) {
+				if ( array() === $aggregates && array() !== $joins ) {
 					$distinct = true;
+				}
+				if ( 1 === count( $aggregates ) && 'COUNT' === $aggregates[0]['function'] && null === $aggregates[0]['column'] && array() === $joins ) {
+					$group_count_alias = $aggregates[0]['alias'];
+					$aggregates = array();
 				}
 			}
 		}
@@ -358,7 +377,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group_count_alias );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group_count_alias, $aggregates );
 	}
 
 	private function match_join_kind(): ?string {
@@ -491,6 +510,33 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			return array();
 		}
 		return array( $this->predicate() );
+	}
+
+	/**
+	 * Parse one aliased aggregate in a projection.
+	 *
+	 * @return array{function:string,column:?WP_Markdown_Native_SQL_Identifier,alias:string}|null
+	 */
+	private function match_aggregate(): ?array {
+		foreach ( array( 'COUNT', 'SUM' ) as $function ) {
+			if ( ! $this->matches_function( $function ) ) {
+				continue;
+			}
+			$this->identifier();
+			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			if ( 'SUM' === $function && null === $column ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_keyword( 'AS' );
+			return array(
+				'function' => $function,
+				'column'   => $column,
+				'alias'    => $this->unqualified_identifier()->name(),
+			);
+		}
+		return null;
 	}
 
 	private function matches_function( string $function ): bool {

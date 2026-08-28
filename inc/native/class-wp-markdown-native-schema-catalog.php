@@ -225,7 +225,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 				$normalizer,
 				$column_overlay['lookup_operators'] ?? array(),
 				$column_overlay['lookup_validator'] ?? null,
-				$column_overlay['filter_operators'] ?? ( self::is_integer( $column_definition['type'] ) ? array( '=', 'IN', '<>' ) : array( '=', 'IN', '<>', 'LIKE' ) ),
+				$column_overlay['filter_operators'] ?? ( self::is_integer( $column_definition['type'] ) ? array( '=', 'IN', 'NOT IN', '<>' ) : array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ) ),
 				$column_overlay['filter_validator'] ?? null
 			);
 		}
@@ -258,8 +258,8 @@ final class WP_Markdown_Native_Schema_Catalog {
 		foreach ( $definition['columns'] as $name => $column ) {
 			$overlay['columns'][ $name ] = array(
 				'filter_operators' => self::is_integer( $column['type'] )
-					? array( '=', 'IN', '<>' )
-					: ( in_array( $column['type'], array( 'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ? array( 'LIKE' ) : array() ),
+					? array( '=', 'IN', 'NOT IN', '<>' )
+					: ( in_array( $column['type'], array( 'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ? array( 'LIKE', 'NOT LIKE' ) : array() ),
 			);
 		}
 		foreach ( $definition['indexes'] as $index ) {
@@ -276,7 +276,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 				}
 				if ( $unique && in_array( $type, array( 'char', 'varchar' ), true ) ) {
 					$overlay['columns'][ $name ]['lookup_operators']  = array( '=', 'IN' );
-					$overlay['columns'][ $name ]['filter_operators'] = array( '=', 'IN', '<>', 'LIKE' );
+					$overlay['columns'][ $name ]['filter_operators'] = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' );
 					$overlay['columns'][ $name ]['lookup_validator'] = static fn( array $values ): bool => array() === array_filter(
 						$values,
 						static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )

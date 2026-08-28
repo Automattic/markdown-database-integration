@@ -38,6 +38,8 @@ $cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'p
 $inequality_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status <> 'trash' OR post_status <> 'auto-draft'" );
 $like_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_title LIKE '%Hello%'" );
 $like_plan = $like_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $like_ast ) : $like_ast;
+$not_in_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_status NOT IN ('trash', 'auto-draft')" );
+$not_in_plan = $not_in_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $not_in_ast ) : $not_in_ast;
 $like_or_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE (post_title LIKE '%Hello%') OR (post_content LIKE '%Hello%') OR (post_excerpt LIKE '%Hello%')" );
 $like_or_plan = $like_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $like_or_ast ) : $like_or_ast;
 $composite_order_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY wp_posts.menu_order ASC, wp_posts.post_title ASC' );
@@ -155,6 +157,9 @@ $checks = array(
 		&& 'menu_order' === $composite_order_plan->order()
 		&& array( 'menu_order', 'post_title' ) === array_column( $composite_order_plan->order_by(), 'column' )
 		&& array( false, false ) === array_column( $composite_order_plan->order_by(), 'descending' ),
+	'NOT IN lowers to a negated membership predicate' => $not_in_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 'NOT IN' === $not_in_plan->predicates()[0]->operator()
+		&& array( 'trash', 'auto-draft' ) === $not_in_plan->predicates()[0]->values(),
 	'LIKE lowers to a string-pattern predicate' => $like_plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'LIKE' === $like_plan->predicates()[0]->operator()
 		&& array( '%Hello%' ) === $like_plan->predicates()[0]->values(),

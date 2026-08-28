@@ -44,7 +44,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 				if ( '' === $line ) {
 					continue;
 				}
-				if ( preg_match( '/^(PRIMARY\s+KEY|UNIQUE\s+KEY|KEY)\s*(?:`?([A-Za-z0-9_]+)`?)?\s*\((.+)\)$/i', $line, $index ) ) {
+				if ( preg_match( '/^(PRIMARY\s+KEY|UNIQUE\s+KEY|UNIQUE\s+INDEX|KEY|INDEX)\s*(?:`?([A-Za-z0-9_]+)`?)?\s*\((.+)\)$/i', $line, $index ) ) {
 					$index_columns = array();
 					foreach ( explode( ',', $index[3] ) as $column ) {
 						if ( ! preg_match( '/^\s*`?([A-Za-z0-9_]+)`?(?:\(([0-9]+)\))?\s*$/', $column, $part ) ) {
@@ -55,10 +55,11 @@ final class WP_Markdown_Native_Schema_Catalog {
 							'length' => isset( $part[2] ) ? (int) $part[2] : null,
 						);
 					}
-					$primary = 0 === strcasecmp( preg_replace( '/\s+/', ' ', $index[1] ), 'PRIMARY KEY' );
+					$kind = strtoupper( preg_replace( '/\s+/', ' ', $index[1] ) );
+					$primary = 'PRIMARY KEY' === $kind;
 					$indexes[] = array(
 						'name'    => $primary ? 'PRIMARY' : $index[2],
-						'unique'  => $primary || 0 === strcasecmp( preg_replace( '/\s+/', ' ', $index[1] ), 'UNIQUE KEY' ),
+						'unique'  => $primary || str_starts_with( $kind, 'UNIQUE ' ),
 						'columns' => $index_columns,
 					);
 					continue;

@@ -375,11 +375,13 @@ final class WP_Markdown_Native_Table_Registry {
 			throw new InvalidArgumentException( 'An altered table must already be registered.' );
 		}
 		unset( $this->tables[ $table ], $this->definitions[ $table ] );
-		if ( null === $schema || null === $provider ) {
-			$this->register_definition( $table, $definition );
-			return;
+		$this->register_definition( $table, $definition );
+		if ( null !== $schema && null !== $provider ) {
+			$this->tables[ $table ] = array(
+				'schema'   => $schema,
+				'provider' => $provider,
+			);
 		}
-		$this->register( $table, $schema, $provider );
 	}
 
 	/** @return array<int,string> */

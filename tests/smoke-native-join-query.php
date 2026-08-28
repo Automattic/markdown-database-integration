@@ -79,6 +79,8 @@ $unbounded = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0
 $unqualified = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr.object_id=41', 'object_id=41', $query ) ) );
 $unknown_alias = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 't.slug', 'x.slug', $query ) ) );
 $limited = $runtime->execute( new WP_Markdown_Query_Request( $query . ' LIMIT 1' ) );
+$catalog_query = "SELECT wp_term_relationships.object_id FROM wp_term_relationships LEFT JOIN wp_term_taxonomy ON (wp_term_relationships.term_taxonomy_id = wp_term_taxonomy.term_taxonomy_id) WHERE wp_term_taxonomy.taxonomy IN ('category') GROUP BY wp_term_relationships.object_id ORDER BY wp_term_relationships.object_id DESC LIMIT 0, 5";
+$catalog = $runtime->execute( new WP_Markdown_Query_Request( $catalog_query ) );
 $core_term_ids_query = "SELECT DISTINCT t.term_id, tr.object_id FROM wp_terms AS t INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id INNER JOIN wp_term_relationships AS tr ON tr.term_taxonomy_id = tt.term_taxonomy_id WHERE tt.taxonomy IN ('category', 'post_tag', 'post_format') AND tr.object_id IN (41) ORDER BY t.name ASC";
 $core_term_ids_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $core_term_ids_query );
 $core_term_ids = $runtime->execute( new WP_Markdown_Query_Request( $core_term_ids_query ) );
@@ -153,6 +155,10 @@ $checks = array(
 		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )
 		&& array( 'id' => '1000', 'label' => 'row-1000' ) === get_object_vars( $scale_rows[999] ?? (object) array() )
 		&& $right_normalizations < 10000,
+	'LEFT JOIN with identity GROUP BY and LIMIT returns distinct left keys' => array( '99', '41' ) === array_map(
+		static fn( object $row ): string => (string) $row->object_id,
+		$catalog->wpdb_state()['last_result']
+	),
 	'JOIN LIMIT returns the bounded prefix' => 1 === $limited->return_value()
 		&& array( 'object_id' => '41', 'taxonomy' => 'category', 'slug' => 'news' ) === get_object_vars( $limited->wpdb_state()['last_result'][0] ?? (object) array() ),
 	'unbounded, unqualified, and unknown-alias JOIN variants fail closed' => false === $unbounded->return_value()

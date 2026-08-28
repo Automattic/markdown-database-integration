@@ -463,19 +463,44 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
 	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+		$indexed = $this->indexed_columns( $schema );
 		foreach ( $predicates as $predicate ) {
 			if ( $this->predicate_uses_like( $predicate ) ) {
+				continue;
+			}
+			if ( in_array( $predicate->operator(), array( 'IS NULL', 'IS NOT NULL' ), true ) ) {
 				continue;
 			}
 			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'NOT IN', '<>' ), true ) ) {
 				return false;
 			}
-			$type = $schema->column( $predicate->column() )->type();
-			if ( ! in_array( $type, array( 1, 2, 3, 4, 5, 8, 9, 246 ), true ) ) {
-				return false;
+			$column = $predicate->column();
+			$type = $schema->column( $column )->type();
+			if ( in_array( $type, array( 1, 2, 3, 4, 5, 8, 9, 246 ), true ) ) {
+				continue;
 			}
+			if ( isset( $indexed[ $column ] )
+				&& ! $schema->is_lookup( $column )
+				&& $schema->allows_filter( $column, $predicate->operator(), $predicate->values() ) ) {
+				continue;
+			}
+			return false;
 		}
 		return array() !== $predicates;
+	}
+
+	/** @return array<string,true> */
+	private function indexed_columns( WP_Markdown_Native_Table_Schema $schema ): array {
+		$indexed = array();
+		foreach ( $schema->definition()['indexes'] ?? array() as $index ) {
+			foreach ( $index['columns'] ?? array() as $column ) {
+				$name = $column['name'] ?? '';
+				if ( '' !== $name ) {
+					$indexed[ $name ] = true;
+				}
+			}
+		}
+		return $indexed;
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
@@ -506,7 +531,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			return array() !== $predicate->any();
 		}
-		if ( 'IS NULL' === $predicate->operator() ) {
+		if ( in_array( $predicate->operator(), array( 'IS NULL', 'IS NOT NULL' ), true ) ) {
 			return $schema->has_column( $predicate->column() );
 		}
 		return $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
@@ -555,6 +580,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( 'IS NULL' === $predicate->operator() ) {
 			return null === ( $row[ $predicate->column() ] ?? null );
+		}
+		if ( 'IS NOT NULL' === $predicate->operator() ) {
+			return null !== ( $row[ $predicate->column() ] ?? null );
 		}
 		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
 		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {

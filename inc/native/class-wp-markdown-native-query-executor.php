@@ -416,6 +416,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$selected_rows[] = $selected_row;
 			}
 		}
+		if ( 0 < $plan->limit_offset() || PHP_INT_MAX !== $plan->limit() ) {
+			$selected_rows = array_values( array_slice( $selected_rows, $plan->limit_offset(), PHP_INT_MAX === $plan->limit() ? null : $plan->limit() ) );
+		}
 		$columns = array();
 		foreach ( $projection as $index => $column ) {
 			$source = $projection_sources[ $index ];

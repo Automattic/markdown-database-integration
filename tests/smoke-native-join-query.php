@@ -153,15 +153,14 @@ $checks = array(
 		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )
 		&& array( 'id' => '1000', 'label' => 'row-1000' ) === get_object_vars( $scale_rows[999] ?? (object) array() )
 		&& $right_normalizations < 10000,
-	'unbounded, unqualified, unknown-alias, and limited JOIN variants fail closed' => false === $unbounded->return_value()
+	'JOIN LIMIT returns the bounded prefix' => 1 === $limited->return_value()
+		&& array( 'object_id' => '41', 'taxonomy' => 'category', 'slug' => 'news' ) === get_object_vars( $limited->wpdb_state()['last_result'][0] ?? (object) array() ),
+	'unbounded, unqualified, and unknown-alias JOIN variants fail closed' => false === $unbounded->return_value()
 		&& 'unsupported_join_shape' === ( $unbounded->diagnostic()['reason'] ?? null )
 		&& false === $unqualified->return_value()
 		&& 'unsupported_join_shape' === ( $unqualified->diagnostic()['reason'] ?? null )
 		&& false === $unknown_alias->return_value()
-		&& 'unsupported_column' === ( $unknown_alias->diagnostic()['reason'] ?? null )
-		&& false === $limited->return_value()
-		&& 'unsupported_join_shape' === ( $limited->diagnostic()['reason'] ?? null )
-		&& isset( $limited->diagnostic()['sql_offset'] ),
+		&& 'unsupported_column' === ( $unknown_alias->diagnostic()['reason'] ?? null ),
 );
 
 $failed = 0;

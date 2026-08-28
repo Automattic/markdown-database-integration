@@ -453,6 +453,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}
 			);
 		}
+		if ( $plan->counts_all() ) {
+			return $this->count_result( count( $rows ), true );
+		}
 		$selected_rows = array();
 		$seen = array();
 		foreach ( $rows as $row ) {

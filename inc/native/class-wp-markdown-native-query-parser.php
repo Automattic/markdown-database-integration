@@ -49,9 +49,10 @@ final class WP_Markdown_Native_Query_Parser {
 			$seen[ $key ] = true;
 		}
 
+		$base_source = array() === $ast->joins() ? null : ( $ast->alias()?->name() ?? $ast->table()->name() );
 		$predicates = array();
 		foreach ( $ast->predicates() as $predicate ) {
-			$predicates[] = $this->lower_predicate( $predicate );
+			$predicates[] = $this->lower_predicate( $predicate, $base_source );
 		}
 		$joins = array_map(
 			fn( WP_Markdown_Native_SQL_Join $join ): WP_Markdown_Native_Query_Join => new WP_Markdown_Native_Query_Join(
@@ -62,7 +63,10 @@ final class WP_Markdown_Native_Query_Parser {
 				(string) $join->right()->qualifier(),
 				$join->right()->name(),
 				$join->is_outer(),
-				array_map( $this->lower_predicate( ... ), $join->on_predicates() )
+				array_map(
+					fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $join->alias()->name() ),
+					$join->on_predicates()
+				)
 			),
 			$ast->joins()
 		);
@@ -80,13 +84,8 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 		if ( array() !== $joins ) {
 			$base_alias = $ast->alias()?->name();
-			if ( null === $base_alias || $ast->selects_all() || $ast->counts_all() ) {
+			if ( null === $base_alias || $ast->selects_all() ) {
 				return $this->failure( 'unsupported_join_shape', 'mdi-native supports retained bounded equality JOIN queries only.', $ast->table()->sql_offset() );
-			}
-			foreach ( $referenced_columns as $column ) {
-				if ( null === $column->qualifier() ) {
-					return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN columns must be qualified.', $column->sql_offset() );
-				}
 			}
 			$available = array( $base_alias => true );
 			foreach ( $ast->joins() as $join ) {
@@ -103,7 +102,7 @@ final class WP_Markdown_Native_Query_Parser {
 				$available[ $alias ] = true;
 			}
 			foreach ( $referenced_columns as $column ) {
-				if ( ! isset( $available[ (string) $column->qualifier() ] ) ) {
+				if ( ! isset( $available[ $column->qualifier() ?? $base_alias ] ) ) {
 					return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested qualified column.', $column->sql_offset() );
 				}
 			}
@@ -113,7 +112,7 @@ final class WP_Markdown_Native_Query_Parser {
 			static fn( array $item ): array => array(
 				'column'     => $item['column']->name(),
 				'descending' => $item['descending'],
-				'source'     => $item['column']->qualifier(),
+				'source'     => $item['column']->qualifier() ?? $base_source,
 				'numeric'    => $item['numeric'] ?? false,
 			),
 			$ast->orders()
@@ -126,7 +125,7 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->limit() ?? PHP_INT_MAX,
 			$ast->counts_all(),
 			$ast->alias()?->name(),
-			array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): ?string => $column->qualifier(), $ast->projection() ),
+			array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): ?string => $column->qualifier() ?? $base_source, $ast->projection() ),
 			$joins,
 			$ast->calculates_found_rows(),
 			$ast->order_descending(),
@@ -139,7 +138,7 @@ final class WP_Markdown_Native_Query_Parser {
 		);
 	}
 
-	private function lower_predicate( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate {
+	private function lower_predicate( WP_Markdown_Native_SQL_Predicate $predicate, ?string $base_source = null ): WP_Markdown_Native_Query_Predicate {
 		$values = array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
 		if ( 'IN' === $predicate->operator() || 'NOT IN' === $predicate->operator() ) {
 			$values = array_values( array_unique( $values, SORT_REGULAR ) );
@@ -148,8 +147,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$predicate->column()->name(),
 			$predicate->operator(),
 			$values,
-			$predicate->column()->qualifier(),
-			array_map( $this->lower_predicate( ... ), $predicate->any() )
+			$predicate->column()->qualifier() ?? $base_source,
+			array_map( fn( WP_Markdown_Native_SQL_Predicate $alternative ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $alternative, $base_source ), $predicate->any() )
 		);
 	}
 
@@ -266,12 +265,19 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			if ( $wrapped ) {
 				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			}
-			if ( null === $left->qualifier() || null === $right->qualifier() ) {
+			if ( null === $left->qualifier() && null === $right->qualifier() ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_join_shape',
 					$left->sql_offset(),
 					'mdi-native JOIN equality columns must be qualified.'
 				);
+			}
+			$base_source = $alias ?? $table;
+			if ( null === $left->qualifier() ) {
+				$left = new WP_Markdown_Native_SQL_Identifier( $left->name(), $left->sql_offset(), $base_source->name() );
+			}
+			if ( null === $right->qualifier() ) {
+				$right = new WP_Markdown_Native_SQL_Identifier( $right->name(), $right->sql_offset(), $base_source->name() );
 			}
 			$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, $left, $right, 'left' === $join_kind, $on_predicates );
 		}

@@ -44,15 +44,18 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 	private array $tokens = array();
 	private int $position = 0;
 
-	public function parse( WP_Markdown_Query_Request $request ): WP_Markdown_Native_Option_Mutation|WP_Markdown_Query_Result {
+	/** @return array<int,WP_Markdown_Native_Option_Mutation>|WP_Markdown_Query_Result */
+	public function parse( WP_Markdown_Query_Request $request ): array|WP_Markdown_Query_Result {
 		try {
 			$this->tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $request->sql() );
 			$this->position = 0;
 			if ( 0 === strcasecmp( 'UPDATE', (string) $this->current()->value() ) ) {
-				return $this->parse_update( $request );
+				$update = $this->parse_update( $request );
+				return $update instanceof WP_Markdown_Query_Result ? $update : array( $update );
 			}
 			if ( 0 === strcasecmp( 'DELETE', (string) $this->current()->value() ) ) {
-				return $this->parse_delete( $request );
+				$delete = $this->parse_delete( $request );
+				return $delete instanceof WP_Markdown_Query_Result ? $delete : array( $delete );
 			}
 			$this->word( 'INSERT' );
 			$this->word( 'INTO' );
@@ -63,21 +66,42 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 
 			$columns = $this->identifier_list();
 			$this->word( 'VALUES' );
-			$values = $this->literal_list();
-			if ( count( $columns ) !== count( $values ) || array( 'autoload', 'option_name', 'option_value' ) !== $this->set( $columns ) ) {
-				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one complete canonical option row.' );
-			}
-			$row = array_combine( $columns, $values );
-			if ( false === $row ) {
-				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one complete canonical option row.' );
-			}
-			/** @var array{option_name:string,option_value:string,autoload:string} $row */
-			$option_name = $row['option_name'];
-			unset( $row['option_name'] );
+			// WordPress writes a fresh site's options as one multi-row INSERT.
+			$rows = array();
+			do {
+				$values = $this->literal_list();
+				if ( count( $columns ) !== count( $values ) || array( 'autoload', 'option_name', 'option_value' ) !== $this->set( $columns ) ) {
+					return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one complete canonical option row.' );
+				}
+				$row = array_combine( $columns, $values );
+				if ( false === $row ) {
+					return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one complete canonical option row.' );
+				}
+				$rows[] = $row;
+				if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
+					break;
+				}
+				++$this->position;
+			} while ( true );
 			if ( WP_Markdown_Native_SQL_Token::END === $this->current()->type() ) {
 				++$this->position;
-				return new WP_Markdown_Native_Option_Mutation( 'insert', $option_name, $row );
+				return array_map(
+					static function ( array $row ): WP_Markdown_Native_Option_Mutation {
+						$option_name = (string) $row['option_name'];
+						unset( $row['option_name'] );
+						/** @var array<string,string> $row */
+						return new WP_Markdown_Native_Option_Mutation( 'insert', $option_name, $row );
+					},
+					$rows
+				);
 			}
+			if ( 1 !== count( $rows ) ) {
+				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires one canonical option row for an upsert.' );
+			}
+			/** @var array{option_name:string,option_value:string,autoload:string} $row */
+			$row = $rows[0];
+			$option_name = $row['option_name'];
+			unset( $row['option_name'] );
 
 			$this->word( 'ON' );
 			$this->word( 'DUPLICATE' );
@@ -105,7 +129,7 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires deterministic VALUES assignments for an option upsert.' );
 			}
 
-			return new WP_Markdown_Native_Option_Mutation( 'upsert', $option_name, $row );
+			return array( new WP_Markdown_Native_Option_Mutation( 'upsert', $option_name, $row ) );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -270,11 +294,41 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		$mutation = $this->parser->parse( $request );
-		if ( $mutation instanceof WP_Markdown_Query_Result ) {
-			return $mutation;
+		$mutations = $this->parser->parse( $request );
+		if ( $mutations instanceof WP_Markdown_Query_Result ) {
+			return $mutations;
 		}
-		return $this->mutate( $mutation );
+		if ( 1 === count( $mutations ) ) {
+			return $this->mutate( $mutations[0] );
+		}
+
+		// A statement carrying many rows reports the rows it affected and the
+		// identifier of the first row it created, and leaves nothing behind
+		// when one of them fails.
+		$owns_transaction = null !== $this->transactions && ! $this->transactions->is_active();
+		if ( $owns_transaction && true !== $this->transactions->begin() ) {
+			return $this->failure( 'mutation_transaction_failed', 'The canonical multi-row option INSERT could not be isolated.' );
+		}
+		$affected = 0;
+		$insert_id = 0;
+		foreach ( $mutations as $mutation ) {
+			$result = $this->mutate( $mutation );
+			if ( false === $result->return_value() ) {
+				if ( $owns_transaction ) {
+					$this->transactions->rollback();
+				}
+				return $result;
+			}
+			$affected += (int) $result->return_value();
+			$row_id = (int) ( $result->wpdb_state()['insert_id'] ?? 0 );
+			if ( 0 === $insert_id && 0 !== $row_id ) {
+				$insert_id = $row_id;
+			}
+		}
+		if ( $owns_transaction && true !== $this->transactions->commit() ) {
+			return $this->failure( 'mutation_transaction_failed', 'The canonical multi-row option INSERT could not be committed.' );
+		}
+		return WP_Markdown_Query_Result::mutated( $affected, $insert_id );
 	}
 
 	private function mutate( WP_Markdown_Native_Option_Mutation $mutation ): WP_Markdown_Query_Result {

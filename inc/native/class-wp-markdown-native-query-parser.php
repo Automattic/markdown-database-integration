@@ -478,8 +478,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	private function predicate(): WP_Markdown_Native_SQL_Predicate {
 		$column = $this->identifier();
 		if ( $this->match_keyword( 'IS' ) ) {
+			$operator = $this->match_keyword( 'NOT' ) ? 'IS NOT NULL' : 'IS NULL';
 			$this->expect_keyword( 'NULL' );
-			return new WP_Markdown_Native_SQL_Predicate( $column, 'IS NULL', array() );
+			return new WP_Markdown_Native_SQL_Predicate( $column, $operator, array() );
 		}
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::EQUALS ) ) {
 			return new WP_Markdown_Native_SQL_Predicate( $column, '=', array( $this->literal() ) );

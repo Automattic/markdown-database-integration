@@ -12,20 +12,20 @@ mkdir( $root . '/_tables', 0777, true );
 $runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
 $runtime->execute(
 	new WP_Markdown_Query_Request(
-		'CREATE TABLE wp_yoast_indexable (id int unsigned NOT NULL auto_increment, object_id int unsigned NOT NULL, title varchar(191) NULL, PRIMARY KEY (id), UNIQUE KEY object_id (object_id))',
+		'CREATE TABLE wp_plugin_records (id int unsigned NOT NULL auto_increment, object_id int unsigned NOT NULL, title varchar(191) NULL, PRIMARY KEY (id), UNIQUE KEY object_id (object_id))',
 		'wp_'
 	)
 );
 
-$insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (object_id, title) VALUES (7, 'one')", 'wp_' ) );
+$insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_records (object_id, title) VALUES (7, 'one')", 'wp_' ) );
 $upsert = $runtime->execute(
 	new WP_Markdown_Query_Request(
-		"INSERT INTO `wp_yoast_indexable` (`object_id`, `title`) VALUES ( 7, 'two' ) ON DUPLICATE KEY UPDATE `object_id` = VALUES(`object_id`), `title` = VALUES(`title`)",
+		"INSERT INTO `wp_plugin_records` (`object_id`, `title`) VALUES ( 7, 'two' ) ON DUPLICATE KEY UPDATE `object_id` = VALUES(`object_id`), `title` = VALUES(`title`)",
 		'wp_'
 	)
 );
-$read = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, object_id, title FROM wp_yoast_indexable WHERE object_id = 7', 'wp_' ) );
-$fresh = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (object_id, title) VALUES (8, 'eight') ON DUPLICATE KEY UPDATE title = VALUES(title)", 'wp_' ) );
+$read = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, object_id, title FROM wp_plugin_records WHERE object_id = 7', 'wp_' ) );
+$fresh = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_records (object_id, title) VALUES (8, 'eight') ON DUPLICATE KEY UPDATE title = VALUES(title)", 'wp_' ) );
 
 $checks = array(
 	'the first insert persists' => 1 === $insert->return_value() && 1 === $insert->wpdb_state()['insert_id'],

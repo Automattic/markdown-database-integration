@@ -85,7 +85,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
 		$columns    = $projection;
 		foreach ( $predicates as $predicate ) {
-			$columns[] = $predicate->column();
+			foreach ( $predicate->columns() as $column ) {
+				$columns[] = $column;
+			}
 		}
 		foreach ( $plan->order_by() as $item ) {
 			$columns[] = $item['column'];
@@ -105,7 +107,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() !== $predicates && null === $pushdown ) {
 			$likes = array_filter(
 				$predicates,
-				static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => 'LIKE' === $predicate->operator()
+				fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $this->predicate_uses_like( $predicate )
 			);
 			if ( array() === $likes ) {
 				return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
@@ -126,7 +128,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$residual = array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
 		$provider_projection = $plan->counts_all() ? array() : $projection;
 		foreach ( $residual as $predicate ) {
-			$provider_projection[] = $predicate->column();
+			foreach ( $predicate->columns() as $column ) {
+				$provider_projection[] = $column;
+			}
 		}
 		if ( array() === $provider_projection ) {
 			$provider_projection[] = $schema->natural_order();
@@ -444,8 +448,28 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function supports_predicate( WP_Markdown_Native_Table_Schema $schema, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'OR' === $predicate->operator() ) {
+			foreach ( $predicate->any() as $alternative ) {
+				if ( ! $this->supports_predicate( $schema, $alternative ) ) {
+					return false;
+				}
+			}
+			return array() !== $predicate->any();
+		}
 		return $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
 			|| $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() );
+	}
+
+	private function predicate_uses_like( WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'LIKE' === $predicate->operator() ) {
+			return true;
+		}
+		foreach ( $predicate->any() as $alternative ) {
+			if ( $this->predicate_uses_like( $alternative ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private function compare_pushdowns( WP_Markdown_Native_Query_Predicate $left, WP_Markdown_Native_Query_Predicate $right ): int {
@@ -460,23 +484,33 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	/** @param array<string,mixed> $row @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
 	private function matches( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
 		foreach ( $predicates as $predicate ) {
-			$matched = false;
-			foreach ( $predicate->values() as $value ) {
-				$compare = match ( $predicate->operator() ) {
-					'<>' => $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value ),
-					'LIKE' => is_string( $value ) && $schema->value_matches_like( $predicate->column(), $row[ $predicate->column() ], $value ),
-					default => $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ),
-				};
-				if ( $compare ) {
-					$matched = true;
-					break;
-				}
-			}
-			if ( ! $matched ) {
+			if ( ! $this->matches_predicate( $row, $predicate, $schema ) ) {
 				return false;
 			}
 		}
 		return true;
+	}
+
+	private function matches_predicate( array $row, WP_Markdown_Native_Query_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
+		if ( 'OR' === $predicate->operator() ) {
+			foreach ( $predicate->any() as $alternative ) {
+				if ( $this->matches_predicate( $row, $alternative, $schema ) ) {
+					return true;
+				}
+			}
+			return false;
+		}
+		foreach ( $predicate->values() as $value ) {
+			$compare = match ( $predicate->operator() ) {
+				'<>' => $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value ),
+				'LIKE' => is_string( $value ) && $schema->value_matches_like( $predicate->column(), $row[ $predicate->column() ], $value ),
+				default => $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ),
+			};
+			if ( $compare ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** @param array<int,array<string,mixed>> $rows @param array<int,string> $projection */

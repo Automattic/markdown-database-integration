@@ -31,6 +31,7 @@ $ci = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts
 $content_like = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_content LIKE '%hello%'", 'wp_' ) );
 $unicode = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title LIKE '%Café%'", 'wp_' ) );
 $integer = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE ID LIKE '1%'", 'wp_' ) );
+$search = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE (post_title LIKE '%Hello%') OR (post_content LIKE '%Hello%') OR (post_excerpt LIKE '%Hello%')", 'wp_' ) );
 
 $ids = static function ( WP_Markdown_Query_Result $result ): array {
 	return array_map( static fn( object $row ): string => (string) $row->ID, $result->wpdb_state()['last_result'] );
@@ -45,6 +46,7 @@ $checks = array(
 		&& 'unsupported_lookup' === ( $unicode->diagnostic()['reason'] ?? null ),
 	'LIKE on an integer column fails closed' => false === $integer->return_value()
 		&& 'unsupported_lookup' === ( $integer->diagnostic()['reason'] ?? null ),
+	'WP_Query search ORs LIKE across title and content' => array( '11', '12' ) === $ids( $search ),
 );
 
 $failed = false;

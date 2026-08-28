@@ -51,16 +51,7 @@ final class WP_Markdown_Native_Query_Parser {
 
 		$predicates = array();
 		foreach ( $ast->predicates() as $predicate ) {
-			$values = array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
-			if ( 'IN' === $predicate->operator() ) {
-				$values = array_values( array_unique( $values, SORT_REGULAR ) );
-			}
-			$predicates[] = new WP_Markdown_Native_Query_Predicate(
-				$predicate->column()->name(),
-				$predicate->operator(),
-				$values,
-				$predicate->column()->qualifier()
-			);
+			$predicates[] = $this->lower_predicate( $predicate );
 		}
 		$joins = array_map(
 			static fn( WP_Markdown_Native_SQL_Join $join ): WP_Markdown_Native_Query_Join => new WP_Markdown_Native_Query_Join(
@@ -143,14 +134,37 @@ final class WP_Markdown_Native_Query_Parser {
 		);
 	}
 
+	private function lower_predicate( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate {
+		$values = array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
+		if ( 'IN' === $predicate->operator() ) {
+			$values = array_values( array_unique( $values, SORT_REGULAR ) );
+		}
+		return new WP_Markdown_Native_Query_Predicate(
+			$predicate->column()->name(),
+			$predicate->operator(),
+			$values,
+			$predicate->column()->qualifier(),
+			array_map( $this->lower_predicate( ... ), $predicate->any() )
+		);
+	}
+
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
 	private function referenced_columns( WP_Markdown_Native_SQL_Select $ast ): array {
-		$columns = array_merge(
-			$ast->projection(),
-			array_map( static fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_SQL_Identifier => $predicate->column(), $ast->predicates() )
-		);
+		$columns = $ast->projection();
+		foreach ( $ast->predicates() as $predicate ) {
+			$columns = array_merge( $columns, $this->predicate_columns( $predicate ) );
+		}
 		foreach ( $ast->orders() as $item ) {
 			$columns[] = $item['column'];
+		}
+		return $columns;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	private function predicate_columns( WP_Markdown_Native_SQL_Predicate $predicate ): array {
+		$columns = array( $predicate->column() );
+		foreach ( $predicate->any() as $alternative ) {
+			$columns = array_merge( $columns, $this->predicate_columns( $alternative ) );
 		}
 		return $columns;
 	}
@@ -303,6 +317,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( 1 === count( $groups ) ) {
 			return $groups[0];
 		}
+		$likes = array();
+		foreach ( $groups as $group ) {
+			if ( 1 === count( $group ) && 'LIKE' === $group[0]->operator() ) {
+				$likes[] = $group[0];
+			}
+		}
+		if ( count( $likes ) === count( $groups ) ) {
+			return array( new WP_Markdown_Native_SQL_Predicate( $likes[0]->column(), 'OR', array(), $likes ) );
+		}
 		$column     = null;
 		$qualifier  = null;
 		$values     = array();
@@ -312,7 +335,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_or',
 					$sql_offset,
-					'mdi-native supports OR only as same-column equality.'
+					'mdi-native supports OR only as same-column equality or LIKE alternatives.'
 				);
 			}
 			$predicate = $group[0];
@@ -320,7 +343,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_or',
 					$sql_offset,
-					'mdi-native supports OR only as same-column equality.'
+					'mdi-native supports OR only as same-column equality or LIKE alternatives.'
 				);
 			}
 			$name = $predicate->column()->name();
@@ -333,7 +356,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_or',
 					$sql_offset,
-					'mdi-native supports OR only as same-column equality.'
+					'mdi-native supports OR only as same-column equality or LIKE alternatives.'
 				);
 			}
 			$values = array_merge( $values, $predicate->values() );

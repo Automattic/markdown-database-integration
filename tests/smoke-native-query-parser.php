@@ -38,6 +38,8 @@ $cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'p
 $inequality_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status <> 'trash' OR post_status <> 'auto-draft'" );
 $like_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_title LIKE '%Hello%'" );
 $like_plan = $like_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $like_ast ) : $like_ast;
+$like_or_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE (post_title LIKE '%Hello%') OR (post_content LIKE '%Hello%') OR (post_excerpt LIKE '%Hello%')" );
+$like_or_plan = $like_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $like_or_ast ) : $like_or_ast;
 $composite_order_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY wp_posts.menu_order ASC, wp_posts.post_title ASC' );
 $composite_order_plan = $composite_order_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $composite_order_ast ) : $composite_order_ast;
 $found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
@@ -156,6 +158,13 @@ $checks = array(
 	'LIKE lowers to a string-pattern predicate' => $like_plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'LIKE' === $like_plan->predicates()[0]->operator()
 		&& array( '%Hello%' ) === $like_plan->predicates()[0]->values(),
+	'cross-column LIKE OR lowers to one disjunction' => $like_or_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 'OR' === $like_or_plan->predicates()[0]->operator()
+		&& 3 === count( $like_or_plan->predicates()[0]->any() )
+		&& array( 'post_title', 'post_content', 'post_excerpt' ) === array_map(
+			static fn( WP_Markdown_Native_Query_Predicate $predicate ): string => $predicate->column(),
+			$like_or_plan->predicates()[0]->any()
+		),
 	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
 		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result

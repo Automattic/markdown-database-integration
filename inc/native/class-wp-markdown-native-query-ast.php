@@ -41,11 +41,12 @@ final class WP_Markdown_Native_SQL_Literal {
 }
 
 final class WP_Markdown_Native_SQL_Predicate {
-	/** @param array<int,WP_Markdown_Native_SQL_Literal> $values */
+	/** @param array<int,WP_Markdown_Native_SQL_Literal> $values @param array<int,self> $any */
 	public function __construct(
 		private readonly WP_Markdown_Native_SQL_Identifier $column,
 		private readonly string $operator,
-		private readonly array $values
+		private readonly array $values,
+		private readonly array $any = array()
 	) {}
 
 	public function column(): WP_Markdown_Native_SQL_Identifier {
@@ -59,6 +60,11 @@ final class WP_Markdown_Native_SQL_Predicate {
 	/** @return array<int,WP_Markdown_Native_SQL_Literal> */
 	public function values(): array {
 		return $this->values;
+	}
+
+	/** @return array<int,self> */
+	public function any(): array {
+		return $this->any;
 	}
 }
 

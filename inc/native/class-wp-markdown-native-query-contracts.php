@@ -26,12 +26,13 @@ final class WP_Markdown_Query_Request {
 }
 
 final class WP_Markdown_Native_Query_Predicate {
-	/** @param array<int,int|string> $values */
+	/** @param array<int,int|string> $values @param array<int,self> $any */
 	public function __construct(
 		private readonly string $column,
 		private readonly string $operator,
 		private readonly array $values,
-		private readonly ?string $source = null
+		private readonly ?string $source = null,
+		private readonly array $any = array()
 	) {}
 
 	public function column(): string {
@@ -49,6 +50,20 @@ final class WP_Markdown_Native_Query_Predicate {
 
 	public function source(): ?string {
 		return $this->source;
+	}
+
+	/** @return array<int,self> */
+	public function any(): array {
+		return $this->any;
+	}
+
+	/** @return array<int,string> */
+	public function columns(): array {
+		$columns = array( $this->column );
+		foreach ( $this->any as $predicate ) {
+			$columns = array_merge( $columns, $predicate->columns() );
+		}
+		return array_values( array_unique( $columns ) );
 	}
 }
 

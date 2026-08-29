@@ -97,12 +97,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
-		$lock = @fopen( $directory . '/.mdi-native.lock', 'c+b' );
-		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
-			if ( is_resource( $lock ) ) {
-				fclose( $lock );
-			}
-			return $this->failure( 'mutation_lock_failed', 'The canonical table mutation lock could not be acquired.' );
+		$lock = $this->table_lock( $directory, $suffix );
+		if ( $lock instanceof WP_Markdown_Query_Result ) {
+			return $lock;
 		}
 
 		try {
@@ -442,12 +439,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
-		$lock = @fopen( $directory . '/.mdi-native.lock', 'c+b' );
-		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
-			if ( is_resource( $lock ) ) {
-				fclose( $lock );
-			}
-			return $this->failure( 'mutation_lock_failed', 'The canonical table mutation lock could not be acquired.' );
+		$lock = $this->table_lock( $directory, $suffix );
+		if ( $lock instanceof WP_Markdown_Query_Result ) {
+			return $lock;
 		}
 
 		try {
@@ -680,6 +674,19 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'unsafe_tables_directory', 'The canonical tables directory is unavailable or unsafe.' );
 		}
 		return $root;
+	}
+
+	/** Coordinate only writers that publish the same canonical table. */
+	private function table_lock( string $directory, string $suffix ) {
+		$path = $directory . '/.mdi-native-' . hash( 'sha256', $suffix ) . '.lock';
+		$lock = @fopen( $path, 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			return $this->failure( 'mutation_lock_failed', 'The canonical table mutation lock could not be acquired.' );
+		}
+		return $lock;
 	}
 
 	/** @param array<int,array<string,mixed>> $rows */

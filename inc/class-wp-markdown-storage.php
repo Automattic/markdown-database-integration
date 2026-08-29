@@ -771,14 +771,20 @@ class WP_Markdown_Storage {
 			}
 
 			$path = $dir . '/' . $entry;
-			if ( is_link( $path ) ) {
+			// One look at the entry answers what it is, whether it is a link
+			// and how it stands, rather than asking the filesystem three times
+			// for the same facts.
+			clearstatcache( true, $path );
+			$stat = @lstat( $path );
+			$mode = is_array( $stat ) ? ( $stat['mode'] & 0170000 ) : 0;
+			if ( 0120000 === $mode ) {
 				if ( $strict && ! str_starts_with( $entry, '_' ) ) {
 					throw new RuntimeException( 'Markdown DB: Canonical content path must not be a link.' );
 				}
 				continue;
 			}
 
-			if ( is_dir( $path ) ) {
+			if ( 0040000 === $mode ) {
 				if ( str_starts_with( $entry, '_' ) ) {
 					continue;
 				}
@@ -790,7 +796,6 @@ class WP_Markdown_Storage {
 			if ( ! str_ends_with( $entry, '.md' ) ) {
 				continue;
 			}
-			$stat = @lstat( $path );
 			if ( $strict && ( ! $this->existing_path_is_safe( $path ) || ! is_array( $stat ) || 1 !== ( $stat['nlink'] ?? 1 ) ) ) {
 				throw new RuntimeException( 'Markdown DB: Canonical Markdown file is unsafe.' );
 			}
@@ -803,8 +808,8 @@ class WP_Markdown_Storage {
 			}
 
 			yield $this->relative_path( $path ) => array(
-				'mtime'     => (int) filemtime( $path ),
-				'size'      => (int) filesize( $path ),
+				'mtime'     => (int) ( $stat['mtime'] ?? 0 ),
+				'size'      => (int) ( $stat['size'] ?? 0 ),
 				'absolute'  => $path,
 				'parent_id' => $derived_parent_id,
 			);

@@ -737,9 +737,20 @@ class WP_Markdown_Storage {
 		$winners = array();
 
 		foreach ( $this->get_markdown_file_manifest_iterator() as $file_info ) {
-			$id = $this->extract_id_from_file( $file_info['absolute'] );
+			// A metadata read is the post itself, so its frontmatter also
+			// answers identity and is not read a second time. A content read
+			// cannot reuse it, so identity stays the cheaper id-only scan.
+			$metadata = $metadata_only ? $this->read_file( $file_info['absolute'], true, $file_info['parent_id'] ) : null;
+
+			$id = $metadata ? (int) ( $metadata->ID ?? 0 ) : 0;
 			if ( ! $id ) {
-				$post = $this->read_file( $file_info['absolute'], $metadata_only, $file_info['parent_id'] );
+				// Identity shapes the parser does not map are still resolved
+				// the long way, so no file loses its identity here.
+				$id = (int) ( $this->extract_id_from_file( $file_info['absolute'] ) ?: 0 );
+			}
+
+			if ( ! $id ) {
+				$post = $metadata ?? $this->read_file( $file_info['absolute'], $metadata_only, $file_info['parent_id'] );
 				if ( $post ) {
 					yield $post;
 				}
@@ -747,12 +758,15 @@ class WP_Markdown_Storage {
 			}
 
 			if ( ! isset( $winners[ $id ] ) || $file_info['mtime'] > $winners[ $id ]['mtime'] ) {
-				$winners[ $id ] = $file_info;
+				$file_info['metadata'] = $metadata;
+				$winners[ $id ]        = $file_info;
 			}
 		}
 
 		foreach ( $winners as $file_info ) {
-			$post = $this->read_file( $file_info['absolute'], $metadata_only, $file_info['parent_id'] );
+			// Content bodies are read one at a time as each winner is yielded,
+			// so a full read never accumulates across the corpus.
+			$post = $file_info['metadata'] ?? $this->read_file( $file_info['absolute'], $metadata_only, $file_info['parent_id'] );
 			if ( $post ) {
 				yield $post;
 			}

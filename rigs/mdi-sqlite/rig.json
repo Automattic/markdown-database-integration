@@ -1,0 +1,64 @@
+{
+  "id": "mdi-sqlite",
+  "description": "Markdown Database Integration benchmark control using its default SQLite query runtime.",
+  "lifecycle": {
+    "cleanup": {
+      "intent": "external",
+      "reason": "WP Codebox owns disposable runtime cleanup; the MDI checkout is user-owned."
+    }
+  },
+  "components": {
+    "markdown-database-integration": {
+      "component_id": "markdown-database-integration",
+      "default_ref": "origin/main",
+      "path": "${env.HOMEBOY_RIG_COMPONENT_PATH__MDI_SQLITE__MARKDOWN_DATABASE_INTEGRATION}",
+      "path_setting": "HOMEBOY_RIG_COMPONENT_PATH__MDI_SQLITE__MARKDOWN_DATABASE_INTEGRATION",
+      "checkout_root": "${env.HOMEBOY_RIG_COMPONENT_CHECKOUT_ROOT__MDI_SQLITE__MARKDOWN_DATABASE_INTEGRATION}",
+      "branch": "main",
+      "extensions": {
+        "wordpress": {
+          "bench_env": {
+            "BENCH_CORPUS_SIZE": "100"
+          }
+        }
+      }
+    }
+  },
+  "resources": {
+    "paths": [
+      "${components.markdown-database-integration.path}"
+    ]
+  },
+  "bench": {
+    "default_component": "markdown-database-integration",
+    "warmup_iterations": 5,
+    "axes": {
+      "backend": "sqlite"
+    }
+  },
+  "bench_workloads": {
+    "wordpress": []
+  },
+  "bench_profiles": {
+    "decision": [
+      "boot-timing",
+      "bulk-import",
+      "obsidian-bursty",
+      "read-heavy"
+    ]
+  },
+  "pipeline": {
+    "check": [
+      {
+        "kind": "requirement",
+        "label": "MDI plugin checkout exists",
+        "file": "${components.markdown-database-integration.path}/markdown-database-integration.php",
+        "component": "markdown-database-integration",
+        "remediation": "Set HOMEBOY_RIG_COMPONENT_PATH__MDI_SQLITE__MARKDOWN_DATABASE_INTEGRATION to an MDI checkout."
+      }
+    ],
+    "up": [],
+    "bench_prepare": [],
+    "down": []
+  }
+}

@@ -227,6 +227,10 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 
 final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Provider {
 	private WP_Markdown_Storage $storage;
+	/** @var array<string,array<string,mixed>> */
+	private array $parsed = array();
+	/** @var array<int,array<string,mixed>> */
+	private array $located = array();
 
 	public function __construct(
 		string $content_root,
@@ -235,6 +239,17 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
+		// Writing a canonical file makes anything remembered about the corpus
+		// stale, so the parse is dropped the moment one changes.
+		$this->storage->set_file_mutation_observer( function (): void {
+			$this->parsed = array();
+			$this->located = array();
+		} );
+	}
+
+	/** A read that restricts post type parses a different part of the corpus. */
+	private function parse_key( ?array $scope ): string {
+		return null === $scope ? '*' : implode( ',', $scope );
 	}
 
 	/**
@@ -261,17 +276,88 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		return array() === $types ? null : $types;
 	}
 
+	/**
+	 * Resolve a read restricted to durable identity without walking the corpus.
+	 *
+	 * A scan proves the corpus is internally consistent, which is why every
+	 * file is visited when one is performed. Looking up a post by identity is
+	 * the common read and cannot afford that, so it goes straight to the file
+	 * the identity was last found in. Anything unproven — an identity never
+	 * seen, a file since removed, or a file no longer carrying that identity —
+	 * returns null so the caller scans instead.
+	 *
+	 * @return array<int,array<string,mixed>>|null
+	 */
+	private function located_candidates( WP_Markdown_Native_Table_Access $access ): ?array {
+		$predicate = $access->predicate();
+		if ( null === $predicate || $predicate->column() !== $this->schema->natural_order() ) {
+			return null;
+		}
+		$candidates = array();
+		foreach ( $predicate->values() as $value ) {
+			$id = (int) $value;
+			$file = $this->located[ $id ] ?? null;
+			if ( null === $file ) {
+				return null;
+			}
+			$identity = $this->file_identity( $file['absolute'] );
+			if ( null === $identity ) {
+				return null;
+			}
+			$remembered = $this->parsed[ $file['absolute'] ] ?? null;
+			if ( null !== $remembered && $remembered['identity'] === $identity ) {
+				$post = $remembered['post'];
+				$row = $remembered['row'];
+			} else {
+				$post = $this->storage->read_file( $file['absolute'], true, $file['parent_id'] );
+				if ( null === $post || ! $this->unchanged( $file['absolute'], $identity ) ) {
+					return null;
+				}
+				$row = $this->row( $post );
+				if ( true !== $this->schema->validate_row( $row ) ) {
+					return null;
+				}
+				$this->parsed[ $file['absolute'] ] = array( 'identity' => $identity, 'post' => $post, 'row' => $row );
+			}
+			if ( $id !== (int) ( $post->ID ?? 0 ) || ! $this->matches( $row, $predicate ) ) {
+				return null;
+			}
+			$candidates[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
+		}
+		return $candidates;
+	}
+
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
 		try {
+			$posts = $this->located_candidates( $access );
+			if ( null !== $posts ) {
+				return $this->ordered_projection( $posts, $access );
+			}
 			$posts = array();
 			$ids   = array();
+			$predicate = $access->predicate();
 			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $this->post_type_scope( $access ) ) as $file ) {
 				$identity = $this->file_identity( $file['absolute'] );
-				$post = $this->storage->read_file( $file['absolute'], true, $file['parent_id'] );
+				// Parsing a file is the expensive part of a post read, so a
+				// file that still carries the identity it was parsed under is
+				// taken from the previous parse. Every file is still visited,
+				// so a corpus edited outside this process is still seen.
+				$remembered = $this->parsed[ $file['absolute'] ] ?? null;
+				$reused = null !== $identity && null !== $remembered && $remembered['identity'] === $identity;
+				if ( $reused ) {
+					$post = $remembered['post'];
+					$row = $remembered['row'];
+				} else {
+					$post = $this->storage->read_file( $file['absolute'], true, $file['parent_id'] );
+					$row = null;
+				}
 				if ( null === $identity || null === $post || (int) ( $post->ID ?? 0 ) < 1 ) {
 					return $this->malformed( 'invalid_post', 'A canonical Markdown post is malformed or has no durable identity.' );
 				}
-				if ( ! $this->unchanged( $file['absolute'], $identity ) ) {
+				// Re-reading the identity proves the file did not change while
+				// it was being read. A reused parse read nothing, so there is
+				// no window to close.
+				if ( ! $reused && ! $this->unchanged( $file['absolute'], $identity ) ) {
 					return $this->malformed( 'changed_post', 'A canonical Markdown post changed while it was being read.' );
 				}
 				$id = (int) $post->ID;
@@ -279,17 +365,36 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 					return $this->malformed( 'duplicate_post_id', 'Canonical Markdown posts contain a duplicate durable identity.' );
 				}
 				$ids[ $id ] = true;
-				$row = $this->row( $post );
-				if ( true !== $this->schema->validate_row( $row ) ) {
-					return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
+				// A scan is the one read that sees the whole corpus, so it is
+				// where identity learns which file it lives in.
+				$this->located[ $id ] = $file;
+				if ( null === $row ) {
+					$row = $this->row( $post );
+					if ( true !== $this->schema->validate_row( $row ) ) {
+						return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
+					}
+					$this->parsed[ $file['absolute'] ] = array( 'identity' => $identity, 'post' => $post, 'row' => $row );
 				}
-				$predicate = $access->predicate();
 				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
 					continue;
 				}
 				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 			}
 
+			return $this->ordered_projection( $posts, $access );
+		} catch ( Throwable $error ) {
+			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
+		}
+	}
+
+	/**
+	 * Order, bound and project the posts a read selected.
+	 *
+	 * @param array<int,array<string,mixed>> $posts
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
+	 */
+	private function ordered_projection( array $posts, WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result {
+		try {
 			$order_rows = array_map( static fn( array $candidate ): array => $candidate['row'], $posts );
 			if ( null !== $this->schema->unsupported_order_reason( $access->order_by(), $order_rows ) ) {
 				return $this->failure(

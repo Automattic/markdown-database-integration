@@ -525,7 +525,10 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	 */
 	private function answerable_in_file_order( WP_Markdown_Native_Table_Access $access ): bool {
 		$order_by = $access->order_by();
-		if ( 1 !== count( $order_by ) || true === ( $order_by[0]['descending'] ?? false ) ) {
+		if ( PHP_INT_MAX === $access->limit()
+			|| 1 !== count( $order_by )
+			|| true === ( $order_by[0]['descending'] ?? false )
+		) {
 			return false;
 		}
 		if ( ! $this->schema->allows_order( (string) $order_by[0]['column'] ) ) {

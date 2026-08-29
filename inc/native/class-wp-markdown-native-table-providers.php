@@ -282,18 +282,24 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	 * @return array<int,string>|null
 	 */
 	private function post_type_scope( WP_Markdown_Native_Table_Access $access ): ?array {
-		$predicate = $access->predicate();
-		if ( null === $predicate || 'post_type' !== $predicate->column() ) {
-			return null;
+		$predicates = $access->predicates();
+		if ( array() === $predicates && null !== $access->predicate() ) {
+			$predicates = array( $access->predicate() );
 		}
-		$types = array();
-		foreach ( $predicate->values() as $value ) {
-			if ( ! is_string( $value ) || '' === $value ) {
-				return null;
+		foreach ( $predicates as $predicate ) {
+			if ( 'post_type' !== $predicate->column() ) {
+				continue;
 			}
-			$types[] = $value;
+			$types = array();
+			foreach ( $predicate->values() as $value ) {
+				if ( ! is_string( $value ) || '' === $value ) {
+					return null;
+				}
+				$types[] = $value;
+			}
+			return array() === $types ? null : $types;
 		}
-		return array() === $types ? null : $types;
+		return null;
 	}
 
 	/**
@@ -525,7 +531,10 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	 */
 	private function answerable_in_file_order( WP_Markdown_Native_Table_Access $access ): bool {
 		$order_by = $access->order_by();
-		if ( 1 !== count( $order_by ) || true === ( $order_by[0]['descending'] ?? false ) ) {
+		if ( PHP_INT_MAX === $access->limit()
+			|| 1 !== count( $order_by )
+			|| true === ( $order_by[0]['descending'] ?? false )
+		) {
 			return false;
 		}
 		if ( ! $this->schema->allows_order( (string) $order_by[0]['column'] ) ) {
@@ -825,6 +834,7 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_Provider {
 	private bool $loaded = false;
 	private string $signature = '';
+	private string $snapshot_scope = '';
 	/** @var array<int,array<string,mixed>>|WP_Markdown_Query_Result|null */
 	private array|WP_Markdown_Query_Result|null $snapshot = null;
 	/** @var array<string,array{signature:string,value:array<string,mixed>|WP_Markdown_Query_Result|null}> */
@@ -841,7 +851,7 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		if ( null !== $predicate && 'option_name' === $predicate->column() ) {
 			$rows = $this->named_rows( $predicate->values() );
 		} else {
-			$rows = $this->snapshot();
+			$rows = $this->snapshot( null !== $predicate && 'autoload' === $predicate->column() ? $predicate->values() : null );
 			if ( is_array( $rows ) && null !== $predicate ) {
 				$rows = $this->indexed_rows( $rows, $predicate );
 			}
@@ -850,14 +860,16 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 	}
 
 	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
-	private function snapshot(): array|WP_Markdown_Query_Result {
-		if ( $this->loaded ) {
+	private function snapshot( ?array $autoload_values = null ): array|WP_Markdown_Query_Result {
+		$scope = null === $autoload_values ? '*' : implode( ',', array_map( 'strval', $autoload_values ) );
+		if ( $this->loaded && $scope === $this->snapshot_scope ) {
 			$signature = $this->options_signature();
 			if ( $signature === $this->signature ) {
 				return $this->snapshot;
 			}
 		}
 		$this->loaded = true;
+		$this->snapshot_scope = $scope;
 		$this->reset_indexes();
 		$root = $this->options_root();
 		if ( $root instanceof WP_Markdown_Query_Result ) {
@@ -905,6 +917,15 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		foreach ( $paths as $offset => $path ) {
 			$path_signature = null === $catalogued ? null : ( $catalogued['signatures'][ $offset ] ?? null );
 			$row = null === $catalogued ? $this->read_option( $path, $root, null, $path_signature ) : ( $catalogued['rows'][ $offset ] ?? null );
+			if ( null !== $catalogued && null === $row ) {
+				$autoload = $catalogued['autoloads'][ $offset ] ?? null;
+				if ( null !== $autoload_values && is_string( $autoload ) && ! in_array( $autoload, $autoload_values, true ) ) {
+					$signatures[ basename( $path ) ] = (string) $path_signature;
+					$ordered_signatures[] = (string) $path_signature;
+					continue;
+				}
+				$row = $this->read_option( $path, $root, null, $path_signature );
+			}
 			if ( $row instanceof WP_Markdown_Query_Result ) {
 				$this->signature = $this->options_signature();
 				return $this->snapshot = $row;

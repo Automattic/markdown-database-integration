@@ -242,7 +242,8 @@ final class WP_Markdown_Native_Table_Access {
 		private readonly string $order,
 		private readonly int $limit,
 		private readonly bool $order_descending = false,
-		private readonly array $order_by = array()
+		private readonly array $order_by = array(),
+		private readonly array $predicates = array()
 	) {
 		if ( array() === $projection || $limit < 0 ) {
 			throw new InvalidArgumentException( 'Native table access requires a projection and nonnegative bound.' );
@@ -256,6 +257,11 @@ final class WP_Markdown_Native_Table_Access {
 
 	public function predicate(): ?WP_Markdown_Native_Query_Predicate {
 		return $this->predicate;
+	}
+
+	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
+	public function predicates(): array {
+		return $this->predicates;
 	}
 
 	public function order(): string {

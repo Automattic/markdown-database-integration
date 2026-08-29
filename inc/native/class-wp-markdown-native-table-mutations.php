@@ -457,6 +457,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		}
 
 		try {
+			$path = $directory . '/' . $suffix . '.json';
+			$index = $this->index->load( $suffix, $path );
+			if ( null !== $index && $this->index_excludes( $index, $write->predicates() ) ) {
+				return WP_Markdown_Query_Result::mutated( 0 );
+			}
 			$rows = $table['provider']->read( new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX ) );
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
@@ -482,13 +487,13 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 
 			if ( 0 === $affected ) {
+				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			$violation = $this->unique_set_violation( $retained, $definition, $schema );
 			if ( $violation instanceof WP_Markdown_Query_Result ) {
 				return $violation;
 			}
-			$path = $directory . '/' . $suffix . '.json';
 			$written = $this->write( $path, $retained );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
@@ -501,6 +506,43 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	/** @param array{summary:array<string,array{null:int,empty:int}>} $index @param array<int,mixed> $predicates */
+	private function index_excludes( array $index, array $predicates ): bool {
+		foreach ( $predicates as $predicate ) {
+			if ( $this->index_predicate_excludes( $index, $predicate ) ) {
+				return true;
+			}
+		}
+		return false;
+	}
+
+	/** @param array{summary:array<string,array{null:int,empty:int}>} $index */
+	private function index_predicate_excludes( array $index, mixed $predicate ): bool {
+		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+			foreach ( $predicate->any() as $alternative ) {
+				if ( ! $this->index_predicate_excludes( $index, $alternative ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
+		if ( ! $predicate instanceof WP_Markdown_Native_Table_Predicate || '=' !== $predicate->operator() ) {
+			return false;
+		}
+		$counts = $index['summary'][ $predicate->column() ] ?? null;
+		if ( ! is_array( $counts ) ) {
+			return false;
+		}
+		$can_match = $predicate->matches_null() && 0 < $counts['null'];
+		foreach ( $predicate->values() as $value ) {
+			if ( '' !== $value ) {
+				return false;
+			}
+			$can_match = $can_match || 0 < $counts['empty'];
+		}
+		return ! $can_match;
 	}
 
 	/**

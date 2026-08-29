@@ -151,7 +151,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$order_by[0]['column'],
 				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_count_alias() || array() !== $residual ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
-				$order_by
+				$order_by,
+				$predicates
 			)
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {

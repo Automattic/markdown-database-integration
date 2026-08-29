@@ -8,11 +8,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
 
 final class WP_Markdown_Native_Option_Catalogue {
-	private const SCHEMA = 'markdown-db-option-catalogue/v1';
+	private const SCHEMA = 'markdown-db-option-catalogue/v2';
+	private const HOT_AUTOLOAD = array( 'yes', 'on', 'auto-on', 'auto' );
 
 	public function __construct( private readonly string $state_root ) {}
 
-	/** @param array<int,string> $paths @return array{rows:array<int,array<string,mixed>>,signatures:array<int,string>}|null */
+	/** @param array<int,string> $paths @return array{rows:array<int,array<string,mixed>|null>,autoloads:array<int,string>,signatures:array<int,string>}|null */
 	public function restore( string $root, array $paths ): ?array {
 		$path = $this->path();
 		if ( null === $path || ! is_file( $path ) || is_link( $path ) ) {
@@ -32,10 +33,17 @@ final class WP_Markdown_Native_Option_Catalogue {
 			return null;
 		}
 		$rows = array();
+		$autoloads = array();
 		$signatures = array();
 		foreach ( $paths as $offset => $option_path ) {
 			$entry = $decoded['entries'][ $offset ] ?? null;
-			if ( ! is_array( $entry ) || basename( $option_path ) !== ( $entry['filename'] ?? null ) || ! is_array( $entry['identity'] ?? null ) || ! is_array( $entry['row'] ?? null ) || ! is_string( $entry['signature'] ?? null ) ) {
+			if ( ! is_array( $entry )
+				|| basename( $option_path ) !== ( $entry['filename'] ?? null )
+				|| ! is_array( $entry['identity'] ?? null )
+				|| ! is_string( $entry['autoload'] ?? null )
+				|| ( null !== ( $entry['row'] ?? null ) && ! is_array( $entry['row'] ) )
+				|| ! is_string( $entry['signature'] ?? null )
+			) {
 				return null;
 			}
 			$current = WP_Markdown_File_Witness::take( $option_path );
@@ -43,9 +51,10 @@ final class WP_Markdown_Native_Option_Catalogue {
 				return null;
 			}
 			$rows[] = $entry['row'];
+			$autoloads[] = $entry['autoload'];
 			$signatures[] = $entry['signature'];
 		}
-		return array( 'rows' => $rows, 'signatures' => $signatures );
+		return array( 'rows' => $rows, 'autoloads' => $autoloads, 'signatures' => $signatures );
 	}
 
 	/** @param array<int,string> $paths @param array<int,array<string,mixed>> $rows @param array<int,string> $signatures */
@@ -66,8 +75,9 @@ final class WP_Markdown_Native_Option_Catalogue {
 			$entries[] = array(
 				'filename' => basename( $option_path ),
 				'identity' => $witness->identity(),
+				'autoload' => (string) ( $rows[ $offset ]['autoload'] ?? '' ),
 				'signature' => $signatures[ $offset ],
-				'row'      => $rows[ $offset ],
+				'row'      => in_array( $rows[ $offset ]['autoload'] ?? null, self::HOT_AUTOLOAD, true ) ? $rows[ $offset ] : null,
 			);
 		}
 		try {

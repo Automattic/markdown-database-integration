@@ -111,6 +111,8 @@ $by_id = ids( $runtime, 'SELECT ID FROM wp_posts WHERE ID = 24' );
 $by_slug = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_name = 'storage'" );
 $slug_and_type = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_name = 'about' AND post_type = 'page'" );
 $wrong_type = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_name = 'about' AND post_type = 'wiki'" );
+file_put_contents( $root . '/wiki/malformed.md', "not canonical markdown\n" );
+$residual_scope = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_parent = 0 AND post_type = 'page'" );
 
 $checks = array(
 	'an unrestricted read sees every post type' => array( '21', '22', '23', '24', '25' ) === $all,
@@ -122,6 +124,7 @@ $checks = array(
 	'a slug lookup still reaches every type' => array( '25' ) === $by_slug,
 	'a slug combined with its type resolves' => array( '22' ) === $slug_and_type,
 	'a slug under the wrong type resolves to nothing' => array() === $wrong_type,
+	'a residual post type restricts canonical traversal' => array( '21', '22' ) === $residual_scope,
 );
 
 $passed = ! in_array( false, $checks, true );

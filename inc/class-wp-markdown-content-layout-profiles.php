@@ -69,7 +69,6 @@ class WP_Markdown_Content_Layout_Profiles {
 			'label' => 'Post type hierarchy',
 			'extensions' => array( 'md' ),
 			'hierarchy' => 'directory-index',
-			'legacy' => true,
 		);
 	}
 

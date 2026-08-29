@@ -235,8 +235,15 @@ class WP_Markdown_Storage {
 		return WP_Markdown_Content_Layout_Profiles::resolve( $this->content_layout_profile, array( 'content_dir' => $this->content_dir ) );
 	}
 
-	private function uses_legacy_layout(): bool {
-		return ! empty( $this->content_layout()['legacy'] );
+	/**
+	 * Whether the layout profile finds canonical files itself.
+	 *
+	 * A profile that does supplies its own sources and its own mapping. The
+	 * default profile supplies neither, so canonical files are found by
+	 * walking the post-type tree.
+	 */
+	private function profile_enumerates_sources(): bool {
+		return is_callable( $this->content_layout()['enumerate'] ?? null );
 	}
 
 	/**
@@ -274,7 +281,7 @@ class WP_Markdown_Storage {
 
 		$parent_id = (int) ( $post->post_parent ?? 0 );
 
-		if ( ! $this->uses_legacy_layout() ) {
+		if ( $this->profile_enumerates_sources() ) {
 			return $this->write_profile_post( $post );
 		}
 
@@ -479,7 +486,7 @@ class WP_Markdown_Storage {
 	 * @return object[] Array of post-like objects (unique by ID).
 	 */
 	public function get_all_posts( bool $metadata_only = false ): array {
-		if ( ! $this->uses_legacy_layout() ) {
+		if ( $this->profile_enumerates_sources() ) {
 			return iterator_to_array( $this->get_all_posts_iterator( $metadata_only ) );
 		}
 		if ( ! is_dir( $this->content_dir ) ) {
@@ -668,7 +675,7 @@ class WP_Markdown_Storage {
 		if ( $strict && is_link( $this->content_dir ) ) {
 			throw new RuntimeException( 'Markdown DB: Canonical content root must not be a link.' );
 		}
-		if ( ! $this->uses_legacy_layout() ) {
+		if ( $this->profile_enumerates_sources() ) {
 			$identities = array();
 			foreach ( $this->profile_source_paths() as $relative ) {
 				$path = $this->profile_absolute_path( $relative );
@@ -865,7 +872,7 @@ class WP_Markdown_Storage {
 		if ( $post && null !== $parent_id ) {
 			$post->post_parent = $parent_id;
 		}
-		if ( $post && ! $this->uses_legacy_layout() ) {
+		if ( $post && $this->profile_enumerates_sources() ) {
 			$this->apply_layout_mapping( $post, $this->relative_path( $file_path ) );
 		}
 
@@ -908,7 +915,7 @@ class WP_Markdown_Storage {
 		}
 	}
 
-	/** Write using a non-legacy profile's canonical source path. */
+	/** Write using the canonical source path the layout profile supplied. */
 	private function write_profile_post( object $post ): string|false {
 		$relative = $this->profile_path_for_post( $post );
 		if ( false === $relative ) {
@@ -960,10 +967,10 @@ class WP_Markdown_Storage {
 		return $file_path;
 	}
 
-	/** Return the validated route selected by the active non-legacy profile. */
+	/** Return the validated route the active layout profile selected. */
 	public function profile_path_for_post( object $post ): string|false {
 		$profile = $this->content_layout();
-		if ( ! empty( $profile['legacy'] ) || empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
+		if ( empty( $profile['path_for_post'] ) || ! is_callable( $profile['path_for_post'] ) ) {
 			error_log( 'Markdown DB: content layout profile has no path_for_post callback.' );
 			return false;
 		}
@@ -1362,7 +1369,7 @@ class WP_Markdown_Storage {
 			return;
 		}
 
-		if ( ! $this->uses_legacy_layout() ) {
+		if ( $this->profile_enumerates_sources() ) {
 			foreach ( $this->profile_source_paths() as $relative ) {
 				$file = $this->profile_absolute_path( $relative );
 				if ( null === $file || ! ( $id = $this->extract_id_from_file( $file ) ) ) {

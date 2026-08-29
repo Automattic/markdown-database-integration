@@ -69,6 +69,35 @@ function mdi_bench_corpus_size(): int {
 }
 
 /**
+ * Verify that the configured database backend owns the active wpdb boundary.
+ *
+ * @return array{backend:string,wpdb_class:string}
+ */
+function mdi_bench_runtime(): array {
+    global $wpdb;
+
+    $backend = defined('MARKDOWN_DB_BACKEND') ? (string) MARKDOWN_DB_BACKEND : 'sqlite';
+    $wpdb_class = is_object($wpdb) ? get_class($wpdb) : gettype($wpdb);
+    $native_active = class_exists('WP_Markdown_Native_WPDB', false) && $wpdb instanceof WP_Markdown_Native_WPDB;
+
+    if ('mdi-native' === $backend && !$native_active) {
+        throw new RuntimeException(
+            sprintf('Configured mdi-native benchmark booted %s instead of WP_Markdown_Native_WPDB.', $wpdb_class)
+        );
+    }
+    if ('mdi-native' !== $backend && $native_active) {
+        throw new RuntimeException(
+            sprintf('Configured %s benchmark unexpectedly booted WP_Markdown_Native_WPDB.', $backend)
+        );
+    }
+
+    return [
+        'backend'    => $backend,
+        'wpdb_class' => $wpdb_class,
+    ];
+}
+
+/**
  * Seed mt_rand for deterministic corpus + workload streams.
  *
  * Combines the base seed with the bench instance id so concurrent

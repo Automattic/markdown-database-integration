@@ -41,6 +41,8 @@ return function (): array {
     static $next_create = 0;
     static $ops_per_iter = 50; // 50 mixed ops per dispatcher iteration
 
+    mdi_bench_runtime();
+
     if ($live_ids === null) {
         // First call — seed the corpus.
         mdi_bench_seed();

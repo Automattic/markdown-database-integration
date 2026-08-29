@@ -9,10 +9,13 @@
  * @package Markdown_Database_Integration\Tests\Bench
  */
 
+require_once __DIR__ . '/../bench-lib/shared-helpers.php';
+
 return function (): array {
     static $seeded = false;
 
     global $wpdb;
+    $runtime = mdi_bench_runtime();
 
     $table = $wpdb->prefix . 'bench_worktree_inventory';
     $wpdb->query(
@@ -91,6 +94,8 @@ return function (): array {
         ],
         'metadata' => [
             'query_shape' => 'dynamic plugin table ordered scans, filtered lookup, and REPLACE upsert',
+            'backend'     => $runtime['backend'],
+            'wpdb_class'  => $runtime['wpdb_class'],
         ],
     ];
 };

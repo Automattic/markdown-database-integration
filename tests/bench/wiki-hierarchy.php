@@ -9,10 +9,13 @@
  * @package Markdown_Database_Integration\Tests\Bench
  */
 
+require_once __DIR__ . '/../bench-lib/shared-helpers.php';
+
 return function (): array {
     static $seeded = false;
 
     global $wpdb;
+    $runtime = mdi_bench_runtime();
 
     $root_slug = 'bench-wiki-hierarchy';
     $root_id = (int) $wpdb->get_var(
@@ -96,6 +99,8 @@ return function (): array {
         ],
         'metadata' => [
             'query_shape' => 'posts hierarchy ordered with two correlated postmeta NOT EXISTS predicates',
+            'backend'     => $runtime['backend'],
+            'wpdb_class'  => $runtime['wpdb_class'],
         ],
     ];
 };

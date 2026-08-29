@@ -37,7 +37,20 @@
     }
   },
   "bench_workloads": {
-    "wordpress": []
+    "wordpress": [
+      {
+        "path": "${package.root}/tests/bench/boot-timing.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/bulk-import.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/obsidian-bursty.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/read-heavy.php"
+      }
+    ]
   },
   "bench_profiles": {
     "decision": [

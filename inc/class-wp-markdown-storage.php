@@ -1363,100 +1363,65 @@ class WP_Markdown_Storage {
 		// regardless of path depth. See GitHub issue #70.
 		$claimed     = is_array( $this->index ) ? $this->index : array();
 		$this->index = array();
+		$mtimes      = array();
 
 		if ( ! is_dir( $this->content_dir ) ) {
 			$this->index = $claimed;
 			return;
 		}
 
-		if ( $this->profile_enumerates_sources() ) {
-			foreach ( $this->profile_source_paths() as $relative ) {
-				$file = $this->profile_absolute_path( $relative );
-				if ( null === $file || ! ( $id = $this->extract_id_from_file( $file ) ) ) {
-					continue;
-				}
-				if ( isset( $claimed[ $id ] ) ) {
-					$this->index[ $id ] = $claimed[ $id ];
-					continue;
-				}
-				if ( isset( $this->index[ $id ] ) && $this->index[ $id ] !== $file ) {
-					error_log( sprintf( 'Markdown DB: duplicate source identity for post ID %d at %s and %s.', $id, $this->relative_path( $this->index[ $id ] ), $relative ) );
-					continue;
-				}
-				$this->index[ $id ] = $file;
-			}
-			return;
+		// The corpus is walked in one place. This asks that walk what exists
+		// and what identity each file carries, rather than keeping a second
+		// opinion about either.
+		$entries = array();
+		foreach ( $this->get_markdown_file_manifest_iterator( false, null ) as $entry ) {
+			$entries[] = $entry;
 		}
 
-		$dirs = glob( $this->content_dir . '/*', GLOB_ONLYDIR );
-		if ( ! $dirs ) {
-			$this->index = $claimed;
-			return;
-		}
-
-		foreach ( $dirs as $dir ) {
-			if ( is_link( $dir ) ) {
-				continue;
-			}
-			$dirname = basename( $dir );
-
-			// Skip internal directories.
-			if ( str_starts_with( $dirname, '_' ) ) {
+		foreach ( $entries as $entry ) {
+			$file = $entry['absolute'];
+			$post = $this->read_file( $file, true, $entry['parent_id'] );
+			$id   = (int) ( $post->ID ?? 0 );
+			if ( $id < 1 ) {
 				continue;
 			}
 
-			$files = $this->scan_directory_recursive( $dir );
-
-			foreach ( $files as $file ) {
-				$id = $this->extract_id_from_file( $file );
-				if ( ! $id ) {
-					continue;
-				}
-
-				// If the caller pre-claimed a canonical path for this ID,
-				// honor it unconditionally. Any competing copy is stale.
-				if ( isset( $claimed[ $id ] ) ) {
-					$canonical = $claimed[ $id ];
-					if ( $file === $canonical ) {
-						$this->index[ $id ] = $canonical;
-						continue;
-					}
-					// Competing disk copy — unlink it.
+			// If the caller pre-claimed a canonical path for this ID,
+			// honor it unconditionally. Any competing copy is stale.
+			if ( isset( $claimed[ $id ] ) ) {
+				$canonical = $claimed[ $id ];
+				if ( $file !== $canonical ) {
 					$this->safe_unlink( $file );
 					$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
-					$this->index[ $id ] = $canonical;
-					continue;
 				}
-
-				// No pre-claim — apply dedup heuristic for stale duplicates.
-				// See GitHub issue #31.
-				if ( isset( $this->index[ $id ] ) ) {
-					$existing = $this->index[ $id ];
-
-					// Prefer most recently modified — the freshest write on
-					// disk is the authoritative copy. Depth is no longer
-					// used as a tiebreaker; a fresh shallow write should
-					// beat a stale deep copy. See GitHub issue #70.
-					$existing_mtime = @filemtime( $existing );
-					$new_mtime      = @filemtime( $file );
-
-					if ( false === $existing_mtime && false === $new_mtime ) {
-						// Both unreadable — skip; neither is a safe canonical.
-						continue;
-					}
-
-					if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
-						$this->safe_unlink( $existing );
-						$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
-						$this->index[ $id ] = $file;
-					} else {
-						$this->safe_unlink( $file );
-						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
-					}
-				} else {
-					$this->index[ $id ] = $file;
-				}
+				$this->index[ $id ] = $canonical;
+				continue;
 			}
+
+			if ( ! isset( $this->index[ $id ] ) ) {
+				$this->index[ $id ]  = $file;
+				$mtimes[ $id ]       = $entry['mtime'];
+				continue;
+			}
+
+			// Prefer most recently modified — the freshest write on disk is
+			// the authoritative copy. See GitHub issues #31 and #70. The walk
+			// already looked at each file, so its mtime is reused here.
+			$existing       = $this->index[ $id ];
+			$existing_mtime = $mtimes[ $id ] ?? @filemtime( $existing );
+			$new_mtime      = $entry['mtime'];
+			if ( false === $existing_mtime && false === $new_mtime ) {
+				continue;
+			}
+			if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
+				$this->safe_unlink( $existing );
+				$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
+				$this->index[ $id ] = $file;
+				$mtimes[ $id ]      = $new_mtime;
+				continue;
+			}
+			$this->safe_unlink( $file );
+			$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
 		}
 
 		// Ensure any claimed entries that didn't match a disk scan still

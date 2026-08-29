@@ -41,6 +41,7 @@ if ( 2 === $argc ) {
 		'class-wp-markdown-canonical-option-path.php',
 		'class-wp-markdown-file-witness.php',
 		'native/class-wp-markdown-native-post-catalogue.php',
+		'native/class-wp-markdown-native-option-catalogue.php',
 		'native/class-wp-markdown-native-query-contracts.php',
 		'native/class-wp-markdown-native-query-schema.php',
 		'native/class-wp-markdown-native-schema-catalog.php',

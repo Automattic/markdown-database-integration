@@ -117,6 +117,26 @@ $actual = array(
 );
 $fixture = json_decode( (string) file_get_contents( __DIR__ . '/fixtures/query-corpus/mdi-native-options-v1.json' ), true, 512, JSON_THROW_ON_ERROR );
 $comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $fixture, $actual );
+$catalogue_path = $root . '/_indexes/options.json';
+$catalogued_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$catalogued_rows = $catalogued_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) )->wpdb_state()['last_result'];
+
+// A same-size, same-mtime atomic replacement must invalidate persisted rows.
+$disabled_path = $root . '/_options/disabled.json';
+$disabled_stat = stat( $disabled_path );
+$disabled_raw = (string) file_get_contents( $disabled_path );
+$replacement_raw = str_replace( '"option_value":"disabled"', '"option_value":"altered!"', $disabled_raw );
+$replacement_path = $disabled_path . '.replacement';
+file_put_contents( $replacement_path, $replacement_raw );
+touch( $replacement_path, (int) $disabled_stat['mtime'] );
+rename( $replacement_path, $disabled_path );
+$replaced_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$replaced_rows = $replaced_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) )->wpdb_state()['last_result'];
+$replaced_values = array_column( array_map( 'get_object_vars', $replaced_rows ), 'option_value', 'option_name' );
+
+file_put_contents( $catalogue_path, '{' );
+$corrupt_catalogue_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$corrupt_catalogue_result = $corrupt_catalogue_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) );
 
 $state = $result->wpdb_state();
 $projection = $runtime->execute( new WP_Markdown_Query_Request( "SELECT `option_name`, option_id, autoload FROM `wp_options` WHERE `option_name` = 'siteurl'" ) );
@@ -205,6 +225,10 @@ $unsafe_hardlink = $hardlink_supported ? $runtime->execute( new WP_Markdown_Quer
 
 $checks = array(
 	'committed corpus matches native result' => $comparison['compatible'],
+	'a cold runtime restores the verified option catalogue' => 6 === count( $catalogued_rows ),
+	'same-size same-mtime option replacement invalidates the catalogue' => strlen( $disabled_raw ) === strlen( $replacement_raw )
+		&& 'altered!' === ( $replaced_values['disabled'] ?? null ),
+	'a corrupt option catalogue falls back to canonical files' => 6 === $corrupt_catalogue_result->return_value(),
 	'wpdb state preserves row and native metadata shape' => 1 === $result->return_value() && 1 === $state['num_rows'] && 'https://example.test' === ( $state['last_result'][0]->option_value ?? null ) && 'option_value' === ( $state['col_info'][0]->name ?? null ) && 252 === ( $state['col_info'][0]->type ?? null ),
 	'projection order and MySQL string scalars are preserved' => array( 'option_name', 'option_id', 'autoload' ) === array_map( static fn( object $column ): string => $column->name, $projection_state['col_info'] ) && '1' === ( $projection_state['last_result'][0]->option_id ?? null ),
 	'missing options succeed with an empty result' => 0 === $missing->return_value() && 0 === $missing->wpdb_state()['num_rows'],
@@ -296,6 +320,8 @@ if ( $hardlink_supported ) {
 	@unlink( $root . '/_options/hardlinked.json' );
 }
 @unlink( $outside );
+@unlink( $catalogue_path );
+@rmdir( $root . '/_indexes' );
 @rmdir( $root . '/_options' );
 @rmdir( $root );
 exit( $failed ? 1 : 0 );

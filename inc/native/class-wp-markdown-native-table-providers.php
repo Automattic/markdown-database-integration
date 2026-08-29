@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/class-wp-markdown-native-json-row-stream.php';
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
 require_once __DIR__ . '/class-wp-markdown-native-post-catalogue.php';
+require_once __DIR__ . '/class-wp-markdown-native-option-catalogue.php';
 
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
@@ -828,6 +829,12 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 	private array|WP_Markdown_Query_Result|null $snapshot = null;
 	/** @var array<string,array{signature:string,value:array<string,mixed>|WP_Markdown_Query_Result|null}> */
 	private array $option_cache = array();
+	private WP_Markdown_Native_Option_Catalogue $catalogue;
+
+	public function __construct( string $state_root, WP_Markdown_Native_Table_Schema $schema ) {
+		parent::__construct( $state_root, $schema );
+		$this->catalogue = new WP_Markdown_Native_Option_Catalogue( $state_root );
+	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
 		$predicate = $access->predicate();
@@ -889,18 +896,21 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		}
 
 		sort( $paths, SORT_STRING );
+		$catalogued = $this->catalogue->restore( $root, $paths );
 		$rows  = array();
 		$ids   = array();
 		$names = array();
 		$signatures = array();
-		foreach ( $paths as $path ) {
-			$path_signature = null;
-			$row = $this->read_option( $path, $root, null, $path_signature );
+		$ordered_signatures = array();
+		foreach ( $paths as $offset => $path ) {
+			$path_signature = null === $catalogued ? null : ( $catalogued['signatures'][ $offset ] ?? null );
+			$row = null === $catalogued ? $this->read_option( $path, $root, null, $path_signature ) : ( $catalogued['rows'][ $offset ] ?? null );
 			if ( $row instanceof WP_Markdown_Query_Result ) {
 				$this->signature = $this->options_signature();
 				return $this->snapshot = $row;
 			}
-			if ( basename( $path ) !== WP_Markdown_Canonical_Option_Path::filename( $row['option_name'] )
+			if ( ! is_array( $row ) || true !== $this->schema->validate_row( $row )
+				|| basename( $path ) !== WP_Markdown_Canonical_Option_Path::filename( $row['option_name'] )
 				|| isset( $ids[ $row['option_id'] ] )
 				|| isset( $names[ $row['option_name'] ] )
 			) {
@@ -915,11 +925,15 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			$names[ $row['option_name'] ] = true;
 			$rows[]                       = $row;
 			$signatures[ basename( $path ) ] = (string) $path_signature;
+			$ordered_signatures[] = (string) $path_signature;
 			$key = (string) $this->schema->value_key( 'option_name', $row['option_name'] );
 			$this->option_cache[ $key ] = array(
 				'signature' => (string) $path_signature,
 				'value'     => $row,
 			);
+		}
+		if ( null === $catalogued ) {
+			$this->catalogue->persist( $paths, $rows, $ordered_signatures );
 		}
 		$this->signature = $this->options_signature( $signatures );
 		return $this->snapshot = $rows;

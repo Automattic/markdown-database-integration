@@ -282,18 +282,24 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	 * @return array<int,string>|null
 	 */
 	private function post_type_scope( WP_Markdown_Native_Table_Access $access ): ?array {
-		$predicate = $access->predicate();
-		if ( null === $predicate || 'post_type' !== $predicate->column() ) {
-			return null;
+		$predicates = $access->predicates();
+		if ( array() === $predicates && null !== $access->predicate() ) {
+			$predicates = array( $access->predicate() );
 		}
-		$types = array();
-		foreach ( $predicate->values() as $value ) {
-			if ( ! is_string( $value ) || '' === $value ) {
-				return null;
+		foreach ( $predicates as $predicate ) {
+			if ( 'post_type' !== $predicate->column() ) {
+				continue;
 			}
-			$types[] = $value;
+			$types = array();
+			foreach ( $predicate->values() as $value ) {
+				if ( ! is_string( $value ) || '' === $value ) {
+					return null;
+				}
+				$types[] = $value;
+			}
+			return array() === $types ? null : $types;
 		}
-		return array() === $types ? null : $types;
+		return null;
 	}
 
 	/**

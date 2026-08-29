@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/class-wp-markdown-native-json-row-stream.php';
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
+require_once __DIR__ . '/class-wp-markdown-native-post-catalogue.php';
 
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
@@ -228,10 +229,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 
 final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Provider {
 	private WP_Markdown_Storage $storage;
-	/** @var array<string,array<string,mixed>> */
-	private array $parsed = array();
-	/** @var array<int,array<string,mixed>> */
-	private array $located = array();
+	private WP_Markdown_Native_Post_Catalogue $catalogue;
 
 	public function __construct(
 		string $content_root,
@@ -242,9 +240,9 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
 		// Writing a canonical file makes anything remembered about the corpus
 		// stale, so the parse is dropped the moment one changes.
+		$this->catalogue = new WP_Markdown_Native_Post_Catalogue();
 		$this->storage->set_file_mutation_observer( function (): void {
-			$this->parsed = array();
-			$this->located = array();
+			$this->catalogue->forget();
 		} );
 	}
 
@@ -297,16 +295,17 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		$candidates = array();
 		foreach ( $predicate->values() as $value ) {
 			$id = (int) $value;
-			$file = $this->located[ $id ] ?? null;
+			$file = $this->catalogue->file_for( $id );
 			if ( null === $file ) {
 				return null;
 			}
-			$identity = $this->file_identity( $file['absolute'] );
-			if ( null === $identity ) {
+			$witness = WP_Markdown_File_Witness::take( $file['absolute'] );
+			if ( null === $witness ) {
 				return null;
 			}
-			$remembered = $this->parsed[ $file['absolute'] ] ?? null;
-			if ( null !== $remembered && $remembered['identity'] === $identity ) {
+			$identity = $witness->identity();
+			$remembered = $this->catalogue->recorded( $file['absolute'], $witness );
+			if ( null !== $remembered ) {
 				$post = $remembered['post'];
 				$row = $remembered['row'];
 			} else {
@@ -318,7 +317,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				if ( true !== $this->schema->validate_row( $row ) ) {
 					return null;
 				}
-				$this->parsed[ $file['absolute'] ] = array( 'identity' => $identity, 'post' => $post, 'row' => $row );
+				$this->catalogue->remember( $witness, $file, $post, $row );
 			}
 			if ( $id !== (int) ( $post->ID ?? 0 ) || ! $this->matches( $row, $predicate ) ) {
 				return null;
@@ -338,13 +337,14 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$ids   = array();
 			$predicate = $access->predicate();
 			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $this->post_type_scope( $access ) ) as $file ) {
-				$identity = $this->file_identity( $file['absolute'] );
+				$witness = WP_Markdown_File_Witness::take( $file['absolute'] );
+				$identity = null === $witness ? null : $witness->identity();
 				// Parsing a file is the expensive part of a post read, so a
 				// file that still carries the identity it was parsed under is
 				// taken from the previous parse. Every file is still visited,
 				// so a corpus edited outside this process is still seen.
-				$remembered = $this->parsed[ $file['absolute'] ] ?? null;
-				$reused = null !== $identity && null !== $remembered && $remembered['identity'] === $identity;
+				$remembered = $this->catalogue->recorded( $file['absolute'], $witness );
+				$reused = null !== $remembered;
 				if ( $reused ) {
 					$post = $remembered['post'];
 					$row = $remembered['row'];
@@ -368,13 +368,13 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				$ids[ $id ] = true;
 				// A scan is the one read that sees the whole corpus, so it is
 				// where identity learns which file it lives in.
-				$this->located[ $id ] = $file;
+
 				if ( null === $row ) {
 					$row = $this->row( $post );
 					if ( true !== $this->schema->validate_row( $row ) ) {
 						return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
 					}
-					$this->parsed[ $file['absolute'] ] = array( 'identity' => $identity, 'post' => $post, 'row' => $row );
+					$this->catalogue->remember( $witness, $file, $post, $row );
 				}
 				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
 					continue;

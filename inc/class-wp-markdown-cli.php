@@ -1210,7 +1210,7 @@ class WP_Markdown_CLI {
 	private static function expected_export_path( object $post, string $layout_profile = '' ): string {
 		if ( class_exists( 'WP_Markdown_Content_Layout_Profiles' ) ) {
 			$profile = WP_Markdown_Content_Layout_Profiles::resolve( $layout_profile );
-			if ( empty( $profile['legacy'] ) && ! empty( $profile['path_for_post'] ) && is_callable( $profile['path_for_post'] ) ) {
+			if ( ! empty( $profile['path_for_post'] ) && is_callable( $profile['path_for_post'] ) ) {
 				$path = call_user_func( $profile['path_for_post'], $post, array(), array( 'profile_id' => $profile['id'] ) );
 				if ( is_string( $path ) ) {
 					return ltrim( $path, '/' );

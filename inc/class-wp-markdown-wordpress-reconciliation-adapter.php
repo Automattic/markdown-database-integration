@@ -617,13 +617,15 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 
 	private function expected_path( object $post, ?string $source, ?string $canonical, array $posts, WP_Markdown_Storage $storage, string $layout_profile, string $root ): ?string {
 		$profile = WP_Markdown_Content_Layout_Profiles::resolve( $layout_profile, array( 'content_dir' => $root ) );
-		if ( empty( $profile['legacy'] ) ) {
+		if ( ! empty( $profile['path_for_post'] ) && is_callable( $profile['path_for_post'] ) ) {
 			$path = $storage->profile_path_for_post( $post );
 			return false === $path ? null : $path;
 		}
 		$type = $this->safe_segment( (string) $post->post_type );
-		$legacy = null === $canonical || str_starts_with( $canonical, $type . '/' );
-		if ( ! $legacy ) {
+		// A path already outside the post-type tree was routed by a profile,
+		// so it is left where that profile put it.
+		$in_post_type_tree = null === $canonical || str_starts_with( $canonical, $type . '/' );
+		if ( ! $in_post_type_tree ) {
 			return $source ?? $canonical;
 		}
 		$parts = array( $type );

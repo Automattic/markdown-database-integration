@@ -655,7 +655,8 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		if ( is_link( $directory ) || ! is_dir( $directory ) ) {
 			return $directory_signature . '|unavailable';
 		}
-		return $directory_signature . '|' . $this->path_signature( $path, $digest );
+		$witness = WP_Markdown_File_Witness::take( $path );
+		return $directory_signature . '|' . ( null === $witness ? $this->path_signature( $path, $digest ) : 'file:' . $witness->state() );
 	}
 }
 

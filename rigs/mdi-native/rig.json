@@ -117,8 +117,7 @@
       "read-heavy",
       "wiki-hierarchy",
       "plugin-table-inventory",
-      "transaction-heavy",
-      "concurrent-read"
+      "transaction-heavy"
     ]
   },
   "pipeline": {

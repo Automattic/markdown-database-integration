@@ -67,6 +67,7 @@
         "label": "MDI plugin checkout exists",
         "file": "${components.markdown-database-integration.path}/markdown-database-integration.php",
         "component": "markdown-database-integration",
+        "component_path_contains": "markdown-database-integration",
         "remediation": "Set HOMEBOY_RIG_COMPONENT_PATH__MDI_SQLITE__MARKDOWN_DATABASE_INTEGRATION to an MDI checkout."
       }
     ],

@@ -84,6 +84,7 @@ $exact = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT status, id FR
 $secondary = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, status FROM wp_plugin_jobs WHERE owner_id IN (7) ORDER BY id ASC LIMIT 2' ) );
 $unfiltered = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs LIMIT 2' ) );
 $string_filter = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE status = 'QUEUED'" ) );
+$lower_cross_filter = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE owner_id = 8 OR LOWER(status) = LOWER('QUEUED') ORDER BY id ASC" ) );
 $string_order = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs ORDER BY status ASC' ) );
 $no_identity = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT value FROM wp_no_identity' ) );
 $composite = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT right_id FROM wp_composite WHERE left_id = 3' ) );
@@ -154,6 +155,10 @@ $checks = array(
 		&& 'unsupported_lookup' === ( $string_filter->diagnostic()['reason'] ?? null )
 		&& false === $string_order->return_value()
 		&& 'unsupported_order' === ( $string_order->diagnostic()['reason'] ?? null ),
+	'explicit LOWER equality composes with a cross-column indexed predicate' => array( '2', '10' ) === array_map(
+		static fn( object $row ): string => $row->id,
+		$lower_cross_filter->wpdb_state()['last_result']
+	),
 	'schemas without a numeric primary identity remain unsupported' => false === $no_identity->return_value(),
 	'composite numeric plugin identities execute without table-specific code' => array( '7', '9' ) === array_map(
 		static fn( object $row ): string => $row->right_id,

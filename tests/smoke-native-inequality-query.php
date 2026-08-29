@@ -138,8 +138,8 @@ $checks = array(
 		&& 'unsupported_grammar' === $gt['reason'],
 	'admin status OR returns the visible statuses' => array( '21', '22' ) === $admin_or['ids']
 		&& null === $admin_or['reason'],
-	'cross-column OR fails closed' => false === $cross_or['return']
-		&& 'unsupported_or' === $cross_or['reason'],
+	'cross-column equality OR returns either matching predicate' => array( '21', '22', '23', '24' ) === $cross_or['ids']
+		&& null === $cross_or['reason'],
 	'NOT IN excludes the listed statuses' => array( '21', '22' ) === $not_in['ids']
 		&& null === $not_in['reason'],
 );

@@ -68,6 +68,7 @@ return function (): array {
         ),
         ARRAY_A
     );
+    $task_error = (string) $wpdb->last_error;
 
     $sequence = count($all_rows);
     $replaced = $wpdb->replace($table, [
@@ -81,8 +82,11 @@ return function (): array {
         'updated_at'      => '2026-08-29 00:00:00',
     ]);
 
-    if (!is_array($all_rows) || !is_array($repo_rows) || !is_array($task_rows) || false === $replaced || '' !== (string) $wpdb->last_error) {
-        throw new RuntimeException('Plugin-table inventory workload failed: ' . (string) $wpdb->last_error);
+    if (!is_array($all_rows) || !is_array($repo_rows) || !is_array($task_rows) || false === $replaced || '' !== $task_error || '' !== (string) $wpdb->last_error) {
+        throw new RuntimeException('Plugin-table inventory workload failed: ' . ($task_error ?: (string) $wpdb->last_error));
+    }
+    if (count($all_rows) < 500 || 20 !== count($repo_rows) || 5 !== count($task_rows)) {
+        throw new RuntimeException('Plugin-table inventory workload returned incorrect result counts.');
     }
 
     return [

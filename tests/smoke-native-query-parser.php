@@ -35,6 +35,7 @@ $unsupported_gt = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status > '
 $wordpress_admin_or_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish' OR wp_posts.post_status = 'future' OR wp_posts.post_status = 'draft' OR wp_posts.post_status = 'pending' OR wp_posts.post_status = 'private'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 20" );
 $wordpress_admin_or_plan = $wordpress_admin_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_or_ast ) : $wordpress_admin_or_ast;
 $cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'post' OR post_status = 'publish'" );
+$lower_cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE guid = 'https://example.test/42' OR LOWER(post_name) = LOWER('BENCH-42')" );
 $inequality_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status <> 'trash' OR post_status <> 'auto-draft'" );
 $like_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_title LIKE '%Hello%'" );
 $like_plan = $like_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $like_ast ) : $like_ast;
@@ -149,8 +150,15 @@ $checks = array(
 		&& 2 === count( $wordpress_admin_or_plan->predicates() )
 		&& 'IN' === $wordpress_admin_or_plan->predicates()[1]->operator()
 		&& array( 'publish', 'future', 'draft', 'pending', 'private' ) === $wordpress_admin_or_plan->predicates()[1]->values(),
-	'cross-column OR fails closed' => false === $cross_column_or->return_value()
-		&& 'unsupported_or' === ( $cross_column_or->diagnostic()['reason'] ?? null ),
+	'cross-column equality OR retains bounded alternatives' => $cross_column_or instanceof WP_Markdown_Native_Query_Plan
+		&& 'OR' === $cross_column_or->predicates()[0]->operator()
+		&& array( 'post_type', 'post_status' ) === array_map(
+			static fn( WP_Markdown_Native_Query_Predicate $predicate ): string => $predicate->column(),
+			$cross_column_or->predicates()[0]->any()
+		),
+	'LOWER equality composes with cross-column OR' => $lower_cross_column_or instanceof WP_Markdown_Native_Query_Plan
+		&& 'OR' === $lower_cross_column_or->predicates()[0]->operator()
+		&& 'LOWER =' === $lower_cross_column_or->predicates()[0]->any()[1]->operator(),
 	'inequality OR fails closed' => false === $inequality_or->return_value()
 		&& 'unsupported_or' === ( $inequality_or->diagnostic()['reason'] ?? null ),
 	'composite ORDER BY keeps every key' => $composite_order_plan instanceof WP_Markdown_Native_Query_Plan

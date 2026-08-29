@@ -6,6 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-native-json-row-stream.php';
+require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
 
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
@@ -457,20 +458,8 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 
 	/** @return array{dev:int,ino:int,mode:int,size:int,mtime:int,ctime:int,nlink:int}|null */
 	private function file_identity( string $path ): ?array {
-		clearstatcache( true, $path );
-		$stat = @lstat( $path );
-		if ( ! is_array( $stat ) || is_link( $path ) || 1 !== ( $stat['nlink'] ?? 1 ) ) {
-			return null;
-		}
-		return array(
-			'dev'   => (int) $stat['dev'],
-			'ino'   => (int) $stat['ino'],
-			'mode'  => (int) $stat['mode'],
-			'size'  => (int) $stat['size'],
-			'mtime' => (int) $stat['mtime'],
-			'ctime' => (int) $stat['ctime'],
-			'nlink' => (int) $stat['nlink'],
-		);
+		$witness = WP_Markdown_File_Witness::take( $path );
+		return null === $witness ? null : $witness->identity();
 	}
 
 	/** @param array{dev:int,ino:int,mode:int,size:int,mtime:int,ctime:int,nlink:int} $identity */

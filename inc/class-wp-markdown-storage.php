@@ -649,7 +649,7 @@ class WP_Markdown_Storage {
 			if ( ! str_ends_with( $entry, '.md' ) ) {
 				continue;
 			}
-			if ( $strict && ( ! $this->existing_path_is_safe( $path ) || ! is_array( $stat ) || 1 !== ( $stat['nlink'] ?? 1 ) ) ) {
+			if ( $strict && ( ! is_array( $stat ) || 0100000 !== $mode || 1 !== ( $stat['nlink'] ?? 1 ) ) ) {
 				throw new RuntimeException( 'Markdown DB: Canonical Markdown file is unsafe.' );
 			}
 

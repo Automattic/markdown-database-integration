@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/class-wp-markdown-native-json-row-stream.php';
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
 require_once __DIR__ . '/class-wp-markdown-native-post-catalogue.php';
+require_once __DIR__ . '/class-wp-markdown-native-option-catalogue.php';
 
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
@@ -253,13 +254,14 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	public function __construct(
 		string $content_root,
 		WP_Markdown_Native_Table_Schema $schema,
-		?WP_Markdown_Storage $storage = null
+		?WP_Markdown_Storage $storage = null,
+		?string $state_root = null
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
 		// Writing a canonical file makes anything remembered about the corpus
 		// stale, so the parse is dropped the moment one changes.
-		$this->catalogue = new WP_Markdown_Native_Post_Catalogue();
+		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
 		$this->storage->set_file_mutation_observer( function (): void {
 			$this->catalogue->forget();
 		} );
@@ -355,7 +357,11 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$posts = array();
 			$ids   = array();
 			$predicate = $access->predicate();
-			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $this->post_type_scope( $access ) ) as $file ) {
+			$scope = $this->post_type_scope( $access );
+			if ( null === $scope ) {
+				$this->catalogue->begin_scan();
+			}
+			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $scope ) as $file ) {
 				// The manifest looked at this file to yield it, so its witness
 				// is the one taken then.
 				$witness = $file['witness'] ?? WP_Markdown_File_Witness::take( $file['absolute'] );
@@ -364,7 +370,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				// file that still carries the identity it was parsed under is
 				// taken from the previous parse. Every file is still visited,
 				// so a corpus edited outside this process is still seen.
-				$remembered = $this->catalogue->recorded( $file['absolute'], $witness );
+				$remembered = $this->catalogue->recorded( $file['absolute'], $witness, true );
 				$reused = null !== $remembered;
 				if ( $reused ) {
 					$post = $remembered['post'];
@@ -395,12 +401,15 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 					if ( true !== $this->schema->validate_row( $row ) ) {
 						return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
 					}
-					$this->catalogue->remember( $witness, $file, $post, $row );
 				}
+				$this->catalogue->remember( $witness, $file, $post, $row );
 				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
 					continue;
 				}
 				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
+			}
+			if ( null === $scope ) {
+				$this->catalogue->complete_scan();
 			}
 
 			return $this->ordered_projection( $posts, $access );
@@ -510,9 +519,9 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	 * Report whether a read could be answered in the order the file holds.
 	 *
 	 * Only an ascending single-column order can be satisfied by reading
-	 * forwards, and only a single-valued restriction selects rows in file
-	 * order, because the offsets an index holds for one value ascend. Whether
-	 * the file really is in that order is proven while it is read.
+	 * forwards. Keyed reads use the decoded snapshot because streaming would
+	 * rescan the complete file for every lookup instead of reusing its index.
+	 * Whether the file really is in order is proven while it is read.
 	 */
 	private function answerable_in_file_order( WP_Markdown_Native_Table_Access $access ): bool {
 		$order_by = $access->order_by();
@@ -522,8 +531,7 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		if ( ! $this->schema->allows_order( (string) $order_by[0]['column'] ) ) {
 			return false;
 		}
-		$predicate = $access->predicate();
-		return null === $predicate || 1 === count( $predicate->values() );
+		return null === $access->predicate();
 	}
 
 	/**
@@ -646,7 +654,8 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		if ( is_link( $directory ) || ! is_dir( $directory ) ) {
 			return $directory_signature . '|unavailable';
 		}
-		return $directory_signature . '|' . $this->path_signature( $path, $digest );
+		$witness = WP_Markdown_File_Witness::take( $path );
+		return $directory_signature . '|' . ( null === $witness ? $this->path_signature( $path, $digest ) : 'file:' . $witness->state() );
 	}
 }
 
@@ -820,6 +829,12 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 	private array|WP_Markdown_Query_Result|null $snapshot = null;
 	/** @var array<string,array{signature:string,value:array<string,mixed>|WP_Markdown_Query_Result|null}> */
 	private array $option_cache = array();
+	private WP_Markdown_Native_Option_Catalogue $catalogue;
+
+	public function __construct( string $state_root, WP_Markdown_Native_Table_Schema $schema ) {
+		parent::__construct( $state_root, $schema );
+		$this->catalogue = new WP_Markdown_Native_Option_Catalogue( $state_root );
+	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
 		$predicate = $access->predicate();
@@ -881,18 +896,21 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		}
 
 		sort( $paths, SORT_STRING );
+		$catalogued = $this->catalogue->restore( $root, $paths );
 		$rows  = array();
 		$ids   = array();
 		$names = array();
 		$signatures = array();
-		foreach ( $paths as $path ) {
-			$path_signature = null;
-			$row = $this->read_option( $path, $root, null, $path_signature );
+		$ordered_signatures = array();
+		foreach ( $paths as $offset => $path ) {
+			$path_signature = null === $catalogued ? null : ( $catalogued['signatures'][ $offset ] ?? null );
+			$row = null === $catalogued ? $this->read_option( $path, $root, null, $path_signature ) : ( $catalogued['rows'][ $offset ] ?? null );
 			if ( $row instanceof WP_Markdown_Query_Result ) {
 				$this->signature = $this->options_signature();
 				return $this->snapshot = $row;
 			}
-			if ( basename( $path ) !== WP_Markdown_Canonical_Option_Path::filename( $row['option_name'] )
+			if ( ! is_array( $row ) || true !== $this->schema->validate_row( $row )
+				|| basename( $path ) !== WP_Markdown_Canonical_Option_Path::filename( $row['option_name'] )
 				|| isset( $ids[ $row['option_id'] ] )
 				|| isset( $names[ $row['option_name'] ] )
 			) {
@@ -907,11 +925,15 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			$names[ $row['option_name'] ] = true;
 			$rows[]                       = $row;
 			$signatures[ basename( $path ) ] = (string) $path_signature;
+			$ordered_signatures[] = (string) $path_signature;
 			$key = (string) $this->schema->value_key( 'option_name', $row['option_name'] );
 			$this->option_cache[ $key ] = array(
 				'signature' => (string) $path_signature,
 				'value'     => $row,
 			);
+		}
+		if ( null === $catalogued ) {
+			$this->catalogue->persist( $paths, $rows, $ordered_signatures );
 		}
 		$this->signature = $this->options_signature( $signatures );
 		return $this->snapshot = $rows;

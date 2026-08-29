@@ -58,6 +58,13 @@ $created = $runtime->execute(
 		'wp_'
 	)
 );
+$runtime->execute(
+	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_jobs (id BIGINT NOT NULL AUTO_INCREMENT, label VARCHAR(60) NULL, PRIMARY KEY (id))',
+		'wp_'
+	)
+);
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_jobs (label) VALUES ('ready')", 'wp_' ) );
 
 foreach ( array(
 	"INSERT INTO wp_agents (instance_key, label) VALUES (NULL, 'first')",
@@ -68,14 +75,14 @@ foreach ( array(
 }
 
 /** @return array<int,array<string,mixed>> */
-function table_rows( string $root ): array {
-	$rows = json_decode( (string) file_get_contents( $root . '/_tables/agents.json' ), true );
+function table_rows( string $root, string $table = 'agents' ): array {
+	$rows = json_decode( (string) file_get_contents( $root . '/_tables/' . $table . '.json' ), true );
 	return is_array( $rows ) ? $rows : array();
 }
 
 /** @return array<int,mixed> */
-function column_values( string $root, string $column ): array {
-	return array_map( static fn( array $row ): mixed => $row[ $column ] ?? null, table_rows( $root ) );
+function column_values( string $root, string $column, string $table = 'agents' ): array {
+	return array_map( static fn( array $row ): mixed => $row[ $column ] ?? null, table_rows( $root, $table ) );
 }
 
 // The corpus blocker: a disjunctive restriction over one column including NULL.
@@ -121,6 +128,18 @@ $null_equality = $runtime->execute(
 	new WP_Markdown_Query_Request( 'UPDATE wp_agents SET label = 1 WHERE instance_key = NULL', 'wp_' )
 );
 
+// A writer for one canonical table must not serialize an unrelated table.
+$agents_lock_path = $root . '/_tables/.mdi-native-' . hash( 'sha256', 'agents' ) . '.lock';
+$held_agents_lock = fopen( $agents_lock_path, 'c+b' );
+if ( false === $held_agents_lock || ! flock( $held_agents_lock, LOCK_EX | LOCK_NB ) ) {
+	throw new RuntimeException( 'Failed to hold the agents table lock fixture.' );
+}
+$unrelated_write = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_jobs SET label = 'running' WHERE id = 1", 'wp_' )
+);
+flock( $held_agents_lock, LOCK_UN );
+fclose( $held_agents_lock );
+
 // A rolled back generic write must leave the snapshot untouched.
 $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION', 'wp_' ) );
 $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_agents SET label = 'rolled-back' WHERE id = 1", 'wp_' ) );
@@ -143,6 +162,8 @@ $checks = array(
 		&& 'unsupported_mutation_table' === ( $unknown_table->diagnostic()['reason'] ?? null ),
 	'an OR group across columns updates its disjunction' => 1 === $cross_column_or->return_value(),
 	'NULL equality fails closed' => false === $null_equality->return_value(),
+	'an unrelated table writes while another table is locked' => 1 === $unrelated_write->return_value()
+		&& array( 'running' ) === column_values( $root, 'label', 'jobs' ),
 	'a rolled back generic write restores the snapshot' => array( 'x', 'second', 'one; two' ) === $after_rollback,
 );
 

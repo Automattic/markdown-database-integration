@@ -15,7 +15,8 @@ final class WP_Markdown_Native_Table_Insert {
 		private readonly array $values,
 		private readonly ?array $unless_exists = null,
 		private readonly bool $ignore_duplicate = false,
-		private readonly ?array $upsert_columns = null
+		private readonly ?array $upsert_columns = null,
+		private readonly bool $replace = false
 	) {}
 
 	public function table(): string {
@@ -39,6 +40,10 @@ final class WP_Markdown_Native_Table_Insert {
 	/** @return array<int,string>|null */
 	public function upsert_columns(): ?array {
 		return $this->upsert_columns;
+	}
+
+	public function is_replace(): bool {
+		return $this->replace;
 	}
 }
 

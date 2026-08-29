@@ -34,12 +34,20 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		try {
 			$this->tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql );
 			$this->position = 0;
-			$this->word( 'INSERT' );
+			$replace = 0 === strcasecmp( 'REPLACE', (string) $this->current()->value() );
+			$this->word( $replace ? 'REPLACE' : 'INSERT' );
 			$ignore_duplicate = 0 === strcasecmp( 'IGNORE', (string) $this->current()->value() );
 			if ( $ignore_duplicate ) {
+				if ( $replace ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native does not combine REPLACE with IGNORE.' );
+				}
 				++$this->position;
 			}
-			$this->word( 'INTO' );
+			if ( $replace && ! $this->is_word( 'INTO' ) ) {
+				// MySQL permits the INTO keyword to be omitted for REPLACE.
+			} else {
+				$this->word( 'INTO' );
+			}
 			$table = $this->identifier();
 			$columns = $this->identifier_list();
 			if ( 0 === strcasecmp( 'SELECT', (string) $this->current()->value() ) ) {
@@ -64,7 +72,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			}
 			$upsert_columns = null;
 			if ( 0 === strcasecmp( 'ON', (string) $this->current()->value() ) ) {
-				if ( $ignore_duplicate || null !== $unless_exists ) {
+				if ( $replace || $ignore_duplicate || null !== $unless_exists ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native cannot combine INSERT IGNORE or INSERT SELECT FROM DUAL with ON DUPLICATE KEY UPDATE.' );
 				}
 				$upsert_columns = $this->upsert_assignments( $columns );
@@ -79,7 +87,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				if ( false === $row ) {
 					return $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' );
 				}
-				$inserts[] = new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_columns );
+				$inserts[] = new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_columns, $replace );
 			}
 			return $inserts;
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {

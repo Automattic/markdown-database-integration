@@ -120,7 +120,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 			}
 			$path = $directory . '/' . $suffix . '.json';
-			$index = null !== $insert->upsert_columns() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
+			$index = $insert->is_replace() || null !== $insert->upsert_columns() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
 				? null
 				: $this->index->load( $suffix, $path );
 			if ( null !== $index ) {
@@ -168,8 +168,21 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 			}
-			$duplicate = $this->duplicate_row_offset( $row, $rows, $definition, $schema );
-			if ( null !== $duplicate ) {
+			$duplicates = $this->duplicate_row_offsets( $row, $rows, $definition, $schema );
+			if ( array() !== $duplicates ) {
+				if ( $insert->is_replace() ) {
+					foreach ( $duplicates as $duplicate ) {
+						unset( $rows[ $duplicate ] );
+					}
+					$rows[] = $row;
+					$rows = array_values( $rows );
+					$written = $this->write( $path, $rows );
+					if ( $written instanceof WP_Markdown_Query_Result ) {
+						return $written;
+					}
+					$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+					return WP_Markdown_Query_Result::mutated( count( $duplicates ) + 1, $this->auto_increment_value( $row, $definition ) );
+				}
 				if ( $insert->ignores_duplicate() ) {
 					return WP_Markdown_Query_Result::mutated( 0 );
 				}
@@ -177,6 +190,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( null === $upsert_columns ) {
 					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 				}
+				$duplicate = $duplicates[0];
 				$updated = $rows[ $duplicate ];
 				foreach ( $upsert_columns as $column ) {
 					$updated[ $column ] = $row[ $column ];
@@ -195,14 +209,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					return $written;
 				}
 				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
-				$insert_id = 0;
-				foreach ( $definition['columns'] as $name => $column ) {
-					if ( true === ( $column['auto_increment'] ?? false ) ) {
-						$insert_id = (int) $updated[ $name ];
-						break;
-					}
-				}
-				return WP_Markdown_Query_Result::mutated( 2, $insert_id );
+				return WP_Markdown_Query_Result::mutated( 2, $this->auto_increment_value( $updated, $definition ) );
 			}
 			$rows[] = $row;
 			$written = $this->write( $path, $rows );
@@ -210,14 +217,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $written;
 			}
 			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
-			$insert_id = 0;
-			foreach ( $definition['columns'] as $name => $column ) {
-				if ( true === ( $column['auto_increment'] ?? false ) ) {
-					$insert_id = (int) $row[ $name ];
-					break;
-				}
-			}
-			return WP_Markdown_Query_Result::mutated( 1, $insert_id );
+			return WP_Markdown_Query_Result::mutated( 1, $this->auto_increment_value( $row, $definition ) );
 		} finally {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
@@ -231,12 +231,17 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 * @param array<string,mixed> $definition Compiled definition.
 	 */
 	private function insert_result( array $row, array $definition ): WP_Markdown_Query_Result {
+		return WP_Markdown_Query_Result::mutated( 1, $this->auto_increment_value( $row, $definition ) );
+	}
+
+	/** @param array<string,mixed> $row @param array<string,mixed> $definition */
+	private function auto_increment_value( array $row, array $definition ): int {
 		foreach ( $definition['columns'] as $name => $column ) {
 			if ( true === ( $column['auto_increment'] ?? false ) ) {
-				return WP_Markdown_Query_Result::mutated( 1, (int) $row[ $name ] );
+				return (int) $row[ $name ];
 			}
 		}
-		return WP_Markdown_Query_Result::mutated( 1, 0 );
+		return 0;
 	}
 
 	/**
@@ -366,6 +371,13 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 	/** @param array<string,mixed> $row @param array<int,array<string,mixed>> $rows @param array<string,mixed> $definition */
 	private function duplicate_row_offset( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): ?int {
+		$duplicates = $this->duplicate_row_offsets( $row, $rows, $definition, $schema );
+		return $duplicates[0] ?? null;
+	}
+
+	/** @return array<int,int> */
+	private function duplicate_row_offsets( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): array {
+		$duplicates = array();
 		foreach ( $definition['indexes'] as $index ) {
 			if ( true !== ( $index['unique'] ?? false ) ) {
 				continue;
@@ -387,11 +399,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					);
 				}
 				if ( $matches ) {
-					return (int) $offset;
+					$duplicates[ (int) $offset ] = (int) $offset;
 				}
 			}
 		}
-		return null;
+		return array_values( $duplicates );
 	}
 
 	/** @param array<string,mixed> $definition */

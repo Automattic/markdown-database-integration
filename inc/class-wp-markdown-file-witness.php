@@ -31,8 +31,21 @@ final class WP_Markdown_File_Witness {
 	 */
 	public static function take( string $path ): ?self {
 		clearstatcache( true, $path );
-		$stat = @lstat( $path );
-		if ( ! is_array( $stat ) || is_link( $path ) || 1 !== ( $stat['nlink'] ?? 1 ) ) {
+		return self::from_stat( $path, @lstat( $path ) );
+	}
+
+	/**
+	 * Witness a file from a look already taken at it.
+	 *
+	 * A caller that has just looked at a file knows everything a witness is,
+	 * so it can say so rather than making the filesystem repeat itself. The
+	 * look must be an lstat of this path and no older than the caller is
+	 * willing to vouch for.
+	 *
+	 * @param array<string|int,int>|false $stat
+	 */
+	public static function from_stat( string $path, array|false $stat ): ?self {
+		if ( ! is_array( $stat ) || 1 !== ( $stat['nlink'] ?? 1 ) || 0120000 === ( ( $stat['mode'] ?? 0 ) & 0170000 ) ) {
 			return null;
 		}
 		return new self(

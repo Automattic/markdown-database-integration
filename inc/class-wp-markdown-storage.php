@@ -42,6 +42,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-file-witness.php';
+
 if ( ! class_exists( 'WP_Markdown_Yaml' ) ) {
 	require_once __DIR__ . '/class-wp-markdown-yaml.php';
 }
@@ -807,11 +809,15 @@ class WP_Markdown_Storage {
 				$derived_parent_id = $current_parent_id;
 			}
 
+			// The look taken above is everything a witness is, and it was
+			// taken a moment ago, so the entry carries it rather than leaving
+			// the reader to ask the filesystem the same question again.
 			yield $this->relative_path( $path ) => array(
 				'mtime'     => (int) ( $stat['mtime'] ?? 0 ),
 				'size'      => (int) ( $stat['size'] ?? 0 ),
 				'absolute'  => $path,
 				'parent_id' => $derived_parent_id,
+				'witness'   => WP_Markdown_File_Witness::from_stat( $path, $stat ),
 			);
 		}
 	}

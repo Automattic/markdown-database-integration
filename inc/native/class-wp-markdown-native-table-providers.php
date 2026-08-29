@@ -356,7 +356,9 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$ids   = array();
 			$predicate = $access->predicate();
 			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $this->post_type_scope( $access ) ) as $file ) {
-				$witness = WP_Markdown_File_Witness::take( $file['absolute'] );
+				// The manifest looked at this file to yield it, so its witness
+				// is the one taken then.
+				$witness = $file['witness'] ?? WP_Markdown_File_Witness::take( $file['absolute'] );
 				$identity = null === $witness ? null : $witness->identity();
 				// Parsing a file is the expensive part of a post read, so a
 				// file that still carries the identity it was parsed under is

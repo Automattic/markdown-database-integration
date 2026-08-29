@@ -55,6 +55,9 @@
       },
       {
         "path": "${package.root}/tests/bench/plugin-table-inventory.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/transaction-heavy.php"
       }
     ]
   },
@@ -65,7 +68,8 @@
       "obsidian-bursty",
       "read-heavy",
       "wiki-hierarchy",
-      "plugin-table-inventory"
+      "plugin-table-inventory",
+      "transaction-heavy"
     ]
   },
   "pipeline": {

@@ -5,6 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-native-json-row-stream.php';
+
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
 	protected string $state_root;
@@ -37,7 +39,12 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	}
 
 	/** @return mixed|WP_Markdown_Query_Result */
-	protected function read_json( string $path, string $root, string $kind, ?string &$digest = null ) {
+	/**
+	 * Open a canonical state file, proving it is the file it claims to be.
+	 *
+	 * @return resource|WP_Markdown_Query_Result
+	 */
+	protected function open_verified( string $path, string $root, string $kind ) {
 		$real = realpath( $path );
 		if ( is_link( $path ) || false === $real || ! is_file( $real ) || ! $this->contains( $root, $real ) ) {
 			return $this->failure(
@@ -56,24 +63,33 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 			);
 		}
 
-		try {
-			$opened  = fstat( $handle );
-			$current = @lstat( $real );
-			if ( false === $opened
-				|| false === $current
-				|| $opened['dev'] !== $current['dev']
-				|| $opened['ino'] !== $current['ino']
-				|| 1 !== ( $opened['nlink'] ?? 1 )
-				|| is_link( $real )
-				|| $root !== realpath( dirname( $path ) )
-			) {
-				return $this->failure(
-					'markdown_db_native_unsafe_path',
-					'changed_' . $kind,
-					'The canonical state file changed while it was being opened.'
-				);
-			}
+		$opened  = fstat( $handle );
+		$current = @lstat( $real );
+		if ( false === $opened
+			|| false === $current
+			|| $opened['dev'] !== $current['dev']
+			|| $opened['ino'] !== $current['ino']
+			|| 1 !== ( $opened['nlink'] ?? 1 )
+			|| is_link( $real )
+			|| $root !== realpath( dirname( $path ) )
+		) {
+			fclose( $handle );
+			return $this->failure(
+				'markdown_db_native_unsafe_path',
+				'changed_' . $kind,
+				'The canonical state file changed while it was being opened.'
+			);
+		}
+		return $handle;
+	}
 
+	protected function read_json( string $path, string $root, string $kind, ?string &$digest = null ) {
+		$handle = $this->open_verified( $path, $root, $kind );
+		if ( $handle instanceof WP_Markdown_Query_Result ) {
+			return $handle;
+		}
+
+		try {
 			$contents = stream_get_contents( $handle );
 			if ( false === $contents ) {
 				return $this->failure(
@@ -373,6 +389,12 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		if ( ! $this->loaded && $this->answerable_in_file_order( $access ) ) {
+			$streamed = $this->streamed_rows( $access );
+			if ( null !== $streamed ) {
+				return $streamed;
+			}
+		}
 		$rows = $this->snapshot();
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
 			return $rows;
@@ -381,6 +403,102 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 			$rows = $this->indexed_rows( $rows, $access->predicate() );
 		}
 		return $this->bounded_rows( $rows, $access );
+	}
+
+	/**
+	 * Report whether a read could be answered in the order the file holds.
+	 *
+	 * Only an ascending single-column order can be satisfied by reading
+	 * forwards, and only a single-valued restriction selects rows in file
+	 * order, because the offsets an index holds for one value ascend. Whether
+	 * the file really is in that order is proven while it is read.
+	 */
+	private function answerable_in_file_order( WP_Markdown_Native_Table_Access $access ): bool {
+		$order_by = $access->order_by();
+		if ( 1 !== count( $order_by ) || true === ( $order_by[0]['descending'] ?? false ) ) {
+			return false;
+		}
+		if ( ! $this->schema->allows_order( (string) $order_by[0]['column'] ) ) {
+			return false;
+		}
+		$predicate = $access->predicate();
+		return null === $predicate || 1 === count( $predicate->values() );
+	}
+
+	/**
+	 * Answer a bounded read without holding the whole snapshot in memory.
+	 *
+	 * Returns null when the file cannot be streamed, so the caller falls back
+	 * to the decoded snapshot and the read still succeeds.
+	 *
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result|null
+	 */
+	private function streamed_rows( WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result|null {
+		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_tables';
+		$root = realpath( $directory );
+		if ( is_link( $directory ) || false === $root || ! is_dir( $root ) || ! $this->contains( $this->state_root, $root ) ) {
+			return null;
+		}
+		$path = $root . DIRECTORY_SEPARATOR . $this->filename;
+		if ( ! file_exists( $path ) || is_link( $path ) ) {
+			return null;
+		}
+		$handle = $this->open_verified( $path, $root, 'table_file' );
+		if ( $handle instanceof WP_Markdown_Query_Result ) {
+			return null;
+		}
+
+		$predicate = $access->predicate();
+		$column = null === $predicate ? null : $predicate->column();
+		$wanted = null === $predicate ? null : $this->schema->value_key( $column, $predicate->values()[0] );
+		if ( null !== $predicate && null === $wanted ) {
+			fclose( $handle );
+			return null;
+		}
+
+		$order_by = $access->order_by();
+		$selected = array();
+		$seen = array();
+		$previous = null;
+		try {
+			foreach ( WP_Markdown_Native_JSON_Row_Stream::rows( $handle ) as $source ) {
+				if ( ! is_array( $source ) || true !== $this->schema->validate_row( $source ) ) {
+					return null;
+				}
+				// Reading forwards only answers the query while the file is
+				// already in the requested order, so that is proven row by row
+				// and abandoned the moment it does not hold.
+				if ( null !== $this->schema->unsupported_order_reason( $order_by, array( $source ) )
+					|| ( null !== $previous && 0 < $this->schema->compare_ordered_rows( $previous, $source, $order_by ) )
+				) {
+					return null;
+				}
+				$previous = $source;
+				if ( null !== $column ) {
+					if ( $wanted !== $this->schema->value_key( $column, $source[ $column ] ?? null ) ) {
+						continue;
+					}
+					$identity = $this->schema->identity_key( $source );
+					if ( null === $identity || isset( $seen[ $identity ] ) ) {
+						continue;
+					}
+					$seen[ $identity ] = true;
+				}
+				$row = array();
+				foreach ( $access->projection() as $projected ) {
+					$row[ $projected ] = $source[ $projected ] ?? null;
+				}
+				$selected[] = $row;
+				if ( count( $selected ) >= $access->limit() ) {
+					break;
+				}
+			}
+		} catch ( JsonException ) {
+			return null;
+		} finally {
+			fclose( $handle );
+		}
+		return $selected;
 	}
 
 	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */

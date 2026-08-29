@@ -45,6 +45,7 @@ if ( 2 === $argc ) {
 		'native/class-wp-markdown-native-sql-tokenizer.php',
 		'native/class-wp-markdown-native-query-ast.php',
 		'native/class-wp-markdown-native-query-parser.php',
+		'native/class-wp-markdown-native-json-row-stream.php',
 		'native/class-wp-markdown-native-table-providers.php',
 		'native/class-wp-markdown-native-option-mutations.php',
 		'native/class-wp-markdown-native-table-index.php',

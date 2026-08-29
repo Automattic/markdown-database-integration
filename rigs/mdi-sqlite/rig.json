@@ -19,7 +19,38 @@
         "wordpress": {
           "bench_env": {
             "BENCH_CORPUS_SIZE": "100"
-          }
+          },
+          "wordpress_runtime_workloads": [
+            {
+              "id": "concurrent-read",
+              "source": "rig",
+              "overridesDiscovered": true,
+              "run": [
+                {
+                  "type": "external-http-load",
+                  "url": "/wp-json/mdi-bench/v1/concurrent-read",
+                  "requestCount": 20,
+                  "concurrency": 4,
+                  "expectedStatuses": [
+                    200
+                  ],
+                  "metric-prefix": "concurrent_read"
+                }
+              ]
+            }
+          ],
+          "wp_config_defines": {
+            "MDI_BENCH_EXPECTED_WPDB_CLASS": "WP_SQLite_DB"
+          },
+          "wp_codebox_bench_mounts": [
+            {
+              "source": "${components.markdown-database-integration.path}/tests/bench-fixtures/concurrent-read-endpoint.php",
+              "target": "/wordpress/wp-content/mu-plugins/mdi-bench-concurrent-read.php",
+              "type": "file",
+              "mode": "readonly",
+              "phase": "pre-install"
+            }
+          ]
         }
       }
     }
@@ -69,7 +100,8 @@
       "read-heavy",
       "wiki-hierarchy",
       "plugin-table-inventory",
-      "transaction-heavy"
+      "transaction-heavy",
+      "concurrent-read"
     ]
   },
   "pipeline": {

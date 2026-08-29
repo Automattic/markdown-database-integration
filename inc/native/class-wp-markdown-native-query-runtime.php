@@ -193,7 +193,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 		}
 		if ( 'posts' === $suffix ) {
 			$posts = self::posts_schema();
-			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $content_root, $posts ) );
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $content_root, $posts, self::shared_storage( $content_root ) ) );
 			return true;
 		}
 		$bespoke = array(
@@ -247,7 +247,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			new WP_Markdown_Native_Post_Mutation_Runtime(
 				$registry,
 				$parser,
-				new WP_Markdown_Storage( $content_root ?? $state_root )
+				self::shared_storage( $content_root ?? $state_root )
 			)
 		);
 	}
@@ -271,6 +271,24 @@ final class WP_Markdown_Native_Runtime_Factory {
 			}
 		}
 		return false;
+	}
+
+	/** @var array<string,WP_Markdown_Storage> */
+	private static array $storages = array();
+
+	/**
+	 * One storage instance per canonical content root.
+	 *
+	 * Reading posts and writing them have to agree about the corpus, because
+	 * a read that remembers what it parsed must be told when a write changes
+	 * a file underneath it.
+	 */
+	private static function shared_storage( string $content_root ): WP_Markdown_Storage {
+		$key = rtrim( $content_root, '/\\' );
+		if ( ! isset( self::$storages[ $key ] ) ) {
+			self::$storages[ $key ] = new WP_Markdown_Storage( $content_root );
+		}
+		return self::$storages[ $key ];
 	}
 
 	public static function register_json_snapshot(

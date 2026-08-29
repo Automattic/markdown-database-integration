@@ -1,0 +1,6 @@
+{
+    "option_id": 14,
+    "option_name": "mailserver_url",
+    "option_value": "mail.example.test",
+    "autoload": "on"
+}

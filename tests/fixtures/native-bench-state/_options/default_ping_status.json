@@ -1,0 +1,6 @@
+{
+    "option_id": 20,
+    "option_name": "default_ping_status",
+    "option_value": "open",
+    "autoload": "on"
+}

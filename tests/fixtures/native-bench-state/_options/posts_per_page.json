@@ -1,0 +1,6 @@
+{
+    "option_id": 22,
+    "option_name": "posts_per_page",
+    "option_value": "10",
+    "autoload": "on"
+}

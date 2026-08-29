@@ -1,0 +1,6 @@
+{
+    "option_id": 10,
+    "option_name": "require_name_email",
+    "option_value": "1",
+    "autoload": "on"
+}

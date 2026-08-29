@@ -1,0 +1,6 @@
+{
+    "option_id": 12,
+    "option_name": "posts_per_rss",
+    "option_value": "10",
+    "autoload": "on"
+}

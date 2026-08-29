@@ -14,9 +14,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_Transaction_Journal {
 
 	private const JOURNAL_DIRECTORY = '_journal';
-	private const JOURNAL_FILE      = 'native-transaction.json';
+	private const JOURNAL_PREFIX    = 'native-transaction-';
+	private const JOURNAL_SUFFIX    = '.json';
+	private const CLAIM_SUFFIX      = '.lock';
 
 	private string $state_root;
+	private string $owner;
+	/** @var resource|null */
+	private $claim = null;
 	private bool $active = false;
 	private bool $autocommit = true;
 
@@ -32,24 +37,90 @@ final class WP_Markdown_Native_Transaction_Journal {
 			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
 		}
 		$this->state_root = rtrim( $root, DIRECTORY_SEPARATOR );
+		$this->owner = bin2hex( random_bytes( 8 ) );
 	}
 
 	public function is_active(): bool {
 		return $this->active;
 	}
 
-	/** Restore any journal left behind by a process that terminated mid-transaction. */
+	/**
+	 * Restore journals left behind by a process that terminated mid-transaction.
+	 *
+	 * A journal belongs to the writer that opened it, which holds it locked
+	 * for as long as it lives. Another writer may only restore a journal it
+	 * can take that lock on, because an unheld lock is what proves the writer
+	 * that wrote it is gone. This is what keeps one process from rolling back
+	 * a transaction another process is still running.
+	 */
 	public function recover(): bool {
-		$path = $this->journal_path();
-		if ( ! is_file( $path ) ) {
+		$directory = $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY;
+		if ( ! is_dir( $directory ) || is_link( $directory ) ) {
 			return false;
 		}
-		$entries = json_decode( (string) file_get_contents( $path ), true );
-		if ( is_array( $entries ) ) {
-			$this->restore( $this->normalize_entries( $entries ), 0 );
+		$recovered = false;
+		foreach ( glob( $directory . DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . '*' . self::JOURNAL_SUFFIX ) ?: array() as $path ) {
+			if ( ! is_file( $path ) || is_link( $path ) || $path === $this->journal_path() ) {
+				continue;
+			}
+			$owner = substr( basename( $path ), strlen( self::JOURNAL_PREFIX ), -strlen( self::JOURNAL_SUFFIX ) );
+			$claim = $this->claim_path( $owner );
+			$handle = @fopen( $claim, 'c+b' );
+			if ( false === $handle ) {
+				continue;
+			}
+			if ( ! flock( $handle, LOCK_EX | LOCK_NB ) ) {
+				// Still held, so its writer is alive and owns this journal.
+				fclose( $handle );
+				continue;
+			}
+			$entries = json_decode( (string) file_get_contents( $path ), true );
+			if ( is_array( $entries ) ) {
+				$this->restore( $this->normalize_entries( $entries ), 0 );
+			}
+			flock( $handle, LOCK_UN );
+			fclose( $handle );
+			@unlink( $path );
+			@unlink( $claim );
+			$recovered = true;
 		}
-		@unlink( $path );
-		return true;
+		return $recovered;
+	}
+
+	/**
+	 * Hold this writer's journal for as long as its transaction runs.
+	 *
+	 * The claim is a file of its own because the journal is published by
+	 * renaming a replacement over it, and a lock does not survive the inode
+	 * it was taken on being replaced.
+	 */
+	private function claim(): void {
+		if ( null !== $this->claim ) {
+			return;
+		}
+		$handle = @fopen( $this->claim_path( $this->owner ), 'c+b' );
+		if ( false !== $handle && flock( $handle, LOCK_EX | LOCK_NB ) ) {
+			$this->claim = $handle;
+			return;
+		}
+		if ( false !== $handle ) {
+			fclose( $handle );
+		}
+	}
+
+	private function release(): void {
+		if ( null === $this->claim ) {
+			return;
+		}
+		flock( $this->claim, LOCK_UN );
+		fclose( $this->claim );
+		$this->claim = null;
+		@unlink( $this->claim_path( $this->owner ) );
+	}
+
+	private function claim_path( string $owner ): string {
+		return $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY
+			. DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . $owner . self::CLAIM_SUFFIX;
 	}
 
 	public function begin(): true|string {
@@ -96,6 +167,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		$this->entries    = array();
 		$this->savepoints = array();
 		$path = $this->journal_path();
+		$this->release();
 		if ( is_file( $path ) && ! @unlink( $path ) ) {
 			return 'The canonical transaction journal could not be cleared.';
 		}
@@ -209,6 +281,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( ! is_dir( $directory ) && ! @mkdir( $directory, 0777, true ) && ! is_dir( $directory ) ) {
 			return 'The canonical transaction journal directory could not be created.';
 		}
+		$this->claim();
 		try {
 			$json = json_encode( $this->entries, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR );
 		} catch ( Throwable ) {
@@ -273,6 +346,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 	}
 
 	private function journal_path(): string {
-		return $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY . DIRECTORY_SEPARATOR . self::JOURNAL_FILE;
+		return $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY
+			. DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . $this->owner . self::JOURNAL_SUFFIX;
 	}
 }

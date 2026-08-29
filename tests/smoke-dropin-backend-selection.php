@@ -39,6 +39,7 @@ if ( 2 === $argc ) {
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-query-observer-boundary.php', $mdi . '/inc/class-wp-markdown-query-observer-boundary.php' );
 	foreach ( array(
 		'class-wp-markdown-canonical-option-path.php',
+		'class-wp-markdown-file-witness.php',
 		'native/class-wp-markdown-native-query-contracts.php',
 		'native/class-wp-markdown-native-query-schema.php',
 		'native/class-wp-markdown-native-schema-catalog.php',

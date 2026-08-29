@@ -5,6 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
+
 /**
  * A rebuildable index over one persisted snapshot table.
  *
@@ -15,7 +17,7 @@ if ( ! defined( 'ABSPATH' ) ) {
  */
 final class WP_Markdown_Native_Table_Index {
 
-	public const SCHEMA = 'mdi-native-table-index/v1';
+	public const SCHEMA = 'mdi-native-table-index/v2';
 	private const DIRECTORY = '.index';
 
 	public function __construct( private string $tables_directory ) {}
@@ -27,7 +29,7 @@ final class WP_Markdown_Native_Table_Index {
 	/**
 	 * Load an index that still describes the current snapshot.
 	 *
-	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,row_count:int}|null
+	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int}|null
 	 */
 	public function load( string $suffix, string $snapshot_path ): ?array {
 		$path = $this->path( $suffix );
@@ -44,6 +46,7 @@ final class WP_Markdown_Native_Table_Index {
 		$index = array(
 			'max'       => array(),
 			'unique'    => array(),
+			'summary'   => array(),
 			'row_count' => (int) ( $decoded['row_count'] ?? 0 ),
 		);
 		foreach ( (array) ( $decoded['max'] ?? array() ) as $column => $value ) {
@@ -51,6 +54,15 @@ final class WP_Markdown_Native_Table_Index {
 		}
 		foreach ( (array) ( $decoded['unique'] ?? array() ) as $name => $keys ) {
 			$index['unique'][ (string) $name ] = array_map( 'strval', is_array( $keys ) ? $keys : array() );
+		}
+		foreach ( (array) ( $decoded['summary'] ?? array() ) as $column => $counts ) {
+			if ( ! is_array( $counts ) ) {
+				return null;
+			}
+			$index['summary'][ (string) $column ] = array(
+				'null'  => (int) ( $counts['null'] ?? 0 ),
+				'empty' => (int) ( $counts['empty'] ?? 0 ),
+			);
 		}
 		return $index;
 	}
@@ -60,11 +72,12 @@ final class WP_Markdown_Native_Table_Index {
 	 *
 	 * @param  array<int,array<string,mixed>> $rows       Snapshot rows.
 	 * @param  array<string,mixed>            $definition Compiled table definition.
-	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,row_count:int}
+	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int}
 	 */
 	public static function build( array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): array {
-		$index = array( 'max' => array(), 'unique' => array(), 'row_count' => count( $rows ) );
+		$index = array( 'max' => array(), 'unique' => array(), 'summary' => array(), 'row_count' => 0 );
 		foreach ( $definition['columns'] as $name => $column ) {
+			$index['summary'][ $name ] = array( 'null' => 0, 'empty' => 0 );
 			if ( true === ( $column['auto_increment'] ?? false ) ) {
 				$index['max'][ $name ] = 0;
 			}
@@ -81,12 +94,19 @@ final class WP_Markdown_Native_Table_Index {
 	/**
 	 * Fold one row into an index.
 	 *
-	 * @param  array{max:array<string,int>,unique:array<string,array<int,string>>,row_count:int} $index Current index.
+	 * @param  array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int} $index Current index.
 	 * @param  array<string,mixed>                                                               $row   Row to record.
 	 * @param  array<string,mixed>                                                               $definition Compiled definition.
 	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,row_count:int}
 	 */
 	public static function with_row( array $index, array $row, array $definition, WP_Markdown_Native_Table_Schema $schema ): array {
+		foreach ( $index['summary'] as $column => $counts ) {
+			if ( null === ( $row[ $column ] ?? null ) ) {
+				++$index['summary'][ $column ]['null'];
+			} elseif ( '' === $row[ $column ] ) {
+				++$index['summary'][ $column ]['empty'];
+			}
+		}
 		foreach ( array_keys( $index['max'] ) as $column ) {
 			$index['max'][ $column ] = max( $index['max'][ $column ], (int) ( $row[ $column ] ?? 0 ) );
 		}
@@ -120,7 +140,7 @@ final class WP_Markdown_Native_Table_Index {
 	/**
 	 * Persist an index describing the current snapshot.
 	 *
-	 * @param array{max:array<string,int>,unique:array<string,array<int,string>>,row_count:int} $index Index to persist.
+	 * @param array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int} $index Index to persist.
 	 */
 	public function save( string $suffix, string $snapshot_path, array $index, ?WP_Markdown_Native_Transaction_Journal $transactions ): bool {
 		$path = $this->path( $suffix );
@@ -128,8 +148,8 @@ final class WP_Markdown_Native_Table_Index {
 		if ( ! is_dir( $directory ) && ! @mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) {
 			return false;
 		}
-		$stat = @stat( $snapshot_path );
-		if ( false === $stat ) {
+		$witness = WP_Markdown_File_Witness::take( $snapshot_path );
+		if ( null === $witness ) {
 			return false;
 		}
 		if ( null !== $transactions && true !== $transactions->record( $path ) ) {
@@ -139,9 +159,10 @@ final class WP_Markdown_Native_Table_Index {
 			$encoded = json_encode(
 				array(
 					'schema'      => self::SCHEMA,
-					'fingerprint' => array( 'size' => (int) $stat['size'], 'mtime' => (int) $stat['mtime'] ),
+					'fingerprint' => $witness->identity(),
 					'max'         => $index['max'],
 					'unique'      => $index['unique'],
+					'summary'     => $index['summary'],
 					'row_count'   => $index['row_count'],
 				),
 				JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
@@ -171,14 +192,9 @@ final class WP_Markdown_Native_Table_Index {
 
 	/** @param array<string,mixed> $decoded */
 	private function describes( array $decoded, string $snapshot_path ): bool {
-		$stat = @stat( $snapshot_path );
-		if ( false === $stat ) {
-			return false;
-		}
+		$witness = WP_Markdown_File_Witness::take( $snapshot_path );
 		$fingerprint = $decoded['fingerprint'] ?? array();
-		return is_array( $fingerprint )
-			&& (int) ( $fingerprint['size'] ?? -1 ) === (int) $stat['size']
-			&& (int) ( $fingerprint['mtime'] ?? -1 ) === (int) $stat['mtime'];
+		return null !== $witness && is_array( $fingerprint ) && $fingerprint === $witness->identity();
 	}
 
 	/**

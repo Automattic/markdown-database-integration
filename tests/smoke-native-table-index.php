@@ -94,10 +94,25 @@ $stale['fingerprint']['size'] = 1;
 file_put_contents( $index_path, json_encode( $stale ) );
 $after_stale = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (14, 'e')", 'wp_' ) );
 
+// Null and empty summaries can prove a migration-style UPDATE is a no-op.
+$summarized = json_decode( (string) file_get_contents( $index_path ), true );
+$no_op = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_items SET label = 'set' WHERE label IS NULL OR label = ''", 'wp_' ) );
+
+// Atomic replacement must invalidate an index even when size and mtime agree.
+$stale_identity = json_decode( (string) file_get_contents( $index_path ), true );
+$stale_identity['max']['id'] = 999;
+file_put_contents( $index_path, json_encode( $stale_identity ) );
+$mtime = filemtime( $snapshot );
+$replacement = $snapshot . '.replacement';
+file_put_contents( $replacement, (string) file_get_contents( $snapshot ) );
+rename( $replacement, $snapshot );
+touch( $snapshot, $mtime );
+$after_replacement = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (15, 'f')", 'wp_' ) );
+
 // A rolled back insert must restore the snapshot and leave the index coherent.
 $before_rollback = count( rows( $snapshot ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION', 'wp_' ) );
-$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (15, 'f')", 'wp_' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (17, 'rollback')", 'wp_' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK', 'wp_' ) );
 $after_rollback = count( rows( $snapshot ) );
 $post_rollback_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (16, 'g')", 'wp_' ) );
@@ -117,9 +132,15 @@ $checks = array(
 		&& '4' === (string) ( rows( $snapshot )[3]['id'] ?? null ),
 	'a stale index is ignored rather than trusted' => 1 === $after_stale->return_value()
 		&& '5' === (string) ( rows( $snapshot )[4]['id'] ?? null ),
+	'a compact value summary proves a migration update cannot match' => 5 === ( $summarized['row_count'] ?? null )
+		&& 0 === ( $summarized['summary']['label']['null'] ?? null )
+		&& 0 === ( $summarized['summary']['label']['empty'] ?? null )
+		&& 0 === $no_op->return_value(),
+	'same-size same-mtime atomic replacement invalidates the index' => 1 === $after_replacement->return_value()
+		&& '6' === (string) ( rows( $snapshot )[5]['id'] ?? null ),
 	'a rolled back insert restores the snapshot' => $before_rollback === $after_rollback,
 	'inserts after a rollback stay coherent' => 1 === $post_rollback_insert->return_value()
-		&& array( '1', '2', '3', '4', '5', '6' ) === $post_rollback_ids,
+		&& array( '1', '2', '3', '4', '5', '6', '7' ) === $post_rollback_ids,
 );
 
 $passed = ! in_array( false, $checks, true );

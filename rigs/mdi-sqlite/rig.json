@@ -49,6 +49,12 @@
       },
       {
         "path": "${package.root}/tests/bench/read-heavy.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/wiki-hierarchy.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/plugin-table-inventory.php"
       }
     ]
   },
@@ -57,7 +63,9 @@
       "boot-timing",
       "bulk-import",
       "obsidian-bursty",
-      "read-heavy"
+      "read-heavy",
+      "wiki-hierarchy",
+      "plugin-table-inventory"
     ]
   },
   "pipeline": {

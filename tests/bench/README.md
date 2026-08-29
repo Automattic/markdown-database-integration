@@ -99,6 +99,8 @@ tests/bench/
 ├── crash-kill.php           ← workload: simulated mid-write interrupt, shared-state-required
 ├── obsidian-bursty.php      ← workload: 70%U / 20%C / 5%R / 3%P / 2%D against persistent corpus
 ├── read-heavy.php           ← workload: get_post / by_slug / date / tax / search mix
+├── wiki-hierarchy.php       ← workload: ordered hierarchy scan with postmeta exclusions
+├── plugin-table-inventory.php ← workload: dynamic plugin-table scans and lifecycle upserts
 └── results/                 ← gitignored output dir, .gitkeep retained
 
 tests/bench-lib/

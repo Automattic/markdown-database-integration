@@ -56,6 +56,7 @@ if ( ! class_exists( 'WP_Markdown_Content_Layout_Profiles' ) ) {
 
 class WP_Markdown_Storage {
 
+
 	/**
 	 * Base directory for markdown files.
 	 *
@@ -1444,20 +1445,21 @@ class WP_Markdown_Storage {
 	 * @return int|null The post ID, or null.
 	 */
 	private function extract_id_from_file( string $file_path ): ?int {
-		// Read just the first ~500 bytes — the ID is always near the top.
-		$handle = fopen( $file_path, 'r' );
-		if ( ! $handle ) {
+		// Identity is a frontmatter field, so it is read from the frontmatter
+		// rather than from a fixed number of bytes at the top of the file. A
+		// window wide enough for most files silently loses the identity of the
+		// rest, and can find a line in the body that reads like frontmatter.
+		$raw = $this->read_frontmatter_only( $file_path );
+		if ( ! is_string( $raw ) || '' === $raw || ! preg_match( '/^---\n(.+?)\n---/s', $raw, $block ) ) {
 			return null;
 		}
+		$frontmatter = $block[1];
 
-		$header = fread( $handle, 512 );
-		fclose( $handle );
-
-		if ( preg_match( '/^id:\s*(\d+)\s*$/m', $header, $m ) ) {
+		if ( preg_match( '/^id:\s*(\d+)\s*$/m', $frontmatter, $m ) ) {
 			return (int) $m[1];
 		}
 
-		if ( preg_match( '/^wordpress:\s*$.*?^  id:\s*(\d+)\s*$/ms', $header, $m ) ) {
+		if ( preg_match( '/^wordpress:\s*$.*?^  id:\s*(\d+)\s*$/ms', $frontmatter, $m ) ) {
 			return (int) $m[1];
 		}
 

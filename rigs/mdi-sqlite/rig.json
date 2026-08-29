@@ -17,6 +17,7 @@
       "branch": "main",
       "extensions": {
         "wordpress": {
+          "wordpress_runtime_version": "7.1",
           "bench_env": {
             "BENCH_CORPUS_SIZE": "100"
           }

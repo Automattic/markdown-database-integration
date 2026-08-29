@@ -118,6 +118,8 @@ $actual = array(
 $fixture = json_decode( (string) file_get_contents( __DIR__ . '/fixtures/query-corpus/mdi-native-options-v1.json' ), true, 512, JSON_THROW_ON_ERROR );
 $comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $fixture, $actual );
 $catalogue_path = $root . '/_indexes/options.json';
+$persisted_catalogue = json_decode( (string) file_get_contents( $catalogue_path ), true, 512, JSON_THROW_ON_ERROR );
+$persisted_entries = array_column( $persisted_catalogue['entries'], null, 'filename' );
 $catalogued_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
 $catalogued_rows = $catalogued_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) )->wpdb_state()['last_result'];
 
@@ -225,6 +227,9 @@ $unsafe_hardlink = $hardlink_supported ? $runtime->execute( new WP_Markdown_Quer
 
 $checks = array(
 	'committed corpus matches native result' => $comparison['compatible'],
+	'the persisted catalogue retains full rows only for hot autoload options' => is_array( $persisted_entries['siteurl.json']['row'] ?? null )
+		&& null === ( $persisted_entries['disabled.json']['row'] ?? null )
+		&& 'off' === ( $persisted_entries['disabled.json']['autoload'] ?? null ),
 	'a cold runtime restores the verified option catalogue' => 6 === count( $catalogued_rows ),
 	'same-size same-mtime option replacement invalidates the catalogue' => strlen( $disabled_raw ) === strlen( $replacement_raw )
 		&& 'altered!' === ( $replaced_values['disabled'] ?? null ),

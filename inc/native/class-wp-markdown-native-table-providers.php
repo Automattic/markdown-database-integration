@@ -519,9 +519,9 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	 * Report whether a read could be answered in the order the file holds.
 	 *
 	 * Only an ascending single-column order can be satisfied by reading
-	 * forwards, and only a single-valued restriction selects rows in file
-	 * order, because the offsets an index holds for one value ascend. Whether
-	 * the file really is in that order is proven while it is read.
+	 * forwards. Keyed reads use the decoded snapshot because streaming would
+	 * rescan the complete file for every lookup instead of reusing its index.
+	 * Whether the file really is in order is proven while it is read.
 	 */
 	private function answerable_in_file_order( WP_Markdown_Native_Table_Access $access ): bool {
 		$order_by = $access->order_by();
@@ -531,8 +531,7 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		if ( ! $this->schema->allows_order( (string) $order_by[0]['column'] ) ) {
 			return false;
 		}
-		$predicate = $access->predicate();
-		return null === $predicate || 1 === count( $predicate->values() );
+		return null === $access->predicate();
 	}
 
 	/**

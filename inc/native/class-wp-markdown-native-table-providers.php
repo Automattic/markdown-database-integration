@@ -174,8 +174,19 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		return $selected;
 	}
 
-	/** @param array<int,array<string,mixed>> $rows @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
-	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result {
+	/**
+	 * Order a read, bound it, and project the columns it asked for.
+	 *
+	 * Every provider answers a read this way, so it is said here once. A
+	 * provider that must go back to storage for a column it did not carry
+	 * through ordering supplies $hydrate, which is called only for the rows
+	 * that survived the bound, and may refuse the read.
+	 *
+	 * @param array<int,array<string,mixed>> $rows
+	 * @param null|callable(int,array<string,mixed>):(array<string,mixed>|WP_Markdown_Query_Result) $hydrate
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
+	 */
+	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access, ?callable $hydrate = null ): array|WP_Markdown_Query_Result {
 		if ( null !== $this->schema->unsupported_order_reason( $access->order_by(), $rows ) ) {
 			return $this->failure(
 				'markdown_db_native_unsupported_query',
@@ -183,15 +194,23 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 				'mdi-native cannot apply the requested ordering collation.'
 			);
 		}
-		usort(
+		// Ordering keeps each row's offset so a provider can find whatever it
+		// set aside for that row.
+		uasort(
 			$rows,
 			fn( array $left, array $right ): int => $this->schema->compare_ordered_rows( $left, $right, $access->order_by() )
 		);
 
 		$selected = array();
-		foreach ( $rows as $source ) {
+		foreach ( $rows as $offset => $source ) {
 			if ( count( $selected ) >= $access->limit() ) {
 				break;
+			}
+			if ( null !== $hydrate ) {
+				$source = $hydrate( $offset, $source );
+				if ( $source instanceof WP_Markdown_Query_Result ) {
+					return $source;
+				}
 			}
 			$row = array();
 			foreach ( $access->projection() as $column ) {
@@ -396,38 +415,24 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	 */
 	private function ordered_projection( array $posts, WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result {
 		try {
-			$order_rows = array_map( static fn( array $candidate ): array => $candidate['row'], $posts );
-			if ( null !== $this->schema->unsupported_order_reason( $access->order_by(), $order_rows ) ) {
-				return $this->failure(
-					'markdown_db_native_unsupported_query',
-					'unsupported_order',
-					'mdi-native cannot apply the requested ordering collation.'
-				);
+			$rows = array_map( static fn( array $candidate ): array => $candidate['row'], $posts );
+			if ( ! in_array( 'post_content', $access->projection(), true ) ) {
+				return $this->bounded_rows( $rows, $access );
 			}
-			usort(
-				$posts,
-				fn( array $left, array $right ): int => $this->schema->compare_ordered_rows( $left['row'], $right['row'], $access->order_by() )
-			);
-			$selected = array();
-			foreach ( $posts as $candidate ) {
-				if ( count( $selected ) >= $access->limit() ) {
-					break;
-				}
-				$row = $candidate['row'];
-				if ( in_array( 'post_content', $access->projection(), true ) ) {
-					$post = $this->storage->read_file( $candidate['file']['absolute'], false, $candidate['file']['parent_id'] );
+			// A body is read only for the posts the bound actually returns,
+			// and the file must still be the one the row was taken from.
+			return $this->bounded_rows(
+				$rows,
+				$access,
+				function ( int $offset, array $row ) use ( $posts ): array|WP_Markdown_Query_Result {
+					$candidate = $posts[ $offset ];
+					$post      = $this->storage->read_file( $candidate['file']['absolute'], false, $candidate['file']['parent_id'] );
 					if ( ! $this->unchanged( $candidate['file']['absolute'], $candidate['identity'] ) || null === $post ) {
 						return $this->malformed( 'changed_post', 'A canonical Markdown post changed while it was being read.' );
 					}
-					$row = $this->row( $post );
+					return $this->row( $post );
 				}
-				$projected = array();
-				foreach ( $access->projection() as $column ) {
-					$projected[ $column ] = $row[ $column ];
-				}
-				$selected[] = $projected;
-			}
-			return $selected;
+			);
 		} catch ( Throwable $error ) {
 			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
 		}

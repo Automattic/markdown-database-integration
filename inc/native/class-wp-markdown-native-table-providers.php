@@ -370,7 +370,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				// file that still carries the identity it was parsed under is
 				// taken from the previous parse. Every file is still visited,
 				// so a corpus edited outside this process is still seen.
-				$remembered = $this->catalogue->recorded( $file['absolute'], $witness );
+				$remembered = $this->catalogue->recorded( $file['absolute'], $witness, true );
 				$reused = null !== $remembered;
 				if ( $reused ) {
 					$post = $remembered['post'];

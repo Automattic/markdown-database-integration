@@ -62,6 +62,23 @@ final class WP_Markdown_File_Witness {
 		);
 	}
 
+	/** Restore a recorded identity; callers must compare it with a fresh witness before use. */
+	public static function restore( string $path, array $identity ): ?self {
+		$keys = array( 'dev', 'ino', 'mode', 'size', 'mtime', 'ctime', 'nlink' );
+		if ( $keys !== array_keys( $identity ) ) {
+			return null;
+		}
+		foreach ( $identity as $value ) {
+			if ( ! is_int( $value ) ) {
+				return null;
+			}
+		}
+		if ( 1 !== $identity['nlink'] || 0120000 === ( $identity['mode'] & 0170000 ) ) {
+			return null;
+		}
+		return new self( $path, $identity );
+	}
+
 	/** @return array<string,int> */
 	public function identity(): array {
 		return $this->identity;

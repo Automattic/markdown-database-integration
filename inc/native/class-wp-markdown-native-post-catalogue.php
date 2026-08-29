@@ -60,10 +60,10 @@ final class WP_Markdown_Native_Post_Catalogue {
 	 *
 	 * @return array{witness:WP_Markdown_File_Witness,file:array<string,mixed>,post:object,row:array<string,mixed>}|null
 	 */
-	public function recorded( string $path, ?WP_Markdown_File_Witness $witness ): ?array {
+	public function recorded( string $path, ?WP_Markdown_File_Witness $witness, bool $path_is_safe = false ): ?array {
 		$this->load();
 		$entry = $this->entries[ $path ] ?? null;
-		if ( null === $entry || null === $witness || ! $entry['witness']->is( $witness ) ) {
+		if ( null === $entry || null === $witness || ! $entry['witness']->is( $witness ) || ( ! $path_is_safe && ! $this->existing_path_is_safe( $path ) ) ) {
 			return null;
 		}
 		return $entry;
@@ -169,7 +169,7 @@ final class WP_Markdown_Native_Post_Catalogue {
 			return null;
 		}
 		$path = rtrim( $this->content_root, '/\\' ) . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative );
-		if ( $relative !== $this->relative_path( $path ) || ! $this->existing_path_is_safe( $path ) ) {
+		if ( $relative !== $this->relative_path( $path ) ) {
 			return null;
 		}
 		$identity = array();
@@ -179,8 +179,8 @@ final class WP_Markdown_Native_Post_Catalogue {
 			}
 			$identity[ $name ] = $saved['identity'][ $name ];
 		}
-		$current = WP_Markdown_File_Witness::take( $path );
-		if ( null === $current || $identity !== $current->identity() ) {
+		$recorded = WP_Markdown_File_Witness::restore( $path, $identity );
+		if ( null === $recorded ) {
 			return null;
 		}
 		$row = $saved['row'];
@@ -194,9 +194,9 @@ final class WP_Markdown_Native_Post_Catalogue {
 			'parent_id' => isset( $saved['parent_id'] ) ? (int) $saved['parent_id'] : null,
 			'mtime'     => $identity['mtime'],
 			'size'      => $identity['size'],
-			'witness'   => $current,
+			'witness'   => $recorded,
 		);
-		return array( 'witness' => $current, 'file' => $file, 'post' => $post, 'row' => $row );
+		return array( 'witness' => $recorded, 'file' => $file, 'post' => $post, 'row' => $row );
 	}
 
 	private function persist(): void {

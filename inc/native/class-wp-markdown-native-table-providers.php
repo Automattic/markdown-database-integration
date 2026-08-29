@@ -253,13 +253,14 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	public function __construct(
 		string $content_root,
 		WP_Markdown_Native_Table_Schema $schema,
-		?WP_Markdown_Storage $storage = null
+		?WP_Markdown_Storage $storage = null,
+		?string $state_root = null
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
 		// Writing a canonical file makes anything remembered about the corpus
 		// stale, so the parse is dropped the moment one changes.
-		$this->catalogue = new WP_Markdown_Native_Post_Catalogue();
+		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
 		$this->storage->set_file_mutation_observer( function (): void {
 			$this->catalogue->forget();
 		} );
@@ -355,7 +356,11 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$posts = array();
 			$ids   = array();
 			$predicate = $access->predicate();
-			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $this->post_type_scope( $access ) ) as $file ) {
+			$scope = $this->post_type_scope( $access );
+			if ( null === $scope ) {
+				$this->catalogue->begin_scan();
+			}
+			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $scope ) as $file ) {
 				// The manifest looked at this file to yield it, so its witness
 				// is the one taken then.
 				$witness = $file['witness'] ?? WP_Markdown_File_Witness::take( $file['absolute'] );
@@ -395,12 +400,15 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 					if ( true !== $this->schema->validate_row( $row ) ) {
 						return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
 					}
-					$this->catalogue->remember( $witness, $file, $post, $row );
 				}
+				$this->catalogue->remember( $witness, $file, $post, $row );
 				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
 					continue;
 				}
 				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
+			}
+			if ( null === $scope ) {
+				$this->catalogue->complete_scan();
 			}
 
 			return $this->ordered_projection( $posts, $access );

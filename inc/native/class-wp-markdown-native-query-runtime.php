@@ -193,7 +193,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 		}
 		if ( 'posts' === $suffix ) {
 			$posts = self::posts_schema();
-			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $content_root, $posts, self::shared_storage( $content_root ) ) );
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $content_root, $posts, self::shared_storage( $content_root ), $state_root ) );
 			return true;
 		}
 		$bespoke = array(

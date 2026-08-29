@@ -27,7 +27,9 @@ final class MDI_Replacing_Post_Storage extends WP_Markdown_Storage {
 
 	public function read_file( string $file_path, bool $metadata_only = false, ?int $parent_id = null ): ?object {
 		$post = parent::read_file( $file_path, $metadata_only, $parent_id );
-		if ( $metadata_only && ! $this->replaced && $file_path === $this->target ) {
+		// Persisted metadata projections deliberately skip a metadata parse, so
+		// replace after whichever verified file read the provider actually needs.
+		if ( ! $this->replaced && $file_path === $this->target ) {
 			$stat = lstat( $file_path );
 			$raw = file_get_contents( $file_path );
 			if ( false === $stat || false === $raw ) {

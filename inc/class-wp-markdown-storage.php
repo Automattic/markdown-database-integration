@@ -1117,48 +1117,6 @@ class WP_Markdown_Storage {
 		return $this->content_dir;
 	}
 
-	/**
-	 * Recursively scan a directory for .md files.
-	 *
-	 * @param string $dir Directory to scan.
-	 * @return string[] Array of file paths.
-	 */
-	private function scan_directory_recursive( string $dir ): array {
-		$files = array();
-
-		if ( ! is_dir( $dir ) || is_link( $dir ) ) {
-			return $files;
-		}
-
-		$entries = scandir( $dir );
-		if ( false === $entries ) {
-			return $files;
-		}
-
-		foreach ( $entries as $entry ) {
-			if ( '.' === $entry || '..' === $entry ) {
-				continue;
-			}
-
-			$path = $dir . '/' . $entry;
-			if ( is_link( $path ) ) {
-				continue;
-			}
-
-			if ( is_dir( $path ) ) {
-				// Skip internal directories (e.g. _tables, _schema).
-				if ( str_starts_with( $entry, '_' ) ) {
-					continue;
-				}
-				// Recurse into subdirectories (these are parent post directories).
-				$files = array_merge( $files, $this->scan_directory_recursive( $path ) );
-			} elseif ( str_ends_with( $entry, '.md' ) ) {
-				$files[] = $path;
-			}
-		}
-
-		return $files;
-	}
 
 	/**
 	 * Get a file path relative to the content directory (for logging).

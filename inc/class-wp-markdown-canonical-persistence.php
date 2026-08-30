@@ -24,6 +24,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-canonical-option-path.php';
+require_once __DIR__ . '/class-wp-markdown-table-durability-policy.php';
 
 class WP_Markdown_Canonical_Persistence {
 
@@ -1270,9 +1271,9 @@ class WP_Markdown_Canonical_Persistence {
 			return;
 		}
 
-		$policy = $this->table_persistence_policy_for( $table_suffix );
+		$policy = $this->table_projection_for( $table_suffix );
 		try {
-			$rows = $this->operations->table_rows( $table_suffix, is_array( $policy ) ? $policy : null );
+			$rows = $this->operations->table_rows( $table_suffix, $policy ?: null );
 		} catch ( \Throwable $e ) {
 			if ( $this->strict_persistence ) { throw $e; }
 			error_log( "Markdown DB: Failed to read {$table_suffix} for persist: " . $e->getMessage() );
@@ -1296,7 +1297,7 @@ class WP_Markdown_Canonical_Persistence {
 			 * @param string      $table        Full table name.
 			 * @param array|bool|null $policy   Table persistence policy, if configured.
 			 */
-			$filtered = apply_filters( 'markdown_db_persistent_table_rows', $data, $table_suffix, $this->prefix() . $table_suffix, $policy );
+			$filtered = apply_filters( 'markdown_db_persistent_table_rows', $data, $table_suffix, $this->prefix() . $table_suffix, $policy ?: null );
 			if ( is_array( $filtered ) ) {
 				$data = array_values( $filtered );
 			}
@@ -1319,13 +1320,13 @@ class WP_Markdown_Canonical_Persistence {
 		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) { throw new \RuntimeException( 'Markdown DB: Failed to lock table partition.' ); }
 		try {
 			if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create table partition directory.' ); }
-			$policy = $this->table_persistence_policy_for( $table_suffix );
-			if ( is_array( $policy ) ) { unset( $policy['resource_ids'] ); }
+			$policy = $this->table_projection_for( $table_suffix );
+			unset( $policy['resource_ids'] );
 			$marker_data = json_decode( (string) @file_get_contents( $marker ), true );
 			$active_generation = is_array( $marker_data ) ? (string) ( $marker_data['generation'] ?? '' ) : '';
 			$full = '' === $active_generation || 1 !== count( $resource_ids ) || in_array( '*', $resource_ids, true ) || $this->has_persistent_table_row_filter() || isset( $policy['query'] ) || isset( $policy['limit'] );
-			if ( ! $full ) { $policy = array_merge( is_array( $policy ) ? $policy : array(), array( 'partition_by' => $identity_column, 'resource_ids' => $resource_ids ) ); }
-			$rows = $this->operations->table_rows( $table_suffix, is_array( $policy ) ? $policy : null );
+			if ( ! $full ) { $policy = array_merge( $policy, array( 'partition_by' => $identity_column, 'resource_ids' => $resource_ids ) ); }
+			$rows = $this->operations->table_rows( $table_suffix, $policy ?: null );
 			if ( $this->has_persistent_table_row_filter() ) {
 				$data = array(); foreach ( $rows as $row ) { $data[] = (array) $row; }
 				$filtered = apply_filters( 'markdown_db_persistent_table_rows', $data, $table_suffix, $this->prefix() . $table_suffix, $policy );
@@ -1362,32 +1363,23 @@ class WP_Markdown_Canonical_Persistence {
 	}
 
 	/**
-	 * Read the site-configured persistence policy for a table.
-	 *
-	 * Policies are keyed by unprefixed table name. Values may be `true`, `false`,
-	 * or an array of site-defined options consumed by filters such as
-	 * `markdown_db_persistent_table_rows`.
+	 * Read the normalized durability policy for a table.
 	 *
 	 * @param string $table_suffix Table name without prefix.
-	 * @return array|bool|null Configured policy, or null when unset.
+	 * @return array{durability:string,projection:array<string,mixed>}
 	 */
-	private function table_persistence_policy_for( string $table_suffix ): array|bool|null {
-		if ( ! function_exists( 'apply_filters' ) ) {
-			return null;
-		}
+	private function table_durability_policy_for( string $table_suffix ): array {
+		return WP_Markdown_Table_Durability_Policy::resolve( $this->prefix() . $table_suffix, $this->prefix() );
+	}
 
-		$policy = apply_filters( 'markdown_db_table_persistence_policy', array() );
-		if ( ! is_array( $policy ) || ! array_key_exists( $table_suffix, $policy ) ) {
-			return null;
-		}
-
-		$table_policy = $policy[ $table_suffix ];
-		return is_array( $table_policy ) || is_bool( $table_policy ) ? $table_policy : null;
+	/** @return array<string,mixed> */
+	private function table_projection_for( string $table_suffix ): array {
+		return $this->table_durability_policy_for( $table_suffix )['projection'];
 	}
 
 	private function partition_identity_column( string $table_suffix ): ?string {
-		$policy = $this->table_persistence_policy_for( $table_suffix );
-		$column = is_array( $policy ) ? strtolower( (string) ( $policy['partition_by'] ?? '' ) ) : '';
+		$policy = $this->table_projection_for( $table_suffix );
+		$column = strtolower( (string) ( $policy['partition_by'] ?? '' ) );
 		return preg_match( '/^[a-z_][a-z0-9_]*$/', $column ) ? $column : null;
 	}
 
@@ -1418,8 +1410,7 @@ class WP_Markdown_Canonical_Persistence {
 	 * @return bool True when the table should be persisted.
 	 */
 	private function should_persist_table( string $table_suffix ): bool {
-		$policy = $this->table_persistence_policy_for( $table_suffix );
-		return false !== $policy;
+		return WP_Markdown_Table_Durability_Policy::EPHEMERAL !== $this->table_durability_policy_for( $table_suffix )['durability'];
 	}
 
 	/**

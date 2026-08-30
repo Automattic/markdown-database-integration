@@ -8,6 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 require_once __DIR__ . '/interface-wp-markdown-backend-operations.php';
 require_once __DIR__ . '/class-wp-markdown-backend-adapter.php';
 require_once __DIR__ . '/class-wp-markdown-reconciliation-adapters.php';
+require_once __DIR__ . '/class-wp-markdown-table-durability-policy.php';
 
 final class WP_Markdown_Loader_Outcome {
 	private function __construct( private string $mode, private string $status, private ?string $reason = null ) {}
@@ -225,6 +226,7 @@ class WP_Markdown_Loader {
 	private function load_plugin_tables(): void { $this->hydrate_plugins(); }
 
 	private function hydrate_table( string $table, bool $incremental = false, ?callable $before_hydration = null ): void {
+		if ( ! $this->persists_table( $table ) ) { return; }
 		$lock = $this->partition_lock( $table );
 		try {
 			$partition_marker = $this->partition_marker( $table );
@@ -258,9 +260,14 @@ class WP_Markdown_Loader {
 	}
 	private function hydrate_plugins( bool $incremental = false ): void {
 		$tables = array_map( static fn( $file ): string => basename( $file, '.json' ), glob( $this->state_dir . '/_tables/*.json' ) ?: array() );
+		$tables = array_merge( $tables, array_map( static fn( $file ): string => basename( $file, '.sql' ), glob( $this->state_dir . '/_schema/*.sql' ) ?: array() ) );
 		foreach ( glob( $this->state_dir . '/_tables/*/.mdi-partition.json' ) ?: array() as $marker ) { $tables[] = basename( dirname( $marker ) ); }
 		foreach ( array_unique( $tables ) as $table ) {
-			if ( ! in_array( $table, self::CORE_TABLE_SUFFIXES, true ) && 'posts' !== $table ) { $this->operations->ensure_tables( array( $table => (string) @file_get_contents( $this->state_dir . '/_schema/' . $table . '.sql' ) ) ); $this->hydrate_table( $table, $incremental ); }
+			if ( ! in_array( $table, self::CORE_TABLE_SUFFIXES, true ) && 'posts' !== $table && $this->persists_table( $table ) ) {
+				$schema = $this->state_dir . '/_schema/' . $table . '.sql';
+				if ( is_file( $schema ) ) { $this->operations->ensure_tables( array( $table => (string) file_get_contents( $schema ) ) ); }
+				$this->hydrate_table( $table, $incremental );
+			}
 		}
 	}
 	private function partition_marker( string $table ): ?array { $data = json_decode( (string) @file_get_contents( $this->state_dir . '/_tables/' . $table . '/.mdi-partition.json' ), true ); return is_array( $data ) && 1 === ( $data['version'] ?? null ) && $table === ( $data['table'] ?? null ) && is_string( $data['identity_column'] ?? null ) && preg_match( '/^generation-[a-f0-9]{24}$/', (string) ( $data['generation'] ?? '' ) ) ? $data : null; }
@@ -322,6 +329,7 @@ class WP_Markdown_Loader {
 		$this->pending_id_writes = array();
 	}
 	private function option_rows(): array { $rows = array(); foreach ( glob( $this->state_dir . '/_options/*.json' ) ?: array() as $file ) { $row = json_decode( (string) file_get_contents( $file ), true ); if ( is_array( $row ) && isset( $row['option_name'] ) ) { $rows[] = $row; } } return $rows; }
-	private function schema_files(): array { $schemas = array(); foreach ( glob( $this->state_dir . '/_schema/*.sql' ) ?: array() as $file ) { $schemas[ basename( $file, '.sql' ) ] = (string) file_get_contents( $file ); } return $schemas; }
+	private function schema_files(): array { $schemas = array(); foreach ( glob( $this->state_dir . '/_schema/*.sql' ) ?: array() as $file ) { $table = basename( $file, '.sql' ); if ( $this->persists_table( $table ) ) { $schemas[ $table ] = (string) file_get_contents( $file ); } } return $schemas; }
+	private function persists_table( string $table ): bool { $prefix = ( $this->prefix_resolver )(); return WP_Markdown_Table_Durability_Policy::persists( $prefix . $table, $prefix ); }
 	private function file_identity( string $path ): ?array { $file = $this->state_dir . '/' . $path; clearstatcache( true, $file ); return is_file( $file ) ? array( 'mtime' => (int) filemtime( $file ), 'size' => (int) filesize( $file ), 'path' => $file ) : null; }
 }

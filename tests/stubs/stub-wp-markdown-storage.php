@@ -21,6 +21,19 @@ class Stub_WP_Markdown_Storage {
 	public function get_content_dir(): string {
 		return $this->content_dir;
 	}
+
+	public function get_all_posts_iterator( bool $include_source = false ): iterable {
+		unset( $include_source );
+		return array();
+	}
+
+	public function get_markdown_file_manifest_iterator(): iterable {
+		return array();
+	}
+
+	public function get_excluded_types(): array {
+		return array();
+	}
 }
 
 // Alias so the type hint on WP_Markdown_Search::__construct() matches.

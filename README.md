@@ -94,12 +94,44 @@ Primary mode persists the following state so SQLite can be reconstructed:
 - Arbitrary plugin-table rows as `_tables/*.json` snapshots and their schemas
   as `_schema/*.sql` files.
 
-The driver persists every detected `INSERT`, `UPDATE`, `DELETE`, and `REPLACE`
-unless its table is explicitly excluded through `MARKDOWN_DB_EPHEMERAL_TABLES`
-or the `markdown_db_ephemeral_tables` filter. The write engine also honors an
-explicit `markdown_db_table_persistence_policy` exclusion. Do not assume that
-caches, sessions, or other plugin tables are ephemeral by default; configure
-the exclusion for tables a site does not want persisted.
+The `MARKDOWN_DB_TABLE_DURABILITY_POLICY` `wp-config.php` array and
+`markdown_db_table_durability_policy` filter classify each table as
+`canonical`, `reconstructible`, or `ephemeral`. Canonical tables persist their
+schema and complete rows. Reconstructible tables may persist a bounded
+`projection` (`query`, `limit`, or partition settings), while their owner may
+recreate the runtime table when canonical state is absent. Ephemeral tables are
+excluded from mutation capture, schema and row snapshots, native registration,
+and cold hydration. Tables remain canonical by default.
+
+The constant makes the policy available during drop-in cold reconstruction:
+
+```php
+define( 'MARKDOWN_DB_TABLE_DURABILITY_POLICY', array(
+	'runtime_events' => array( 'durability' => 'reconstructible', 'projection' => array( 'limit' => 100 ) ),
+	'runtime_locks'  => 'ephemeral',
+) );
+```
+
+The filter receives that normalized policy, unprefixed table name, and full
+table name, and may override it after hooks are available. For example:
+
+```php
+add_filter( 'markdown_db_table_durability_policy', function ( $policy, $suffix ) {
+	if ( 'runtime_events' === $suffix ) {
+		return array( 'durability' => 'reconstructible', 'projection' => array( 'limit' => 100 ) );
+	}
+	if ( 'runtime_locks' === $suffix ) {
+		return array( 'durability' => 'ephemeral' );
+	}
+	return $policy;
+}, 10, 2 );
+```
+
+`MARKDOWN_DB_EPHEMERAL_TABLES`, `markdown_db_ephemeral_tables`,
+`markdown_db_table_persistence_policy`, `markdown_db_persistent_table_query`,
+and `markdown_db_persistent_table_rows` remain compatibility inputs to this
+resolver. Sites can migrate table classifications to the unified filter while
+retaining the query and row filters for existing projections.
 
 ## Storage Boundary
 

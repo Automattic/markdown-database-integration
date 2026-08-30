@@ -85,6 +85,7 @@ if ( 2 === $argc ) {
 	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-durable-reconciliation-operations.php', $mdi . '/inc/class-wp-markdown-durable-reconciliation-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-reconciliation-adapters.php', $mdi . '/inc/class-wp-markdown-reconciliation-adapters.php' );
+	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-primary-index-health.php', $mdi . '/inc/class-wp-markdown-primary-index-health.php' );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-driver.php', "<?php\n" );
 	file_put_contents( $mdi . '/inc/class-wp-markdown-db.php', "<?php\nclass WP_Markdown_DB { public function __construct( string \$database ) {} }\n" );
 	file_put_contents( $mdi . '/markdown-database-integration.php', "<?php\n" );

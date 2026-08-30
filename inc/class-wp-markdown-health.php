@@ -121,6 +121,7 @@ class WP_Markdown_Health {
 		);
 		$runtime_loaded = ! in_array( false, $runtime_classes, true );
 		$markdown_runtime = $context['markdown_runtime'] ?? ( class_exists( 'WP_Markdown_DB' ) && $wpdb instanceof WP_Markdown_DB );
+		$primary_index_evidence = $context['primary_index_evidence'] ?? ( $GLOBALS['markdown_db_primary_index_evidence'] ?? null );
 
 		if ( 'primary' === $mode && $dropin_loaded && $install_fallback ) {
 			return self::with_backend( array(
@@ -131,12 +132,25 @@ class WP_Markdown_Health {
 			), $backend );
 		}
 
+		$primary_index_code = is_array( $primary_index_evidence ) ? (string) ( $primary_index_evidence['code'] ?? '' ) : '';
+		$primary_index_usable = in_array( $primary_index_code, array( 'markdown_db_primary_index_ready', 'markdown_db_primary_index_recovered_previous', 'markdown_db_primary_index_cold_reconstructed' ), true );
+		if ( 'primary' === $mode && str_starts_with( $primary_index_code, 'markdown_db_primary_index_' ) && ! $primary_index_usable ) {
+			return self::with_backend( array(
+				'status'     => 'primary_index_unavailable',
+				'healthy'    => false,
+				'mode'       => $mode,
+				'message'    => 'The disposable primary index is unavailable; canonical files remain authoritative and require explicit index maintenance.',
+				'diagnostic' => $primary_index_evidence,
+			), $backend );
+		}
+
 		if ( $dropin_loaded && $runtime_loaded && $markdown_runtime ) {
 			return self::with_backend( array(
-				'status'  => 'healthy',
+				'status'  => 'markdown_db_primary_index_recovered_previous' === $primary_index_code ? 'primary_index_recovered_previous' : 'healthy',
 				'healthy' => true,
 				'mode'    => $mode,
 				'message' => 'MDI drop-in and runtime classes are active.',
+				'primary_index' => $primary_index_evidence,
 			), $backend );
 		}
 

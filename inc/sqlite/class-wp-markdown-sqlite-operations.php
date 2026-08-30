@@ -104,6 +104,11 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 		$pdo->exec( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
 	}
 	public function ensure_tables( array $schemas ): void {
+		global $wpdb;
+		if ( is_object( $wpdb ) && method_exists( $wpdb, 'set_prefix' ) && function_exists( 'wp_get_db_schema' ) ) {
+			$wpdb->set_prefix( ( $this->prefix )() );
+			$schemas = array( 'wordpress-core' => wp_get_db_schema() ) + $schemas;
+		}
 		foreach ( $schemas as $schema ) {
 			foreach ( preg_split( '/;\s*/', $schema, -1, PREG_SPLIT_NO_EMPTY ) as $statement ) {
 				if ( preg_match( '/^\s*CREATE\s+TABLE/i', $statement ) ) {

@@ -30,6 +30,12 @@ $healthy = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_run
 mdi_health_assert( 'healthy' === $healthy['status'], 'healthy MDI runtime is healthy' );
 mdi_health_assert( 'sqlite' === $healthy['backend']['id'], 'SQLite is identified as the active backend' );
 mdi_health_assert( $healthy['backend']['capabilities']['explicit_flush'], 'health reports SQLite explicit flush support' );
+$recovered_index = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true, 'primary_index_evidence' => array( 'code' => 'markdown_db_primary_index_recovered_previous', 'served_generation' => 'previous' ) ) );
+mdi_health_assert( 'primary_index_recovered_previous' === $recovered_index['status'] && $recovered_index['healthy'], 'health exposes typed successful previous-index recovery' );
+$unavailable_index = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true, 'primary_index_evidence' => array( 'code' => 'markdown_db_primary_index_unavailable', 'reason' => 'invalid_sqlite_header' ) ) );
+mdi_health_assert( 'primary_index_unavailable' === $unavailable_index['status'] && ! $unavailable_index['healthy'] && 'invalid_sqlite_header' === $unavailable_index['diagnostic']['reason'], 'health preserves typed unavailable-index evidence' );
+$deadline_index = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true, 'primary_index_evidence' => array( 'code' => 'markdown_db_primary_index_deadline_exceeded', 'deadline_ms' => 500 ) ) );
+mdi_health_assert( 'primary_index_unavailable' === $deadline_index['status'] && ! $deadline_index['healthy'], 'health treats a typed index deadline as unavailable' );
 $healthy_mirror = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true ) );
 mdi_health_assert( 'healthy' === $healthy_mirror['status'], 'healthy MDI mirror runtime is healthy' );
 $standard_sqlite = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => false ) );

@@ -127,27 +127,175 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 		}
 	}
 	private function ensure_core_schema(): void {
-		$pdo = $this->driver->get_connection()->get_pdo();
 		foreach ( $this->core_schema_statements() as $sql ) {
-			$pdo->exec( $sql );
+			try {
+				$this->driver->query( $sql );
+			} catch ( \Throwable $e ) {
+			}
 		}
 	}
 	/** @return string[] */
 	private function core_schema_statements(): array {
 		$prefix = ( $this->prefix )();
 		return array(
-			"CREATE TABLE IF NOT EXISTS `{$prefix}options` (`option_id` INTEGER PRIMARY KEY, `option_name` TEXT UNIQUE, `option_value` TEXT, `autoload` TEXT)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}users` (`ID` INTEGER PRIMARY KEY, `user_login` TEXT, `user_pass` TEXT, `user_nicename` TEXT, `user_email` TEXT, `user_url` TEXT, `user_registered` TEXT, `user_activation_key` TEXT, `user_status` INTEGER, `display_name` TEXT)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}usermeta` (`umeta_id` INTEGER PRIMARY KEY, `user_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}posts` (`ID` INTEGER PRIMARY KEY, `post_author` INTEGER, `post_date` TEXT, `post_date_gmt` TEXT, `post_content` TEXT, `post_title` TEXT, `post_excerpt` TEXT, `post_status` TEXT, `comment_status` TEXT, `ping_status` TEXT, `post_password` TEXT, `post_name` TEXT, `to_ping` TEXT, `pinged` TEXT, `post_modified` TEXT, `post_modified_gmt` TEXT, `post_content_filtered` TEXT, `post_parent` INTEGER, `guid` TEXT, `menu_order` INTEGER, `post_type` TEXT, `post_mime_type` TEXT, `comment_count` INTEGER)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}postmeta` (`meta_id` INTEGER PRIMARY KEY, `post_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}terms` (`term_id` INTEGER PRIMARY KEY, `name` TEXT, `slug` TEXT, `term_group` INTEGER)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}term_taxonomy` (`term_taxonomy_id` INTEGER PRIMARY KEY, `term_id` INTEGER, `taxonomy` TEXT, `description` TEXT, `parent` INTEGER, `count` INTEGER)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}term_relationships` (`object_id` INTEGER, `term_taxonomy_id` INTEGER, `term_order` INTEGER DEFAULT 0, PRIMARY KEY (`object_id`, `term_taxonomy_id`))",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}termmeta` (`meta_id` INTEGER PRIMARY KEY, `term_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}comments` (`comment_ID` INTEGER PRIMARY KEY, `comment_post_ID` INTEGER, `comment_author` TEXT, `comment_author_email` TEXT, `comment_author_url` TEXT, `comment_author_IP` TEXT, `comment_date` TEXT, `comment_date_gmt` TEXT, `comment_content` TEXT, `comment_karma` INTEGER, `comment_approved` TEXT, `comment_agent` TEXT, `comment_type` TEXT, `comment_parent` INTEGER, `user_id` INTEGER)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}commentmeta` (`meta_id` INTEGER PRIMARY KEY, `comment_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
-			"CREATE TABLE IF NOT EXISTS `{$prefix}links` (`link_id` INTEGER PRIMARY KEY, `link_url` TEXT, `link_name` TEXT, `link_image` TEXT, `link_target` TEXT, `link_description` TEXT, `link_visible` TEXT, `link_owner` INTEGER, `link_rating` INTEGER, `link_updated` TEXT, `link_rel` TEXT, `link_notes` TEXT, `link_rss` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}options` (
+  `option_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `option_name` varchar(191) NOT NULL DEFAULT '',
+  `option_value` longtext NOT NULL,
+  `autoload` varchar(20) NOT NULL DEFAULT 'yes',
+  PRIMARY KEY (`option_id`),
+  UNIQUE KEY `option_name` (`option_name`),
+  KEY `autoload` (`autoload`)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}users` (
+  `ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_login` varchar(60) NOT NULL DEFAULT '',
+  `user_pass` varchar(255) NOT NULL DEFAULT '',
+  `user_nicename` varchar(50) NOT NULL DEFAULT '',
+  `user_email` varchar(100) NOT NULL DEFAULT '',
+  `user_url` varchar(100) NOT NULL DEFAULT '',
+  `user_registered` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `user_activation_key` varchar(255) NOT NULL DEFAULT '',
+  `user_status` int(11) NOT NULL DEFAULT 0,
+  `display_name` varchar(250) NOT NULL DEFAULT '',
+  PRIMARY KEY (`ID`),
+  KEY `user_login_key` (`user_login`),
+  KEY `user_nicename` (`user_nicename`),
+  KEY `user_email` (`user_email`)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}usermeta` (
+  `umeta_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `user_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `meta_key` varchar(255) DEFAULT NULL,
+  `meta_value` longtext,
+  PRIMARY KEY (`umeta_id`),
+  KEY `user_id` (`user_id`),
+  KEY `meta_key` (`meta_key`(191))
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}posts` (
+  `ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `post_author` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `post_date` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `post_date_gmt` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `post_content` longtext NOT NULL,
+  `post_title` text NOT NULL,
+  `post_excerpt` text NOT NULL,
+  `post_status` varchar(20) NOT NULL DEFAULT 'publish',
+  `comment_status` varchar(20) NOT NULL DEFAULT 'open',
+  `ping_status` varchar(20) NOT NULL DEFAULT 'open',
+  `post_password` varchar(255) NOT NULL DEFAULT '',
+  `post_name` varchar(200) NOT NULL DEFAULT '',
+  `to_ping` text NOT NULL,
+  `pinged` text NOT NULL,
+  `post_modified` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `post_modified_gmt` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `post_content_filtered` longtext NOT NULL,
+  `post_parent` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `guid` varchar(255) NOT NULL DEFAULT '',
+  `menu_order` int(11) NOT NULL DEFAULT 0,
+  `post_type` varchar(20) NOT NULL DEFAULT 'post',
+  `post_mime_type` varchar(100) NOT NULL DEFAULT '',
+  `comment_count` bigint(20) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`ID`),
+  KEY `post_name` (`post_name`(191)),
+  KEY `type_status_date` (`post_type`,`post_status`,`post_date`,`ID`),
+  KEY `post_parent` (`post_parent`),
+  KEY `post_author` (`post_author`)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}postmeta` (
+  `meta_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `post_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `meta_key` varchar(255) DEFAULT NULL,
+  `meta_value` longtext,
+  PRIMARY KEY (`meta_id`),
+  KEY `post_id` (`post_id`),
+  KEY `meta_key` (`meta_key`(191))
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}terms` (
+  `term_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `name` varchar(200) NOT NULL DEFAULT '',
+  `slug` varchar(200) NOT NULL DEFAULT '',
+  `term_group` bigint(10) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`term_id`),
+  KEY `slug` (`slug`(191)),
+  KEY `name` (`name`(191))
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}term_taxonomy` (
+  `term_taxonomy_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `term_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `taxonomy` varchar(32) NOT NULL DEFAULT '',
+  `description` longtext NOT NULL,
+  `parent` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `count` bigint(20) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`term_taxonomy_id`),
+  UNIQUE KEY `term_id_taxonomy` (`term_id`,`taxonomy`),
+  KEY `taxonomy` (`taxonomy`)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}term_relationships` (
+  `object_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `term_taxonomy_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `term_order` int(11) NOT NULL DEFAULT 0,
+  PRIMARY KEY (`object_id`,`term_taxonomy_id`),
+  KEY `term_taxonomy_id` (`term_taxonomy_id`)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}termmeta` (
+  `meta_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `term_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `meta_key` varchar(255) DEFAULT NULL,
+  `meta_value` longtext,
+  PRIMARY KEY (`meta_id`),
+  KEY `term_id` (`term_id`),
+  KEY `meta_key` (`meta_key`(191))
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}comments` (
+  `comment_ID` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `comment_post_ID` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `comment_author` tinytext NOT NULL,
+  `comment_author_email` varchar(100) NOT NULL DEFAULT '',
+  `comment_author_url` varchar(200) NOT NULL DEFAULT '',
+  `comment_author_IP` varchar(100) NOT NULL DEFAULT '',
+  `comment_date` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `comment_date_gmt` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `comment_content` text NOT NULL,
+  `comment_karma` int(11) NOT NULL DEFAULT 0,
+  `comment_approved` varchar(20) NOT NULL DEFAULT '1',
+  `comment_agent` varchar(255) NOT NULL DEFAULT '',
+  `comment_type` varchar(20) NOT NULL DEFAULT 'comment',
+  `comment_parent` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `user_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  PRIMARY KEY (`comment_ID`),
+  KEY `comment_post_ID` (`comment_post_ID`),
+  KEY `comment_approved_date_gmt` (`comment_approved`,`comment_date_gmt`),
+  KEY `comment_date_gmt` (`comment_date_gmt`),
+  KEY `comment_parent` (`comment_parent`),
+  KEY `comment_author_email` (`comment_author_email`(10))
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}commentmeta` (
+  `meta_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `comment_id` bigint(20) unsigned NOT NULL DEFAULT 0,
+  `meta_key` varchar(255) DEFAULT NULL,
+  `meta_value` longtext,
+  PRIMARY KEY (`meta_id`),
+  KEY `comment_id` (`comment_id`),
+  KEY `meta_key` (`meta_key`(191))
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}links` (
+  `link_id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,
+  `link_url` varchar(255) NOT NULL DEFAULT '',
+  `link_name` varchar(255) NOT NULL DEFAULT '',
+  `link_image` varchar(255) NOT NULL DEFAULT '',
+  `link_target` varchar(25) NOT NULL DEFAULT '',
+  `link_description` varchar(255) NOT NULL DEFAULT '',
+  `link_visible` varchar(20) NOT NULL DEFAULT 'Y',
+  `link_owner` bigint(20) unsigned NOT NULL DEFAULT 1,
+  `link_rating` int(11) NOT NULL DEFAULT 0,
+  `link_updated` datetime NOT NULL DEFAULT '0000-00-00 00:00:00',
+  `link_rel` varchar(255) NOT NULL DEFAULT '',
+  `link_notes` mediumtext NOT NULL,
+  `link_rss` varchar(255) NOT NULL DEFAULT '',
+  PRIMARY KEY (`link_id`),
+  KEY `link_visible` (`link_visible`)
+) DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_520_ci",
 		);
 	}
 	public function hydrate_options( array $rows ): void { foreach ( $rows as $row ) { $row = (array) $row; $this->driver->get_connection()->get_pdo()->prepare( 'INSERT OR REPLACE INTO `' . $this->table( 'options' ) . '` (option_id, option_name, option_value, autoload) VALUES (?, ?, ?, ?)' )->execute( array( $row['option_id'] ?? 0, $row['option_name'], $row['option_value'] ?? '', $row['autoload'] ?? 'yes' ) ); } }

@@ -16,6 +16,8 @@ class WP_SQLite_Connection {
 }
 
 class WP_MySQL_On_SQLite {
+	/** @var string[] */
+	public static array $queries = array();
 	private WP_SQLite_Connection $connection;
 	private bool $in_transaction = false;
 	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
@@ -30,16 +32,69 @@ class WP_MySQL_On_SQLite {
 	public function inTransaction(): bool { return $this->in_transaction; }
 	public function query( string $sql, $fetch_mode = PDO::FETCH_OBJ, ...$args ) {
 		unset( $fetch_mode, $args );
+		self::$queries[] = $sql;
 		$wrap = ! $this->in_transaction && 1 === preg_match( '/^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i', $sql );
-		if ( $wrap ) { $this->connection->get_pdo()->beginTransaction(); }
+		$pdo = $this->connection->get_pdo();
+		if ( $wrap ) { $pdo->beginTransaction(); }
 		try {
-			$result = $this->connection->get_pdo()->query( $sql );
-			if ( $wrap ) { $this->connection->get_pdo()->commit(); }
+			$statements = $this->sqlite_statements( $sql );
+			$result = null;
+			foreach ( $statements as $statement ) {
+				$result = $pdo->query( $statement );
+			}
+			if ( $wrap ) { $pdo->commit(); }
 			return $result;
 		} catch ( Throwable $error ) {
-			if ( $wrap && $this->connection->get_pdo()->inTransaction() ) { $this->connection->get_pdo()->rollBack(); }
+			if ( $wrap && $pdo->inTransaction() ) { $pdo->rollBack(); }
 			throw $error;
 		}
+	}
+	/** @return string[] */
+	private function sqlite_statements( string $sql ): array {
+		$trimmed = trim( $sql, " \t\n\r\0\x0B;" );
+		if ( ! preg_match( '/^\s*CREATE\s+TABLE\s+(IF\s+NOT\s+EXISTS\s+)?`?([A-Za-z0-9_]+)`?\s*\((.*)\)\s*(?:DEFAULT\s+CHARSET\s*=\s*\w+\s*(?:COLLATE\s*=\s*\w+)?)?\s*$/is', $trimmed, $match ) ) {
+			return array( $sql );
+		}
+		if ( ! preg_match( '/\b(?:AUTO_INCREMENT|varchar\s*\(|longtext|tinytext|mediumtext|UNIQUE\s+KEY|\bKEY\s+`)/i', $trimmed ) ) {
+			return array( $sql );
+		}
+		$exists = '' !== trim( $match[1] );
+		$table = $match[2];
+		$columns = array();
+		$indexes = array();
+		$inline_pk = false;
+		foreach ( preg_split( '/\n/', $match[3] ) as $line ) {
+			$line = rtrim( trim( $line ), ',' );
+			if ( '' === $line ) { continue; }
+			if ( preg_match( '/^PRIMARY\s+KEY\s*\((.+)\)$/i', $line, $pk ) ) {
+				$columns[] = 'PRIMARY KEY (' . preg_replace( '/\s*\(\d+\)/', '', $pk[1] ) . ')';
+				continue;
+			}
+			if ( preg_match( '/^UNIQUE\s+KEY\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)$/i', $line, $unique ) ) {
+				$indexes[] = 'CREATE UNIQUE INDEX ' . ( $exists ? 'IF NOT EXISTS ' : '' ) . '`' . $table . '_' . $unique[1] . '` ON `' . $table . '` (' . preg_replace( '/\s*\(\d+\)/', '', $unique[2] ) . ')';
+				continue;
+			}
+			if ( preg_match( '/^KEY\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)$/i', $line, $key ) ) {
+				$indexes[] = 'CREATE INDEX ' . ( $exists ? 'IF NOT EXISTS ' : '' ) . '`' . $table . '_' . $key[1] . '` ON `' . $table . '` (' . preg_replace( '/\s*\(\d+\)/', '', $key[2] ) . ')';
+				continue;
+			}
+			$line = preg_replace( '/\bbigint\(\d+\)(?:\s+unsigned)?/i', 'INTEGER', $line );
+			$line = preg_replace( '/\bint\(\d+\)(?:\s+unsigned)?/i', 'INTEGER', $line );
+			$line = preg_replace( '/\bvarchar\(\d+\)/i', 'TEXT', $line );
+			$line = preg_replace( '/\b(?:longtext|mediumtext|tinytext|datetime|text)\b/i', 'TEXT', $line );
+			$auto = (bool) preg_match( '/\bAUTO_INCREMENT\b/i', $line );
+			$line = preg_replace( '/\s*AUTO_INCREMENT\b/i', '', $line );
+			if ( $auto ) {
+				$line = preg_replace( '/\bINTEGER\b/i', 'INTEGER PRIMARY KEY AUTOINCREMENT', $line, 1 );
+				$inline_pk = true;
+			}
+			$columns[] = $line;
+		}
+		if ( $inline_pk ) {
+			$columns = array_values( array_filter( $columns, static fn( string $column ): bool => 1 !== preg_match( '/^PRIMARY KEY\s*\(/i', $column ) ) );
+		}
+		$create = 'CREATE TABLE ' . ( $exists ? 'IF NOT EXISTS ' : '' ) . '`' . $table . '` (' . implode( ', ', $columns ) . ')';
+		return array_merge( array( $create ), $indexes );
 	}
 }
 
@@ -162,6 +217,69 @@ mdi_cold_assert(
 mdi_cold_assert(
 	! file_exists( $state . '/_schema/options.sql' ) && ! file_exists( $state . '/_schema/posts.sql' ),
 	'core table schemas are not persisted into _schema'
+);
+
+$driver_sql = implode( "\n", WP_MySQL_On_SQLite::$queries );
+mdi_cold_assert(
+	str_contains( $driver_sql, 'CREATE TABLE IF NOT EXISTS `wp_options`' )
+		&& str_contains( $driver_sql, 'CREATE TABLE IF NOT EXISTS `wp_posts`' )
+		&& str_contains( strtoupper( $driver_sql ), 'AUTO_INCREMENT' )
+		&& str_contains( $driver_sql, 'UNIQUE KEY `option_name`' )
+		&& str_contains( $driver_sql, 'KEY `type_status_date`' )
+		&& str_contains( $driver_sql, 'DEFAULT CHARSET' ),
+	'core DDL passes through the owning SQLite driver rather than a raw-PDO-only path'
+);
+
+$column = static function ( PDO $pdo, string $table, string $name ): array {
+	foreach ( $pdo->query( 'PRAGMA table_info(`' . $table . '`)' )->fetchAll( PDO::FETCH_ASSOC ) as $row ) {
+		if ( $name === $row['name'] ) {
+			return $row;
+		}
+	}
+	return array();
+};
+$option_name = $column( $pdo, 'wp_options', 'option_name' );
+$autoload = $column( $pdo, 'wp_options', 'autoload' );
+$option_id = $column( $pdo, 'wp_options', 'option_id' );
+$post_status = $column( $pdo, 'wp_posts', 'post_status' );
+$post_id = $column( $pdo, 'wp_posts', 'ID' );
+$meta_key = $column( $pdo, 'wp_postmeta', 'meta_key' );
+mdi_cold_assert(
+	1 === (int) ( $option_id['pk'] ?? 0 )
+		&& 1 === (int) ( $post_id['pk'] ?? 0 )
+		&& 1 === (int) ( $option_name['notnull'] ?? 0 )
+		&& 1 === (int) ( $autoload['notnull'] ?? 0 )
+		&& 1 === (int) ( $post_status['notnull'] ?? 0 )
+		&& 0 === (int) ( $meta_key['notnull'] ?? 1 )
+		&& str_contains( (string) ( $option_name['dflt_value'] ?? '' ), "''" )
+		&& str_contains( (string) ( $autoload['dflt_value'] ?? '' ), 'yes' )
+		&& str_contains( (string) ( $post_status['dflt_value'] ?? '' ), 'publish' )
+		&& str_contains( (string) $pdo->query( "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = 'wp_options'" )->fetchColumn(), 'AUTOINCREMENT' ),
+	'cold reconstruction restores WordPress core defaults, nullability, and auto-increment'
+);
+
+$index_sql = implode( "\n", $pdo->query( "SELECT sql FROM sqlite_master WHERE type = 'index' AND sql IS NOT NULL" )->fetchAll( PDO::FETCH_COLUMN ) );
+mdi_cold_assert(
+	str_contains( $index_sql, 'wp_options_autoload' )
+		&& str_contains( $index_sql, 'wp_options_option_name' )
+		&& str_contains( $index_sql, 'wp_posts_type_status_date' )
+		&& str_contains( $index_sql, 'wp_posts_post_parent' )
+		&& str_contains( $index_sql, 'wp_posts_post_author' )
+		&& str_contains( $index_sql, 'wp_posts_post_name' )
+		&& str_contains( $index_sql, 'wp_users_user_login_key' )
+		&& str_contains( $index_sql, 'wp_postmeta_post_id' )
+		&& str_contains( $index_sql, 'wp_term_relationships_term_taxonomy_id' ),
+	'cold reconstruction restores representative WordPress secondary indexes'
+);
+
+$pdo->exec( "INSERT INTO wp_options (option_name, option_value) VALUES ('_mdi_autoincrement', '1')" );
+$pdo->exec( "INSERT INTO wp_posts (post_content, post_title, post_excerpt, to_ping, pinged, post_content_filtered) VALUES ('', '', '', '', '', '')" );
+mdi_cold_assert(
+	(int) $pdo->query( "SELECT option_id FROM wp_options WHERE option_name = '_mdi_autoincrement'" )->fetchColumn() > 0
+		&& 'publish' === $pdo->query( 'SELECT post_status FROM wp_posts ORDER BY ID DESC LIMIT 1' )->fetchColumn()
+		&& 'open' === $pdo->query( 'SELECT comment_status FROM wp_posts ORDER BY ID DESC LIMIT 1' )->fetchColumn()
+		&& 'yes' === $pdo->query( "SELECT autoload FROM wp_options WHERE option_name = '_mdi_autoincrement'" )->fetchColumn(),
+	'cold reconstruction applies auto-increment and WordPress column defaults on insert'
 );
 
 mdi_cold_rm( $root );

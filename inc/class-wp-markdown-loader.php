@@ -101,7 +101,7 @@ class WP_Markdown_Loader {
 		try {
 			$this->operations->ensure_reconciliation_state();
 			$this->recover_pending_operations();
-			$this->operations->ensure_tables( $this->schema_files() );
+			$this->reconstruct( 'ensure_tables', 'wordpress-core and _schema/*.sql', fn() => $this->operations->ensure_tables( $this->schema_files() ) );
 			$this->reconstruct( 'hydrate_options', '_options/*.json', fn() => $this->operations->hydrate_options( $this->option_rows() ) );
 			foreach ( self::CORE_TABLE_SUFFIXES as $table ) { $this->hydrate_table( $table ); }
 			$this->reconstruct( 'hydrate_markdown_posts', '*.md and _tables/posts.json', fn() => $this->operations->hydrate_markdown_posts( $this->markdown_posts(), $this->json_rows( 'posts' ) ) );

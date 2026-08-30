@@ -5,12 +5,12 @@
  * Extends WP_SQLite_DB to:
  * - Use persistent on-disk SQLite as the index/query engine
  * - Load all data from markdown/JSON files on cold boot
- * - Incrementally sync only changed files on warm boot
+ * - Serve the last complete index on warm boot
  * - Persist all writes back to markdown/JSON files
  *
  * Boot modes:
  *   Cold boot: SQLite file doesn't exist → full load from disk
- *   Warm boot: SQLite file exists → incremental sync (stat changed files only)
+ *   Warm boot: SQLite file exists → bounded read-only attach
  *
  * @package Markdown_Database_Integration
  * @since 0.1.0
@@ -22,6 +22,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
 require_once __DIR__ . '/class-wp-markdown-query-observer-boundary.php';
+require_once __DIR__ . '/class-wp-markdown-primary-index-health.php';
 
 class WP_Markdown_DB extends WP_SQLite_DB {
 
@@ -42,6 +43,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 */
 	private $deferred_primary_loader_action = null;
 	private string $primary_runtime_identity = '';
+	private ?WP_Markdown_Write_Engine $write_engine = null;
+	private ?WP_Markdown_Primary_Index_Evidence $primary_index_evidence = null;
 
 	private mixed $native_shadow_verifier = null;
 
@@ -69,8 +72,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 *
 	 * In 'primary' mode: uses a persistent on-disk SQLite file as the index.
 	 * On cold boot (no file), does a full load from markdown/JSON files.
-	 * On warm boot (file exists), does an incremental sync — only re-parses
-	 * .md files whose mtime/size changed since last boot.
+	 * On warm boot (file exists), attaches the last complete index without
+	 * entering reconciliation. An explicit maintenance owner synchronizes it.
 	 *
 	 * In 'mirror' mode: uses the standard on-disk SQLite file and mirrors
 	 * writes to markdown files.
@@ -207,7 +210,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		$this->primary_runtime_identity = $db_path;
 		$this->backend_capabilities = WP_Markdown_Backend_Resolver::resolve();
 		if ( class_exists( 'WP_Markdown_SQLite_Runtime_Adapter' ) ) {
-			$this->dbh = WP_Markdown_SQLite_Runtime_Adapter::create_runtime( $db_path, $pdo, $this->dbname, $storage, $this->backend_capabilities );
+			$this->dbh = WP_Markdown_SQLite_Runtime_Adapter::create_runtime( $db_path, $pdo, $this->dbname, $storage, $this->backend_capabilities, 'primary' === $mode && $is_warm_boot );
 		} else {
 			// Isolated bootstrap consumers may inject the historical driver facade.
 			$connection = new WP_SQLite_Connection( array( 'pdo' => $pdo, 'path' => $db_path, 'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null ) );
@@ -256,7 +259,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$state_dir,
 			$reconciliation
 		);
-		$this->dbh->set_write_engine( $write_engine );
+		$this->write_engine = $write_engine;
+		$this->dbh->set_write_engine( $write_engine, 'primary' !== $mode || ! $is_warm_boot );
 
 		// Set up the post resolver so the storage engine can build
 		// hierarchical directory paths. See GitHub issue #14.
@@ -333,6 +337,10 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$this->deferred_primary_loader_action = $loader_action;
 			}
 		}
+
+		if ( 'primary' === $mode && $is_warm_boot && method_exists( $this->dbh, 'finish_warm_bootstrap' ) ) {
+			$this->dbh->finish_warm_bootstrap();
+		}
 	}
 
 	/**
@@ -407,7 +415,12 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		}
 
 		$this->backend_capabilities->require( 'disposable_index_operation' );
-		return $this->loader->sync_incremental_if_available( (string) $this->dbname . "\0" . $this->primary_runtime_identity );
+		$recover_pending = function (): void {
+			if ( null !== $this->write_engine && method_exists( $this->write_engine, 'recover_pending' ) ) {
+				$this->write_engine->recover_pending();
+			}
+		};
+		return $this->loader->sync_incremental_if_available( (string) $this->dbname . "\0" . $this->primary_runtime_identity, $recover_pending );
 	}
 
 	/**
@@ -415,7 +428,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 *
 	 * Each worker builds its index independently — no shared writes.
 	 *
-	 * Warm boot: index file exists → connect to it, sync incrementally.
+	 * Warm boot: index file exists → connect without inline reconciliation.
 	 * Cold boot: index file doesn't exist → build into a private temp
 	 *   file (unique per worker), then rename atomically into place.
 	 *   If rename fails (another worker beat us), discard our temp file
@@ -438,19 +451,53 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 		string $state_dir,
 		WP_Markdown_Storage $storage
 	): void {
-		// --- Warm boot: index exists ---
-		if ( file_exists( $db_path ) ) {
+		$deadline_ms = defined( 'MARKDOWN_DB_PRIMARY_BOOTSTRAP_DEADLINE_MS' )
+			? max( 1, (int) MARKDOWN_DB_PRIMARY_BOOTSTRAP_DEADLINE_MS )
+			: 500;
+		$started = hrtime( true );
+		$attempted_existing = false;
+		$last_evidence = null;
+		$recovery_evidence = null;
+
+		// Warm boot only attaches an already-published generation. It never scans
+		// canonical files, recovers pending work, deletes an index, or rebuilds.
+		foreach ( array( $db_path => false, $db_path . '.previous' => true ) as $candidate => $previous ) {
+			$probe = WP_Markdown_Primary_Index_Evidence::probe( $candidate, $deadline_ms );
+			if ( 'missing' === $probe->status() ) {
+				continue;
+			}
+			$attempted_existing = true;
+			$last_evidence = $probe;
+			if ( ! $probe->is_ready() ) {
+				if ( ! $previous ) {
+					$recovery_evidence = $probe;
+				}
+				continue;
+			}
 			try {
-				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $state_dir, $storage );
+				$this->boot_connection( $candidate, null, 'primary', true, $content_dir, $state_dir, $storage );
+				$elapsed_ms = (int) ceil( ( hrtime( true ) - $started ) / 1000000 );
+				if ( $elapsed_ms > $deadline_ms ) {
+					throw new RuntimeException( 'Primary index attachment exceeded its bootstrap deadline.' );
+				}
+				$this->publish_primary_index_evidence( WP_Markdown_Primary_Index_Evidence::attached( $probe, $previous, $recovery_evidence ) );
 				return;
 			} catch ( \Throwable $e ) {
-				// Index exists but is unusable (corrupted, incomplete from
-				// a concurrent worker's rename, etc.). Fall through to cold
-				// boot — we'll build our own and try to rename over it.
+				$last_evidence = WP_Markdown_Primary_Index_Evidence::failed( $probe, $e );
+				if ( ! $previous ) {
+					$recovery_evidence = $last_evidence;
+				}
 				$this->dbh        = null;
 				$this->last_error = '';
 				$this->loader     = null;
+				$this->write_engine = null;
 			}
+		}
+
+		if ( $attempted_existing ) {
+			$this->publish_primary_index_evidence( $last_evidence );
+			$this->last_error = $last_evidence->operator_message();
+			return;
 		}
 
 		// --- Cold boot: build into a private temp file ---
@@ -476,18 +523,19 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 				$this->dbh        = null;
 				$this->last_error = '';
 				$this->loader     = null;
-				$this->cleanup_index_files( $tmp_path );
-
 				try {
 					$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $state_dir, $storage );
+					$this->cleanup_index_files( $tmp_path );
+					$this->publish_primary_index_evidence( WP_Markdown_Primary_Index_Evidence::attached( WP_Markdown_Primary_Index_Evidence::probe( $db_path, $deadline_ms ) ) );
 					return;
 				} catch ( \Throwable $e ) {
-					// Their file is bad too? Delete it, fall through to our rename.
+					// Their file is bad too? Keep it until our complete candidate can
+					// replace it atomically; never create an empty authority window.
 					error_log( 'Markdown DB: Rival index unreadable (' . $e->getMessage() . '). Using ours.' );
-					$this->cleanup_index_files( $db_path );
 					$this->dbh        = null;
 					$this->last_error = '';
 					$this->loader     = null;
+					$this->write_engine = null;
 					// Re-build connection to our temp file for the rename below.
 					$this->boot_connection( $tmp_path, null, 'primary', true, $content_dir, $state_dir, $storage );
 				}
@@ -516,6 +564,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 
 				$this->boot_connection( $db_path, null, 'primary', true, $content_dir, $state_dir, $storage );
 			}
+			$this->publish_primary_index_evidence( WP_Markdown_Primary_Index_Evidence::cold_complete( $db_path, $deadline_ms ) );
 			// If rename succeeded, we keep our existing connection — it's
 			// already fully loaded from the cold boot above.
 
@@ -524,6 +573,7 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$this->cleanup_index_files( $tmp_path );
 			$this->dbh    = null;
 			$this->loader = null;
+			$this->write_engine = null;
 			if ( $e instanceof WP_Markdown_Loader_Exception ) {
 				$GLOBALS['markdown_db_primary_bootstrap_diagnostic'] = $e->diagnostic();
 				$this->last_error = $e->operator_message();
@@ -532,6 +582,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			}
 			error_log( 'Markdown DB: Cold boot failed: ' . $this->last_error . "\n" . $e->getTraceAsString() );
 		}
+	}
+
+	private function publish_primary_index_evidence( WP_Markdown_Primary_Index_Evidence $evidence ): void {
+		$this->primary_index_evidence = $evidence;
+		$GLOBALS['markdown_db_primary_index_evidence'] = $evidence->diagnostic();
 	}
 
 	/**
@@ -588,6 +643,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	 */
 	public function get_loader(): ?WP_Markdown_Loader {
 		return $this->loader;
+	}
+
+	/** @return array<string,mixed>|null */
+	public function get_primary_index_evidence(): ?array {
+		return null === $this->primary_index_evidence ? null : $this->primary_index_evidence->diagnostic();
 	}
 
 	/** @return array{created:string[],changed:string[],deleted:string[]} Canonical paths flushed at an explicit long-lived request boundary. */

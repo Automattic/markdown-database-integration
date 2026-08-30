@@ -22,8 +22,9 @@ class MDI_Bounded_Warm_Loader extends WP_Markdown_Loader {
 		return WP_Markdown_Loader_Outcome::retained( $reason );
 	}
 
-	public function sync_incremental_if_available( string $runtime_identity ): bool {
+	public function sync_incremental_if_available( string $runtime_identity, ?callable $before_sync = null ): bool {
 		++$this->synchronized;
+		if ( null !== $before_sync ) { $before_sync(); }
 		return true;
 	}
 }

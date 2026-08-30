@@ -145,7 +145,7 @@ class WP_Markdown_Loader {
 	}
 
 	/** Run warm synchronization only when this process owns the runtime gate. */
-	public function sync_incremental_if_available( string $runtime_identity ): bool {
+	public function sync_incremental_if_available( string $runtime_identity, ?callable $before_sync = null ): bool {
 		$directory = sys_get_temp_dir() . '/markdown-database-integration-locks';
 		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) {
 			throw new \RuntimeException( 'Markdown DB: Failed to create synchronization lock directory.' );
@@ -160,6 +160,9 @@ class WP_Markdown_Loader {
 			return false;
 		}
 		try {
+			if ( null !== $before_sync ) {
+				$before_sync();
+			}
 			$this->sync_incremental();
 			return true;
 		} finally {

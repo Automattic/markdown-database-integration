@@ -53,6 +53,29 @@ class WP_MySQL_On_SQLite {
 function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed { unset( $hook, $args ); return $value; }
 function do_action( string $hook, mixed ...$args ): void { $GLOBALS['mdi_runtime_actions'][ $hook ][] = $args; }
 
+class MDI_Runtime_WPDB {
+	public string $prefix = 'wp_';
+	public function set_prefix( string $prefix ): string { $this->prefix = $prefix; return $prefix; }
+}
+$GLOBALS['wpdb'] = new MDI_Runtime_WPDB();
+function wp_get_db_schema(): string {
+	$prefix = $GLOBALS['wpdb']->prefix;
+	return implode( ';', array(
+		"CREATE TABLE {$prefix}posts (ID INTEGER PRIMARY KEY, post_author INTEGER, post_date TEXT, post_date_gmt TEXT, post_content TEXT, post_title TEXT, post_excerpt TEXT, post_status TEXT, comment_status TEXT, ping_status TEXT, post_password TEXT, post_name TEXT, to_ping TEXT, pinged TEXT, post_modified TEXT, post_modified_gmt TEXT, post_content_filtered TEXT, post_parent INTEGER, guid TEXT, menu_order INTEGER, post_type TEXT, post_mime_type TEXT, comment_count INTEGER)",
+		"CREATE TABLE {$prefix}options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)",
+		"CREATE TABLE {$prefix}users (ID INTEGER PRIMARY KEY, user_login TEXT, user_pass TEXT)",
+		"CREATE TABLE {$prefix}usermeta (umeta_id INTEGER PRIMARY KEY, user_id INTEGER, meta_key TEXT, meta_value TEXT)",
+		"CREATE TABLE {$prefix}postmeta (meta_id INTEGER PRIMARY KEY, post_id INTEGER, meta_key TEXT, meta_value TEXT)",
+		"CREATE TABLE {$prefix}terms (term_id INTEGER PRIMARY KEY, slug TEXT)",
+		"CREATE TABLE {$prefix}term_taxonomy (term_taxonomy_id INTEGER PRIMARY KEY, term_id INTEGER, taxonomy TEXT)",
+		"CREATE TABLE {$prefix}term_relationships (object_id INTEGER, term_taxonomy_id INTEGER, term_order INTEGER DEFAULT 0)",
+		"CREATE TABLE {$prefix}termmeta (meta_id INTEGER PRIMARY KEY, term_id INTEGER, meta_key TEXT, meta_value TEXT)",
+		"CREATE TABLE {$prefix}comments (comment_ID INTEGER PRIMARY KEY)",
+		"CREATE TABLE {$prefix}commentmeta (meta_id INTEGER PRIMARY KEY, comment_id INTEGER, meta_key TEXT, meta_value TEXT)",
+		"CREATE TABLE {$prefix}links (link_id INTEGER PRIMARY KEY)"
+	) ) . ';';
+}
+
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-backend-capabilities.php';
 require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-storage.php';
@@ -244,12 +267,6 @@ $pdo = null;
 unlink( $cache );
 $cold_pdo = new PDO( 'sqlite:' . $cache );
 $cold_pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$cold_pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_author INTEGER, post_date TEXT, post_date_gmt TEXT, post_content TEXT, post_title TEXT, post_excerpt TEXT, post_status TEXT, comment_status TEXT, ping_status TEXT, post_password TEXT, post_name TEXT, to_ping TEXT, pinged TEXT, post_modified TEXT, post_modified_gmt TEXT, post_content_filtered TEXT, post_parent INTEGER, guid TEXT, menu_order INTEGER, post_type TEXT, post_mime_type TEXT, comment_count INTEGER)' );
-$cold_pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
-$cold_pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
-$cold_pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
-$cold_pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
-$cold_pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER, term_order INTEGER DEFAULT 0)' );
 $cold_runtime = WP_Markdown_Primary_Storage_Runtime::bootstrap( array( 'content_root' => $root . '/content', 'state_root' => $root . '/state' ), new WP_SQLite_Connection( $cold_pdo ), 'wordpress', null, true );
 $cold_driver = $cold_runtime->get_driver();
 $lazy_round_trip_matches = array();
@@ -257,7 +274,7 @@ foreach ( $lazy_round_trip_cases as $post_id => $content ) {
 	$cold_post = $cold_driver->query_cursor( 'SELECT ID, post_content FROM wp_posts WHERE ID = ' . $post_id )->fetch( PDO::FETCH_OBJ );
 	$lazy_round_trip_matches[] = $content === ( $cold_post->post_content ?? null );
 }
-mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn() && ! in_array( false, $lazy_round_trip_matches, true ) && 4 === count( $lazy_round_trip_matches ), 'cold reconstruction and lazy post SELECT preserve LF-terminated trailing whitespace, empty, no-final-LF, and CRLF content exactly' );
+mdi_runtime_assert( 'Canonical name six' === $cold_pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'blogname'" )->fetchColumn() && 'Written post' === $cold_pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 12' )->fetchColumn() && ! in_array( false, $lazy_round_trip_matches, true ) && 4 === count( $lazy_round_trip_matches ), 'cold reconstruction creates WordPress core tables in an empty index and preserves canonical content exactly' );
 
 $unsupported_cold_boot = false;
 try {

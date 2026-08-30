@@ -47,13 +47,22 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		?\PDO $pdo,
 		string $database,
 		WP_Markdown_Storage $storage,
-		?WP_Markdown_Backend_Capabilities $capabilities = null
+		?WP_Markdown_Backend_Capabilities $capabilities = null,
+		bool $bounded_warm_boot = false
 	): self {
+		if ( $bounded_warm_boot && null === $pdo ) {
+			$uri = 'file:' . str_replace( '%2F', '/', rawurlencode( $path ) ) . '?mode=rw';
+			$pdo = new \PDO( 'sqlite:' . $uri, null, null, array( \PDO::ATTR_TIMEOUT => 0 ) );
+			$pdo->setAttribute( \PDO::ATTR_ERRMODE, \PDO::ERRMODE_EXCEPTION );
+			$pdo->exec( 'PRAGMA busy_timeout = 0' );
+			$pdo->exec( 'PRAGMA query_only = ON' );
+			$pdo->query( 'SELECT 1 FROM sqlite_schema LIMIT 1' )->fetchColumn();
+		}
 		$connection = new WP_SQLite_Connection(
 			array(
 				'pdo'          => $pdo,
 				'path'         => $path,
-				'journal_mode' => defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null,
+				'journal_mode' => $bounded_warm_boot ? null : ( defined( 'SQLITE_JOURNAL_MODE' ) ? SQLITE_JOURNAL_MODE : null ),
 			)
 		);
 		return new self( $connection, $database, $storage, $capabilities );
@@ -196,9 +205,16 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 	 *
 	 * @param WP_Markdown_Write_Engine $engine The write engine.
 	 */
-	public function set_write_engine( WP_Markdown_Write_Engine $engine ): void {
+	public function set_write_engine( WP_Markdown_Write_Engine $engine, bool $recover_pending = true ): void {
 		$this->write_engine = $engine;
-		$engine->recover_pending();
+		if ( $recover_pending ) {
+			$engine->recover_pending();
+		}
+	}
+
+	/** End the query-only attachment phase after warm bootstrap has returned its retained index. */
+	public function finish_warm_bootstrap(): void {
+		$this->get_connection()->get_pdo()->exec( 'PRAGMA query_only = OFF' );
 	}
 
 	/**

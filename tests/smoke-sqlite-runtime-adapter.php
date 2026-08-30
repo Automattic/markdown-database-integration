@@ -7,7 +7,8 @@ define( 'ABSPATH', __DIR__ . '/' );
 define( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API', true );
 
 class WP_SQLite_Connection {
-	public function __construct( private PDO $pdo ) {}
+	private PDO $pdo;
+	public function __construct( PDO|array $options ) { $this->pdo = $options instanceof PDO ? $options : $options['pdo']; }
 	public function get_pdo(): PDO { return $this->pdo; }
 }
 
@@ -74,6 +75,36 @@ foreach ( $canonical_close_checks as $label => $check ) {
 	}
 	$passed = $passed && $check;
 }
+
+$database = tempnam( sys_get_temp_dir(), 'mdi-bounded-adapter-' );
+$writer = new PDO( 'sqlite:' . $database );
+$writer->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
+$writer->exec( 'CREATE TABLE bounded_boot (id INTEGER PRIMARY KEY)' );
+$writer->exec( 'BEGIN EXCLUSIVE' );
+$started = hrtime( true );
+$bounded_failure = null;
+try {
+	WP_Markdown_SQLite_Runtime_Adapter::create_runtime( $database, null, 'wordpress', new WP_Markdown_Storage(), null, true );
+} catch ( Throwable $error ) {
+	$bounded_failure = $error;
+}
+$bounded_ms = ( hrtime( true ) - $started ) / 1000000;
+$writer->rollBack();
+$bounded = WP_Markdown_SQLite_Runtime_Adapter::create_runtime( $database, null, 'wordpress', new WP_Markdown_Storage(), null, true );
+$query_only_during_attach = '1' === (string) $bounded->get_connection()->get_pdo()->query( 'PRAGMA query_only' )->fetchColumn();
+$bounded->finish_warm_bootstrap();
+$query_only_after_attach = '0' === (string) $bounded->get_connection()->get_pdo()->query( 'PRAGMA query_only' )->fetchColumn();
+$passed = $passed
+	&& $bounded_failure instanceof PDOException
+	&& $bounded_ms < 250
+	&& $query_only_during_attach
+	&& $query_only_after_attach;
+if ( ! ( $bounded_failure instanceof PDOException && $bounded_ms < 250 && $query_only_during_attach && $query_only_after_attach ) ) {
+	fwrite( STDERR, 'FAIL: bounded warm adapter attachment. Elapsed ' . $bounded_ms . " ms.\n" );
+}
+$bounded = null;
+$writer = null;
+unlink( $database );
 
 echo ( $passed ? 'PASS' : 'FAIL' ) . ': SQLite runtime adapter owns the implementation behind the legacy driver name.' . PHP_EOL;
 exit( $passed ? 0 : 1 );

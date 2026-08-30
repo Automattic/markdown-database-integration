@@ -3,7 +3,7 @@
  * Plugin Name: Markdown Database Integration
  * Plugin URI: https://github.com/chubes4/markdown-database-integration
  * Description: File-backed WordPress database with Markdown content, JSON state, plugin schemas, and a rebuildable SQLite query engine.
- * Version: 0.11.5
+ * Version: 0.12.0
  * Author: Chris Huber
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -32,7 +32,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MARKDOWN_DB_VERSION', '0.11.5' );
+define( 'MARKDOWN_DB_VERSION', '0.12.0' );
 define( 'MARKDOWN_DB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
 
 $markdown_database_integration_autoload = MARKDOWN_DB_PLUGIN_DIR . 'vendor/autoload.php';

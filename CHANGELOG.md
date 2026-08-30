@@ -1,5 +1,112 @@
 # Changelog
 
+## [0.12.0] - 2026-08-30
+
+### Added
+- apply multi-row INSERT VALUES as one statement
+- let WordPress install itself into canonical storage
+- dynamic defaults and comparison OR-groups in DML
+- server variable, status, and DATABASE() introspection
+- COUNT and SUM aggregates grouped over a JOIN
+- execute tables keyed by an exact string primary key
+- ENUM columns, CREATE TABLE IF NOT EXISTS, and DROP TABLE
+- CALC_FOUND_ROWS with COUNT(*) and indexed column ordering
+- default ORDER BY direction and trailing terminator
+- unqualified JOIN columns and COUNT(*) over JOINs
+- IS NOT NULL and indexed varchar-only scans
+- indexed varchar columns filter by exact ASCII
+- CREATE INDEX on persisted plugin tables
+- INSERT ON DUPLICATE KEY UPDATE for snapshot tables
+- residual equality scans for numeric columns
+- LEFT JOIN ON filters, IS NULL, and ORDER BY col+0
+- LEFT JOIN, unaliased tables, and JOIN FOUND_ROWS
+- honor LIMIT on bounded equality JOINs
+- INSERT IGNORE skips duplicate unique keys
+- treat false constant predicates as empty
+- INSERT SELECT literals FROM DUAL
+- ADD INDEX and SHOW INDEX WHERE
+- accept decimal SQL literals
+- enforce ASCII prefix unique keys
+- negate IN and LIKE
+- disjoin LIKE across columns
+- filter ASCII LIKE predicates
+- persist wp_posts mutations as markdown
+- look up unique char/varchar columns
+- enforce exact ASCII unique keys
+- default the canonical store to wp-content/db
+- composite order with an ASCII collation guard
+- filter inequality and same-column OR
+- mutate core snapshot tables
+- resolve canonical posts by slug
+- support native table alterations
+- support native generic table writes
+- support native transaction boundaries
+- support native plugin activation
+- support native generic inserts
+- support native table creation
+- add native schema introspection
+- boot WordPress on native canonical storage
+- execute bounded native equality joins
+- compose native partitioned plugin tables
+
+### Changed
+- declare native comparison workloads
+- add native backend comparison rigs
+- compact persisted option catalogue
+- index empty table predicates
+- scope residual post type reads
+- cache unbounded table reads
+- cache keyed table snapshots
+- witness warm table snapshots
+- verify only served post entries
+- persist verified option catalogue
+- persist verified post catalogue
+- read each file's frontmatter once when reading metadata
+- delete the walk nothing calls
+- read every post through the shared walk
+- walk the corpus once for reads and writes
+- delete the legacy layout flag
+- let a discovered file carry the look its discovery took
+- say how a read is ordered, bounded and projected once
+- hold what the corpus said in one catalogue
+- give file identity and its verification one owner
+- read each manifest entry with a single stat
+- resolve a post looked up by identity straight to its file
+- reuse the parse of an unchanged Markdown post
+- answer bounded reads without decoding the whole snapshot
+- separate mutation statements, INSERT parsing and the YAML codec
+- seed core roles in the native lifecycle fixture
+- share integer typing and DML routing
+- group inc files by backend
+- scope canonical post reads by type
+- index persisted snapshot tables
+- resolve canonical option mutations by path
+- activate corpus plugins in dependency order
+- probe native transaction durability
+- extend native lifecycle coverage
+- add native WordPress lifecycle gate
+- Revert "refactor: remove SQLite runtime"
+- Revert "test: add native request compatibility probe"
+- reuse native schema contracts
+- centralize native query planning
+- simplify native option mutations
+- scale native query execution
+
+### Fixed
+- bound primary index bootstrap
+- support native snapshot table replace
+- isolate canonical table writers
+- read a post's identity from its frontmatter
+- recover only journals whose writer is gone
+- recognize a created core table by name
+- type integer column defaults on post insert
+- honor quoting in native statement separators
+- support native option deletion
+- resolve hashed option collation
+- bind native post reads to file identity
+- guard SQLite wp db check
+- preserve primary bootstrap diagnostics
+
 ## [0.11.5] - 2026-08-25
 
 ### Fixed

@@ -21,6 +21,7 @@ require_once __DIR__ . '/class-wp-markdown-native-post-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-introspection.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
+require_once __DIR__ . '/../class-wp-markdown-table-durability-policy.php';
 require_once __DIR__ . '/class-wp-markdown-native-transactions.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
@@ -319,7 +320,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 		$core_tables = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
 		foreach ( glob( $root . '/*.sql' ) ?: array() as $path ) {
 			$table = basename( $path, '.sql' );
-			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $core_tables[ $table ] ) ) {
+			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table ) || isset( $core_tables[ $table ] ) || ! WP_Markdown_Table_Durability_Policy::persists( $prefix . $table, $prefix ) ) {
 				continue;
 			}
 			$ddl = self::read_persisted_file( $root, $path );

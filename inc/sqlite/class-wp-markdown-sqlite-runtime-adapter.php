@@ -24,6 +24,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/../class-wp-markdown-backend-capabilities.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
+require_once __DIR__ . '/../class-wp-markdown-table-durability-policy.php';
 require_once __DIR__ . '/class-wp-markdown-sqlite-operations.php';
 
 // Plugin and db.php drop-in updates are not atomic. Preserve the canonical PDO
@@ -119,14 +120,6 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 	);
 
 	/**
-	 * Tables that should NOT be persisted to disk.
-	 * Built once in the constructor from config + filter.
-	 *
-	 * @var array<string, bool>
-	 */
-	private $ephemeral_tables = array();
-
-	/**
 	 * Last materialized result for the released SQLite wpdb facade.
 	 *
 	 * @var mixed
@@ -166,38 +159,6 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		global $table_prefix;
 		$this->table_prefix = $table_prefix ?? 'wp_';
 
-		// Build the ephemeral tables list from config.
-		$this->build_ephemeral_tables();
-	}
-
-	/**
-	 * Build the set of tables that should NOT be persisted.
-	 *
-	 * Sources:
-	 *   1. MARKDOWN_DB_EPHEMERAL_TABLES constant (comma-separated suffixes)
-	 *   2. 'markdown_db_ephemeral_tables' filter (array of full table names)
-	 */
-	private function build_ephemeral_tables(): void {
-		$ephemeral = array();
-
-		// From constant: comma-separated table suffixes.
-		if ( defined( 'MARKDOWN_DB_EPHEMERAL_TABLES' ) ) {
-			$suffixes = array_filter( array_map( 'trim', explode( ',', MARKDOWN_DB_EPHEMERAL_TABLES ) ) );
-			foreach ( $suffixes as $suffix ) {
-				$ephemeral[ $this->table_prefix . $suffix ] = true;
-			}
-		}
-
-		// From filter (if WordPress hooks are available at this point).
-		if ( function_exists( 'apply_filters' ) ) {
-			$filtered = apply_filters( 'markdown_db_ephemeral_tables', array_keys( $ephemeral ) );
-			$ephemeral = array();
-			foreach ( $filtered as $table ) {
-				$ephemeral[ $table ] = true;
-			}
-		}
-
-		$this->ephemeral_tables = $ephemeral;
 	}
 
 	/**
@@ -786,7 +747,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		if ( ! isset( $operation['table'] ) || 'TRUNCATE' === $operation['op'] || preg_match( '/^\s*CREATE\s+(?:(?:OR\s+REPLACE)\s+)?(?:(?:UNIQUE|FULLTEXT|SPATIAL|VECTOR)\s+)?INDEX\b/i', $query ) ) {
 			return null;
 		}
-		if ( 'DML' === $operation['type'] && $this->is_ephemeral_table( $operation['table'] ) ) {
+		if ( $this->is_ephemeral_table( $operation['table'] ) ) {
 			return null;
 		}
 		if ( 'DDL' === $operation['type'] && $this->is_core_table( $operation['table'] ) && preg_match( '/^\s*(?:CREATE\s+TABLE|DROP\s+INDEX)/i', $query ) ) {
@@ -802,7 +763,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 	 * @return bool
 	 */
 	private function is_ephemeral_table( string $table ): bool {
-		return isset( $this->ephemeral_tables[ $table ] );
+		return WP_Markdown_Table_Durability_Policy::EPHEMERAL === WP_Markdown_Table_Durability_Policy::resolve( $table, $this->table_prefix )['durability'];
 	}
 
 	/**

@@ -4,6 +4,14 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
+
+function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
+	if ( 'markdown_db_table_durability_policy' === $tag && 'ephemeral_native' === ( $args[0] ?? null ) ) {
+		return array( 'durability' => 'ephemeral' );
+	}
+	return $value;
+}
+
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
 
 function mdi_plugin_schema_remove_tree( string $root ): void {
@@ -56,6 +64,8 @@ file_put_contents( $root . '/_schema/mismatch.sql', 'CREATE TABLE wp_different_n
 file_put_contents( $root . '/_schema/malformed.sql', 'not ddl' );
 file_put_contents( $root . '/_schema/inline_items.sql', "CREATE TABLE wp_inline_items (\n id INTEGER PRIMARY KEY,\n value TEXT NOT NULL\n);" );
 file_put_contents( $root . '/_tables/inline_items.json', '[{"id":4,"value":"portable"}]' );
+file_put_contents( $root . '/_schema/ephemeral_native.sql', 'CREATE TABLE wp_ephemeral_native (id INTEGER PRIMARY KEY);' );
+file_put_contents( $root . '/_tables/ephemeral_native.json', '[{"id":1}]' );
 file_put_contents( $root . '/_schema/partitioned.sql', 'CREATE TABLE wp_partitioned (id bigint(20) unsigned NOT NULL, owner_id bigint(20) unsigned NOT NULL, status varchar(32) NOT NULL, PRIMARY KEY (id), KEY owner_id (owner_id));' );
 $partition_generation = 'generation-1234567890abcdef12345678';
 mkdir( $root . '/_tables/partitioned/' . $partition_generation, 0755, true );
@@ -90,6 +100,7 @@ $composite = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT right_id 
 $unsupported = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_unsupported' ) );
 $mismatch = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_mismatch' ) );
 $inline = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT value FROM wp_inline_items WHERE id = 4' ) );
+$ephemeral_native = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_ephemeral_native WHERE id = 1' ) );
 $partitioned = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT status, id FROM wp_partitioned WHERE id = 1 AND owner_id IN (7) ORDER BY id ASC LIMIT 1' ) );
 $partition_count = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_partitioned WHERE id IN (2, 1)' ) );
 $partition_scan = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_partitioned' ) );
@@ -163,6 +174,8 @@ $checks = array(
 		&& false === $mismatch->return_value()
 		&& 1 === $exact->return_value(),
 	'SQLite inline integer primary keys normalize into the generic execution contract' => 'portable' === ( $inline->wpdb_state()['last_result'][0]->value ?? null ),
+	'ephemeral plugin schemas and snapshots do not register in the native runtime' => false === $ephemeral_native->return_value()
+		&& 'unsupported_table' === ( $ephemeral_native->diagnostic()['reason'] ?? null ),
 	'partitioned plugin tables compose lookup, residual filter, ordering, and limit execution' => 1 === $partitioned->return_value()
 		&& 'ready' === ( $partitioned->wpdb_state()['last_result'][0]->status ?? null )
 		&& '1' === ( $partitioned->wpdb_state()['last_result'][0]->id ?? null ),

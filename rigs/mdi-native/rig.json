@@ -20,9 +20,54 @@
           "bench_env": {
             "BENCH_CORPUS_SIZE": "100"
           },
+          "wordpress_runtime_workloads": [
+            {
+              "id": "concurrent-read",
+              "source": "rig",
+              "overridesDiscovered": true,
+              "run": [
+                {
+                  "type": "external-http-load",
+                  "url": "/wp-json/mdi-bench/v1/concurrent-read",
+                  "requestCount": 20,
+                  "concurrency": 4,
+                  "expectedStatuses": [
+                    200
+                  ],
+                  "metric-prefix": "concurrent_read"
+                }
+              ]
+            }
+          ],
           "wp_config_defines": {
-            "MARKDOWN_DB_BACKEND": "mdi-native"
-          }
+            "MARKDOWN_DB_BACKEND": "mdi-native",
+            "MARKDOWN_DB_CONTENT_DIR": "/wordpress/wp-content/db",
+            "MARKDOWN_DB_STATE_DIR": "/wordpress/wp-content/db",
+            "MDI_BENCH_EXPECTED_WPDB_CLASS": "WP_Markdown_Native_WPDB"
+          },
+          "wp_codebox_bench_mounts": [
+            {
+              "source": "${components.markdown-database-integration.path}/db.php",
+              "target": "/wordpress/wp-content/db.php",
+              "type": "file",
+              "mode": "readonly",
+              "phase": "pre-install"
+            },
+            {
+              "source": "${components.markdown-database-integration.path}/tests/fixtures/native-bench-state",
+              "target": "/wordpress/wp-content/db",
+              "type": "directory",
+              "mode": "readonly",
+              "phase": "pre-install"
+            },
+            {
+              "source": "${components.markdown-database-integration.path}/tests/bench-fixtures/concurrent-read-endpoint.php",
+              "target": "/wordpress/wp-content/mu-plugins/mdi-bench-concurrent-read.php",
+              "type": "file",
+              "mode": "readonly",
+              "phase": "pre-install"
+            }
+          ]
         }
       }
     }
@@ -52,6 +97,15 @@
       },
       {
         "path": "${package.root}/tests/bench/read-heavy.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/wiki-hierarchy.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/plugin-table-inventory.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/transaction-heavy.php"
       }
     ]
   },
@@ -60,7 +114,10 @@
       "boot-timing",
       "bulk-import",
       "obsidian-bursty",
-      "read-heavy"
+      "read-heavy",
+      "wiki-hierarchy",
+      "plugin-table-inventory",
+      "transaction-heavy"
     ]
   },
   "pipeline": {
@@ -70,6 +127,7 @@
         "label": "MDI plugin checkout exists",
         "file": "${components.markdown-database-integration.path}/markdown-database-integration.php",
         "component": "markdown-database-integration",
+        "component_path_contains": "markdown-database-integration",
         "remediation": "Set HOMEBOY_RIG_COMPONENT_PATH__MDI_NATIVE__MARKDOWN_DATABASE_INTEGRATION to an MDI checkout."
       }
     ],

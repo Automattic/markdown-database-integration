@@ -558,6 +558,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
 		$indexed = $this->indexed_columns( $schema );
 		foreach ( $predicates as $predicate ) {
+			if ( in_array( $predicate->operator(), array( 'OR', 'LOWER =' ), true ) ) {
+				continue;
+			}
 			if ( $this->predicate_uses_like( $predicate ) ) {
 				continue;
 			}
@@ -627,6 +630,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( in_array( $predicate->operator(), array( 'IS NULL', 'IS NOT NULL' ), true ) ) {
 			return $schema->has_column( $predicate->column() );
 		}
+		if ( 'LOWER =' === $predicate->operator() ) {
+			return $schema->has_column( $predicate->column() )
+				&& 1 === count( $predicate->values() )
+				&& null !== WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] );
+		}
 		return $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
 			|| $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() );
 	}
@@ -676,6 +684,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( 'IS NOT NULL' === $predicate->operator() ) {
 			return null !== ( $row[ $predicate->column() ] ?? null );
+		}
+		if ( 'LOWER =' === $predicate->operator() ) {
+			$left  = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $row[ $predicate->column() ] ?? null );
+			$right = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] ?? null );
+			return null !== $left && null !== $right && $left === $right;
 		}
 		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
 		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {

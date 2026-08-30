@@ -14,6 +14,8 @@ require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 return function (): array {
     static $iteration = 0;
 
+    mdi_bench_runtime();
+
     $phase = getenv('BENCH_BOOT_PHASE');
     if ($phase === false || trim($phase) === '') {
         return [

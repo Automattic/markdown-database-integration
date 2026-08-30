@@ -1,0 +1,6 @@
+{
+    "option_id": 2,
+    "option_name": "home",
+    "option_value": "http://localhost",
+    "autoload": "on"
+}

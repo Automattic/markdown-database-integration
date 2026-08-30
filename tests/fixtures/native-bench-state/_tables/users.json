@@ -1,0 +1,14 @@
+[
+    {
+        "ID": "1",
+        "user_login": "admin",
+        "user_pass": "x",
+        "user_nicename": "admin",
+        "user_email": "admin@example.test",
+        "user_url": "",
+        "user_registered": "2026-01-01 00:00:00",
+        "user_activation_key": "",
+        "user_status": "0",
+        "display_name": "admin"
+    }
+]

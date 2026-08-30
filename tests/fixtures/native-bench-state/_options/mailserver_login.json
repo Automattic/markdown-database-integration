@@ -1,0 +1,6 @@
+{
+    "option_id": 15,
+    "option_name": "mailserver_login",
+    "option_value": "login@example.test",
+    "autoload": "on"
+}

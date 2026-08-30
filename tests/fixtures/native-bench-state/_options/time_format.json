@@ -1,0 +1,6 @@
+{
+    "option_id": 24,
+    "option_name": "time_format",
+    "option_value": "g:i a",
+    "autoload": "on"
+}

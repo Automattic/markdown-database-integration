@@ -1,0 +1,6 @@
+{
+    "option_id": 6,
+    "option_name": "admin_email",
+    "option_value": "admin@example.test",
+    "autoload": "on"
+}

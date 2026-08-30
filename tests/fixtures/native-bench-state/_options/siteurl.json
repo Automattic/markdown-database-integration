@@ -1,0 +1,6 @@
+{
+    "option_id": 1,
+    "option_name": "siteurl",
+    "option_value": "http://localhost",
+    "autoload": "on"
+}

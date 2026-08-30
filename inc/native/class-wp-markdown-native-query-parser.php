@@ -405,9 +405,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	 * Parse a WHERE expression.
 	 *
 	 * AND binds tighter than OR, matching SQL. A disjunction is accepted only
-	 * when every alternative is equality on the same column, which is the
-	 * membership shape WordPress uses for `post_status` lists. Cross-column
-	 * OR and inequality OR stay fail-closed.
+	 * when every alternative is a supported equality predicate. Same-column
+	 * alternatives collapse to membership; cross-column alternatives retain
+	 * an explicit bounded disjunction. Inequality OR stays fail-closed.
 	 *
 	 * @return array<int,WP_Markdown_Native_SQL_Predicate>
 	 */
@@ -439,24 +439,25 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( count( $likes ) === count( $groups ) ) {
 			return array( new WP_Markdown_Native_SQL_Predicate( $likes[0]->column(), 'OR', array(), $likes ) );
 		}
-		$column     = null;
-		$qualifier  = null;
-		$values     = array();
-		$identifier = null;
+		$column      = null;
+		$qualifier   = null;
+		$values      = array();
+		$identifier  = null;
+		$same_column = true;
 		foreach ( $groups as $group ) {
 			if ( 1 !== count( $group ) ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_or',
 					$sql_offset,
-					'mdi-native supports OR only as same-column equality or LIKE alternatives.'
+					'mdi-native supports OR only as equality or LIKE alternatives.'
 				);
 			}
 			$predicate = $group[0];
-			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL' ), true ) ) {
+			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =' ), true ) ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_or',
 					$sql_offset,
-					'mdi-native supports OR only as same-column equality or LIKE alternatives.'
+					'mdi-native supports OR only as equality or LIKE alternatives.'
 				);
 			}
 			$name = $predicate->column()->name();
@@ -466,15 +467,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				$qualifier  = $qual;
 				$identifier = $predicate->column();
 			} elseif ( $column !== $name || $qualifier !== $qual ) {
-				throw new WP_Markdown_Native_SQL_Parse_Error(
-					'unsupported_or',
-					$sql_offset,
-					'mdi-native supports OR only as same-column equality or LIKE alternatives.'
-				);
+				$same_column = false;
 			}
 			$values = array_merge( $values, $predicate->values() );
 		}
 		$alternatives = array_map( static fn( array $group ): WP_Markdown_Native_SQL_Predicate => $group[0], $groups );
+		if ( ! $same_column ) {
+			return array( new WP_Markdown_Native_SQL_Predicate( $identifier, 'OR', array(), $alternatives ) );
+		}
 		foreach ( $alternatives as $alternative ) {
 			if ( 'IS NULL' === $alternative->operator() ) {
 				return array( new WP_Markdown_Native_SQL_Predicate( $identifier, 'OR', array(), $alternatives ) );
@@ -547,6 +547,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function predicate(): WP_Markdown_Native_SQL_Predicate {
+		if ( $this->matches_function( 'LOWER' ) ) {
+			return $this->lower_equality_predicate();
+		}
 		$column = $this->identifier();
 		if ( $this->match_keyword( 'IS' ) ) {
 			$operator = $this->match_keyword( 'NOT' ) ? 'IS NOT NULL' : 'IS NULL';
@@ -571,6 +574,25 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_keyword( 'IN' );
 		return new WP_Markdown_Native_SQL_Predicate( $column, 'IN', $this->in_list() );
+	}
+
+	private function lower_equality_predicate(): WP_Markdown_Native_SQL_Predicate {
+		$this->unqualified_identifier();
+		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$column = $this->identifier();
+		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
+		if ( ! $this->matches_function( 'LOWER' ) ) {
+			$this->unsupported( $this->current() );
+		}
+		$this->unqualified_identifier();
+		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$value = $this->literal();
+		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		if ( ! is_string( $value->value() ) || 1 === preg_match( '/[^\x00-\x7F]/', $value->value() ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $value->sql_offset(), 'mdi-native LOWER equality requires an ASCII string literal.' );
+		}
+		return new WP_Markdown_Native_SQL_Predicate( $column, 'LOWER =', array( $value ) );
 	}
 
 	private function like_predicate( WP_Markdown_Native_SQL_Identifier $column, string $operator ): WP_Markdown_Native_SQL_Predicate {

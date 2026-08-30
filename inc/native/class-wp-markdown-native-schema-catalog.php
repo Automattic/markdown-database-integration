@@ -312,12 +312,21 @@ final class WP_Markdown_Native_Schema_Catalog {
 			}
 		}
 		$overlay = array( 'columns' => array(), 'natural_order' => $identity, 'order_columns' => $order_columns );
+		$ascii = static fn( array $values ): bool => array() === array_filter(
+			$values,
+			static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )
+		);
 		foreach ( $definition['columns'] as $name => $column ) {
-			$overlay['columns'][ $name ] = array(
-				'filter_operators' => self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] )
-					? array( '=', 'IN', 'NOT IN', '<>' )
-					: ( in_array( $column['type'], array( 'char', 'varchar', 'enum', 'set', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ? array( 'LIKE', 'NOT LIKE' ) : array() ),
-			);
+			if ( self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] ) ) {
+				$overlay['columns'][ $name ] = array( 'filter_operators' => array( '=', 'IN', 'NOT IN', '<>' ) );
+			} elseif ( in_array( $column['type'], array( 'char', 'varchar', 'enum', 'set', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ) {
+				$overlay['columns'][ $name ] = array(
+					'filter_operators' => array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ),
+					'filter_validator' => $ascii,
+				);
+			} else {
+				$overlay['columns'][ $name ] = array( 'filter_operators' => array() );
+			}
 		}
 		foreach ( $definition['indexes'] as $index ) {
 			$unique = true === ( $index['unique'] ?? false );
@@ -332,12 +341,6 @@ final class WP_Markdown_Native_Schema_Catalog {
 					continue;
 				}
 				if ( in_array( $type, array( 'char', 'varchar', 'enum', 'set' ), true ) ) {
-					$ascii = static fn( array $values ): bool => array() === array_filter(
-						$values,
-						static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )
-					);
-					$overlay['columns'][ $name ]['filter_operators'] = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' );
-					$overlay['columns'][ $name ]['filter_validator'] = $ascii;
 					if ( $unique ) {
 						$overlay['columns'][ $name ]['lookup_operators']  = array( '=', 'IN' );
 						$overlay['columns'][ $name ]['lookup_validator'] = $ascii;

@@ -1,0 +1,6 @@
+{
+    "option_id": 21,
+    "option_name": "default_pingback_flag",
+    "option_value": "1",
+    "autoload": "on"
+}

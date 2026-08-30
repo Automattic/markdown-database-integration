@@ -1,0 +1,6 @@
+{
+    "option_id": 25,
+    "option_name": "links_updated_date_format",
+    "option_value": "F j, Y g:i a",
+    "autoload": "on"
+}

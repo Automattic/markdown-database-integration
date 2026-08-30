@@ -1,0 +1,6 @@
+{
+    "option_id": 5,
+    "option_name": "users_can_register",
+    "option_value": "0",
+    "autoload": "on"
+}

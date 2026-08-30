@@ -1,0 +1,6 @@
+{
+    "option_id": 23,
+    "option_name": "date_format",
+    "option_value": "F j, Y",
+    "autoload": "on"
+}

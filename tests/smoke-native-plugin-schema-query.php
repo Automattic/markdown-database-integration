@@ -38,6 +38,8 @@ $schema = "CREATE TABLE `wp_plugin_jobs` (\n"
 	. " `id` bigint(20) unsigned NOT NULL AUTO_INCREMENT,\n"
 	. " `owner_id` bigint(20) unsigned NOT NULL DEFAULT '0',\n"
 	. " `status` varchar(32) NOT NULL DEFAULT '',\n"
+	. " `task_url` text DEFAULT NULL,\n"
+	. " `owner_run_ref` varchar(191) DEFAULT NULL,\n"
 	. " `payload` longtext DEFAULT NULL,\n"
 	. " PRIMARY KEY (`id`),\n"
 	. " KEY `owner_id` (`owner_id`)\n"
@@ -47,9 +49,9 @@ file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
 	json_encode(
 		array(
-			array( 'id' => 10, 'owner_id' => '8', 'status' => 'running', 'payload' => null ),
-			array( 'id' => '2', 'owner_id' => 7, 'status' => 'queued', 'payload' => 'work' ),
-			array( 'id' => 1, 'owner_id' => '7', 'status' => 'done', 'payload' => '' ),
+			array( 'id' => 10, 'owner_id' => '8', 'status' => 'running', 'task_url' => 'https://example.test/issues/10', 'owner_run_ref' => 'BENCH-RUN-42', 'payload' => null ),
+			array( 'id' => '2', 'owner_id' => 7, 'status' => 'queued', 'task_url' => 'https://example.test/issues/42', 'owner_run_ref' => 'bench-run-2', 'payload' => 'work' ),
+			array( 'id' => 1, 'owner_id' => '7', 'status' => 'done', 'task_url' => null, 'owner_run_ref' => null, 'payload' => '' ),
 		),
 		JSON_THROW_ON_ERROR
 	)
@@ -94,6 +96,7 @@ $exact = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT status, id FR
 $secondary = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, status FROM wp_plugin_jobs WHERE owner_id IN (7) ORDER BY id ASC LIMIT 2' ) );
 $unfiltered = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs LIMIT 2' ) );
 $string_filter = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE status = 'QUEUED'" ) );
+$lower_cross_filter = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE task_url = 'https://example.test/issues/42' OR LOWER(owner_run_ref) = LOWER('bench-run-42') ORDER BY id ASC" ) );
 $string_order = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs ORDER BY status ASC' ) );
 $no_identity = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT value FROM wp_no_identity' ) );
 $composite = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT right_id FROM wp_composite WHERE left_id = 3' ) );
@@ -119,8 +122,8 @@ file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
 	json_encode(
 		array(
-			array( 'id' => 2, 'owner_id' => 7, 'status' => 'first', 'payload' => null ),
-			array( 'id' => '2', 'owner_id' => '7', 'status' => 'duplicate', 'payload' => null ),
+			array( 'id' => 2, 'owner_id' => 7, 'status' => 'first', 'task_url' => null, 'owner_run_ref' => null, 'payload' => null ),
+			array( 'id' => '2', 'owner_id' => '7', 'status' => 'duplicate', 'task_url' => null, 'owner_run_ref' => null, 'payload' => null ),
 		),
 		JSON_THROW_ON_ERROR
 	)
@@ -136,7 +139,7 @@ $checks = array(
 		&& 1 === $show_table_wildcard->return_value()
 		&& 1 === $show_table_escaped->return_value()
 		&& 0 === $show_missing_table->return_value(),
-	'generic column introspection derives MySQL-visible schema rows from persisted DDL' => array( 'id', 'owner_id', 'status', 'payload' ) === array_map(
+	'generic column introspection derives MySQL-visible schema rows from persisted DDL' => array( 'id', 'owner_id', 'status', 'task_url', 'owner_run_ref', 'payload' ) === array_map(
 		static fn( object $row ): string => $row->Field,
 		$describe->wpdb_state()['last_result']
 	)
@@ -165,6 +168,10 @@ $checks = array(
 		&& 'unsupported_lookup' === ( $string_filter->diagnostic()['reason'] ?? null )
 		&& false === $string_order->return_value()
 		&& 'unsupported_order' === ( $string_order->diagnostic()['reason'] ?? null ),
+	'ASCII text equality composes with explicit LOWER equality across columns' => array( '2', '10' ) === array_map(
+		static fn( object $row ): string => $row->id,
+		$lower_cross_filter->wpdb_state()['last_result']
+	),
 	'schemas without a numeric primary identity remain unsupported' => false === $no_identity->return_value(),
 	'composite numeric plugin identities execute without table-specific code' => array( '7', '9' ) === array_map(
 		static fn( object $row ): string => $row->right_id,

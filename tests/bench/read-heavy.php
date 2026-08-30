@@ -41,6 +41,8 @@ return function (): array {
     static $tag_term_ids = null;
     static $ops_per_iter = 100;
 
+    mdi_bench_runtime();
+
     if ($ids === null) {
         mdi_bench_seed();
         $ids = mdi_bench_seed_corpus(mdi_bench_corpus_size());

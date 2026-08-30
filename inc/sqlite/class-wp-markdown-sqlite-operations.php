@@ -104,6 +104,7 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 		$pdo->exec( 'CREATE TABLE IF NOT EXISTS `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
 	}
 	public function ensure_tables( array $schemas ): void {
+		$this->ensure_core_schema();
 		global $wpdb;
 		if ( is_object( $wpdb ) && method_exists( $wpdb, 'set_prefix' ) && function_exists( 'wp_get_db_schema' ) ) {
 			$wpdb->set_prefix( ( $this->prefix )() );
@@ -124,6 +125,30 @@ class WP_Markdown_SQLite_Operations implements WP_Markdown_Backend_Operations {
 				}
 			}
 		}
+	}
+	private function ensure_core_schema(): void {
+		$pdo = $this->driver->get_connection()->get_pdo();
+		foreach ( $this->core_schema_statements() as $sql ) {
+			$pdo->exec( $sql );
+		}
+	}
+	/** @return string[] */
+	private function core_schema_statements(): array {
+		$prefix = ( $this->prefix )();
+		return array(
+			"CREATE TABLE IF NOT EXISTS `{$prefix}options` (`option_id` INTEGER PRIMARY KEY, `option_name` TEXT UNIQUE, `option_value` TEXT, `autoload` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}users` (`ID` INTEGER PRIMARY KEY, `user_login` TEXT, `user_pass` TEXT, `user_nicename` TEXT, `user_email` TEXT, `user_url` TEXT, `user_registered` TEXT, `user_activation_key` TEXT, `user_status` INTEGER, `display_name` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}usermeta` (`umeta_id` INTEGER PRIMARY KEY, `user_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}posts` (`ID` INTEGER PRIMARY KEY, `post_author` INTEGER, `post_date` TEXT, `post_date_gmt` TEXT, `post_content` TEXT, `post_title` TEXT, `post_excerpt` TEXT, `post_status` TEXT, `comment_status` TEXT, `ping_status` TEXT, `post_password` TEXT, `post_name` TEXT, `to_ping` TEXT, `pinged` TEXT, `post_modified` TEXT, `post_modified_gmt` TEXT, `post_content_filtered` TEXT, `post_parent` INTEGER, `guid` TEXT, `menu_order` INTEGER, `post_type` TEXT, `post_mime_type` TEXT, `comment_count` INTEGER)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}postmeta` (`meta_id` INTEGER PRIMARY KEY, `post_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}terms` (`term_id` INTEGER PRIMARY KEY, `name` TEXT, `slug` TEXT, `term_group` INTEGER)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}term_taxonomy` (`term_taxonomy_id` INTEGER PRIMARY KEY, `term_id` INTEGER, `taxonomy` TEXT, `description` TEXT, `parent` INTEGER, `count` INTEGER)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}term_relationships` (`object_id` INTEGER, `term_taxonomy_id` INTEGER, `term_order` INTEGER DEFAULT 0, PRIMARY KEY (`object_id`, `term_taxonomy_id`))",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}termmeta` (`meta_id` INTEGER PRIMARY KEY, `term_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}comments` (`comment_ID` INTEGER PRIMARY KEY, `comment_post_ID` INTEGER, `comment_author` TEXT, `comment_author_email` TEXT, `comment_author_url` TEXT, `comment_author_IP` TEXT, `comment_date` TEXT, `comment_date_gmt` TEXT, `comment_content` TEXT, `comment_karma` INTEGER, `comment_approved` TEXT, `comment_agent` TEXT, `comment_type` TEXT, `comment_parent` INTEGER, `user_id` INTEGER)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}commentmeta` (`meta_id` INTEGER PRIMARY KEY, `comment_id` INTEGER, `meta_key` TEXT, `meta_value` TEXT)",
+			"CREATE TABLE IF NOT EXISTS `{$prefix}links` (`link_id` INTEGER PRIMARY KEY, `link_url` TEXT, `link_name` TEXT, `link_image` TEXT, `link_target` TEXT, `link_description` TEXT, `link_visible` TEXT, `link_owner` INTEGER, `link_rating` INTEGER, `link_updated` TEXT, `link_rel` TEXT, `link_notes` TEXT, `link_rss` TEXT)",
+		);
 	}
 	public function hydrate_options( array $rows ): void { foreach ( $rows as $row ) { $row = (array) $row; $this->driver->get_connection()->get_pdo()->prepare( 'INSERT OR REPLACE INTO `' . $this->table( 'options' ) . '` (option_id, option_name, option_value, autoload) VALUES (?, ?, ?, ?)' )->execute( array( $row['option_id'] ?? 0, $row['option_name'], $row['option_value'] ?? '', $row['autoload'] ?? 'yes' ) ); } }
 	public function hydrate_table_snapshot( string $table_suffix, callable $rows, ?array $identity = null, ?array $partition = null ): bool {

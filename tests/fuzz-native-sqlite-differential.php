@@ -7,7 +7,12 @@ if ( ! defined( 'ABSPATH' ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );
 }
 
-require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
+$plugin_root = dirname( __DIR__ );
+if ( defined( 'WP_PLUGIN_DIR' ) && is_file( WP_PLUGIN_DIR . '/markdown-database-integration/inc/native/class-wp-markdown-native-query-runtime.php' ) ) {
+	$plugin_root = WP_PLUGIN_DIR . '/markdown-database-integration';
+}
+require_once $plugin_root . '/inc/native/class-wp-markdown-native-query-runtime.php';
+require_once $plugin_root . '/inc/compatibility/class-wp-markdown-query-compatibility-comparator.php';
 
 const MDI_FUZZ_DEFAULT_SEED = 'mdi-232-native-sqlite-v1';
 const MDI_FUZZ_CASES        = 256;
@@ -106,121 +111,122 @@ function mdi_fuzz_remove_fixture( string $root ): void {
 	@rmdir( $root );
 }
 
-$seed = getenv( 'MDI_FUZZ_SEED' );
-$seed = false === $seed || '' === $seed ? MDI_FUZZ_DEFAULT_SEED : $seed;
-$root = sys_get_temp_dir() . '/mdi-native-sqlite-fuzz-' . bin2hex( random_bytes( 6 ) );
+function mdi_fuzz_run( string $seed ): array {
+	$root = sys_get_temp_dir() . '/mdi-native-sqlite-fuzz-' . bin2hex( random_bytes( 6 ) );
+	$report = array(
+		'schema'              => 'mdi/query-compatibility-differential/v1',
+		'seed'                => $seed,
+		'generated_cases'     => MDI_FUZZ_CASES,
+		'fixture_rows'        => MDI_FUZZ_ROWS,
+		'status'              => 'failed',
+		'passed_cases'        => 0,
+		'mismatch_count'      => 0,
+		'mismatches'          => array(),
+		'unsupported_checks'  => array(),
+		'native_duration_ms'  => 0.0,
+		'sqlite_duration_ms'  => 0.0,
+		'query_set_sha256'    => '',
+		'replay_command'      => "MDI_FUZZ_SEED=" . escapeshellarg( $seed ) . ' php tests/fuzz-native-sqlite-differential.php',
+	);
 
-$report = array(
-	'schema'                => 'mdi/native-sqlite-differential/v1',
-	'seed'                  => $seed,
-	'generated_cases'       => MDI_FUZZ_CASES,
-	'fixture_rows'          => MDI_FUZZ_ROWS,
-	'status'                => 'failed',
-	'passed_cases'          => 0,
-	'mismatch_count'        => 0,
-	'mismatches'            => array(),
-	'unsupported_checks'    => array(),
-	'native_duration_ms'    => 0.0,
-	'sqlite_duration_ms'    => 0.0,
-	'query_corpus_sha256'   => '',
-	'replay_command'        => "MDI_FUZZ_SEED=" . escapeshellarg( $seed ) . ' php tests/fuzz-native-sqlite-differential.php',
-);
-
-try {
-	if ( ! extension_loaded( 'pdo_sqlite' ) ) {
-		throw new RuntimeException( 'pdo_sqlite is required for the reference runtime.' );
-	}
-	if ( ! mkdir( $root . '/_tables', 0777, true ) || ! mkdir( $root . '/_options', 0777, true ) ) {
-		throw new RuntimeException( 'Failed to create the differential fixture.' );
-	}
-
-	$rows = array();
-	for ( $index = 0; $index < MDI_FUZZ_ROWS; ++$index ) {
-		$suffix = substr( hash( 'sha256', $seed . ':row:' . $index ), 0, 10 );
-		$rows[] = array(
-			'ID'                  => (string) ( $index + 1 ),
-			'user_login'          => 'user_' . $suffix,
-			'user_pass'           => 'hash_' . $suffix,
-			'user_nicename'       => 'nice_' . $suffix,
-			'user_email'          => 'user_' . $suffix . '@example.test',
-			'user_url'            => '',
-			'user_registered'     => sprintf( '2026-01-%02d 12:00:00', 1 + ( $index % 28 ) ),
-			'user_activation_key' => '',
-			'user_status'         => '0',
-			'display_name'        => 'User ' . $suffix,
-		);
-	}
-	file_put_contents( $root . '/_tables/users.json', json_encode( $rows, JSON_THROW_ON_ERROR ) );
-
-	$runtime = new WP_Markdown_Native_Query_Runtime( WP_Markdown_Native_Runtime_Factory::registry( $root ) );
-	$pdo     = new PDO( 'sqlite::memory:', null, null, array( PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION ) );
-	$pdo->exec( 'CREATE TABLE wp_users (ID INTEGER PRIMARY KEY, user_login TEXT COLLATE NOCASE, user_pass TEXT, user_nicename TEXT COLLATE NOCASE, user_email TEXT COLLATE NOCASE, user_url TEXT, user_registered TEXT, user_activation_key TEXT, user_status TEXT, display_name TEXT)' );
-	$insert = $pdo->prepare( 'INSERT INTO wp_users (ID, user_login, user_pass, user_nicename, user_email, user_url, user_registered, user_activation_key, user_status, display_name) VALUES (:ID, :user_login, :user_pass, :user_nicename, :user_email, :user_url, :user_registered, :user_activation_key, :user_status, :display_name)' );
-	foreach ( $rows as $row ) {
-		$insert->execute( $row );
-	}
-
-	$queries = array();
-	for ( $case = 0; $case < MDI_FUZZ_CASES; ++$case ) {
-		$query     = mdi_fuzz_query( $seed, $case, $rows );
-		$queries[] = $query;
-
-		$started = hrtime( true );
-		$native  = mdi_fuzz_native_outcome( $runtime, $query );
-		$report['native_duration_ms'] += ( hrtime( true ) - $started ) / 1_000_000;
-
-		$started = hrtime( true );
-		$sqlite  = mdi_fuzz_sqlite_outcome( $pdo, $query );
-		$report['sqlite_duration_ms'] += ( hrtime( true ) - $started ) / 1_000_000;
-
-		if ( $native === $sqlite ) {
-			++$report['passed_cases'];
-			continue;
+	try {
+		if ( ! extension_loaded( 'pdo_sqlite' ) ) {
+			throw new RuntimeException( 'pdo_sqlite is required for the reference runtime.' );
+		}
+		if ( ! mkdir( $root . '/_tables', 0777, true ) || ! mkdir( $root . '/_options', 0777, true ) ) {
+			throw new RuntimeException( 'Failed to create the differential fixture.' );
 		}
 
-		++$report['mismatch_count'];
-		if ( count( $report['mismatches'] ) < 20 ) {
-			$report['mismatches'][] = array(
-				'case'   => $case,
-				'query'  => $query,
-				'native' => $native,
-				'sqlite' => $sqlite,
+		$rows = array();
+		for ( $index = 0; $index < MDI_FUZZ_ROWS; ++$index ) {
+			$suffix = substr( hash( 'sha256', $seed . ':row:' . $index ), 0, 10 );
+			$rows[] = array(
+				'ID'                  => (string) ( $index + 1 ),
+				'user_login'          => 'user_' . $suffix,
+				'user_pass'           => 'hash_' . $suffix,
+				'user_nicename'       => 'nice_' . $suffix,
+				'user_email'          => 'user_' . $suffix . '@example.test',
+				'user_url'            => '',
+				'user_registered'     => sprintf( '2026-01-%02d 12:00:00', 1 + ( $index % 28 ) ),
+				'user_activation_key' => '',
+				'user_status'         => '0',
+				'display_name'        => 'User ' . $suffix,
 			);
 		}
-	}
+		file_put_contents( $root . '/_tables/users.json', json_encode( $rows, JSON_THROW_ON_ERROR ) );
 
-	$unsupported = array(
-		"SELECT ID FROM wp_users WHERE user_login = 'admiñ'",
-		"SELECT ID FROM wp_users WHERE user_login IN 'user_0000000000'",
-	);
-	foreach ( $unsupported as $query ) {
-		$first  = mdi_fuzz_native_outcome( $runtime, $query );
-		$second = mdi_fuzz_native_outcome( $runtime, $query );
-		$stable = 'error' === $first['status'] && $first === $second && '' !== $first['error_code'];
-		$report['unsupported_checks'][] = array(
-			'query'      => $query,
-			'stable'     => $stable,
-			'diagnostic' => $first,
-		);
-		if ( ! $stable ) {
-			++$report['mismatch_count'];
+		$runtime = new WP_Markdown_Native_Query_Runtime( WP_Markdown_Native_Runtime_Factory::registry( $root ) );
+		$pdo     = new PDO( 'sqlite::memory:', null, null, array( PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION ) );
+		$pdo->exec( 'CREATE TABLE wp_users (ID INTEGER PRIMARY KEY, user_login TEXT COLLATE NOCASE, user_pass TEXT, user_nicename TEXT COLLATE NOCASE, user_email TEXT COLLATE NOCASE, user_url TEXT, user_registered TEXT, user_activation_key TEXT, user_status TEXT, display_name TEXT)' );
+		$insert = $pdo->prepare( 'INSERT INTO wp_users (ID, user_login, user_pass, user_nicename, user_email, user_url, user_registered, user_activation_key, user_status, display_name) VALUES (:ID, :user_login, :user_pass, :user_nicename, :user_email, :user_url, :user_registered, :user_activation_key, :user_status, :display_name)' );
+		foreach ( $rows as $row ) {
+			$insert->execute( $row );
 		}
+
+		$queries = array();
+		for ( $case = 0; $case < MDI_FUZZ_CASES; ++$case ) {
+			$query     = mdi_fuzz_query( $seed, $case, $rows );
+			$queries[] = $query;
+			$started   = hrtime( true );
+			$native    = mdi_fuzz_native_outcome( $runtime, $query );
+			$report['native_duration_ms'] += ( hrtime( true ) - $started ) / 1_000_000;
+			$started = hrtime( true );
+			$sqlite  = mdi_fuzz_sqlite_outcome( $pdo, $query );
+			$report['sqlite_duration_ms'] += ( hrtime( true ) - $started ) / 1_000_000;
+			$comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $sqlite, $native );
+			if ( $comparison['compatible'] ) {
+				++$report['passed_cases'];
+				continue;
+			}
+			++$report['mismatch_count'];
+			if ( count( $report['mismatches'] ) < 20 ) {
+				$report['mismatches'][] = array(
+					'case'        => $case,
+					'query'       => $query,
+					'differences' => $comparison['mismatches'],
+					'native'      => $native,
+					'sqlite'      => $sqlite,
+				);
+			}
+		}
+
+		foreach ( array( "SELECT ID FROM wp_users WHERE user_login = 'admiñ'", "SELECT ID FROM wp_users WHERE user_login IN 'user_0000000000'" ) as $query ) {
+			$first  = mdi_fuzz_native_outcome( $runtime, $query );
+			$second = mdi_fuzz_native_outcome( $runtime, $query );
+			$stable = 'error' === $first['status'] && $first === $second && '' !== $first['error_code'];
+			$report['unsupported_checks'][] = array( 'query' => $query, 'stable' => $stable, 'diagnostic' => $first );
+			if ( ! $stable ) {
+				++$report['mismatch_count'];
+			}
+		}
+
+		$report['query_set_sha256']   = hash( 'sha256', implode( "\n", $queries ) );
+		$report['native_duration_ms'] = round( $report['native_duration_ms'], 3 );
+		$report['sqlite_duration_ms'] = round( $report['sqlite_duration_ms'], 3 );
+		$report['status']             = 0 === $report['mismatch_count'] ? 'passed' : 'failed';
+	} catch ( Throwable $error ) {
+		$report['failure'] = array( 'class' => get_class( $error ), 'message' => $error->getMessage() );
+	} finally {
+		mdi_fuzz_remove_fixture( $root );
 	}
 
-	$report['query_corpus_sha256'] = hash( 'sha256', implode( "\n", $queries ) );
-	$report['native_duration_ms']  = round( $report['native_duration_ms'], 3 );
-	$report['sqlite_duration_ms']  = round( $report['sqlite_duration_ms'], 3 );
-	$report['status']              = 0 === $report['mismatch_count'] ? 'passed' : 'failed';
-} catch ( Throwable $error ) {
-	$report['failure'] = array(
-		'class'   => get_class( $error ),
-		'message' => $error->getMessage(),
-	);
-} finally {
-	mdi_fuzz_remove_fixture( $root );
+	return $report;
 }
 
-$artifact = array( 'artifacts' => array( 'mdi_native_sqlite_differential' => $report ) );
-file_put_contents( '/tmp/mdi-native-sqlite-differential.json', json_encode( $report, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR ) );
-echo json_encode( $artifact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR ) . PHP_EOL;
-exit( defined( 'WPINC' ) || 'passed' === $report['status'] ? 0 : 1 );
+$workload = static function ( array $input = array() ): array {
+	$runtime_env = $input['runtime_env'] ?? $input['runtimeEnv'] ?? array();
+	$seed        = is_array( $runtime_env ) ? ( $runtime_env['HOMEBOY_FUZZ_SEED'] ?? $runtime_env['MDI_FUZZ_SEED'] ?? null ) : null;
+	$seed        = is_string( $seed ) && '' !== $seed ? $seed : getenv( 'MDI_FUZZ_SEED' );
+	$seed        = is_string( $seed ) && '' !== $seed ? $seed : MDI_FUZZ_DEFAULT_SEED;
+	$report      = mdi_fuzz_run( $seed );
+	file_put_contents( '/tmp/mdi-native-sqlite-differential.json', json_encode( $report, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR ) );
+	return array( 'artifacts' => array( 'mdi_native_sqlite_differential' => $report ) );
+};
+
+if ( isset( $_SERVER['SCRIPT_FILENAME'] ) && realpath( (string) $_SERVER['SCRIPT_FILENAME'] ) === __FILE__ ) {
+	$artifact = $workload();
+	echo json_encode( $artifact, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR ) . PHP_EOL;
+	exit( 'passed' === $artifact['artifacts']['mdi_native_sqlite_differential']['status'] ? 0 : 1 );
+}
+
+return $workload;

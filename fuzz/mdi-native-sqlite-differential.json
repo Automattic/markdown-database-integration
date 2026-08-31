@@ -61,7 +61,7 @@
           "path": "files/workload-results/mdi-native-sqlite-differential.json",
           "required": true,
           "metadata": {
-            "schema": "mdi/native-sqlite-differential/v1",
+            "schema": "mdi/query-compatibility-differential/v1",
             "semantic_key": "fuzz.report"
           }
         }
@@ -110,7 +110,7 @@
         "name": "mdi_native_sqlite_differential",
         "role": "fuzz_report",
         "semantic_key": "fuzz.report",
-        "schema": "mdi/native-sqlite-differential/v1",
+        "schema": "mdi/query-compatibility-differential/v1",
         "required": true
       }
     ]

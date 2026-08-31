@@ -1,0 +1,43 @@
+{
+  "schema": "wp-codebox/wordpress-workload-run/v1",
+  "steps": [
+    {
+      "command": "wordpress.run-workload",
+      "args": [
+        "type=php",
+        "path=${package.root}/tests/fuzz-native-sqlite-differential.php"
+      ]
+    },
+    {
+      "command": "wordpress.collect-workload-result",
+      "args": [
+        "artifact=mdi_native_sqlite_differential",
+        "schema=mdi/native-sqlite-differential/v1"
+      ]
+    },
+    {
+      "command": "wordpress.run-php",
+      "args": [
+        "code=$report = json_decode( (string) file_get_contents( '/tmp/mdi-native-sqlite-differential.json' ), true ); if ( 'passed' !== ( $report['status'] ?? '' ) ) { throw new RuntimeException( 'MDI native/SQLite differential mismatch; inspect the collected fuzz report.' ); }"
+      ]
+    }
+  ],
+  "artifacts": [
+    {
+      "name": "mdi_native_sqlite_differential",
+      "path": "files/workload-results/mdi-native-sqlite-differential.json",
+      "kind": "json",
+      "contentType": "application/json",
+      "required": true,
+      "metadata": {
+        "schema": "mdi/native-sqlite-differential/v1",
+        "semantic_key": "fuzz.report"
+      }
+    }
+  ],
+  "metadata": {
+    "runner": "wp-codebox",
+    "workload": "native-sqlite-differential",
+    "contract": "wp-codebox/wordpress-workload-run/v1"
+  }
+}

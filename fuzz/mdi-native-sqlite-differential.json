@@ -1,0 +1,118 @@
+{
+  "schema": "homeboy/fuzz-workload/v1",
+  "id": "mdi-native-sqlite-differential",
+  "label": "MDI native versus SQLite seeded query differential",
+  "safety_class": "isolated_mutation",
+  "surface_ids": [
+    "mdi-native-query-runtime",
+    "sqlite-reference-runtime"
+  ],
+  "operations": [
+    "seeded-query-generation",
+    "native-sqlite-result-comparison",
+    "unsupported-query-diagnostic-replay"
+  ],
+  "case_budget": 256,
+  "duration_budget_seconds": 300,
+  "seed": "mdi-232-native-sqlite-v1",
+  "metadata": {
+    "kind": "wordpress-plugin-fuzz",
+    "wordpress_runner": "wp-codebox",
+    "workload_path": "${package.root}/bench/native-sqlite-differential.workload.json",
+    "expected_artifact_role": "fuzz_report",
+    "expected_artifact_semantic_key": "fuzz.report",
+    "readiness": {
+      "level": "executable",
+      "coverage_contract": "A disposable WP Codebox runtime generates a deterministic SQL corpus, executes each query through MDI native and SQLite reference runtimes, compares normalized results, and replays unsupported queries to require stable native diagnostics."
+    },
+    "fixture": {
+      "runtime": "wp-codebox",
+      "scope": "disposable-wordpress",
+      "component": "markdown-database-integration",
+      "activation": "markdown-database-integration/markdown-database-integration.php"
+    }
+  },
+  "target": {
+    "type": "wordpress-plugin",
+    "slug": "markdown-database-integration",
+    "component": "markdown-database-integration"
+  },
+  "workload": {
+    "runner": "wp-codebox",
+    "type": "json",
+    "path": "${package.root}/bench/native-sqlite-differential.workload.json",
+    "entry": "wordpress.run-workload"
+  },
+  "cases": [
+    {
+      "case_id": "mdi-native-sqlite-differential:default",
+      "surface_ids": [
+        "mdi-native-query-runtime",
+        "sqlite-reference-runtime"
+      ],
+      "operations": [
+        "seeded-query-generation",
+        "native-sqlite-result-comparison",
+        "unsupported-query-diagnostic-replay"
+      ],
+      "artifacts": [
+        {
+          "name": "mdi_native_sqlite_differential",
+          "path": "files/workload-results/mdi-native-sqlite-differential.json",
+          "required": true,
+          "metadata": {
+            "schema": "mdi/query-compatibility-differential/v1",
+            "semantic_key": "fuzz.report"
+          }
+        }
+      ],
+      "metadata": {
+        "safety_class": "isolated_mutation"
+      },
+      "intent": {
+        "schema": "homeboy/fuzz-workload-intent/v1",
+        "type": "wordpress-plugin-workload",
+        "plugin": {
+          "activation": "markdown-database-integration/markdown-database-integration.php"
+        },
+        "execute": {
+          "workload_ref": "default",
+          "path": "${package.root}/bench/native-sqlite-differential.workload.json",
+          "type": "json",
+          "entry": "wordpress.run-workload"
+        },
+        "collect": [
+          {
+            "artifact": "mdi_native_sqlite_differential"
+          }
+        ]
+      }
+    }
+  ],
+  "limits": {
+    "max_cases": 256,
+    "max_duration_seconds": 300
+  },
+  "coverage": {
+    "surface_ids": [
+      "mdi-native-query-runtime",
+      "sqlite-reference-runtime"
+    ],
+    "operations": [
+      "seeded-query-generation",
+      "native-sqlite-result-comparison",
+      "unsupported-query-diagnostic-replay"
+    ]
+  },
+  "artifacts": {
+    "expected": [
+      {
+        "name": "mdi_native_sqlite_differential",
+        "role": "fuzz_report",
+        "semantic_key": "fuzz.report",
+        "schema": "mdi/query-compatibility-differential/v1",
+        "required": true
+      }
+    ]
+  }
+}

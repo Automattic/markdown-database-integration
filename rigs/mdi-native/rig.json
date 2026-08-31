@@ -77,6 +77,21 @@
       "${components.markdown-database-integration.path}"
     ]
   },
+  "fuzz": {
+    "default_component": "markdown-database-integration"
+  },
+  "fuzz_workloads": {
+    "wordpress": [
+      {
+        "path": "${package.root}/fuzz/mdi-native-sqlite-differential.json"
+      }
+    ]
+  },
+  "fuzz_profiles": {
+    "differential": [
+      "mdi-native-sqlite-differential"
+    ]
+  },
   "bench": {
     "default_component": "markdown-database-integration",
     "warmup_iterations": 5,

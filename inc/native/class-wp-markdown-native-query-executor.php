@@ -764,6 +764,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'autocommit_1' => $this->transactions->set_autocommit( true ),
 			default => 'mdi-native does not support the requested transaction control statement.',
 		};
+		if ( in_array( $control['action'], array( 'rollback', 'rollback_chain', 'rollback_to' ), true ) ) {
+			$this->registry->forget_snapshots();
+		}
 		if ( true !== $outcome ) {
 			return $this->failure( 'transaction_control_failed', $outcome );
 		}

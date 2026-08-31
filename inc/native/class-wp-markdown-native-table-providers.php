@@ -101,7 +101,9 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 					'The canonical state file cannot be read.'
 				);
 			}
-			$digest = hash( 'sha256', $contents );
+			if ( 4 <= func_num_args() ) {
+				$digest = hash( 'sha256', $contents );
+			}
 			return json_decode( $contents, true, 512, JSON_THROW_ON_ERROR );
 		} catch ( JsonException $error ) {
 			return $this->failure(
@@ -492,7 +494,6 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 
 final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native_File_Provider {
 	private bool $loaded = false;
-	private string $signature = '';
 	/** @var array<int,array<string,mixed>>|WP_Markdown_Query_Result|null */
 	private array|WP_Markdown_Query_Result|null $snapshot = null;
 
@@ -505,13 +506,7 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
-		if ( ! $this->loaded && $this->answerable_in_file_order( $access ) ) {
-			$streamed = $this->streamed_rows( $access );
-			if ( null !== $streamed ) {
-				return $streamed;
-			}
-		}
-		$rows = $this->snapshot();
+		$rows = $this->rows();
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
 			return $rows;
 		}
@@ -521,123 +516,20 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		return $this->bounded_rows( $rows, $access );
 	}
 
-	/**
-	 * Report whether a read could be answered in the order the file holds.
-	 *
-	 * Only an ascending single-column order can be satisfied by reading
-	 * forwards. Keyed reads use the decoded snapshot because streaming would
-	 * rescan the complete file for every lookup instead of reusing its index.
-	 * Whether the file really is in order is proven while it is read.
-	 */
-	private function answerable_in_file_order( WP_Markdown_Native_Table_Access $access ): bool {
-		$order_by = $access->order_by();
-		if ( PHP_INT_MAX === $access->limit()
-			|| 1 !== count( $order_by )
-			|| true === ( $order_by[0]['descending'] ?? false )
-		) {
-			return false;
-		}
-		if ( ! $this->schema->allows_order( (string) $order_by[0]['column'] ) ) {
-			return false;
-		}
-		return null === $access->predicate();
-	}
-
-	/**
-	 * Answer a bounded read without holding the whole snapshot in memory.
-	 *
-	 * Returns null when the file cannot be streamed, so the caller falls back
-	 * to the decoded snapshot and the read still succeeds.
-	 *
-	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result|null
-	 */
-	private function streamed_rows( WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result|null {
-		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_tables';
-		$root = realpath( $directory );
-		if ( is_link( $directory ) || false === $root || ! is_dir( $root ) || ! $this->contains( $this->state_root, $root ) ) {
-			return null;
-		}
-		$path = $root . DIRECTORY_SEPARATOR . $this->filename;
-		if ( ! file_exists( $path ) || is_link( $path ) ) {
-			return null;
-		}
-		$handle = $this->open_verified( $path, $root, 'table_file' );
-		if ( $handle instanceof WP_Markdown_Query_Result ) {
-			return null;
-		}
-
-		$predicate = $access->predicate();
-		$column = null === $predicate ? null : $predicate->column();
-		$wanted = null === $predicate ? null : $this->schema->value_key( $column, $predicate->values()[0] );
-		if ( null !== $predicate && null === $wanted ) {
-			fclose( $handle );
-			return null;
-		}
-
-		$order_by = $access->order_by();
-		$selected = array();
-		$seen = array();
-		$previous = null;
-		try {
-			foreach ( WP_Markdown_Native_JSON_Row_Stream::rows( $handle ) as $source ) {
-				if ( ! is_array( $source ) || true !== $this->schema->validate_row( $source ) ) {
-					return null;
-				}
-				// Reading forwards only answers the query while the file is
-				// already in the requested order, so that is proven row by row
-				// and abandoned the moment it does not hold.
-				if ( null !== $this->schema->unsupported_order_reason( $order_by, array( $source ) )
-					|| ( null !== $previous && 0 < $this->schema->compare_ordered_rows( $previous, $source, $order_by ) )
-				) {
-					return null;
-				}
-				$previous = $source;
-				if ( null !== $column ) {
-					if ( $wanted !== $this->schema->value_key( $column, $source[ $column ] ?? null ) ) {
-						continue;
-					}
-					$identity = $this->schema->identity_key( $source );
-					if ( null === $identity || isset( $seen[ $identity ] ) ) {
-						continue;
-					}
-					$seen[ $identity ] = true;
-				}
-				$row = array();
-				foreach ( $access->projection() as $projected ) {
-					$row[ $projected ] = $source[ $projected ] ?? null;
-				}
-				$selected[] = $row;
-				if ( count( $selected ) >= $access->limit() ) {
-					break;
-				}
-			}
-		} catch ( JsonException ) {
-			return null;
-		} finally {
-			fclose( $handle );
-		}
-		return $selected;
-	}
-
 	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
-	private function snapshot(): array|WP_Markdown_Query_Result {
+	public function rows(): array|WP_Markdown_Query_Result {
 		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_tables';
 		$path      = $directory . DIRECTORY_SEPARATOR . $this->filename;
 		if ( $this->loaded ) {
-			$signature = $this->snapshot_signature( $directory, $path );
-			if ( $signature === $this->signature ) {
-				return $this->snapshot;
-			}
+			return $this->snapshot;
 		}
 		$this->loaded = true;
 		$this->reset_indexes();
 		if ( ! file_exists( $directory ) && ! is_link( $directory ) ) {
-			$this->signature = $this->snapshot_signature( $directory, $path );
 			return $this->snapshot = array();
 		}
 		$root = realpath( $directory );
 		if ( is_link( $directory ) || false === $root || ! is_dir( $root ) || ! $this->contains( $this->state_root, $root ) ) {
-			$this->signature = $this->snapshot_signature( $directory, $path );
 			return $this->snapshot = $this->failure(
 				'markdown_db_native_unsafe_path',
 				'unsafe_tables_directory',
@@ -647,24 +539,33 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 
 		$path = $root . DIRECTORY_SEPARATOR . $this->filename;
 		if ( ! file_exists( $path ) && ! is_link( $path ) ) {
-			$this->signature = $this->snapshot_signature( $directory, $path );
 			return $this->snapshot = array();
 		}
-		$digest = null;
-		$data = $this->read_json( $path, $root, 'table_file', $digest );
-		$this->signature = $this->snapshot_signature( $directory, $path, $digest );
+		$data = $this->read_json( $path, $root, 'table_file' );
 		return $this->snapshot = $data instanceof WP_Markdown_Query_Result
 			? $data
 			: $this->validate_rows( $data );
 	}
 
-	private function snapshot_signature( string $directory, string $path, ?string $digest = null ): string {
-		$directory_signature = $this->path_signature( $directory );
-		if ( is_link( $directory ) || ! is_dir( $directory ) ) {
-			return $directory_signature . '|unavailable';
+	/** @param array<int,array<string,mixed>> $rows */
+	public function replace_rows( array $rows ): void {
+		$this->loaded   = true;
+		$this->snapshot = $rows;
+		$this->reset_indexes();
+	}
+
+	/** @param array<string,mixed> $row */
+	public function append_row( array $row ): void {
+		if ( $this->loaded && is_array( $this->snapshot ) ) {
+			$this->snapshot[] = $row;
+			$this->reset_indexes();
 		}
-		$witness = WP_Markdown_File_Witness::take( $path );
-		return $directory_signature . '|' . ( null === $witness ? $this->path_signature( $path, $digest ) : 'file:' . $witness->state() );
+	}
+
+	public function forget_rows(): void {
+		$this->loaded   = false;
+		$this->snapshot = null;
+		$this->reset_indexes();
 	}
 }
 

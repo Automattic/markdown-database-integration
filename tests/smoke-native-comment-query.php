@@ -90,13 +90,13 @@ $checks = array(
 $invalid = $comments[0];
 $invalid['comment_author_email'] = str_repeat( 'x', 101 );
 file_put_contents( $path, json_encode( array( $comments[0], $invalid ), JSON_THROW_ON_ERROR ) );
-$malformed = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_comments' ) );
+$malformed = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_comments' ) );
 @unlink( $path );
-$absent = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_comments' ) );
+$absent = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_comments' ) );
 $outside = dirname( $root ) . '/mdi-native-comments-outside-' . bin2hex( random_bytes( 4 ) ) . '.json';
 file_put_contents( $outside, json_encode( $comments, JSON_THROW_ON_ERROR ) );
 $linked = function_exists( 'symlink' ) && @symlink( $outside, $path );
-$unsafe = $linked ? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_comments' ) ) : null;
+$unsafe = $linked ? WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_comments' ) ) : null;
 
 $checks['malformed snapshots fail without partial rows and absent snapshots are empty'] = false === $malformed->return_value()
 	&& array() === $malformed->wpdb_state()['last_result']

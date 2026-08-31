@@ -149,35 +149,36 @@ foreach ( $users[0] as $column => $value ) {
 	}
 }
 file_put_contents( $users_path, json_encode( array( $reordered_user ), JSON_THROW_ON_ERROR ) );
-$reordered = $runtime->execute(
+$reordered = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute(
 	new WP_Markdown_Query_Request( "SELECT * FROM wp_users WHERE user_login = 'zoe'" )
 );
 
 file_put_contents( $users_path, json_encode( array( $users[0], $users[0] ), JSON_THROW_ON_ERROR ) );
-$malformed = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
-$malformed_count = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_users' ) );
+$malformed_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
+$malformed = $malformed_runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
+$malformed_count = $malformed_runtime->execute( new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_users' ) );
 
 $outside = dirname( $root ) . '/mdi-native-users-outside-' . bin2hex( random_bytes( 4 ) ) . '.json';
 file_put_contents( $outside, json_encode( $users, JSON_THROW_ON_ERROR ) );
 @unlink( $users_path );
 $symlink = function_exists( 'symlink' ) && @symlink( $outside, $users_path );
 $unsafe_symlink = $symlink
-	? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) )
+	? WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) )
 	: null;
 if ( $symlink ) {
 	@unlink( $users_path );
 }
 $hardlink = function_exists( 'link' ) && @link( $outside, $users_path );
 $unsafe_hardlink = $hardlink
-	? $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) )
+	? WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) )
 	: null;
 
 @unlink( $users_path );
-$absent = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
+$absent = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
 $too_wide = $users[0];
 $too_wide['user_login'] = str_repeat( 'x', 61 );
 file_put_contents( $users_path, json_encode( array( $too_wide ), JSON_THROW_ON_ERROR ) );
-$invalid_width = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
+$invalid_width = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_users' ) );
 $multisite_user = $users[1];
 $multisite_user['spam'] = '0';
 $multisite_user['deleted'] = '0';

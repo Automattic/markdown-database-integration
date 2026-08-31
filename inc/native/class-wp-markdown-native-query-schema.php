@@ -394,6 +394,15 @@ final class WP_Markdown_Native_Table_Registry {
 		unset( $this->tables[ $table ], $this->definitions[ $table ] );
 	}
 
+	/** Forget request-scoped generic snapshots after canonical files are restored. */
+	public function forget_snapshots(): void {
+		foreach ( $this->tables as $table ) {
+			if ( $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider ) {
+				$table['provider']->forget_rows();
+			}
+		}
+	}
+
 	/** @return array<int,string> */
 	public function table_names(): array {
 		return array_keys( $this->definitions );

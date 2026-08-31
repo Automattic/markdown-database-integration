@@ -124,7 +124,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				: $this->result( array(), $projection, $plan->table(), $schema );
 		}
 
-		$residual = array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
+		$residual = $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
+			? array()
+			: array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
 		$provider_projection = $plan->counts_all() ? array() : $projection;
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
@@ -144,7 +146,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				),
 			);
 		}
-		$provided = $table['provider']->read(
+		$provided = $this->read_provider(
+			$table['provider'],
+			$schema,
 			new WP_Markdown_Native_Table_Access(
 				$provider_projection,
 				$pushdown,
@@ -331,7 +335,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate to seed a JOIN query.' );
 		}
 		$seed = $sources[ $seed_source ];
-		$provided = $seed['provider']->read(
+		$provided = $this->read_provider(
+			$seed['provider'],
+			$seed['schema'],
 			new WP_Markdown_Native_Table_Access( $needed[ $seed_source ], $seed_predicate, $seed['schema']->natural_order(), PHP_INT_MAX )
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {
@@ -399,7 +405,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $this->failure( 'unsupported_join_lookup', 'mdi-native requires an indexed equality key for each JOIN source.' );
 			}
 			$join_predicate = new WP_Markdown_Native_Query_Predicate( $target_column, $operator, $values );
-			$provided = $target['provider']->read(
+			$provided = $this->read_provider(
+				$target['provider'],
+				$target['schema'],
 				new WP_Markdown_Native_Table_Access( $needed[ $target_source ], $join_predicate, $target['schema']->natural_order(), PHP_INT_MAX )
 			);
 			if ( $provided instanceof WP_Markdown_Query_Result ) {
@@ -658,6 +666,60 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$value_count = count( $left->values() ) <=> count( $right->values() );
 		return 0 !== $value_count ? $value_count : strcmp( $left->column(), $right->column() );
+	}
+
+	/**
+	 * Generic snapshots expose validated source rows; relational work belongs
+	 * here beside residual filtering. Storage-specific providers retain their
+	 * own bounded reads so they can avoid opening unrelated canonical files.
+	 *
+	 * @return iterable<array<string,mixed>>|WP_Markdown_Query_Result
+	 */
+	private function read_provider(
+		WP_Markdown_Native_Table_Provider $provider,
+		WP_Markdown_Native_Table_Schema $schema,
+		WP_Markdown_Native_Table_Access $access
+	): iterable|WP_Markdown_Query_Result {
+		if ( ! $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider ) {
+			return $provider->read( $access );
+		}
+
+		$rows = $provider->rows();
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
+		}
+		$predicates = $access->predicates();
+		if ( array() === $predicates && null !== $access->predicate() ) {
+			$predicates[] = $access->predicate();
+		}
+		if ( array() !== $predicates ) {
+			$rows = array_values(
+				array_filter(
+					$rows,
+					fn( array $row ): bool => $this->matches( $row, $predicates, $schema )
+				)
+			);
+		}
+		if ( null !== $schema->unsupported_order_reason( $access->order_by(), $rows ) ) {
+			return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
+		}
+		uasort(
+			$rows,
+			fn( array $left, array $right ): int => $schema->compare_ordered_rows( $left, $right, $access->order_by() )
+		);
+
+		$selected = array();
+		foreach ( $rows as $source ) {
+			if ( count( $selected ) >= $access->limit() ) {
+				break;
+			}
+			$row = array();
+			foreach ( $access->projection() as $column ) {
+				$row[ $column ] = $source[ $column ];
+			}
+			$selected[] = $row;
+		}
+		return $selected;
 	}
 
 	/** @param array<string,mixed> $row @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */

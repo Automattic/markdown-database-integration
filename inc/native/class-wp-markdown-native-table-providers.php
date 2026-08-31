@@ -13,8 +13,6 @@ require_once __DIR__ . '/class-wp-markdown-native-option-catalogue.php';
 abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
 
 	protected string $state_root;
-	/** @var array<string,array<string,array<int,int>>> */
-	private array $indexes = array();
 
 	public function __construct(
 		string $state_root,
@@ -148,35 +146,6 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		return $rows;
 	}
 
-	/** @param array<int,array<string,mixed>> $rows @return array<int,array<string,mixed>> */
-	protected function indexed_rows( array $rows, WP_Markdown_Native_Query_Predicate $predicate ): array {
-		$column = $predicate->column();
-		if ( ! isset( $this->indexes[ $column ] ) ) {
-			$this->indexes[ $column ] = array();
-			foreach ( $rows as $offset => $row ) {
-				$key = $this->schema->value_key( $column, $row[ $column ] );
-				if ( null !== $key ) {
-					$this->indexes[ $column ][ $key ][] = $offset;
-				}
-			}
-		}
-
-		$selected = array();
-		$seen     = array();
-		foreach ( $predicate->values() as $value ) {
-			$key = $this->schema->value_key( $column, $value );
-			foreach ( null === $key ? array() : ( $this->indexes[ $column ][ $key ] ?? array() ) as $offset ) {
-				$row = $rows[ $offset ];
-				$identity = $this->schema->identity_key( $row );
-				if ( null !== $identity && ! isset( $seen[ $identity ] ) ) {
-					$seen[ $identity ] = true;
-					$selected[]        = $row;
-				}
-			}
-		}
-		return $selected;
-	}
-
 	/**
 	 * Order a read, bound it, and project the columns it asked for.
 	 *
@@ -222,10 +191,6 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 			$selected[] = $row;
 		}
 		return $selected;
-	}
-
-	protected function reset_indexes(): void {
-		$this->indexes = array();
 	}
 
 	/** Cache identity only; path safety is still enforced while reading. */
@@ -506,14 +471,7 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
-		$rows = $this->rows();
-		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return $rows;
-		}
-		if ( null !== $access->predicate() ) {
-			$rows = $this->indexed_rows( $rows, $access->predicate() );
-		}
-		return $this->bounded_rows( $rows, $access );
+		return $this->rows();
 	}
 
 	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
@@ -524,7 +482,6 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 			return $this->snapshot;
 		}
 		$this->loaded = true;
-		$this->reset_indexes();
 		if ( ! file_exists( $directory ) && ! is_link( $directory ) ) {
 			return $this->snapshot = array();
 		}
@@ -551,21 +508,18 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	public function replace_rows( array $rows ): void {
 		$this->loaded   = true;
 		$this->snapshot = $rows;
-		$this->reset_indexes();
 	}
 
 	/** @param array<string,mixed> $row */
 	public function append_row( array $row ): void {
 		if ( $this->loaded && is_array( $this->snapshot ) ) {
 			$this->snapshot[] = $row;
-			$this->reset_indexes();
 		}
 	}
 
 	public function forget_rows(): void {
 		$this->loaded   = false;
 		$this->snapshot = null;
-		$this->reset_indexes();
 	}
 }
 
@@ -754,7 +708,19 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		} else {
 			$rows = $this->snapshot( null !== $predicate && 'autoload' === $predicate->column() ? $predicate->values() : null );
 			if ( is_array( $rows ) && null !== $predicate ) {
-				$rows = $this->indexed_rows( $rows, $predicate );
+				$rows = array_values(
+					array_filter(
+						$rows,
+						function ( array $row ) use ( $predicate ): bool {
+							foreach ( $predicate->values() as $value ) {
+								if ( $this->schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ) ) {
+									return true;
+								}
+							}
+							return false;
+						}
+					)
+				);
 			}
 		}
 		return $rows instanceof WP_Markdown_Query_Result ? $rows : $this->bounded_rows( $rows, $access );
@@ -771,7 +737,6 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		}
 		$this->loaded = true;
 		$this->snapshot_scope = $scope;
-		$this->reset_indexes();
 		$root = $this->options_root();
 		if ( $root instanceof WP_Markdown_Query_Result ) {
 			$this->signature = $this->options_signature();

@@ -18,6 +18,7 @@ return function (): array {
     $runtime = mdi_bench_runtime();
 
     $table = $wpdb->prefix . 'bench_worktree_inventory';
+    $create_start = hrtime(true);
     $wpdb->query(
         "CREATE TABLE IF NOT EXISTS {$table} (
             id bigint(20) unsigned NOT NULL AUTO_INCREMENT,
@@ -36,6 +37,7 @@ return function (): array {
             KEY missing_path (missing_path)
         )"
     );
+    $create_ms = (hrtime(true) - $create_start) / 1_000_000;
 
     if (!$seeded) {
         $existing = (int) $wpdb->get_var("SELECT COUNT(*) FROM {$table}");
@@ -54,11 +56,18 @@ return function (): array {
         $seeded = true;
     }
 
+    $inventory_start = hrtime(true);
     $all_rows = $wpdb->get_results("SELECT * FROM {$table} ORDER BY handle ASC", ARRAY_A);
+    $inventory_ms = (hrtime(true) - $inventory_start) / 1_000_000;
+
+    $repo_start = hrtime(true);
     $repo_rows = $wpdb->get_results(
         $wpdb->prepare("SELECT * FROM {$table} WHERE repo = %s ORDER BY handle ASC", 'repo-07'),
         ARRAY_A
     );
+    $repo_ms = (hrtime(true) - $repo_start) / 1_000_000;
+
+    $task_start = hrtime(true);
     $task_rows = $wpdb->get_results(
         $wpdb->prepare(
             "SELECT * FROM {$table} WHERE task_url = %s OR LOWER(owner_run_ref) = LOWER(%s) ORDER BY handle ASC LIMIT %d",
@@ -68,9 +77,11 @@ return function (): array {
         ),
         ARRAY_A
     );
+    $task_ms = (hrtime(true) - $task_start) / 1_000_000;
     $task_error = (string) $wpdb->last_error;
 
     $sequence = count($all_rows);
+    $replace_start = hrtime(true);
     $replaced = $wpdb->replace($table, [
         'handle'          => 'repo-00@benchmark-current',
         'repo'            => 'repo-00',
@@ -81,6 +92,7 @@ return function (): array {
         'metadata'        => wp_json_encode(['sequence' => $sequence, 'source' => 'benchmark']),
         'updated_at'      => '2026-08-29 00:00:00',
     ]);
+    $replace_ms = (hrtime(true) - $replace_start) / 1_000_000;
 
     if (!is_array($all_rows) || !is_array($repo_rows) || !is_array($task_rows) || false === $replaced || '' !== $task_error || '' !== (string) $wpdb->last_error) {
         throw new RuntimeException('Plugin-table inventory workload failed: ' . ($task_error ?: (string) $wpdb->last_error));
@@ -91,10 +103,15 @@ return function (): array {
 
     return [
         'metrics' => [
-            'inventory_rows' => count($all_rows),
-            'repo_rows'      => count($repo_rows),
-            'task_rows'      => count($task_rows),
-            'replace_result' => (int) $replaced,
+            'create_table_ms' => round($create_ms, 6),
+            'inventory_ms'    => round($inventory_ms, 6),
+            'inventory_rows'  => count($all_rows),
+            'repo_filter_ms'  => round($repo_ms, 6),
+            'repo_rows'       => count($repo_rows),
+            'task_lookup_ms'  => round($task_ms, 6),
+            'task_rows'       => count($task_rows),
+            'replace_ms'      => round($replace_ms, 6),
+            'replace_result'  => (int) $replaced,
         ],
         'metadata' => [
             'query_shape' => 'dynamic plugin table ordered scans, filtered lookup, and REPLACE upsert',

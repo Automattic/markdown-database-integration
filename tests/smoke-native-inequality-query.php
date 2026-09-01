@@ -129,6 +129,9 @@ $admin_or = ids(
 	"SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'page' AND (wp_posts.post_status = 'publish' OR wp_posts.post_status = 'future' OR wp_posts.post_status = 'draft' OR wp_posts.post_status = 'pending' OR wp_posts.post_status = 'private'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 20"
 );
 $cross_or = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' OR post_status = 'publish'" );
+// The shape WordPress uses to show public posts plus this author's private ones.
+$owner_or = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' AND ((post_status = 'publish') OR (post_author = 1 AND post_status = 'draft'))" );
+$other_owner_or = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' AND ((post_status = 'publish') OR (post_author = 2 AND post_status = 'draft'))" );
 $not_in = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' AND post_status NOT IN ('trash', 'auto-draft') ORDER BY post_date DESC" );
 
 $checks = array(
@@ -144,6 +147,10 @@ $checks = array(
 	'BETWEEN bounds inclusively at both ends' => array( '22', '23' ) === $between['ids']
 		&& null === $between['reason'],
 	'a textual range stays fail-closed without a declared collation' => false === $textual_range['return'],
+	'an OR alternative may be a conjunction' => array( '21', '22' ) === $owner_or['ids']
+		&& null === $owner_or['reason'],
+	'every branch of that conjunction still restricts' => array( '21' ) === $other_owner_or['ids']
+		&& null === $other_owner_or['reason'],
 	'admin status OR returns the visible statuses' => array( '21', '22' ) === $admin_or['ids']
 		&& null === $admin_or['reason'],
 	'cross-column equality OR returns either matching predicate' => array( '21', '22', '23', '24' ) === $cross_or['ids']

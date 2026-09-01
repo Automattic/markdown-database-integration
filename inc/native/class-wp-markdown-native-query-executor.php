@@ -168,11 +168,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$found_rows = 0;
 		$matched_rows = 0;
 		$groups = array();
+		$validated = $this->returns_validated_rows( $table['provider'] );
 		foreach ( $provided as $row ) {
 			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_count_alias() && count( $rows ) >= $plan->limit() ) {
 				break;
 			}
-			if ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) {
+			if ( ! $validated && ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
 			if ( $this->matches( $row, $residual, $schema ) ) {
@@ -345,8 +346,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$residual = array_values( array_filter( $predicates[ $seed_source ], static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $seed_predicate ) );
 		$rows = array();
+		$seed_validated = $this->returns_validated_rows( $seed['provider'] );
 		foreach ( $provided as $row ) {
-			if ( ! is_array( $row ) || true !== $seed['schema']->validate_projection( $row, $needed[ $seed_source ] ) ) {
+			if ( ! $seed_validated && ( ! is_array( $row ) || true !== $seed['schema']->validate_projection( $row, $needed[ $seed_source ] ) ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
 			}
 			if ( $this->matches( $row, $residual, $seed['schema'] ) ) {
@@ -414,8 +416,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $provided;
 			}
 			$target_rows = array();
+			$target_validated = $this->returns_validated_rows( $target['provider'] );
 			foreach ( $provided as $target_row ) {
-				if ( ! is_array( $target_row ) || true !== $target['schema']->validate_projection( $target_row, $needed[ $target_source ] ) ) {
+				if ( ! $target_validated && ( ! is_array( $target_row ) || true !== $target['schema']->validate_projection( $target_row, $needed[ $target_source ] ) ) ) {
 					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
 				}
 				if ( ! $this->matches( $target_row, array_merge( $predicates[ $target_source ], $join->on_filters() ), $target['schema'] ) ) {
@@ -666,6 +669,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$value_count = count( $left->values() ) <=> count( $right->values() );
 		return 0 !== $value_count ? $value_count : strcmp( $left->column(), $right->column() );
+	}
+
+	/**
+	 * Report whether a provider's rows already satisfy its declared schema.
+	 *
+	 * A generic snapshot validates every row when the request loads it, and
+	 * every mutation validates a row before publishing it, so the same rows do
+	 * not need revalidating on each query. Any other provider stays behind the
+	 * executor's boundary check.
+	 */
+	private function returns_validated_rows( WP_Markdown_Native_Table_Provider $provider ): bool {
+		return $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider;
 	}
 
 	/**

@@ -159,19 +159,14 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
 	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access, ?callable $hydrate = null ): array|WP_Markdown_Query_Result {
-		if ( null !== $this->schema->unsupported_order_reason( $access->order_by(), $rows ) ) {
+		$rows = $this->schema->ordered_rows( $rows, $access->order_by() );
+		if ( null === $rows ) {
 			return $this->failure(
 				'markdown_db_native_unsupported_query',
 				'unsupported_order',
 				'mdi-native cannot apply the requested ordering collation.'
 			);
 		}
-		// Ordering keeps each row's offset so a provider can find whatever it
-		// set aside for that row.
-		uasort(
-			$rows,
-			fn( array $left, array $right ): int => $this->schema->compare_ordered_rows( $left, $right, $access->order_by() )
-		);
 
 		$selected = array();
 		foreach ( $rows as $offset => $source ) {

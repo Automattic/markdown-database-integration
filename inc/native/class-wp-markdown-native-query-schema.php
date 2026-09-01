@@ -250,18 +250,64 @@ final class WP_Markdown_Native_Table_Schema {
 	}
 
 	/**
-	 * @param array<string,mixed>                             $left
-	 * @param array<string,mixed>                             $right
+	 * Validate and order rows after normalizing each comparison value once.
+	 *
+	 * Original offsets are retained because post providers use them to hydrate
+	 * the bounded rows from their corresponding canonical files.
+	 *
+	 * @param array<int,array<string,mixed>>                  $rows
 	 * @param array<int,array{column:string,descending:bool}> $order_by
+	 * @return array<int,array<string,mixed>>|null
 	 */
-	public function compare_ordered_rows( array $left, array $right, array $order_by ): int {
+	public function ordered_rows( array $rows, array $order_by ): ?array {
+		if ( null !== $this->unsupported_order_reason( $order_by, $rows ) ) {
+			return null;
+		}
+		$keys = array();
+		foreach ( $rows as $offset => $row ) {
+			$keys[ $offset ] = $this->order_key( $row, $order_by );
+		}
+		$offsets = array_keys( $rows );
+		usort(
+			$offsets,
+			static function ( int $left, int $right ) use ( $keys ): int {
+				foreach ( $keys[ $left ] as $index => $item ) {
+					$comparison = ( $item['descending'] ? -1 : 1 ) * ( $item['value'] <=> $keys[ $right ][ $index ]['value'] );
+					if ( 0 !== $comparison ) {
+						return $comparison;
+					}
+				}
+				return 0;
+			}
+		);
+		$ordered = array();
+		foreach ( $offsets as $offset ) {
+			$ordered[ $offset ] = $rows[ $offset ];
+		}
+		return $ordered;
+	}
+
+	/**
+	 * @param array<string,mixed>                             $row
+	 * @param array<int,array{column:string,descending:bool}> $order_by
+	 * @return array<int,array{value:mixed,descending:bool}>
+	 */
+	private function order_key( array $row, array $order_by ): array {
+		$key = array();
 		foreach ( $order_by as $item ) {
-			$comparison = ( $item['descending'] ? -1 : 1 ) * $this->compare_rows( $item['column'], $left, $right );
-			if ( 0 !== $comparison ) {
-				return $comparison;
+			$columns = array( $item['column'] );
+			if ( $item['column'] === $this->natural_order ) {
+				$columns = array_merge( $columns, array_diff( $this->identity_columns, $columns ) );
+			}
+			foreach ( $columns as $column ) {
+				$value = $this->column( $column )->normalize( $row[ $column ] );
+				$key[] = array(
+					'value'      => $this->orders_textually( $column ) && is_string( $value ) ? strtolower( $value ) : $value,
+					'descending' => $item['descending'],
+				);
 			}
 		}
-		return 0;
+		return $key;
 	}
 
 	private function orders_textually( string $column ): bool {

@@ -700,13 +700,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				)
 			);
 		}
-		if ( null !== $schema->unsupported_order_reason( $access->order_by(), $rows ) ) {
+		$rows = $schema->ordered_rows( $rows, $access->order_by() );
+		if ( null === $rows ) {
 			return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
 		}
-		uasort(
-			$rows,
-			fn( array $left, array $right ): int => $schema->compare_ordered_rows( $left, $right, $access->order_by() )
-		);
 
 		$selected = array();
 		foreach ( $rows as $source ) {

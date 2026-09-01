@@ -699,6 +699,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
 		$indexed = $this->indexed_columns( $schema );
 		foreach ( $predicates as $predicate ) {
+			if ( null !== $predicate->cast() ) {
+				continue;
+			}
 			if ( in_array( $predicate->operator(), array( 'OR', 'LOWER =' ), true ) ) {
 				continue;
 			}

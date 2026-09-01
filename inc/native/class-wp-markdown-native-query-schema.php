@@ -168,6 +168,12 @@ final class WP_Markdown_Native_Table_Schema {
 	}
 
 	public function supports_predicate( WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'SIGNED' === $predicate->cast() ) {
+			return $this->has_column( $predicate->column() )
+				&& in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true )
+				&& 1 === count( $predicate->values() )
+				&& null !== $this->signed_integer( $predicate->values()[0] );
+		}
 		if ( in_array( $predicate->operator(), array( 'AND', 'OR' ), true ) ) {
 			if ( array() === $predicate->any() ) {
 				return false;
@@ -484,6 +490,22 @@ final class WP_Markdown_Native_Table_Schema {
 
 	/** @param array<string,mixed> $row */
 	private function matches_predicate( array $row, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'SIGNED' === $predicate->cast() ) {
+			$left  = $this->signed_integer( $row[ $predicate->column() ] ?? null );
+			$right = $this->signed_integer( $predicate->values()[0] ?? null );
+			if ( null === $left || null === $right ) {
+				return false;
+			}
+			$comparison = $left <=> $right;
+			return match ( $predicate->operator() ) {
+				'='  => 0 === $comparison,
+				'<>' => 0 !== $comparison,
+				'<'  => $comparison < 0,
+				'<=' => $comparison <= 0,
+				'>'  => $comparison > 0,
+				default => $comparison >= 0,
+			};
+		}
 		if ( 'AND' === $predicate->operator() ) {
 			return $this->matches( $row, $predicate->any() );
 		}
@@ -535,6 +557,33 @@ final class WP_Markdown_Native_Table_Schema {
 			}
 		}
 		return $negated;
+	}
+
+	/** Convert a scalar the way MySQL's signed integer cast begins its comparison. */
+	private function signed_integer( mixed $value ): ?int {
+		if ( null === $value ) {
+			return null;
+		}
+		if ( is_int( $value ) ) {
+			return $value;
+		}
+		if ( ! is_string( $value ) || 1 !== preg_match( '/^[\x20\t\n\r\v\f]*([+-]?)([0-9]+)/', $value, $match ) ) {
+			return 0;
+		}
+		$digits = ltrim( $match[2], '0' );
+		if ( '' === $digits ) {
+			return 0;
+		}
+		$negative = '-' === $match[1];
+		$boundary = $negative ? ltrim( (string) PHP_INT_MIN, '-' ) : (string) PHP_INT_MAX;
+		if ( strlen( $digits ) > strlen( $boundary ) || ( strlen( $digits ) === strlen( $boundary ) && strcmp( $digits, $boundary ) > 0 ) ) {
+			return $negative ? PHP_INT_MIN : PHP_INT_MAX;
+		}
+		if ( $negative && $digits === ltrim( (string) PHP_INT_MIN, '-' ) ) {
+			return PHP_INT_MIN;
+		}
+		$integer = (int) $digits;
+		return $negative ? -$integer : $integer;
 	}
 
 	private function order_value( string $column, mixed $value ): mixed {

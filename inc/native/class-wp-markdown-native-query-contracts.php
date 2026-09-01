@@ -32,7 +32,8 @@ final class WP_Markdown_Native_Query_Predicate {
 		private readonly string $operator,
 		private readonly array $values,
 		private readonly ?string $source = null,
-		private readonly array $any = array()
+		private readonly array $any = array(),
+		private readonly ?string $cast = null
 	) {}
 
 	public function column(): string {
@@ -55,6 +56,10 @@ final class WP_Markdown_Native_Query_Predicate {
 	/** @return array<int,self> */
 	public function any(): array {
 		return $this->any;
+	}
+
+	public function cast(): ?string {
+		return $this->cast;
 	}
 
 	/** @return array<int,string> */

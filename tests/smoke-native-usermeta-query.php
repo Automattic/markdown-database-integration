@@ -123,9 +123,9 @@ $site_options = $multisite->execute(
 $invalid = $rows[0];
 $invalid['meta_key'] = str_repeat( 'x', 256 );
 file_put_contents( $path, json_encode( array( $invalid ), JSON_THROW_ON_ERROR ) );
-$malformed_width = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT meta_key FROM wp_usermeta WHERE user_id IN (1)' ) );
+$malformed_width = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT meta_key FROM wp_usermeta WHERE user_id IN (1)' ) );
 file_put_contents( $path, json_encode( array( $rows[0], $rows[0] ), JSON_THROW_ON_ERROR ) );
-$duplicate_identity = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT meta_key FROM wp_usermeta WHERE user_id IN (1)' ) );
+$duplicate_identity = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT meta_key FROM wp_usermeta WHERE user_id IN (1)' ) );
 
 $real_state_root = getenv( 'MDI_NATIVE_REAL_STATE_ROOT' );
 $real_snapshot_verified = true;

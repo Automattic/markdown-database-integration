@@ -250,18 +250,82 @@ final class WP_Markdown_Native_Table_Schema {
 	}
 
 	/**
-	 * @param array<string,mixed>                             $left
-	 * @param array<string,mixed>                             $right
+	 * Validate and order rows after normalizing each comparison value once.
+	 *
+	 * Original offsets are retained because post providers use them to hydrate
+	 * the bounded rows from their corresponding canonical files.
+	 *
+	 * @param array<int,array<string,mixed>>                  $rows
 	 * @param array<int,array{column:string,descending:bool}> $order_by
+	 * @return array<int,array<string,mixed>>|null
 	 */
-	public function compare_ordered_rows( array $left, array $right, array $order_by ): int {
+	public function ordered_rows( array $rows, array $order_by ): ?array {
+		if ( null !== $this->unsupported_order_reason( $order_by, $rows ) ) {
+			return null;
+		}
+		$item = 1 === count( $order_by ) ? $order_by[0] : null;
+		if ( null !== $item && ( $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
+			$keys = array();
+			foreach ( $rows as $offset => $row ) {
+				$keys[ $offset ] = $this->order_value( $item['column'], $row[ $item['column'] ] );
+			}
+			if ( $item['descending'] ) {
+				arsort( $keys, SORT_REGULAR );
+			} else {
+				asort( $keys, SORT_REGULAR );
+			}
+			$offsets = array_keys( $keys );
+		} else {
+			$keys = array();
+			foreach ( $rows as $offset => $row ) {
+				$keys[ $offset ] = $this->order_key( $row, $order_by );
+			}
+			$offsets = array_keys( $rows );
+			usort(
+				$offsets,
+				static function ( int $left, int $right ) use ( $keys ): int {
+					foreach ( $keys[ $left ] as $index => $key ) {
+						$comparison = ( $key['descending'] ? -1 : 1 ) * ( $key['value'] <=> $keys[ $right ][ $index ]['value'] );
+						if ( 0 !== $comparison ) {
+							return $comparison;
+						}
+					}
+					return 0;
+				}
+			);
+		}
+		$ordered = array();
+		foreach ( $offsets as $offset ) {
+			$ordered[ $offset ] = $rows[ $offset ];
+		}
+		return $ordered;
+	}
+
+	/**
+	 * @param array<string,mixed>                             $row
+	 * @param array<int,array{column:string,descending:bool}> $order_by
+	 * @return array<int,array{value:mixed,descending:bool}>
+	 */
+	private function order_key( array $row, array $order_by ): array {
+		$key = array();
 		foreach ( $order_by as $item ) {
-			$comparison = ( $item['descending'] ? -1 : 1 ) * $this->compare_rows( $item['column'], $left, $right );
-			if ( 0 !== $comparison ) {
-				return $comparison;
+			$columns = array( $item['column'] );
+			if ( $item['column'] === $this->natural_order ) {
+				$columns = array_merge( $columns, array_diff( $this->identity_columns, $columns ) );
+			}
+			foreach ( $columns as $column ) {
+				$key[] = array(
+					'value'      => $this->order_value( $column, $row[ $column ] ),
+					'descending' => $item['descending'],
+				);
 			}
 		}
-		return 0;
+		return $key;
+	}
+
+	private function order_value( string $column, mixed $value ): mixed {
+		$value = $this->column( $column )->normalize( $value );
+		return $this->orders_textually( $column ) && is_string( $value ) ? strtolower( $value ) : $value;
 	}
 
 	private function orders_textually( string $column ): bool {
@@ -392,6 +456,15 @@ final class WP_Markdown_Native_Table_Registry {
 	 */
 	public function unregister( string $table ): void {
 		unset( $this->tables[ $table ], $this->definitions[ $table ] );
+	}
+
+	/** Forget request-scoped generic snapshots after canonical files are restored. */
+	public function forget_snapshots(): void {
+		foreach ( $this->tables as $table ) {
+			if ( $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider ) {
+				$table['provider']->forget_rows();
+			}
+		}
 	}
 
 	/** @return array<int,string> */

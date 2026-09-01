@@ -1,0 +1,138 @@
+{
+  "id": "mdi-primary",
+  "description": "Markdown Database Integration benchmark control using its primary SQLite index runtime.",
+  "lifecycle": {
+    "cleanup": {
+      "intent": "external",
+      "reason": "WP Codebox owns disposable runtime cleanup; the MDI checkout is user-owned."
+    }
+  },
+  "components": {
+    "markdown-database-integration": {
+      "component_id": "markdown-database-integration",
+      "default_ref": "origin/main",
+      "path": "${env.HOMEBOY_RIG_COMPONENT_PATH__MDI_PRIMARY__MARKDOWN_DATABASE_INTEGRATION}",
+      "path_setting": "HOMEBOY_RIG_COMPONENT_PATH__MDI_PRIMARY__MARKDOWN_DATABASE_INTEGRATION",
+      "checkout_root": "${env.HOMEBOY_RIG_COMPONENT_CHECKOUT_ROOT__MDI_PRIMARY__MARKDOWN_DATABASE_INTEGRATION}",
+      "branch": "main",
+      "extensions": {
+        "wordpress": {
+          "bench_env": {
+            "BENCH_CORPUS_SIZE": "100"
+          },
+          "wordpress_runtime_workloads": [
+            {
+              "id": "concurrent-read",
+              "source": "rig",
+              "overridesDiscovered": true,
+              "run": [
+                {
+                  "type": "external-http-load",
+                  "url": "/wp-json/mdi-bench/v1/concurrent-read",
+                  "requestCount": 20,
+                  "concurrency": 4,
+                  "expectedStatuses": [
+                    200
+                  ],
+                  "metric-prefix": "concurrent_read"
+                }
+              ]
+            }
+          ],
+          "wp_config_defines": {
+            "MARKDOWN_DB_MODE": "primary",
+            "MARKDOWN_DB_CONTENT_DIR": "/wordpress/wp-content/db",
+            "MARKDOWN_DB_STATE_DIR": "/wordpress/wp-content/db",
+            "MDI_BENCH_EXPECTED_WPDB_CLASS": "WP_Markdown_DB"
+          },
+          "wp_codebox_bench_mounts": [
+            {
+              "source": "${components.markdown-database-integration.path}/db.php",
+              "target": "/wordpress/wp-content/db.php",
+              "type": "file",
+              "mode": "readonly",
+              "phase": "pre-install"
+            },
+            {
+              "source": "${components.markdown-database-integration.path}/tests/fixtures/native-bench-state",
+              "target": "/wordpress/wp-content/db",
+              "type": "directory",
+              "mode": "readonly",
+              "phase": "pre-install"
+            },
+            {
+              "source": "${components.markdown-database-integration.path}/tests/bench-fixtures/concurrent-read-endpoint.php",
+              "target": "/wordpress/wp-content/mu-plugins/mdi-bench-concurrent-read.php",
+              "type": "file",
+              "mode": "readonly",
+              "phase": "pre-install"
+            }
+          ]
+        }
+      }
+    }
+  },
+  "resources": {
+    "paths": [
+      "${components.markdown-database-integration.path}"
+    ]
+  },
+  "bench": {
+    "default_component": "markdown-database-integration",
+    "warmup_iterations": 5,
+    "axes": {
+      "backend": "sqlite-primary"
+    }
+  },
+  "bench_workloads": {
+    "wordpress": [
+      {
+        "path": "${package.root}/tests/bench/boot-timing.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/bulk-import.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/obsidian-bursty.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/read-heavy.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/wiki-hierarchy.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/plugin-table-inventory.php"
+      },
+      {
+        "path": "${package.root}/tests/bench/transaction-heavy.php"
+      }
+    ]
+  },
+  "bench_profiles": {
+    "decision": [
+      "boot-timing",
+      "bulk-import",
+      "obsidian-bursty",
+      "read-heavy",
+      "wiki-hierarchy",
+      "plugin-table-inventory",
+      "transaction-heavy"
+    ]
+  },
+  "pipeline": {
+    "check": [
+      {
+        "kind": "requirement",
+        "label": "MDI plugin checkout exists",
+        "file": "${components.markdown-database-integration.path}/markdown-database-integration.php",
+        "component": "markdown-database-integration",
+        "component_path_contains": "markdown-database-integration",
+        "remediation": "Set HOMEBOY_RIG_COMPONENT_PATH__MDI_PRIMARY__MARKDOWN_DATABASE_INTEGRATION to an MDI checkout."
+      }
+    ],
+    "up": [],
+    "bench_prepare": [],
+    "down": []
+  }
+}

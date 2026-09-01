@@ -128,7 +128,7 @@ file_put_contents(
 		JSON_THROW_ON_ERROR
 	)
 );
-$duplicate_identity = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs' ) );
+$duplicate_identity = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_jobs' ) );
 
 $checks = array(
 	'persisted plugin DDL and snapshots register without table-specific code' => 1 === $exact->return_value()

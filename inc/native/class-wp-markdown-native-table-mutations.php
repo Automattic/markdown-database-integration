@@ -61,6 +61,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( false === $result->return_value() ) {
 				if ( $owns_transaction ) {
 					$this->transactions->rollback();
+					$this->registry->forget_snapshots();
 				}
 				return $result;
 			}
@@ -104,6 +105,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 		try {
 			$schema = $table['schema'];
+			$provider = $table['provider'];
 			if ( ! $this->supports_unique_indexes( $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 			}
@@ -150,10 +152,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					// costs a rebuild on the next insert.
 					$this->index->forget( $suffix, $this->transactions );
 				}
+				$provider->append_row( $row );
 				return $this->insert_result( $row, $definition );
 			}
 
-			$rows = $table['provider']->read( new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX ) );
+			$rows = $provider->rows();
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
 			}
@@ -180,7 +183,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					if ( $written instanceof WP_Markdown_Query_Result ) {
 						return $written;
 					}
-					$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+					// REPLACE already scans and republishes the snapshot. Leave the
+					// derived insert index for the next operation that needs it.
+					$this->index->forget( $suffix, $this->transactions );
+					$provider->replace_rows( $rows );
 					return WP_Markdown_Query_Result::mutated( count( $duplicates ) + 1, $this->auto_increment_value( $row, $definition ) );
 				}
 				if ( $insert->ignores_duplicate() ) {
@@ -209,6 +215,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					return $written;
 				}
 				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
+				$provider->replace_rows( array_values( $rows ) );
 				return WP_Markdown_Query_Result::mutated( 2, $this->auto_increment_value( $updated, $definition ) );
 			}
 			$rows[] = $row;
@@ -217,6 +224,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $written;
 			}
 			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+			$provider->replace_rows( $rows );
 			return WP_Markdown_Query_Result::mutated( 1, $this->auto_increment_value( $row, $definition ) );
 		} finally {
 			flock( $lock, LOCK_UN );
@@ -375,7 +383,16 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		return $duplicates[0] ?? null;
 	}
 
-	/** @return array<int,int> */
+	/**
+	 * Offsets of the persisted rows a candidate row would duplicate.
+	 *
+	 * The candidate's own comparison value cannot change while the persisted
+	 * rows are examined, so each unique index normalizes it once and then
+	 * compares that against every row rather than renormalizing both sides for
+	 * every row it looks at.
+	 *
+	 * @return array<int,int>
+	 */
 	private function duplicate_row_offsets( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): array {
 		$duplicates = array();
 		foreach ( $definition['indexes'] as $index ) {
@@ -387,16 +404,32 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( array() === $names || array_filter( $names, static fn( string $column ): bool => null === $row[ $column ] ) ) {
 				continue;
 			}
+			$candidates = array();
+			foreach ( $columns as $column ) {
+				$name   = (string) ( $column['name'] ?? '' );
+				$length = $column['length'] ?? null;
+				$value  = $schema->column( $name )->normalize( $this->unique_index_value( $row[ $name ] ?? null, $length ) );
+				if ( null === $value ) {
+					// An uncomparable candidate value cannot duplicate any row.
+					continue 2;
+				}
+				$candidates[] = array(
+					'column' => $schema->column( $name ),
+					'name'   => $name,
+					'length' => $length,
+					'value'  => $value,
+				);
+			}
 			foreach ( $rows as $offset => $existing ) {
 				$matches = true;
-				foreach ( $columns as $column ) {
-					$name   = (string) ( $column['name'] ?? '' );
-					$length = $column['length'] ?? null;
-					$matches = $matches && $schema->values_match(
-						$name,
-						$this->unique_index_value( $existing[ $name ] ?? null, $length ),
-						$this->unique_index_value( $row[ $name ] ?? null, $length )
+				foreach ( $candidates as $candidate ) {
+					$value = $candidate['column']->normalize(
+						$this->unique_index_value( $existing[ $candidate['name'] ] ?? null, $candidate['length'] )
 					);
+					if ( null === $value || $value !== $candidate['value'] ) {
+						$matches = false;
+						break;
+					}
 				}
 				if ( $matches ) {
 					$duplicates[ (int) $offset ] = (int) $offset;
@@ -458,11 +491,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 		try {
 			$path = $directory . '/' . $suffix . '.json';
+			$provider = $table['provider'];
 			$index = $this->index->load( $suffix, $path );
 			if ( null !== $index && $this->index_excludes( $index, $write->predicates() ) ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
-			$rows = $table['provider']->read( new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX ) );
+			$rows = $provider->rows();
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
 			}
@@ -501,6 +535,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			// The republished snapshot invalidates the previous index, so it is
 			// refreshed from the rows already in memory.
 			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ), $this->transactions );
+			$provider->replace_rows( $retained );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
 			flock( $lock, LOCK_UN );

@@ -34,14 +34,15 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 
 ## SQLite vs native decision rigs
 
-The repository ships paired `mdi-sqlite` and `mdi-native` rigs for an isolated,
-repeatable backend comparison. Install them from this checkout and point both at
-the same MDI worktree:
+The repository ships `mdi-sqlite`, `mdi-primary`, and `mdi-native` rigs for an
+isolated, repeatable backend comparison. Install them from this checkout and
+point them at the same MDI worktree:
 
 ```bash
 homeboy rig install --all .
 
 export HOMEBOY_RIG_COMPONENT_PATH__MDI_SQLITE__MARKDOWN_DATABASE_INTEGRATION="$PWD"
+export HOMEBOY_RIG_COMPONENT_PATH__MDI_PRIMARY__MARKDOWN_DATABASE_INTEGRATION="$PWD"
 export HOMEBOY_RIG_COMPONENT_PATH__MDI_NATIVE__MARKDOWN_DATABASE_INTEGRATION="$PWD"
 
 homeboy bench markdown-database-integration \
@@ -55,9 +56,27 @@ homeboy bench markdown-database-integration \
 ```
 
 Both cells use the same corpus, warmup, checkout, and workload profile. The
-native rig's only backend-specific input is
-`MARKDOWN_DB_BACKEND=mdi-native`; the SQLite rig leaves that constant undefined
-to exercise MDI's supported default runtime.
+SQLite rig exercises the supported mirror-mode default and the native rig sets
+`MARKDOWN_DB_BACKEND=mdi-native`.
+
+### Primary-mode cell
+
+`mdi-primary` sets `MARKDOWN_DB_MODE=primary` against the same canonical
+fixture so primary mode can be measured beside the other two. Add it to the
+`--rig` list once primary mode boots against that fixture:
+
+```bash
+homeboy bench markdown-database-integration \
+  --rig mdi-sqlite,mdi-primary,mdi-native \
+  --profile decision \
+  --report side-by-side
+```
+
+That cell currently produces no measurement. Primary mode fails during
+WordPress bootstrap with `Error establishing a database connection` against the
+shared fixture, with both the default bootstrap deadline and a 30 s deadline.
+The rig itself passes `homeboy rig lint`, so the blocker is primary-mode
+startup rather than the rig definition.
 
 `run-boot-timing.sh` writes a focused summary to
 `tests/bench/results/<YYYY-MM-DD>/boot-timing-summary.json`. Detailed loader

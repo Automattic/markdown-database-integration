@@ -153,7 +153,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$provider_projection,
 				$pushdown,
 				$order_by[0]['column'],
-				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_count_alias() || array() !== $residual ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
+				// DISTINCT collapses rows after the source read, so a bounded
+				// read would spend its bound on duplicates.
+				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_count_alias() || array() !== $residual || $plan->is_distinct() ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by,
 				$predicates
@@ -168,6 +170,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$found_rows = 0;
 		$matched_rows = 0;
 		$groups = array();
+		$seen = array();
+		$distinct = $plan->is_distinct();
 		$validated = $this->returns_validated_rows( $table['provider'] );
 		foreach ( $provided as $row ) {
 			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_count_alias() && count( $rows ) >= $plan->limit() ) {
@@ -177,6 +181,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
 			if ( $this->matches( $row, $residual, $schema ) ) {
+				$selected = null;
+				if ( $distinct && ! $plan->counts_all() && null === $plan->group_count_alias() ) {
+					// DISTINCT resolves before the bound and before the count,
+					// so a repeated row consumes neither.
+					$selected = $this->string_row( $row, $projection );
+					$key = serialize( $selected );
+					if ( isset( $seen[ $key ] ) ) {
+						continue;
+					}
+					$seen[ $key ] = true;
+				}
 				if ( $plan->calculates_found_rows() ) {
 					++$found_rows;
 				}
@@ -191,7 +206,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				} elseif ( $matched_rows++ < $plan->limit_offset() ) {
 					continue;
 				} elseif ( count( $rows ) < $plan->limit() ) {
-					$rows[] = $this->string_row( $row, $projection );
+					$rows[] = $selected ?? $this->string_row( $row, $projection );
 				}
 			}
 		}

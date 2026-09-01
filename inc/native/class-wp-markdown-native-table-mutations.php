@@ -183,7 +183,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					if ( $written instanceof WP_Markdown_Query_Result ) {
 						return $written;
 					}
-					$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+					// REPLACE already scans and republishes the snapshot. Leave the
+					// derived insert index for the next operation that needs it.
+					$this->index->forget( $suffix, $this->transactions );
 					$provider->replace_rows( $rows );
 					return WP_Markdown_Query_Result::mutated( count( $duplicates ) + 1, $this->auto_increment_value( $row, $definition ) );
 				}

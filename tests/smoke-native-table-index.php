@@ -118,6 +118,14 @@ $after_rollback = count( rows( $snapshot ) );
 $post_rollback_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (16, 'g')", 'wp_' ) );
 $post_rollback_ids = array_map( static fn( array $row ): string => (string) $row['id'], rows( $snapshot ) );
 
+// REPLACE should not rescan the published snapshot just to rebuild a derived
+// index. The next ordinary insert rebuilds it while preserving the sequence.
+$replaced = $runtime->execute( new WP_Markdown_Query_Request( "REPLACE INTO wp_items (code, label) VALUES (16, 'replaced')", 'wp_' ) );
+$replace_deferred_index = ! is_file( $index_path );
+$after_replace = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (18, 'h')", 'wp_' ) );
+$replace_rebuilt_index = is_file( $index_path );
+$after_replace_ids = array_map( static fn( array $row ): string => (string) $row['id'], rows( $snapshot ) );
+
 $checks = array(
 	'appended inserts assign sequential identifiers' => 1 === $first->return_value()
 		&& array( '1', '2', '3' ) === $sequential,
@@ -141,6 +149,11 @@ $checks = array(
 	'a rolled back insert restores the snapshot' => $before_rollback === $after_rollback,
 	'inserts after a rollback stay coherent' => 1 === $post_rollback_insert->return_value()
 		&& array( '1', '2', '3', '4', '5', '6', '7' ) === $post_rollback_ids,
+	'REPLACE defers its derived index rebuild' => 2 === $replaced->return_value()
+		&& $replace_deferred_index,
+	'the next insert rebuilds the index without corrupting identity' => 1 === $after_replace->return_value()
+		&& $replace_rebuilt_index
+		&& array( '1', '2', '3', '4', '5', '6', '8', '9' ) === $after_replace_ids,
 );
 
 $passed = ! in_array( false, $checks, true );

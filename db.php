@@ -48,6 +48,60 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 	}
 }
 
+if ( ! function_exists( 'markdown_database_integration_configured_backend' ) ) {
+	/**
+	 * Resolve the backend that owns this bootstrap.
+	 *
+	 * An explicit MARKDOWN_DB_BACKEND always wins. Otherwise the canonical
+	 * file store is authoritative and mdi-native serves it directly, which is
+	 * why SQLite Database Integration is optional rather than required.
+	 *
+	 * An install that already holds a SQLite database keeps using it, so
+	 * upgrading never moves a running site onto a different query engine
+	 * without the operator asking for it.
+	 */
+	function markdown_database_integration_configured_backend(): string {
+		if ( defined( 'MARKDOWN_DB_BACKEND' ) ) {
+			return (string) MARKDOWN_DB_BACKEND;
+		}
+		if ( defined( 'FQDB' ) && is_file( FQDB ) ) {
+			return 'sqlite';
+		}
+		return is_file( __DIR__ . '/database/.ht.sqlite' ) ? 'sqlite' : 'mdi-native';
+	}
+}
+
+if ( ! function_exists( 'markdown_database_integration_native_plugin_dir' ) ) {
+	/** Locate an MDI install able to serve canonical files during bootstrap. */
+	function markdown_database_integration_native_plugin_dir( string $content_dir ): ?string {
+		foreach ( array( $content_dir . '/mu-plugins/markdown-database-integration', $content_dir . '/plugins/markdown-database-integration' ) as $path ) {
+			if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' )
+				&& is_file( $path . '/inc/native/class-wp-markdown-native-query-runtime.php' )
+				&& is_file( $path . '/inc/native/class-wp-markdown-native-wpdb.php' )
+			) {
+				return $path;
+			}
+		}
+		return null;
+	}
+}
+
+// Downstream capability resolution, health, and CLI read the same identifier,
+// so the backend is settled before it is published. An operator who named a
+// backend is told when its runtime is unavailable; an inferred backend simply
+// stays on the SQLite path the site was already able to boot.
+$markdown_db_backend_is_explicit = defined( 'MARKDOWN_DB_BACKEND' );
+$markdown_db_native_plugin_dir   = markdown_database_integration_native_plugin_dir( __DIR__ );
+if ( ! $markdown_db_backend_is_explicit ) {
+	$markdown_db_resolved_backend = markdown_database_integration_configured_backend();
+	if ( 'mdi-native' === $markdown_db_resolved_backend
+		&& ( null === $markdown_db_native_plugin_dir || ! class_exists( 'wpdb' ) )
+	) {
+		$markdown_db_resolved_backend = 'sqlite';
+	}
+	define( 'MARKDOWN_DB_BACKEND', $markdown_db_resolved_backend );
+}
+
 // mysql-content is a plugin-level MySQL runtime. Leave normal wpdb bootstrap
 // intact so the plugin can report the explicit db.php migration diagnostic.
 if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) {
@@ -98,14 +152,7 @@ if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) 
 
 // mdi-native serves bounded reads directly from canonical Markdown and JSON.
 // It must replace wpdb here because regular plugins load after database boot.
-if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) {
-	$markdown_db_native_plugin_dir = null;
-	foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $path ) {
-		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/native/class-wp-markdown-native-query-runtime.php' ) && is_file( $path . '/inc/native/class-wp-markdown-native-wpdb.php' ) ) {
-			$markdown_db_native_plugin_dir = $path;
-			break;
-		}
-	}
+if ( 'mdi-native' === MARKDOWN_DB_BACKEND ) {
 	if ( null === $markdown_db_native_plugin_dir || ! class_exists( 'wpdb' ) ) {
 		throw new RuntimeException( 'mdi-native requires the MDI plugin and stock wpdb during db.php bootstrap.' );
 	}

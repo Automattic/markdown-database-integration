@@ -383,7 +383,16 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		return $duplicates[0] ?? null;
 	}
 
-	/** @return array<int,int> */
+	/**
+	 * Offsets of the persisted rows a candidate row would duplicate.
+	 *
+	 * The candidate's own comparison value cannot change while the persisted
+	 * rows are examined, so each unique index normalizes it once and then
+	 * compares that against every row rather than renormalizing both sides for
+	 * every row it looks at.
+	 *
+	 * @return array<int,int>
+	 */
 	private function duplicate_row_offsets( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): array {
 		$duplicates = array();
 		foreach ( $definition['indexes'] as $index ) {
@@ -395,16 +404,32 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( array() === $names || array_filter( $names, static fn( string $column ): bool => null === $row[ $column ] ) ) {
 				continue;
 			}
+			$candidates = array();
+			foreach ( $columns as $column ) {
+				$name   = (string) ( $column['name'] ?? '' );
+				$length = $column['length'] ?? null;
+				$value  = $schema->column( $name )->normalize( $this->unique_index_value( $row[ $name ] ?? null, $length ) );
+				if ( null === $value ) {
+					// An uncomparable candidate value cannot duplicate any row.
+					continue 2;
+				}
+				$candidates[] = array(
+					'column' => $schema->column( $name ),
+					'name'   => $name,
+					'length' => $length,
+					'value'  => $value,
+				);
+			}
 			foreach ( $rows as $offset => $existing ) {
 				$matches = true;
-				foreach ( $columns as $column ) {
-					$name   = (string) ( $column['name'] ?? '' );
-					$length = $column['length'] ?? null;
-					$matches = $matches && $schema->values_match(
-						$name,
-						$this->unique_index_value( $existing[ $name ] ?? null, $length ),
-						$this->unique_index_value( $row[ $name ] ?? null, $length )
+				foreach ( $candidates as $candidate ) {
+					$value = $candidate['column']->normalize(
+						$this->unique_index_value( $existing[ $candidate['name'] ] ?? null, $candidate['length'] )
 					);
+					if ( null === $value || $value !== $candidate['value'] ) {
+						$matches = false;
+						break;
+					}
 				}
 				if ( $matches ) {
 					$duplicates[ (int) $offset ] = (int) $offset;

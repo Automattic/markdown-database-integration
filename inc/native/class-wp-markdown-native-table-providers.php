@@ -125,7 +125,8 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 		}
 
 		$identities = array();
-		foreach ( $rows as $row ) {
+		$columns = $this->schema->column_names();
+		foreach ( $rows as $offset => $row ) {
 			if ( ! is_array( $row ) || true !== $this->schema->validate_row( $row ) ) {
 				return $this->failure(
 					'markdown_db_native_malformed_table',
@@ -142,6 +143,11 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 				);
 			}
 			$identities[ $key ] = true;
+			$ordered = array();
+			foreach ( $columns as $column ) {
+				$ordered[ $column ] = $row[ $column ];
+			}
+			$rows[ $offset ] = $ordered;
 		}
 		return $rows;
 	}

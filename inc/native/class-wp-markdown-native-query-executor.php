@@ -704,6 +704,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $rows ) {
 			return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
 		}
+		if ( $access->projection() === $schema->column_names() ) {
+			return PHP_INT_MAX === $access->limit()
+				? $rows
+				: array_slice( $rows, 0, $access->limit() );
+		}
 
 		$selected = array();
 		foreach ( $rows as $source ) {

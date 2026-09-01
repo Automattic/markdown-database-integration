@@ -263,23 +263,37 @@ final class WP_Markdown_Native_Table_Schema {
 		if ( null !== $this->unsupported_order_reason( $order_by, $rows ) ) {
 			return null;
 		}
-		$keys = array();
-		foreach ( $rows as $offset => $row ) {
-			$keys[ $offset ] = $this->order_key( $row, $order_by );
-		}
-		$offsets = array_keys( $rows );
-		usort(
-			$offsets,
-			static function ( int $left, int $right ) use ( $keys ): int {
-				foreach ( $keys[ $left ] as $index => $item ) {
-					$comparison = ( $item['descending'] ? -1 : 1 ) * ( $item['value'] <=> $keys[ $right ][ $index ]['value'] );
-					if ( 0 !== $comparison ) {
-						return $comparison;
-					}
-				}
-				return 0;
+		$item = 1 === count( $order_by ) ? $order_by[0] : null;
+		if ( null !== $item && ( $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
+			$keys = array();
+			foreach ( $rows as $offset => $row ) {
+				$keys[ $offset ] = $this->order_value( $item['column'], $row[ $item['column'] ] );
 			}
-		);
+			if ( $item['descending'] ) {
+				arsort( $keys, SORT_REGULAR );
+			} else {
+				asort( $keys, SORT_REGULAR );
+			}
+			$offsets = array_keys( $keys );
+		} else {
+			$keys = array();
+			foreach ( $rows as $offset => $row ) {
+				$keys[ $offset ] = $this->order_key( $row, $order_by );
+			}
+			$offsets = array_keys( $rows );
+			usort(
+				$offsets,
+				static function ( int $left, int $right ) use ( $keys ): int {
+					foreach ( $keys[ $left ] as $index => $key ) {
+						$comparison = ( $key['descending'] ? -1 : 1 ) * ( $key['value'] <=> $keys[ $right ][ $index ]['value'] );
+						if ( 0 !== $comparison ) {
+							return $comparison;
+						}
+					}
+					return 0;
+				}
+			);
+		}
 		$ordered = array();
 		foreach ( $offsets as $offset ) {
 			$ordered[ $offset ] = $rows[ $offset ];
@@ -300,14 +314,18 @@ final class WP_Markdown_Native_Table_Schema {
 				$columns = array_merge( $columns, array_diff( $this->identity_columns, $columns ) );
 			}
 			foreach ( $columns as $column ) {
-				$value = $this->column( $column )->normalize( $row[ $column ] );
 				$key[] = array(
-					'value'      => $this->orders_textually( $column ) && is_string( $value ) ? strtolower( $value ) : $value,
+					'value'      => $this->order_value( $column, $row[ $column ] ),
 					'descending' => $item['descending'],
 				);
 			}
 		}
 		return $key;
+	}
+
+	private function order_value( string $column, mixed $value ): mixed {
+		$value = $this->column( $column )->normalize( $value );
+		return $this->orders_textually( $column ) && is_string( $value ) ? strtolower( $value ) : $value;
 	}
 
 	private function orders_textually( string $column ): bool {

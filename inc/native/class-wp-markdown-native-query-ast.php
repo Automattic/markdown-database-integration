@@ -46,7 +46,8 @@ final class WP_Markdown_Native_SQL_Predicate {
 		private readonly WP_Markdown_Native_SQL_Identifier $column,
 		private readonly string $operator,
 		private readonly array $values,
-		private readonly array $any = array()
+		private readonly array $any = array(),
+		private readonly ?string $cast = null
 	) {}
 
 	public function column(): WP_Markdown_Native_SQL_Identifier {
@@ -65,6 +66,10 @@ final class WP_Markdown_Native_SQL_Predicate {
 	/** @return array<int,self> */
 	public function any(): array {
 		return $this->any;
+	}
+
+	public function cast(): ?string {
+		return $this->cast;
 	}
 }
 

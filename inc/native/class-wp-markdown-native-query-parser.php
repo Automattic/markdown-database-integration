@@ -170,7 +170,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$predicate->operator(),
 			$values,
 			$predicate->column()->qualifier() ?? $base_source,
-			array_map( fn( WP_Markdown_Native_SQL_Predicate $alternative ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $alternative, $base_source ), $predicate->any() )
+			array_map( fn( WP_Markdown_Native_SQL_Predicate $alternative ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $alternative, $base_source ), $predicate->any() ),
+			$predicate->cast()
 		);
 	}
 
@@ -522,6 +523,13 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				$same_column  = false;
 			}
 			foreach ( $group as $conjunct ) {
+				if ( null !== $conjunct->cast() ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error(
+						'unsupported_or',
+						$sql_offset,
+						'mdi-native supports OR only over uncast equality or LIKE alternatives.'
+					);
+				}
 				if ( ! in_array( $conjunct->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =' ), true ) ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error(
 						'unsupported_or',
@@ -645,6 +653,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->matches_function( 'LOWER' ) ) {
 			return $this->lower_equality_predicate();
 		}
+		if ( $this->matches_function( 'CAST' ) ) {
+			return $this->signed_cast_predicate();
+		}
 		$column = $this->identifier();
 		if ( $this->match_keyword( 'IS' ) ) {
 			$operator = $this->match_keyword( 'NOT' ) ? 'IS NOT NULL' : 'IS NULL';
@@ -686,6 +697,28 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$this->expect_keyword( 'IN' );
 		return new WP_Markdown_Native_SQL_Predicate( $column, 'IN', $this->in_list() );
+	}
+
+	private function signed_cast_predicate(): WP_Markdown_Native_SQL_Predicate {
+		$this->unqualified_identifier();
+		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$column = $this->identifier();
+		$this->expect_keyword( 'AS' );
+		$this->expect_keyword( 'SIGNED' );
+		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		foreach ( array(
+			WP_Markdown_Native_SQL_Token::EQUALS => '=',
+			WP_Markdown_Native_SQL_Token::NOT_EQUALS => '<>',
+			WP_Markdown_Native_SQL_Token::LESS_EQUALS => '<=',
+			WP_Markdown_Native_SQL_Token::GREATER_EQUALS => '>=',
+			WP_Markdown_Native_SQL_Token::LESS_THAN => '<',
+			WP_Markdown_Native_SQL_Token::GREATER_THAN => '>',
+		) as $type => $operator ) {
+			if ( $this->match_type( $type ) ) {
+				return new WP_Markdown_Native_SQL_Predicate( $column, $operator, array( $this->literal() ), array(), 'SIGNED' );
+			}
+		}
+		$this->unsupported( $this->current() );
 	}
 
 	private function lower_equality_predicate(): WP_Markdown_Native_SQL_Predicate {

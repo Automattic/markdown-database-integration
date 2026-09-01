@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ),
+		private readonly array $filter_operators = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE', '<', '<=', '>', '>=', 'BETWEEN' ),
 		private readonly mixed $filter_validator = null
 	) {
 		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
@@ -155,7 +155,66 @@ final class WP_Markdown_Native_Table_Schema {
 
 	/** @param array<int,int|string> $values */
 	public function allows_filter( string $column, string $operator, array $values ): bool {
-		return isset( $this->columns[ $column ] ) && $this->columns[ $column ]->allows_filter( $operator, $values );
+		if ( ! isset( $this->columns[ $column ] ) ) {
+			return false;
+		}
+		if ( self::is_range_operator( $operator ) && ! $this->allows_range( $column, $values ) ) {
+			return false;
+		}
+		if ( 'BETWEEN' === $operator && ( 2 !== count( $values ) || ! $this->allows_range( $column, $values ) ) ) {
+			return false;
+		}
+		return $this->columns[ $column ]->allows_filter( $operator, $values );
+	}
+
+	/** Numeric and temporal field types, whose order is unambiguous. */
+	private const RANGE_TYPES = array( 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 246 );
+
+	public static function is_range_operator( string $operator ): bool {
+		return in_array( $operator, array( '<', '<=', '>', '>=' ), true );
+	}
+
+	/**
+	 * Whether a range comparison over this column is deterministic.
+	 *
+	 * Numeric and temporal columns carry one unambiguous order, so a range
+	 * over them answers the same question MySQL answers. Text ordering depends
+	 * on a collation this engine does not implement, so a textual range stays
+	 * fail-closed rather than guessing at one.
+	 *
+	 * @param array<int,int|string> $values
+	 */
+	private function allows_range( string $column, array $values ): bool {
+		if ( array() === $values || ! in_array( $this->columns[ $column ]->type(), self::RANGE_TYPES, true ) ) {
+			return false;
+		}
+		foreach ( $values as $value ) {
+			if ( null === $value || null === $this->order_value( $column, $value ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Order two values of one column, or report that they cannot be ordered.
+	 *
+	 * @return int|null -1, 0, or 1, or null when either side has no place in
+	 *                  this column's declared order.
+	 */
+	public function ordered_comparison( string $column, mixed $left, mixed $right ): ?int {
+		if ( ! isset( $this->columns[ $column ] ) ) {
+			return null;
+		}
+		$left  = $this->order_value( $column, $left );
+		$right = $this->order_value( $column, $right );
+		if ( null === $left || null === $right ) {
+			return null;
+		}
+		if ( $this->orders_textually( $column ) && ( ! is_string( $left ) || ! is_string( $right ) ) ) {
+			return null;
+		}
+		return $left <=> $right;
 	}
 
 	public function values_match( string $column, mixed $left, mixed $right ): bool {

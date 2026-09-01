@@ -31,7 +31,10 @@ $wordpress_admin_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.
 $wordpress_admin_plan = $wordpress_admin_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_ast ) : $wordpress_admin_ast;
 $not_equals_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_status != 'trash'" );
 $not_equals_plan = $not_equals_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $not_equals_ast ) : $not_equals_ast;
-$unsupported_gt = $parser->parse( "SELECT ID FROM wp_posts WHERE post_status > 'trash'" );
+$range_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_date >= '2026-08-04 00:00:00'" );
+$range_plan = $range_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $range_ast ) : $range_ast;
+$between_ast = $parser->parse_ast( "SELECT ID FROM wp_posts WHERE post_date BETWEEN '2026-08-01 00:00:00' AND '2026-08-09 00:00:00'" );
+$between_plan = $between_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $between_ast ) : $between_ast;
 $wordpress_admin_or_ast = $parser->parse_ast( "SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish' OR wp_posts.post_status = 'future' OR wp_posts.post_status = 'draft' OR wp_posts.post_status = 'pending' OR wp_posts.post_status = 'private'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 20" );
 $wordpress_admin_or_plan = $wordpress_admin_or_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $wordpress_admin_or_ast ) : $wordpress_admin_or_ast;
 $cross_column_or = $parser->parse( "SELECT ID FROM wp_posts WHERE post_type = 'post' OR post_status = 'publish'" );
@@ -144,8 +147,12 @@ $checks = array(
 		&& array( 'auto-draft' ) === $wordpress_admin_plan->predicates()[2]->values(),
 	'bang-equals is the same operator as angle not-equals' => $not_equals_plan instanceof WP_Markdown_Native_Query_Plan
 		&& '<>' === $not_equals_plan->predicates()[0]->operator(),
-	'ordering comparisons stay fail-closed' => false === $unsupported_gt->return_value()
-		&& 'unsupported_grammar' === ( $unsupported_gt->diagnostic()['reason'] ?? null ),
+	'ordering comparisons lower to typed range predicates' => $range_plan instanceof WP_Markdown_Native_Query_Plan
+		&& '>=' === $range_plan->predicates()[0]->operator()
+		&& array( '2026-08-04 00:00:00' ) === $range_plan->predicates()[0]->values(),
+	'BETWEEN lowers to one inclusive bounded predicate' => $between_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 'BETWEEN' === $between_plan->predicates()[0]->operator()
+		&& array( '2026-08-01 00:00:00', '2026-08-09 00:00:00' ) === $between_plan->predicates()[0]->values(),
 	'WordPress admin status OR collapses to same-column membership' => $wordpress_admin_or_plan instanceof WP_Markdown_Native_Query_Plan
 		&& 2 === count( $wordpress_admin_or_plan->predicates() )
 		&& 'IN' === $wordpress_admin_or_plan->predicates()[1]->operator()

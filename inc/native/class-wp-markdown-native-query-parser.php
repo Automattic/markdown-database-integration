@@ -562,6 +562,23 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::NOT_EQUALS ) ) {
 			return new WP_Markdown_Native_SQL_Predicate( $column, '<>', array( $this->literal() ) );
 		}
+		foreach ( array(
+			WP_Markdown_Native_SQL_Token::LESS_EQUALS => '<=',
+			WP_Markdown_Native_SQL_Token::GREATER_EQUALS => '>=',
+			WP_Markdown_Native_SQL_Token::LESS_THAN => '<',
+			WP_Markdown_Native_SQL_Token::GREATER_THAN => '>',
+		) as $type => $operator ) {
+			if ( $this->match_type( $type ) ) {
+				return new WP_Markdown_Native_SQL_Predicate( $column, $operator, array( $this->literal() ) );
+			}
+		}
+		if ( $this->match_keyword( 'BETWEEN' ) ) {
+			// MySQL BETWEEN is inclusive on both ends, which is the pair of
+			// range comparisons this engine already answers.
+			$lower = $this->literal();
+			$this->expect_keyword( 'AND' );
+			return new WP_Markdown_Native_SQL_Predicate( $column, 'BETWEEN', array( $lower, $this->literal() ) );
+		}
 		if ( $this->match_keyword( 'LIKE' ) ) {
 			return $this->like_predicate( $column, 'LIKE' );
 		}

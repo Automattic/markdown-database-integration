@@ -165,6 +165,23 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
 	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access, ?callable $hydrate = null ): array|WP_Markdown_Query_Result {
+		$case_order = false;
+		foreach ( $access->order_by() as $item ) {
+			$case_order = $case_order || null !== ( $item['case'] ?? null );
+		}
+		if ( $case_order && null !== $hydrate ) {
+			// A searched CASE may rank on canonical body content that the post
+			// catalogue intentionally omits. It must see every ordering value
+			// before the bound chooses which rows survive.
+			foreach ( $rows as $offset => $row ) {
+				$hydrated = $hydrate( $offset, $row );
+				if ( $hydrated instanceof WP_Markdown_Query_Result ) {
+					return $hydrated;
+				}
+				$rows[ $offset ] = $hydrated;
+			}
+			$hydrate = null;
+		}
 		$rows = $this->schema->ordered_rows( $rows, $access->order_by() );
 		if ( null === $rows ) {
 			return $this->failure(

@@ -103,6 +103,11 @@ $exact = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID, post_titl
 $body = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT post_content FROM wp_posts WHERE ID = 41 LIMIT 1' ) );
 $all = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT * FROM wp_posts WHERE ID = 41 LIMIT 1' ) );
 $wrong_root = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID = 99 LIMIT 1' ) );
+$search = $runtime->execute(
+	new WP_Markdown_Query_Request(
+		"SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND (((wp_posts.post_title LIKE '%private%') OR (wp_posts.post_excerpt LIKE '%private%') OR (wp_posts.post_content LIKE '%private%')) AND ((wp_posts.post_title LIKE '%body%') OR (wp_posts.post_excerpt LIKE '%body%') OR (wp_posts.post_content LIKE '%body%'))) AND (wp_posts.post_password = '') AND ((wp_posts.post_type = 'attachment' AND (wp_posts.post_status = 'publish')) OR (wp_posts.post_type = 'page' AND (wp_posts.post_status = 'publish')) OR (wp_posts.post_type = 'post' AND (wp_posts.post_status = 'publish'))) ORDER BY (CASE WHEN wp_posts.post_title LIKE '%private body%' THEN 1 WHEN wp_posts.post_title LIKE '%private%' AND wp_posts.post_title LIKE '%body%' THEN 2 WHEN wp_posts.post_title LIKE '%private%' OR wp_posts.post_title LIKE '%body%' THEN 3 WHEN wp_posts.post_excerpt LIKE '%private body%' THEN 4 WHEN wp_posts.post_content LIKE '%private body%' THEN 5 ELSE 6 END), wp_posts.post_date DESC LIMIT 0, 10"
+	)
+);
 $site_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $state, 'wp_2_', 'wp_', true, $content );
 $site_post = $site_runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_2_posts WHERE ID = 41', 'wp_2_' ) );
 
@@ -139,6 +144,8 @@ $checks = array(
 		&& array( 'ID', 'post_author', 'post_date' ) === array_slice( array_keys( get_object_vars( $all->wpdb_state()['last_result'][0] ?? (object) array() ) ), 0, 3 ),
 	'content and state roots remain independent and posts use the active site prefix' => 0 === $wrong_root->return_value()
 		&& 1 === $site_post->return_value(),
+	'WordPress search filters canonical bodies and applies CASE relevance' => 1 === $search->return_value()
+		&& '41' === ( $search->wpdb_state()['last_result'][0]->ID ?? null ),
 	'metadata projections skip bodies and content hydration is bounded to selected posts' => 0 === $content_reads_before
 		&& 1 === $observed_storage->content_reads
 		&& 0 < $observed_storage->metadata_reads,

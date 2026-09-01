@@ -136,6 +136,19 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() === $provider_projection ) {
 			$provider_projection[] = $schema->natural_order();
 		}
+		foreach ( $plan->aggregates() as $aggregate ) {
+			$column = $aggregate['column'];
+			if ( null === $column ) {
+				continue;
+			}
+			if ( in_array( $aggregate['function'], array( 'SUM', 'AVG' ), true ) && ! $schema->is_numeric_column( $column ) ) {
+				return $this->failure( 'unsupported_aggregate', 'mdi-native sums and averages numeric columns only.' );
+			}
+			if ( in_array( $aggregate['function'], array( 'MIN', 'MAX' ), true ) && ! $schema->is_comparable_column( $column ) ) {
+				return $this->failure( 'unsupported_aggregate', 'mdi-native reports extremes over ordered columns only.' );
+			}
+			$provider_projection[] = $column;
+		}
 		$provider_projection = array_values( array_unique( $provider_projection ) );
 		$order_by = $plan->order_by();
 		if ( array() === $order_by ) {
@@ -155,7 +168,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$order_by[0]['column'],
 				// DISTINCT collapses rows after the source read, so a bounded
 				// read would spend its bound on duplicates.
-				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_count_alias() || array() !== $residual || $plan->is_distinct() ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
+				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_count_alias() || array() !== $residual || $plan->is_distinct() || array() !== $plan->aggregates() ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by,
 				$predicates
@@ -173,8 +186,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$seen = array();
 		$distinct = $plan->is_distinct();
 		$validated = $this->returns_validated_rows( $table['provider'] );
+		$aggregates = $plan->aggregates();
+		$aggregate_state = array();
 		foreach ( $provided as $row ) {
-			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_count_alias() && count( $rows ) >= $plan->limit() ) {
+			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_count_alias() && array() === $aggregates && count( $rows ) >= $plan->limit() ) {
 				break;
 			}
 			if ( ! $validated && ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) ) {
@@ -194,6 +209,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}
 				if ( $plan->calculates_found_rows() ) {
 					++$found_rows;
+				}
+				if ( array() !== $aggregates ) {
+					$this->accumulate_aggregates( $aggregate_state, $row, $aggregates, $schema );
+					continue;
 				}
 				if ( null !== $plan->group_count_alias() ) {
 					$value = $row[ $projection[0] ] ?? null;
@@ -228,9 +247,76 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			);
 		}
 
+		if ( array() !== $aggregates ) {
+			return $this->aggregate_result( $aggregate_state, $aggregates );
+		}
+
 		return $plan->counts_all()
 			? $this->count_result( $count, true )
 			: $this->result( $rows, $projection, $plan->table(), $schema );
+	}
+
+	/**
+	 * Fold one row into the running total of each ungrouped aggregate.
+	 *
+	 * @param array<int,array<string,mixed>> $state      Running totals, by aggregate.
+	 * @param array<string,mixed>            $row        Source row.
+	 * @param array<int,array<string,mixed>> $aggregates Declared aggregates.
+	 */
+	private function accumulate_aggregates( array &$state, array $row, array $aggregates, WP_Markdown_Native_Table_Schema $schema ): void {
+		foreach ( $aggregates as $index => $aggregate ) {
+			$current = $state[ $index ] ?? array( 'count' => 0, 'sum' => null, 'min' => null, 'max' => null );
+			$column = $aggregate['column'];
+			if ( null === $column ) {
+				// COUNT(*) reports over rows, so a NULL column cannot skip one.
+				++$current['count'];
+				$state[ $index ] = $current;
+				continue;
+			}
+			$value = $row[ $column ] ?? null;
+			if ( null === $value ) {
+				// SQL aggregates ignore NULL, and COUNT(column) counts values.
+				$state[ $index ] = $current;
+				continue;
+			}
+			++$current['count'];
+			if ( is_numeric( $value ) ) {
+				$current['sum'] = ( $current['sum'] ?? 0 ) + $value + 0;
+			}
+			if ( null === $current['min'] || 0 > ( $schema->ordered_comparison( $column, $value, $current['min'] ) ?? 0 ) ) {
+				$current['min'] = $value;
+			}
+			if ( null === $current['max'] || 0 < ( $schema->ordered_comparison( $column, $value, $current['max'] ) ?? 0 ) ) {
+				$current['max'] = $value;
+			}
+			$state[ $index ] = $current;
+		}
+	}
+
+	/**
+	 * Report one row of ungrouped aggregates.
+	 *
+	 * An aggregate over no rows is NULL, except COUNT, which is zero.
+	 *
+	 * @param array<int,array<string,mixed>> $state      Running totals, by aggregate.
+	 * @param array<int,array<string,mixed>> $aggregates Declared aggregates.
+	 */
+	private function aggregate_result( array $state, array $aggregates ): WP_Markdown_Query_Result {
+		$row = array();
+		$columns = array();
+		foreach ( $aggregates as $index => $aggregate ) {
+			$totals = $state[ $index ] ?? array( 'count' => 0, 'sum' => null, 'min' => null, 'max' => null );
+			$value = match ( $aggregate['function'] ) {
+				'COUNT' => (string) $totals['count'],
+				'SUM'   => null === $totals['sum'] ? null : (string) ( $totals['sum'] + 0 ),
+				'AVG'   => null === $totals['sum'] || 0 === $totals['count'] ? null : (string) ( $totals['sum'] / $totals['count'] ),
+				'MIN'   => null === $totals['min'] ? null : (string) $totals['min'],
+				default => null === $totals['max'] ? null : (string) $totals['max'],
+			};
+			$row[ $aggregate['alias'] ] = $value;
+			$columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 8 );
+		}
+		return WP_Markdown_Query_Result::selected( array( $row ), $columns );
 	}
 
 	public function last_found_rows(): ?int {

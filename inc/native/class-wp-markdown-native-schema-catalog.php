@@ -327,7 +327,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 				// Text ordering needs a collation this engine does not
 				// implement, so text carries equality and LIKE only.
 				$overlay['columns'][ $name ] = array(
-					'filter_operators' => array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ),
+					'filter_operators' => array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE', 'REGEXP' ),
 					'filter_validator' => $ascii,
 				);
 			} elseif ( in_array( $column['type'], array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) ) {
@@ -436,7 +436,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 		if ( in_array( $type, array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) ) {
 			return array_merge( $equality, $ranges );
 		}
-		return array_merge( $equality, array( 'LIKE', 'NOT LIKE' ) );
+		return array_merge( $equality, array( 'LIKE', 'NOT LIKE', 'REGEXP' ) );
 	}
 
 	private static function field_type( string $type ): int {

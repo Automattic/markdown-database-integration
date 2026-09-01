@@ -57,7 +57,7 @@ $checks = array(
 	'the first option write succeeds' => 1 === $installed->return_value(),
 	'the first option write creates the canonical store' => true === $store_created,
 	'an installed directory describes its core tables' => array() !== mdi_native_fresh_site_rows( $site_describe ),
-	'an installed directory lists its core tables' => array( array( 'Table' => 'wp_terms' ) ) === array_map(
+	'an installed directory lists its core tables' => array( array( 'Tables_in_' => 'wp_terms' ) ) === array_map(
 		static fn( $row ): array => (array) $row,
 		mdi_native_fresh_site_rows( $site_listed )
 	),

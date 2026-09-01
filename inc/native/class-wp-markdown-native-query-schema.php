@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Column {
 		private readonly mixed $normalizer = null,
 		private readonly array $lookup_operators = array(),
 		private readonly mixed $lookup_validator = null,
-		private readonly array $filter_operators = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE', '<', '<=', '>', '>=', 'BETWEEN' ),
+		private readonly array $filter_operators = array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE', 'REGEXP', '<', '<=', '>', '>=', 'BETWEEN' ),
 		private readonly mixed $filter_validator = null
 	) {
 		foreach ( array( $validator, $normalizer, $lookup_validator, $filter_validator ) as $callback ) {
@@ -54,7 +54,7 @@ final class WP_Markdown_Native_Column {
 		if ( ! in_array( $operator, $this->filter_operators, true ) || array() === $values ) {
 			return false;
 		}
-		if ( 'LIKE' === $operator || 'NOT LIKE' === $operator ) {
+		if ( 'LIKE' === $operator || 'NOT LIKE' === $operator || 'REGEXP' === $operator ) {
 			foreach ( $values as $value ) {
 				if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
 					return false;
@@ -301,6 +301,11 @@ final class WP_Markdown_Native_Table_Schema {
 		return 1 === preg_match( '/^' . $regex . '$/is', $value );
 	}
 
+	public function value_matches_regexp( string $column, mixed $value, string $pattern ): bool {
+		return is_string( $value ) && 1 !== preg_match( '/[^\\x00-\\x7F]/', $value )
+			&& 1 === preg_match( '/' . str_replace( '/', '\\/', $pattern ) . '/iD', $value );
+	}
+
 	public function values_differ( string $column, mixed $left, mixed $right ): bool {
 		$left  = $this->column( $column )->normalize( $left );
 		$right = $this->column( $column )->normalize( $right );
@@ -353,6 +358,12 @@ final class WP_Markdown_Native_Table_Schema {
 				continue;
 			}
 			$column = $item['column'];
+			if ( null !== ( $item['field'] ?? null ) ) {
+				if ( ! $this->has_column( $column ) ) {
+					return 'unsupported_order';
+				}
+				continue;
+			}
 			$pattern = $item['like'] ?? null;
 			if ( null !== $pattern ) {
 				// Ordering by a match ranks rows by a value the engine derives,
@@ -396,7 +407,7 @@ final class WP_Markdown_Native_Table_Schema {
 			return null;
 		}
 		$item = 1 === count( $order_by ) ? $order_by[0] : null;
-		if ( null !== $item && ( null !== ( $item['case'] ?? null ) || null !== ( $item['like'] ?? null ) || $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
+		if ( null !== $item && ( null !== ( $item['case'] ?? null ) || null !== ( $item['like'] ?? null ) || null !== ( $item['field'] ?? null ) || $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
 			$keys = array();
 			foreach ( $rows as $offset => $row ) {
 				$keys[ $offset ] = $this->order_item_value( $item, $row );
@@ -441,7 +452,7 @@ final class WP_Markdown_Native_Table_Schema {
 	private function order_key( array $row, array $order_by ): array {
 		$key = array();
 		foreach ( $order_by as $item ) {
-			if ( null !== ( $item['case'] ?? null ) || null !== ( $item['like'] ?? null ) ) {
+			if ( null !== ( $item['case'] ?? null ) || null !== ( $item['like'] ?? null ) || null !== ( $item['field'] ?? null ) ) {
 				$key[] = array(
 					'value'      => $this->order_item_value( $item, $row ),
 					'descending' => $item['descending'],
@@ -482,6 +493,18 @@ final class WP_Markdown_Native_Table_Schema {
 			return $case['else'];
 		}
 		$pattern = $item['like'] ?? null;
+		if ( null !== ( $item['field'] ?? null ) ) {
+			$value = $row[ $item['column'] ] ?? null;
+			if ( null === $value ) {
+				return 0;
+			}
+			foreach ( $item['field'] as $position => $candidate ) {
+				if ( $this->values_match( $item['column'], $value, $candidate ) ) {
+					return $position + 1;
+				}
+			}
+			return 0;
+		}
 		if ( null === $pattern ) {
 			return $this->order_value( $item['column'], $row[ $item['column'] ] ?? null );
 		}
@@ -550,6 +573,7 @@ final class WP_Markdown_Native_Table_Schema {
 			$compare = match ( $predicate->operator() ) {
 				'<>' => $this->values_differ( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
 				'LIKE', 'NOT LIKE' => is_string( $value ) && $this->value_matches_like( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
+				'REGEXP' => is_string( $value ) && $this->value_matches_regexp( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
 				default => $this->values_match( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
 			};
 			if ( $compare ) {

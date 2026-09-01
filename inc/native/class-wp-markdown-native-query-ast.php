@@ -40,6 +40,72 @@ final class WP_Markdown_Native_SQL_Literal {
 	}
 }
 
+/** Typed, row-local expression reusable by SELECT, WHERE, ORDER BY, and HAVING. */
+final class WP_Markdown_Native_SQL_Scalar_Expression {
+	/** @param array<int,self> $arguments @param array<int,array{predicates:array,value:self}> $branches */
+	public function __construct(
+		private readonly string $kind,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $identifier = null,
+		private readonly int|string|null $literal = null,
+		private readonly array $arguments = array(),
+		private readonly array $branches = array(),
+		private readonly ?self $else = null
+	) {}
+
+	public function kind(): string {
+		return $this->kind;
+	}
+
+	public function identifier(): ?WP_Markdown_Native_SQL_Identifier {
+		return $this->identifier;
+	}
+
+	public function literal(): int|string|null {
+		return $this->literal;
+	}
+
+	/** @return array<int,self> */
+	public function arguments(): array {
+		return $this->arguments;
+	}
+
+	/** @return array<int,array{predicates:array,value:self}> */
+	public function branches(): array {
+		return $this->branches;
+	}
+
+	public function else(): ?self {
+		return $this->else;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	public function columns(): array {
+		$columns = null === $this->identifier ? array() : array( $this->identifier );
+		foreach ( $this->arguments as $argument ) {
+			$columns = array_merge( $columns, $argument->columns() );
+		}
+		foreach ( $this->branches as $branch ) {
+			foreach ( $branch['predicates'] as $predicate ) {
+				$columns = array_merge( $columns, $this->predicate_columns( $predicate ) );
+			}
+			$columns = array_merge( $columns, $branch['value']->columns() );
+		}
+		if ( null !== $this->else ) {
+			$columns = array_merge( $columns, $this->else->columns() );
+		}
+		return $columns;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	private function predicate_columns( WP_Markdown_Native_SQL_Predicate $predicate ): array {
+		$columns = array( $predicate->column() );
+		foreach ( $predicate->any() as $alternative ) {
+			$columns = array_merge( $columns, $this->predicate_columns( $alternative ) );
+		}
+		return $columns;
+	}
+}
+
 final class WP_Markdown_Native_SQL_Predicate {
 	/** @param array<int,WP_Markdown_Native_SQL_Literal> $values @param array<int,self> $any */
 	public function __construct(
@@ -113,7 +179,7 @@ final class WP_Markdown_Native_SQL_Join {
 final class WP_Markdown_Native_SQL_Found_Rows {}
 
 final class WP_Markdown_Native_SQL_Select {
-	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates @param array<int,WP_Markdown_Native_SQL_Join> $joins */
+	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates @param array<int,WP_Markdown_Native_SQL_Join> $joins @param array<int,array{expression:WP_Markdown_Native_SQL_Scalar_Expression,alias:string,position:int}> $scalar_projection */
 	public function __construct(
 		private readonly bool $select_all,
 		private readonly bool $count_all,
@@ -129,7 +195,8 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly bool $distinct = false,
 		private readonly bool $contradiction = false,
 		private readonly ?string $group_count_alias = null,
-		private readonly array $aggregates = array()
+		private readonly array $aggregates = array(),
+		private readonly array $scalar_projection = array()
 	) {}
 
 	public function selects_all(): bool {
@@ -207,5 +274,10 @@ final class WP_Markdown_Native_SQL_Select {
 	/** @return array<int,array{function:string,column:?WP_Markdown_Native_SQL_Identifier,alias:string}> */
 	public function aggregates(): array {
 		return $this->aggregates;
+	}
+
+	/** @return array<int,array{expression:WP_Markdown_Native_SQL_Scalar_Expression,alias:string,position:int}> */
+	public function scalar_projection(): array {
+		return $this->scalar_projection;
 	}
 }

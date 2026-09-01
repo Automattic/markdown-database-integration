@@ -88,10 +88,22 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$schema     = $table['schema'];
 		$predicates = $plan->predicates();
 		$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
-		$columns    = $projection;
+		$scalar_projection = $plan->scalar_projection();
+		$scalar_columns = array();
+		foreach ( $scalar_projection as $scalar ) {
+			$scalar_columns = array_merge( $scalar_columns, $scalar['expression']->columns() );
+		}
+		$columns = array_merge( $projection, $scalar_columns );
 		foreach ( $predicates as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
 				$columns[] = $column;
+			}
+		}
+		foreach ( $scalar_projection as $scalar ) {
+			foreach ( $scalar['expression']->predicates() as $predicate ) {
+				if ( ! $schema->supports_predicate( $predicate ) ) {
+					return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested CASE predicate.' );
+				}
 			}
 		}
 		foreach ( $plan->order_by() as $item ) {
@@ -143,13 +155,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( 0 === $plan->limit() && ! $plan->calculates_found_rows() ) {
 			return $plan->counts_all()
 				? $this->count_result( 0, false )
-				: $this->result( array(), $projection, $plan->table(), $schema );
+				: $this->result( array(), $projection, $plan->table(), $schema, $scalar_projection );
 		}
 
 		$residual = $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			? array()
 			: array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
-		$provider_projection = $plan->counts_all() ? array() : $projection;
+		$provider_projection = $plan->counts_all() ? array() : array_merge( $projection, $scalar_columns );
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
 				$provider_projection[] = $column;
@@ -229,7 +241,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( $distinct && ! $plan->counts_all() && null === $plan->group_count_alias() ) {
 					// DISTINCT resolves before the bound and before the count,
 					// so a repeated row consumes neither.
-					$selected = $this->string_row( $row, $projection );
+					$selected = $this->string_row( $row, $projection, $scalar_projection, $schema );
 					$key = serialize( $selected );
 					if ( isset( $seen[ $key ] ) ) {
 						continue;
@@ -254,7 +266,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				} elseif ( $matched_rows++ < $plan->limit_offset() ) {
 					continue;
 				} elseif ( count( $rows ) < $plan->limit() ) {
-					$rows[] = $selected ?? $this->string_row( $row, $projection );
+					$rows[] = $selected ?? $this->string_row( $row, $projection, $scalar_projection, $schema );
 				}
 			}
 		}
@@ -282,7 +294,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 		return $plan->counts_all()
 			? $this->count_result( $count, true )
-			: $this->result( $rows, $projection, $plan->table(), $schema );
+			: $this->result( $rows, $projection, $plan->table(), $schema, $scalar_projection );
 	}
 
 	/**
@@ -916,9 +928,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		array $rows,
 		array $projection,
 		string $table,
-		WP_Markdown_Native_Table_Schema $schema
+		WP_Markdown_Native_Table_Schema $schema,
+		array $scalar_projection = array()
 	): WP_Markdown_Query_Result {
-		$columns = array_map(
+		$regular = array_map(
 			static fn( string $column ): array => array(
 				'name'  => $column,
 				'table' => $table,
@@ -926,16 +939,83 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			),
 			$projection
 		);
+		$scalar_columns = array();
+		foreach ( $scalar_projection as $scalar ) { $scalar_columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 ); }
+		$columns = array();
+		$total_columns = count( $regular ) + count( $scalar_columns );
+		for ( $position = 0; $position < $total_columns; ++$position ) {
+			$columns[] = $scalar_columns[ $position ] ?? array_shift( $regular );
+		}
 		return WP_Markdown_Query_Result::selected( $rows, $columns );
 	}
 
 	/** @param array<string,mixed> $source @param array<int,string> $projection @return array<string,string|null> */
-	private function string_row( array $source, array $projection ): array {
-		$row = array();
+	private function string_row( array $source, array $projection, array $scalar_projection, WP_Markdown_Native_Table_Schema $schema ): array {
+		$regular = array();
 		foreach ( $projection as $column ) {
-			$row[ $column ] = null === $source[ $column ] ? null : (string) $source[ $column ];
+			$regular[] = array( $column => null === $source[ $column ] ? null : (string) $source[ $column ] );
 		}
-		return $row;
+		return $this->interleave_scalar_projection(
+			$regular,
+			$scalar_projection,
+			fn( array $scalar ): array => array( $scalar['alias'] => $this->string_scalar( $this->evaluate_scalar( $scalar['expression'], $source, $schema ) ) )
+		);
+	}
+
+	/** @param array<int,array> $regular @param array<int,array{position:int}> $scalar_projection */
+	private function interleave_scalar_projection( array $regular, array $scalar_projection, callable $scalar ): array {
+		$by_position = array();
+		foreach ( $scalar_projection as $item ) { $by_position[ $item['position'] ] = $item; }
+		$result = array();
+		$regular_index = 0;
+		for ( $position = 0; $position < count( $regular ) + count( $scalar_projection ); ++$position ) {
+			$result = array_merge( $result, isset( $by_position[ $position ] ) ? $scalar( $by_position[ $position ] ) : $regular[ $regular_index++ ] );
+		}
+		return $result;
+	}
+
+	/** Evaluate a lowered row-local scalar expression after filtering. */
+	private function evaluate_scalar( WP_Markdown_Native_Query_Scalar_Expression $expression, array $row, WP_Markdown_Native_Table_Schema $schema ): int|string|null {
+		$values = array_map(
+			fn( WP_Markdown_Native_Query_Scalar_Expression $argument ): int|string|null => $this->evaluate_scalar( $argument, $row, $schema ),
+			$expression->arguments()
+		);
+		return match ( $expression->kind() ) {
+			'literal' => $expression->literal(),
+			'column' => $row[ (string) $expression->column() ] ?? null,
+			'CONCAT' => in_array( null, $values, true ) ? null : implode( '', $values ),
+			'COALESCE' => $this->first_non_null( $values ),
+			'SUBSTRING' => in_array( null, $values, true ) ? null : substr( (string) $values[0], max( 0, (int) $values[1] - 1 ), (int) $values[2] ),
+			'CAST_UNSIGNED' => null === $values[0] ? null : max( 0, (int) $values[0] ),
+			'YEAR' => null === $values[0] ? null : substr( (string) $values[0], 0, 4 ),
+			'MONTH' => null === $values[0] ? null : substr( (string) $values[0], 5, 2 ),
+			'DATE_FORMAT' => null === $values[0] ? null : str_replace( array( '%Y', '%m', '%d' ), array( substr( (string) $values[0], 0, 4 ), substr( (string) $values[0], 5, 2 ), substr( (string) $values[0], 8, 2 ) ), (string) $values[1] ),
+			'CASE' => $this->evaluate_case( $expression, $row, $schema ),
+			default => throw new LogicException( 'Unsupported lowered scalar expression.' ),
+		};
+	}
+
+	private function evaluate_case( WP_Markdown_Native_Query_Scalar_Expression $expression, array $row, WP_Markdown_Native_Table_Schema $schema ): int|string|null {
+		foreach ( $expression->branches() as $branch ) {
+			if ( $schema->matches( $row, $branch['predicates'] ) ) {
+				return $this->evaluate_scalar( $branch['value'], $row, $schema );
+			}
+		}
+		return null === $expression->else() ? null : $this->evaluate_scalar( $expression->else(), $row, $schema );
+	}
+
+	private function string_scalar( int|string|null $value ): ?string {
+		return null === $value ? null : (string) $value;
+	}
+
+	/** @param array<int,int|string|null> $values */
+	private function first_non_null( array $values ): int|string|null {
+		foreach ( $values as $value ) {
+			if ( null !== $value ) {
+				return $value;
+			}
+		}
+		return null;
 	}
 
 	private function count_result( int $count, bool $include_row ): WP_Markdown_Query_Result {

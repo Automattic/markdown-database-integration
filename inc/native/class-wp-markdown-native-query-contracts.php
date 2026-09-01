@@ -72,6 +72,75 @@ final class WP_Markdown_Native_Query_Predicate {
 	}
 }
 
+/** Backend-neutral row-local expression used by query plans. */
+final class WP_Markdown_Native_Query_Scalar_Expression {
+	/** @param array<int,self> $arguments @param array<int,array{predicates:array<int,WP_Markdown_Native_Query_Predicate>,value:self}> $branches */
+	public function __construct(
+		private readonly string $kind,
+		private readonly ?string $column = null,
+		private readonly int|string|null $literal = null,
+		private readonly array $arguments = array(),
+		private readonly array $branches = array(),
+		private readonly ?self $else = null
+	) {}
+
+	public function kind(): string {
+		return $this->kind;
+	}
+
+	public function column(): ?string {
+		return $this->column;
+	}
+
+	public function literal(): int|string|null {
+		return $this->literal;
+	}
+
+	/** @return array<int,self> */
+	public function arguments(): array {
+		return $this->arguments;
+	}
+
+	/** @return array<int,array{predicates:array<int,WP_Markdown_Native_Query_Predicate>,value:self}> */
+	public function branches(): array {
+		return $this->branches;
+	}
+
+	public function else(): ?self {
+		return $this->else;
+	}
+
+	/** @return array<int,string> */
+	public function columns(): array {
+		$columns = null === $this->column ? array() : array( $this->column );
+		foreach ( $this->arguments as $argument ) {
+			$columns = array_merge( $columns, $argument->columns() );
+		}
+		foreach ( $this->branches as $branch ) {
+			foreach ( $branch['predicates'] as $predicate ) {
+				$columns = array_merge( $columns, $predicate->columns() );
+			}
+			$columns = array_merge( $columns, $branch['value']->columns() );
+		}
+		if ( null !== $this->else ) {
+			$columns = array_merge( $columns, $this->else->columns() );
+		}
+		return array_values( array_unique( $columns ) );
+	}
+
+	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
+	public function predicates(): array {
+		$predicates = array();
+		foreach ( $this->arguments as $argument ) {
+			$predicates = array_merge( $predicates, $argument->predicates() );
+		}
+		foreach ( $this->branches as $branch ) {
+			$predicates = array_merge( $predicates, $branch['predicates'], $branch['value']->predicates() );
+		}
+		return null === $this->else ? $predicates : array_merge( $predicates, $this->else->predicates() );
+	}
+}
+
 final class WP_Markdown_Native_Query_Join {
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $on_filters */
 	public function __construct(
@@ -141,7 +210,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly array $order_by = array(),
 		private readonly bool $unsatisfiable = false,
 		private readonly ?string $group_count_alias = null,
-		private readonly array $aggregates = array()
+		private readonly array $aggregates = array(),
+		private readonly array $scalar_projection = array()
 	) {}
 
 	public function table(): string {
@@ -236,6 +306,11 @@ final class WP_Markdown_Native_Query_Plan {
 	/** @return array<int,array{function:string,column:?string,source:?string,alias:string}> */
 	public function aggregates(): array {
 		return $this->aggregates;
+	}
+
+	/** @return array<int,array{expression:WP_Markdown_Native_Query_Scalar_Expression,alias:string,position:int}> */
+	public function scalar_projection(): array {
+		return $this->scalar_projection;
 	}
 }
 

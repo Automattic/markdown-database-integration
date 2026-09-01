@@ -302,6 +302,15 @@ final class WP_Markdown_Native_Table_Schema {
 	public function unsupported_order_reason( array $order_by, array $rows ): ?string {
 		foreach ( $order_by as $item ) {
 			$column = $item['column'];
+			$pattern = $item['like'] ?? null;
+			if ( null !== $pattern ) {
+				// Ordering by a match ranks rows by a value the engine derives,
+				// so the column must answer the pattern rather than be orderable.
+				if ( ! $this->allows_filter( $column, 'LIKE', array( $pattern ) ) ) {
+					return 'unsupported_order';
+				}
+				continue;
+			}
 			if ( ! $this->allows_order( $column ) ) {
 				return 'unsupported_order';
 			}
@@ -336,10 +345,10 @@ final class WP_Markdown_Native_Table_Schema {
 			return null;
 		}
 		$item = 1 === count( $order_by ) ? $order_by[0] : null;
-		if ( null !== $item && ( $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
+		if ( null !== $item && ( null !== ( $item['like'] ?? null ) || $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
 			$keys = array();
 			foreach ( $rows as $offset => $row ) {
-				$keys[ $offset ] = $this->order_value( $item['column'], $row[ $item['column'] ] );
+				$keys[ $offset ] = $this->order_item_value( $item, $row );
 			}
 			if ( $item['descending'] ) {
 				arsort( $keys, SORT_REGULAR );
@@ -381,6 +390,13 @@ final class WP_Markdown_Native_Table_Schema {
 	private function order_key( array $row, array $order_by ): array {
 		$key = array();
 		foreach ( $order_by as $item ) {
+			if ( null !== ( $item['like'] ?? null ) ) {
+				$key[] = array(
+					'value'      => $this->order_item_value( $item, $row ),
+					'descending' => $item['descending'],
+				);
+				continue;
+			}
 			$columns = array( $item['column'] );
 			if ( $item['column'] === $this->natural_order ) {
 				$columns = array_merge( $columns, array_diff( $this->identity_columns, $columns ) );
@@ -393,6 +409,23 @@ final class WP_Markdown_Native_Table_Schema {
 			}
 		}
 		return $key;
+	}
+
+	/**
+	 * The value one ORDER BY term sorts a row by.
+	 *
+	 * A match term reports 1 or 0, which is the value MySQL sorts by when a
+	 * query ranks rows by a LIKE expression.
+	 *
+	 * @param array<string,mixed> $item Order term.
+	 * @param array<string,mixed> $row  Source row.
+	 */
+	private function order_item_value( array $item, array $row ): mixed {
+		$pattern = $item['like'] ?? null;
+		if ( null === $pattern ) {
+			return $this->order_value( $item['column'], $row[ $item['column'] ] ?? null );
+		}
+		return $this->value_matches_like( $item['column'], $row[ $item['column'] ] ?? null, (string) $pattern ) ? 1 : 0;
 	}
 
 	private function order_value( string $column, mixed $value ): mixed {

@@ -116,6 +116,7 @@ final class WP_Markdown_Native_Query_Parser {
 				'descending' => $item['descending'],
 				'source'     => $item['column']->qualifier() ?? $base_source,
 				'numeric'    => $item['numeric'] ?? false,
+				'like'       => $item['like'] ?? null,
 			),
 			$ast->orders()
 		);
@@ -355,6 +356,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					$this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
 					$numeric = true;
 				}
+				// WordPress ranks search results by ORDER BY <column> LIKE
+				// <pattern>, which sorts on whether the row matched.
+				$like = null;
+				if ( $this->match_keyword( 'LIKE' ) ) {
+					$pattern = $this->literal()->value();
+					if ( ! is_string( $pattern ) ) {
+						$this->unsupported( $this->current() );
+					}
+					$like = $pattern;
+				}
 				$descending = false;
 				if ( ! $this->match_keyword( 'ASC' ) && $this->match_keyword( 'DESC' ) ) {
 					$descending = true;
@@ -363,6 +374,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					'column'     => $column,
 					'descending' => $descending,
 					'numeric'    => $numeric,
+					'like'       => $like,
 				);
 			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}

@@ -28,6 +28,8 @@ function mdi_coverage_failure(): ?array {
 		'reason'  => is_array( $diagnostic ) ? ( $diagnostic['reason'] ?? null ) : null,
 		'code'    => is_array( $diagnostic ) ? ( $diagnostic['code'] ?? null ) : null,
 		'message' => $error,
+		// The refused statement is what turns a failure into a work item.
+		'query'   => (string) $wpdb->last_query,
 	);
 }
 

@@ -95,7 +95,15 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		foreach ( $plan->order_by() as $item ) {
-			$columns[] = $item['column'];
+			if ( null === ( $item['case'] ?? null ) ) {
+				$columns[] = $item['column'];
+				continue;
+			}
+			foreach ( $item['case']['branches'] as $branch ) {
+				foreach ( $branch['predicates'] as $predicate ) {
+					$columns = array_merge( $columns, $predicate->columns() );
+				}
+			}
 		}
 		foreach ( $columns as $column ) {
 			if ( ! $schema->has_column( $column ) ) {
@@ -104,7 +112,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		foreach ( $predicates as $predicate ) {
-			if ( ! $this->supports_predicate( $schema, $predicate ) ) {
+			if ( ! $schema->supports_predicate( $predicate ) ) {
 				return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested predicate.' );
 			}
 		}
@@ -113,6 +121,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
+			if ( null !== ( $item['case'] ?? null ) ) {
+				foreach ( $item['case']['branches'] as $branch ) {
+					foreach ( $branch['predicates'] as $predicate ) {
+						if ( ! $schema->supports_predicate( $predicate ) ) {
+							return $this->failure( 'unsupported_order', 'mdi-native cannot rank rows by the requested CASE expression.' );
+						}
+					}
+				}
+				continue;
+			}
 			$ranked = null !== ( $item['like'] ?? null );
 			if ( $ranked && ! $schema->allows_filter( $item['column'], 'LIKE', array( $item['like'] ) ) ) {
 				return $this->failure( 'unsupported_order', 'mdi-native cannot rank rows by the requested pattern.' );
@@ -135,6 +153,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
 				$provider_projection[] = $column;
+			}
+		}
+		foreach ( $plan->order_by() as $item ) {
+			foreach ( $item['case']['branches'] ?? array() as $branch ) {
+				foreach ( $branch['predicates'] as $predicate ) {
+					$provider_projection = array_merge( $provider_projection, $predicate->columns() );
+				}
 			}
 		}
 		if ( array() === $provider_projection ) {
@@ -370,7 +395,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$source = $predicate->source();
 			if ( null === $source || ! isset( $sources[ $source ] )
 				|| ! $sources[ $source ]['schema']->has_column( $predicate->column() )
-				|| ! $this->supports_predicate( $sources[ $source ]['schema'], $predicate )
+				|| ! $sources[ $source ]['schema']->supports_predicate( $predicate )
 			) {
 				return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN predicate.' );
 			}
@@ -398,7 +423,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$needed[ $join->right_source() ][] = $join->right_column();
 			foreach ( $join->on_filters() as $filter ) {
 				$filter_source = $filter->source();
-				if ( null === $filter_source || ! isset( $sources[ $filter_source ] ) || ! $this->supports_predicate( $sources[ $filter_source ]['schema'], $filter ) ) {
+				if ( null === $filter_source || ! isset( $sources[ $filter_source ] ) || ! $sources[ $filter_source ]['schema']->supports_predicate( $filter ) ) {
 					return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN ON predicate.' );
 				}
 				$needed[ $filter_source ][] = $filter->column();
@@ -735,6 +760,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				)
 			)
 		);
+		foreach ( $predicates as $predicate ) {
+			$candidates = array_merge( $candidates, $this->disjunction_pushdowns( $predicate, $schema ) );
+		}
 		usort(
 			$candidates,
 			$this->compare_pushdowns( ... )
@@ -742,33 +770,48 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $candidates[0] ?? null;
 	}
 
-	private function supports_predicate( WP_Markdown_Native_Table_Schema $schema, WP_Markdown_Native_Query_Predicate $predicate ): bool {
-		if ( 'AND' === $predicate->operator() ) {
-			foreach ( $predicate->any() as $conjunct ) {
-				if ( ! $this->supports_predicate( $schema, $conjunct ) ) {
-					return false;
-				}
-			}
-			return array() !== $predicate->any();
+	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
+	private function disjunction_pushdowns( WP_Markdown_Native_Query_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema ): array {
+		if ( 'OR' !== $predicate->operator() || array() === $predicate->any() ) {
+			return array();
 		}
-		if ( 'OR' === $predicate->operator() ) {
+		$common = null;
+		foreach ( $predicate->any() as $alternative ) {
+			$conjuncts = 'AND' === $alternative->operator() ? $alternative->any() : array( $alternative );
+			$branch = array();
+			foreach ( $conjuncts as $conjunct ) {
+				if ( ! in_array( $conjunct->operator(), array( '=', 'IN' ), true ) ) {
+					continue;
+				}
+				$branch[ $conjunct->column() ] = $conjunct;
+			}
+			$common = null === $common ? $branch : array_intersect_key( $common, $branch );
+			if ( array() === $common ) {
+				return array();
+			}
+		}
+
+		$pushdowns = array();
+		foreach ( array_keys( $common ?? array() ) as $column ) {
+			$values = array();
+			$source = null;
 			foreach ( $predicate->any() as $alternative ) {
-				if ( ! $this->supports_predicate( $schema, $alternative ) ) {
-					return false;
+				$conjuncts = 'AND' === $alternative->operator() ? $alternative->any() : array( $alternative );
+				foreach ( $conjuncts as $conjunct ) {
+					if ( $column === $conjunct->column() && in_array( $conjunct->operator(), array( '=', 'IN' ), true ) ) {
+						$values = array_merge( $values, $conjunct->values() );
+						$source ??= $conjunct->source();
+						break;
+					}
 				}
 			}
-			return array() !== $predicate->any();
+			$values = array_values( array_unique( $values, SORT_REGULAR ) );
+			$operator = 1 === count( $values ) ? '=' : 'IN';
+			if ( $schema->allows_lookup( $column, $operator, $values ) ) {
+				$pushdowns[] = new WP_Markdown_Native_Query_Predicate( $column, $operator, $values, $source );
+			}
 		}
-		if ( in_array( $predicate->operator(), array( 'IS NULL', 'IS NOT NULL' ), true ) ) {
-			return $schema->has_column( $predicate->column() );
-		}
-		if ( 'LOWER =' === $predicate->operator() ) {
-			return $schema->has_column( $predicate->column() )
-				&& 1 === count( $predicate->values() )
-				&& null !== WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] );
-		}
-		return $schema->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
-			|| $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() );
+		return $pushdowns;
 	}
 
 	private function predicate_uses_like( WP_Markdown_Native_Query_Predicate $predicate ): bool {
@@ -862,71 +905,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	/** @param array<string,mixed> $row @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
 	private function matches( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
-		foreach ( $predicates as $predicate ) {
-			if ( ! $this->matches_predicate( $row, $predicate, $schema ) ) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	private function matches_predicate( array $row, WP_Markdown_Native_Query_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
-		if ( 'AND' === $predicate->operator() ) {
-			foreach ( $predicate->any() as $conjunct ) {
-				if ( ! $this->matches_predicate( $row, $conjunct, $schema ) ) {
-					return false;
-				}
-			}
-			return array() !== $predicate->any();
-		}
-		if ( 'OR' === $predicate->operator() ) {
-			foreach ( $predicate->any() as $alternative ) {
-				if ( $this->matches_predicate( $row, $alternative, $schema ) ) {
-					return true;
-				}
-			}
-			return false;
-		}
-		if ( 'IS NULL' === $predicate->operator() ) {
-			return null === ( $row[ $predicate->column() ] ?? null );
-		}
-		if ( 'IS NOT NULL' === $predicate->operator() ) {
-			return null !== ( $row[ $predicate->column() ] ?? null );
-		}
-		if ( 'LOWER =' === $predicate->operator() ) {
-			$left  = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $row[ $predicate->column() ] ?? null );
-			$right = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] ?? null );
-			return null !== $left && null !== $right && $left === $right;
-		}
-		if ( WP_Markdown_Native_Table_Schema::is_range_operator( $predicate->operator() ) ) {
-			$comparison = $schema->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[0] ?? null );
-			return null !== $comparison && match ( $predicate->operator() ) {
-				'<'  => $comparison < 0,
-				'<=' => $comparison <= 0,
-				'>'  => $comparison > 0,
-				default => $comparison >= 0,
-			};
-		}
-		if ( 'BETWEEN' === $predicate->operator() ) {
-			$lower = $schema->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[0] ?? null );
-			$upper = $schema->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[1] ?? null );
-			return null !== $lower && null !== $upper && $lower >= 0 && $upper <= 0;
-		}
-		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
-		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {
-			return false;
-		}
-		foreach ( $predicate->values() as $value ) {
-			$compare = match ( $predicate->operator() ) {
-				'<>' => $schema->values_differ( $predicate->column(), $row[ $predicate->column() ], $value ),
-				'LIKE', 'NOT LIKE' => is_string( $value ) && $schema->value_matches_like( $predicate->column(), $row[ $predicate->column() ], $value ),
-				default => $schema->values_match( $predicate->column(), $row[ $predicate->column() ], $value ),
-			};
-			if ( $compare ) {
-				return ! $negated;
-			}
-		}
-		return $negated;
+		return $schema->matches( $row, $predicates );
 	}
 
 	/** @param array<int,array<string,mixed>> $rows @param array<int,string> $projection */

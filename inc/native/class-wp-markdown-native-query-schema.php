@@ -167,6 +167,40 @@ final class WP_Markdown_Native_Table_Schema {
 		return $this->columns[ $column ]->allows_filter( $operator, $values );
 	}
 
+	public function supports_predicate( WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( in_array( $predicate->operator(), array( 'AND', 'OR' ), true ) ) {
+			if ( array() === $predicate->any() ) {
+				return false;
+			}
+			foreach ( $predicate->any() as $nested ) {
+				if ( ! $this->supports_predicate( $nested ) ) {
+					return false;
+				}
+			}
+			return true;
+		}
+		if ( in_array( $predicate->operator(), array( 'IS NULL', 'IS NOT NULL' ), true ) ) {
+			return $this->has_column( $predicate->column() );
+		}
+		if ( 'LOWER =' === $predicate->operator() ) {
+			return $this->has_column( $predicate->column() )
+				&& 1 === count( $predicate->values() )
+				&& null !== WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] );
+		}
+		return $this->allows_lookup( $predicate->column(), $predicate->operator(), $predicate->values() )
+			|| $this->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() );
+	}
+
+	/** @param array<string,mixed> $row @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	public function matches( array $row, array $predicates ): bool {
+		foreach ( $predicates as $predicate ) {
+			if ( ! $this->matches_predicate( $row, $predicate ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
 	/** Numeric and temporal field types, whose order is unambiguous. */
 	private const RANGE_TYPES = array( 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 246 );
 
@@ -301,6 +335,17 @@ final class WP_Markdown_Native_Table_Schema {
 	 */
 	public function unsupported_order_reason( array $order_by, array $rows ): ?string {
 		foreach ( $order_by as $item ) {
+			$case = $item['case'] ?? null;
+			if ( null !== $case ) {
+				foreach ( $case['branches'] as $branch ) {
+					foreach ( $branch['predicates'] as $predicate ) {
+						if ( ! $this->supports_predicate( $predicate ) ) {
+							return 'unsupported_order';
+						}
+					}
+				}
+				continue;
+			}
 			$column = $item['column'];
 			$pattern = $item['like'] ?? null;
 			if ( null !== $pattern ) {
@@ -345,7 +390,7 @@ final class WP_Markdown_Native_Table_Schema {
 			return null;
 		}
 		$item = 1 === count( $order_by ) ? $order_by[0] : null;
-		if ( null !== $item && ( null !== ( $item['like'] ?? null ) || $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
+		if ( null !== $item && ( null !== ( $item['case'] ?? null ) || null !== ( $item['like'] ?? null ) || $item['column'] !== $this->natural_order || array() === array_diff( $this->identity_columns, array( $item['column'] ) ) ) ) {
 			$keys = array();
 			foreach ( $rows as $offset => $row ) {
 				$keys[ $offset ] = $this->order_item_value( $item, $row );
@@ -390,7 +435,7 @@ final class WP_Markdown_Native_Table_Schema {
 	private function order_key( array $row, array $order_by ): array {
 		$key = array();
 		foreach ( $order_by as $item ) {
-			if ( null !== ( $item['like'] ?? null ) ) {
+			if ( null !== ( $item['case'] ?? null ) || null !== ( $item['like'] ?? null ) ) {
 				$key[] = array(
 					'value'      => $this->order_item_value( $item, $row ),
 					'descending' => $item['descending'],
@@ -421,11 +466,75 @@ final class WP_Markdown_Native_Table_Schema {
 	 * @param array<string,mixed> $row  Source row.
 	 */
 	private function order_item_value( array $item, array $row ): mixed {
+		$case = $item['case'] ?? null;
+		if ( null !== $case ) {
+			foreach ( $case['branches'] as $branch ) {
+				if ( $this->matches( $row, $branch['predicates'] ) ) {
+					return $branch['value'];
+				}
+			}
+			return $case['else'];
+		}
 		$pattern = $item['like'] ?? null;
 		if ( null === $pattern ) {
 			return $this->order_value( $item['column'], $row[ $item['column'] ] ?? null );
 		}
 		return $this->value_matches_like( $item['column'], $row[ $item['column'] ] ?? null, (string) $pattern ) ? 1 : 0;
+	}
+
+	/** @param array<string,mixed> $row */
+	private function matches_predicate( array $row, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'AND' === $predicate->operator() ) {
+			return $this->matches( $row, $predicate->any() );
+		}
+		if ( 'OR' === $predicate->operator() ) {
+			foreach ( $predicate->any() as $alternative ) {
+				if ( $this->matches_predicate( $row, $alternative ) ) {
+					return true;
+				}
+			}
+			return false;
+		}
+		if ( 'IS NULL' === $predicate->operator() ) {
+			return null === ( $row[ $predicate->column() ] ?? null );
+		}
+		if ( 'IS NOT NULL' === $predicate->operator() ) {
+			return null !== ( $row[ $predicate->column() ] ?? null );
+		}
+		if ( 'LOWER =' === $predicate->operator() ) {
+			$left  = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $row[ $predicate->column() ] ?? null );
+			$right = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] ?? null );
+			return null !== $left && null !== $right && $left === $right;
+		}
+		if ( self::is_range_operator( $predicate->operator() ) ) {
+			$comparison = $this->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[0] ?? null );
+			return null !== $comparison && match ( $predicate->operator() ) {
+				'<'  => $comparison < 0,
+				'<=' => $comparison <= 0,
+				'>'  => $comparison > 0,
+				default => $comparison >= 0,
+			};
+		}
+		if ( 'BETWEEN' === $predicate->operator() ) {
+			$lower = $this->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[0] ?? null );
+			$upper = $this->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[1] ?? null );
+			return null !== $lower && null !== $upper && $lower >= 0 && $upper <= 0;
+		}
+		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
+		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {
+			return false;
+		}
+		foreach ( $predicate->values() as $value ) {
+			$compare = match ( $predicate->operator() ) {
+				'<>' => $this->values_differ( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
+				'LIKE', 'NOT LIKE' => is_string( $value ) && $this->value_matches_like( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
+				default => $this->values_match( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
+			};
+			if ( $compare ) {
+				return ! $negated;
+			}
+		}
+		return $negated;
 	}
 
 	private function order_value( string $column, mixed $value ): mixed {

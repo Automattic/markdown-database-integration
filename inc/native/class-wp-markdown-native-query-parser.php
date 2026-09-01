@@ -111,12 +111,22 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 
 		$order_by = array_map(
-			static fn( array $item ): array => array(
+			fn( array $item ): array => array(
 				'column'     => $item['column']->name(),
 				'descending' => $item['descending'],
 				'source'     => $item['column']->qualifier() ?? $base_source,
 				'numeric'    => $item['numeric'] ?? false,
 				'like'       => $item['like'] ?? null,
+				'case'       => null === ( $item['case'] ?? null ) ? null : array(
+					'branches' => array_map(
+						fn( array $branch ): array => array(
+							'predicates' => array_map( fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $base_source ), $branch['predicates'] ),
+							'value'      => $branch['value'],
+						),
+						$item['case']['branches']
+					),
+					'else' => $item['case']['else'],
+				),
 			),
 			$ast->orders()
 		);
@@ -171,7 +181,15 @@ final class WP_Markdown_Native_Query_Parser {
 			$columns = array_merge( $columns, $this->predicate_columns( $predicate ) );
 		}
 		foreach ( $ast->orders() as $item ) {
-			$columns[] = $item['column'];
+			if ( null === ( $item['case'] ?? null ) ) {
+				$columns[] = $item['column'];
+				continue;
+			}
+			foreach ( $item['case']['branches'] as $branch ) {
+				foreach ( $branch['predicates'] as $predicate ) {
+					$columns = array_merge( $columns, $this->predicate_columns( $predicate ) );
+				}
+			}
 		}
 		foreach ( $ast->aggregates() as $aggregate ) {
 			if ( null !== $aggregate['column'] ) {
@@ -350,16 +368,28 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'ORDER' ) ) {
 			$this->expect_keyword( 'BY' );
 			do {
-				$column = $this->identifier();
+				$parenthesized = $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+				$case = $this->match_keyword( 'CASE' ) ? $this->searched_case() : null;
+				if ( null !== $case ) {
+					$column = $case['branches'][0]['predicates'][0]->column();
+					if ( $parenthesized ) {
+						$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+					}
+				} else {
+					if ( $parenthesized ) {
+						$this->unsupported( $this->current() );
+					}
+					$column = $this->identifier();
+				}
 				$numeric = false;
-				if ( $this->match_type( WP_Markdown_Native_SQL_Token::PLUS ) ) {
+				if ( null === $case && $this->match_type( WP_Markdown_Native_SQL_Token::PLUS ) ) {
 					$this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
 					$numeric = true;
 				}
 				// WordPress ranks search results by ORDER BY <column> LIKE
 				// <pattern>, which sorts on whether the row matched.
 				$like = null;
-				if ( $this->match_keyword( 'LIKE' ) ) {
+				if ( null === $case && $this->match_keyword( 'LIKE' ) ) {
 					$pattern = $this->literal()->value();
 					if ( ! is_string( $pattern ) ) {
 						$this->unsupported( $this->current() );
@@ -375,6 +405,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					'descending' => $descending,
 					'numeric'    => $numeric,
 					'like'       => $like,
+					'case'       => $case,
 				);
 			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}
@@ -393,6 +424,29 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 
 		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group_count_alias, $aggregates );
+	}
+
+	/** @return array{branches:array<int,array{predicates:array<int,WP_Markdown_Native_SQL_Predicate>,value:int}>,else:int} */
+	private function searched_case(): array {
+		$branches = array();
+		while ( $this->match_keyword( 'WHEN' ) ) {
+			$predicates = $this->disjunction();
+			if ( array() === $predicates ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_keyword( 'THEN' );
+			$branches[] = array(
+				'predicates' => $predicates,
+				'value'      => $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' ),
+			);
+		}
+		if ( array() === $branches ) {
+			$this->unsupported( $this->current() );
+		}
+		$this->expect_keyword( 'ELSE' );
+		$else = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
+		$this->expect_keyword( 'END' );
+		return array( 'branches' => $branches, 'else' => $else );
 	}
 
 	private function match_join_kind(): ?string {

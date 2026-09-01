@@ -120,7 +120,10 @@ $admin = ids(
 );
 $bang = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_type = 'page' AND post_status != 'trash' ORDER BY post_date DESC" );
 $nulls = ids( $runtime, "SELECT umeta_id FROM wp_usermeta WHERE meta_key <> 'nickname' AND user_id = 1 ORDER BY umeta_id ASC" );
-$gt = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_status > 'draft'" );
+$after = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_date > '2026-08-04 00:00:00'" );
+$on_or_after = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_date >= '2026-08-04 00:00:00'" );
+$between = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_date BETWEEN '2026-08-04 00:00:00' AND '2026-08-05 00:00:00'" );
+$textual_range = ids( $runtime, "SELECT ID FROM wp_posts WHERE post_status > 'draft'" );
 $admin_or = ids(
 	$runtime,
 	"SELECT SQL_CALC_FOUND_ROWS wp_posts.ID FROM wp_posts WHERE 1=1 AND ((wp_posts.post_type = 'page' AND (wp_posts.post_status = 'publish' OR wp_posts.post_status = 'future' OR wp_posts.post_status = 'draft' OR wp_posts.post_status = 'pending' OR wp_posts.post_status = 'private'))) ORDER BY wp_posts.post_date DESC LIMIT 0, 20"
@@ -134,8 +137,13 @@ $checks = array(
 	'bang-equals excludes the compared status' => array( '21', '22', '24' ) === $bang['ids'],
 	'NULL never satisfies inequality' => array() === $nulls['ids']
 		&& null === $nulls['reason'],
-	'ordering comparisons stay fail-closed' => false === $gt['return']
-		&& 'unsupported_grammar' === $gt['reason'],
+	'a date range excludes its own bound' => array( '23', '24' ) === $after['ids']
+		&& null === $after['reason'],
+	'an inclusive date range keeps its own bound' => array( '22', '23', '24' ) === $on_or_after['ids']
+		&& null === $on_or_after['reason'],
+	'BETWEEN bounds inclusively at both ends' => array( '22', '23' ) === $between['ids']
+		&& null === $between['reason'],
+	'a textual range stays fail-closed without a declared collation' => false === $textual_range['return'],
 	'admin status OR returns the visible statuses' => array( '21', '22' ) === $admin_or['ids']
 		&& null === $admin_or['reason'],
 	'cross-column equality OR returns either matching predicate' => array( '21', '22', '23', '24' ) === $cross_or['ids']

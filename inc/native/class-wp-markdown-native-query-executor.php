@@ -578,6 +578,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( in_array( $predicate->operator(), array( 'IS NULL', 'IS NOT NULL' ), true ) ) {
 				continue;
 			}
+			if ( WP_Markdown_Native_Table_Schema::is_range_operator( $predicate->operator() ) || 'BETWEEN' === $predicate->operator() ) {
+				// A range has no equality to seek on, so the schema's own
+				// ordering gate decides whether the scan is answerable.
+				if ( ! $schema->allows_filter( $predicate->column(), $predicate->operator(), $predicate->values() ) ) {
+					return false;
+				}
+				continue;
+			}
 			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'NOT IN', '<>' ), true ) ) {
 				return false;
 			}
@@ -768,6 +776,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$left  = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $row[ $predicate->column() ] ?? null );
 			$right = WP_Markdown_Native_Runtime_Factory::normalize_ascii_ci( $predicate->values()[0] ?? null );
 			return null !== $left && null !== $right && $left === $right;
+		}
+		if ( WP_Markdown_Native_Table_Schema::is_range_operator( $predicate->operator() ) ) {
+			$comparison = $schema->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[0] ?? null );
+			return null !== $comparison && match ( $predicate->operator() ) {
+				'<'  => $comparison < 0,
+				'<=' => $comparison <= 0,
+				'>'  => $comparison > 0,
+				default => $comparison >= 0,
+			};
+		}
+		if ( 'BETWEEN' === $predicate->operator() ) {
+			$lower = $schema->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[0] ?? null );
+			$upper = $schema->ordered_comparison( $predicate->column(), $row[ $predicate->column() ] ?? null, $predicate->values()[1] ?? null );
+			return null !== $lower && null !== $upper && $lower >= 0 && $upper <= 0;
 		}
 		$negated = in_array( $predicate->operator(), array( 'NOT IN', 'NOT LIKE' ), true );
 		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {

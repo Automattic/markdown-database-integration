@@ -263,7 +263,7 @@ final class WP_Markdown_Native_Schema_Catalog {
 				$normalizer,
 				$column_overlay['lookup_operators'] ?? array(),
 				$column_overlay['lookup_validator'] ?? null,
-				$column_overlay['filter_operators'] ?? ( self::is_integer( $column_definition['type'] ) ? array( '=', 'IN', 'NOT IN', '<>' ) : array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ) ),
+				$column_overlay['filter_operators'] ?? self::default_filter_operators( $column_definition['type'] ),
 				$column_overlay['filter_validator'] ?? null
 			);
 		}
@@ -316,12 +316,25 @@ final class WP_Markdown_Native_Schema_Catalog {
 			$values,
 			static fn( mixed $value ): bool => ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value )
 		);
+		// A range comparison is the ordering question ORDER BY already answers,
+		// so it is offered wherever this schema can order a column. The schema
+		// still refuses a range whose literal has no place in that order.
+		$ranges = array( '<', '<=', '>', '>=', 'BETWEEN' );
 		foreach ( $definition['columns'] as $name => $column ) {
 			if ( self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] ) ) {
-				$overlay['columns'][ $name ] = array( 'filter_operators' => array( '=', 'IN', 'NOT IN', '<>' ) );
+				$overlay['columns'][ $name ] = array( 'filter_operators' => array_merge( array( '=', 'IN', 'NOT IN', '<>' ), $ranges ) );
 			} elseif ( in_array( $column['type'], array( 'char', 'varchar', 'enum', 'set', 'tinytext', 'text', 'mediumtext', 'longtext' ), true ) ) {
+				// Text ordering needs a collation this engine does not
+				// implement, so text carries equality and LIKE only.
 				$overlay['columns'][ $name ] = array(
 					'filter_operators' => array( '=', 'IN', 'NOT IN', '<>', 'LIKE', 'NOT LIKE' ),
+					'filter_validator' => $ascii,
+				);
+			} elseif ( in_array( $column['type'], array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) ) {
+				// WordPress compares dates as canonical strings, which order
+				// exactly as the stored 'Y-m-d H:i:s' form does.
+				$overlay['columns'][ $name ] = array(
+					'filter_operators' => array_merge( array( '=', 'IN', 'NOT IN', '<>' ), $ranges ),
 					'filter_validator' => $ascii,
 				);
 			} else {
@@ -403,6 +416,27 @@ final class WP_Markdown_Native_Schema_Catalog {
 
 	public static function is_decimal( string $type ): bool {
 		return in_array( $type, array( 'float', 'double', 'real', 'decimal', 'numeric' ), true );
+	}
+
+	/**
+	 * Filters a column type answers when a caller declares none.
+	 *
+	 * Numeric and temporal columns carry one unambiguous order, so they also
+	 * answer range comparisons. Text answers equality and pattern matching,
+	 * because ordering it needs a collation this engine does not implement.
+	 *
+	 * @return array<int,string>
+	 */
+	private static function default_filter_operators( string $type ): array {
+		$equality = array( '=', 'IN', 'NOT IN', '<>' );
+		$ranges   = array( '<', '<=', '>', '>=', 'BETWEEN' );
+		if ( self::is_integer( $type ) || self::is_decimal( $type ) ) {
+			return array_merge( $equality, $ranges );
+		}
+		if ( in_array( $type, array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) ) {
+			return array_merge( $equality, $ranges );
+		}
+		return array_merge( $equality, array( 'LIKE', 'NOT LIKE' ) );
 	}
 
 	private static function field_type( string $type ): int {

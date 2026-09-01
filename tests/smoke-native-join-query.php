@@ -76,6 +76,8 @@ $result = $runtime->execute( new WP_Markdown_Query_Request( $query ) );
 $state = $result->wpdb_state();
 $missing = $runtime->execute( new WP_Markdown_Query_Request( str_replace( '=41', '=404', $query ) ) );
 $unbounded = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0, strpos( $query, ' WHERE' ) ) ) );
+$unindexed_filter = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0, strpos( $query, ' WHERE' ) ) . " WHERE tt.description = ''" ) );
+$unbounded_left = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT tr.object_id, tt.taxonomy FROM wp_term_relationships tr LEFT JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id' ) );
 $unqualified = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr.object_id=41', 'object_id=41', $query ) ) );
 $unknown_alias = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 't.slug', 'x.slug', $query ) ) );
 $limited = $runtime->execute( new WP_Markdown_Query_Request( $query . ' LIMIT 1' ) );
@@ -128,6 +130,20 @@ $scale_result = ( new WP_Markdown_Native_Query_Runtime( $scale_registry ) )->exe
 );
 $scale_rows = $scale_result->wpdb_state()['last_result'];
 
+$multiplicity_registry = new WP_Markdown_Native_Table_Registry();
+$multiplicity_left_schema = new WP_Markdown_Native_Table_Schema(
+	array( 'id' => $integer( array( '=' ) ) ),
+	'id'
+);
+$multiplicity_right_schema = new WP_Markdown_Native_Table_Schema(
+	array( 'row_id' => $integer(), 'left_id' => $integer( array( '=', 'IN' ) ), 'label' => new WP_Markdown_Native_Column( 253, true, static fn( mixed $value ): bool => is_string( $value ) ) ),
+	'row_id'
+);
+$multiplicity_registry->register( 'wp_multiplicity_left', $multiplicity_left_schema, new MDI_Native_Join_Array_Provider( array( array( 'id' => 1 ), array( 'id' => 2 ) ), $multiplicity_left_schema ) );
+$multiplicity_registry->register( 'wp_multiplicity_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array( array( 'row_id' => 1, 'left_id' => 1, 'label' => 'first' ), array( 'row_id' => 2, 'left_id' => 1, 'label' => 'second' ), array( 'row_id' => 3, 'left_id' => 3, 'label' => 'other' ) ), $multiplicity_right_schema ) );
+$multiplicity_runtime = new WP_Markdown_Native_Query_Runtime( $multiplicity_registry );
+$multiplicity = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LIMIT 3' ) );
+
 $checks = array(
 	'tokenizer and parser lower aliases and chained equality JOINs into typed contracts' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'tr' === $plan->table_alias()
@@ -170,9 +186,26 @@ $checks = array(
 			static fn( object $row ): string => (string) $row->object_id,
 			$unqualified->wpdb_state()['last_result']
 		),
-	'unbounded and unknown-alias JOIN variants fail closed' => false === $unbounded->return_value()
-		&& 'unsupported_join_shape' === ( $unbounded->diagnostic()['reason'] ?? null )
-		&& false === $unknown_alias->return_value()
+	'unfiltered chained INNER JOIN scans each source and preserves projection metadata' => array(
+		array( 'object_id' => '41', 'taxonomy' => 'category', 'slug' => 'news' ),
+		array( 'object_id' => '41', 'taxonomy' => 'post_tag', 'slug' => 'featured' ),
+		array( 'object_id' => '99', 'taxonomy' => 'category', 'slug' => 'other' ),
+	) === array_map( 'get_object_vars', $unbounded->wpdb_state()['last_result'] )
+		&& array( 'wp_term_relationships', 'wp_term_taxonomy', 'wp_terms' ) === array_map( static fn( object $column ): string => $column->table, $unbounded->wpdb_state()['col_info'] ),
+	'non-indexed JOIN filters scan their owning source without changing multiplicity' => array_map( 'get_object_vars', $unbounded->wpdb_state()['last_result'] )
+		=== array_map( 'get_object_vars', $unindexed_filter->wpdb_state()['last_result'] ),
+	'unfiltered LEFT JOIN preserves unmatched NULL rows and duplicate matches before LIMIT' => array(
+		array( 'object_id' => '41', 'taxonomy' => 'category' ),
+		array( 'object_id' => '41', 'taxonomy' => 'post_tag' ),
+		array( 'object_id' => '41', 'taxonomy' => null ),
+		array( 'object_id' => '99', 'taxonomy' => 'category' ),
+	) === array_map( 'get_object_vars', $unbounded_left->wpdb_state()['last_result'] )
+		&& array(
+			array( 'id' => '1', 'label' => 'first' ),
+			array( 'id' => '1', 'label' => 'second' ),
+			array( 'id' => '2', 'label' => null ),
+		) === array_map( 'get_object_vars', $multiplicity->wpdb_state()['last_result'] ),
+	'unknown JOIN aliases fail closed' => false === $unknown_alias->return_value()
 		&& 'unsupported_column' === ( $unknown_alias->diagnostic()['reason'] ?? null ),
 );
 

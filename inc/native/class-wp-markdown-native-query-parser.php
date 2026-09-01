@@ -77,9 +77,6 @@ final class WP_Markdown_Native_Query_Parser {
 		);
 		$referenced_columns = $this->referenced_columns( $ast );
 		if ( array() === $joins ) {
-			if ( $ast->is_distinct() ) {
-				return $this->failure( 'unsupported_select_modifier', 'mdi-native supports DISTINCT on bounded JOIN projections only.', $ast->table()->sql_offset() );
-			}
 			$source = $ast->alias()?->name() ?? $ast->table()->name();
 			foreach ( $referenced_columns as $column ) {
 				if ( null !== $column->qualifier() && $source !== $column->qualifier() ) {

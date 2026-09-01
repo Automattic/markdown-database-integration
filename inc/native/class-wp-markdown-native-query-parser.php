@@ -231,7 +231,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$group_count_alias = null;
 		$aggregates = array();
 		$projection = array();
-		if ( ! $select_all && $this->matches_function( 'COUNT' ) ) {
+		// COUNT(*) reports over rows; COUNT(column) counts values, so it is an
+		// aggregate like the others rather than the row-count shortcut.
+		$counts_rows = $this->matches_function( 'COUNT' )
+			&& WP_Markdown_Native_SQL_Token::STAR === ( $this->tokens[ $this->current + 2 ] ?? null )?->type();
+		if ( ! $select_all && $counts_rows ) {
 			$count_all = true;
 			$this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
@@ -302,7 +306,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$grouped = WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
 			&& 0 === strcasecmp( 'GROUP', (string) $this->current()->value() );
-		if ( array() !== $aggregates && ! $grouped ) {
+		// An ungrouped aggregate reports one row over the whole match, which is
+		// only answerable here when no projected column rides alongside it.
+		if ( array() !== $aggregates && ! $grouped && ( array() !== $projection || array() !== $joins ) ) {
 			$this->unsupported( $this->current() );
 		}
 		if ( $grouped ) {
@@ -535,16 +541,22 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	 * @return array{function:string,column:?WP_Markdown_Native_SQL_Identifier,alias:string}|null
 	 */
 	private function match_aggregate(): ?array {
-		foreach ( array( 'COUNT', 'SUM' ) as $function ) {
+		foreach ( array( 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX' ) as $function ) {
 			if ( ! $this->matches_function( $function ) ) {
 				continue;
 			}
 			$this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$argument = $this->current();
+			if ( WP_Markdown_Native_SQL_Token::KEYWORD === $argument->type() && 0 === strcasecmp( 'DISTINCT', (string) $argument->value() ) ) {
+				// A distinct aggregate argument is its own feature.
+				$this->unsupported( $argument );
+			}
 			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-			if ( 'SUM' === $function && null === $column ) {
-				$this->unsupported( $this->current() );
+			if ( 'COUNT' !== $function && null === $column ) {
+				// Only COUNT reports over rows rather than over a column.
+				$this->unsupported( $argument );
 			}
 			$this->expect_keyword( 'AS' );
 			return array(

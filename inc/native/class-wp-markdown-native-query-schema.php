@@ -170,8 +170,21 @@ final class WP_Markdown_Native_Table_Schema {
 	/** Numeric and temporal field types, whose order is unambiguous. */
 	private const RANGE_TYPES = array( 1, 2, 3, 4, 5, 7, 8, 9, 10, 11, 12, 13, 246 );
 
+	/** Field types that carry arithmetic, as opposed to only an order. */
+	private const NUMERIC_TYPES = array( 1, 2, 3, 4, 5, 8, 9, 246 );
+
 	public static function is_range_operator( string $operator ): bool {
 		return in_array( $operator, array( '<', '<=', '>', '>=' ), true );
+	}
+
+	/** Whether this column can be summed or averaged. */
+	public function is_numeric_column( string $column ): bool {
+		return isset( $this->columns[ $column ] ) && in_array( $this->columns[ $column ]->type(), self::NUMERIC_TYPES, true );
+	}
+
+	/** Whether this column carries one unambiguous order. */
+	public function is_comparable_column( string $column ): bool {
+		return isset( $this->columns[ $column ] ) && in_array( $this->columns[ $column ]->type(), self::RANGE_TYPES, true );
 	}
 
 	/**

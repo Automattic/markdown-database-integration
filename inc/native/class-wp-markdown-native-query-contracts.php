@@ -33,7 +33,9 @@ final class WP_Markdown_Native_Query_Predicate {
 		private readonly array $values,
 		private readonly ?string $source = null,
 		private readonly array $any = array(),
-		private readonly ?string $cast = null
+		private readonly ?string $cast = null,
+		private readonly ?string $comparison_column = null,
+		private readonly ?string $comparison_source = null
 	) {}
 
 	public function column(): string {
@@ -62,6 +64,9 @@ final class WP_Markdown_Native_Query_Predicate {
 		return $this->cast;
 	}
 
+	public function comparison_column(): ?string { return $this->comparison_column; }
+	public function comparison_source(): ?string { return $this->comparison_source; }
+
 	/** @return array<int,string> */
 	public function columns(): array {
 		$columns = array( $this->column );
@@ -70,6 +75,18 @@ final class WP_Markdown_Native_Query_Predicate {
 		}
 		return array_values( array_unique( $columns ) );
 	}
+}
+
+/** A bounded membership or existence test over a separately planned SELECT. */
+final class WP_Markdown_Native_Query_Subquery {
+	public function __construct(
+		private readonly string $operator,
+		private readonly ?string $column,
+		private readonly WP_Markdown_Native_Query_Plan $query
+	) {}
+	public function operator(): string { return $this->operator; }
+	public function column(): ?string { return $this->column; }
+	public function query(): WP_Markdown_Native_Query_Plan { return $this->query; }
 }
 
 /** Backend-neutral row-local expression used by query plans. */
@@ -191,7 +208,7 @@ final class WP_Markdown_Native_Query_Join {
 final class WP_Markdown_Native_Found_Rows_Plan {}
 
 final class WP_Markdown_Native_Query_Plan {
-	/** @param array<int,string> $projection @param array<int,WP_Markdown_Native_Query_Predicate> $predicates @param array<int,string|null> $projection_sources @param array<int,WP_Markdown_Native_Query_Join> $joins */
+/** @param array<int,string> $projection @param array<int,WP_Markdown_Native_Query_Predicate> $predicates @param array<int,WP_Markdown_Native_Query_Subquery> $subqueries @param array<int,WP_Markdown_Native_Query_Predicate> $having @param array<int,string|null> $projection_sources @param array<int,WP_Markdown_Native_Query_Join> $joins */
 	public function __construct(
 		private readonly string $table,
 		private readonly array $projection,
@@ -209,9 +226,12 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly ?string $order_source = null,
 		private readonly array $order_by = array(),
 		private readonly bool $unsatisfiable = false,
-		private readonly ?string $group_count_alias = null,
+		private readonly ?string $group_by = null,
 		private readonly array $aggregates = array(),
-		private readonly array $scalar_projection = array()
+		private readonly array $scalar_projection = array(),
+		private readonly array $having = array(),
+		private readonly array $subqueries = array(),
+		private readonly ?self $union = null
 	) {}
 
 	public function table(): string {
@@ -299,8 +319,13 @@ final class WP_Markdown_Native_Query_Plan {
 		return $this->unsatisfiable;
 	}
 
-	public function group_count_alias(): ?string {
-		return $this->group_count_alias;
+	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
+	public function having(): array {
+		return $this->having;
+	}
+
+	public function group_by(): ?string {
+		return $this->group_by;
 	}
 
 	/** @return array<int,array{function:string,column:?string,source:?string,alias:string}> */
@@ -312,6 +337,11 @@ final class WP_Markdown_Native_Query_Plan {
 	public function scalar_projection(): array {
 		return $this->scalar_projection;
 	}
+
+	/** @return array<int,WP_Markdown_Native_Query_Subquery> */
+	public function subqueries(): array { return $this->subqueries; }
+
+	public function union(): ?self { return $this->union; }
 }
 
 final class WP_Markdown_Native_Table_Access {

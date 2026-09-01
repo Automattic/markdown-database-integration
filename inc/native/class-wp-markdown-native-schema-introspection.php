@@ -82,8 +82,11 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 			}
 			if ( $this->is_word( 'TABLES' ) ) {
 				$this->word( 'TABLES' );
-				$this->word( 'LIKE' );
-				$pattern = $this->string();
+				$pattern = null;
+				if ( $this->is_word( 'LIKE' ) ) {
+					$this->word( 'LIKE' );
+					$pattern = $this->string();
+				}
 				$this->end();
 				return new WP_Markdown_Native_Schema_Query( 'tables', null, $pattern );
 			}
@@ -227,7 +230,7 @@ final class WP_Markdown_Native_Schema_Introspection {
 			return $query;
 		}
 		if ( 'tables' === $query->operation() ) {
-			return $this->tables( (string) $query->pattern() );
+			return $this->tables( $query->pattern() );
 		}
 		if ( 'variables' === $query->operation() || 'status' === $query->operation() ) {
 			return $this->server_values( $query->operation(), $query->pattern(), $query->names() );
@@ -280,15 +283,16 @@ final class WP_Markdown_Native_Schema_Introspection {
 		);
 	}
 
-	private function tables( string $pattern ): WP_Markdown_Query_Result {
+	private function tables( ?string $pattern ): WP_Markdown_Query_Result {
 		$rows = array();
+		$column = 'Tables_in_' . ( defined( 'DB_NAME' ) ? (string) DB_NAME : '' );
 		foreach ( $this->registry->table_names() as $table ) {
-			if ( $this->matches( $table, $pattern ) ) {
-				$rows[] = array( 'Table' => $table );
+			if ( null === $pattern || $this->matches( $table, $pattern ) ) {
+				$rows[] = array( $column => $table );
 			}
 		}
 		sort( $rows, SORT_REGULAR );
-		return WP_Markdown_Query_Result::selected( $rows, array( array( 'name' => 'Table', 'type' => 253, 'table' => '' ) ) );
+		return WP_Markdown_Query_Result::selected( $rows, array( array( 'name' => $column, 'type' => 253, 'table' => '' ) ) );
 	}
 
 	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition */

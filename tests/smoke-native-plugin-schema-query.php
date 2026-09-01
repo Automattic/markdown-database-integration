@@ -135,7 +135,7 @@ $checks = array(
 		&& 'queued' === ( $exact->wpdb_state()['last_result'][0]->status ?? null )
 		&& '2' === ( $exact->wpdb_state()['last_result'][0]->id ?? null ),
 	'generic table introspection exposes registered tables with MySQL LIKE semantics' => 1 === $show_table->return_value()
-		&& 'wp_plugin_jobs' === ( $show_table->wpdb_state()['last_result'][0]->Table ?? null )
+		&& 'wp_plugin_jobs' === ( $show_table->wpdb_state()['last_result'][0]->{'Tables_in_'} ?? null )
 		&& 1 === $show_table_wildcard->return_value()
 		&& 1 === $show_table_escaped->return_value()
 		&& 0 === $show_missing_table->return_value(),

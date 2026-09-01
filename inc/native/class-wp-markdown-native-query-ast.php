@@ -113,7 +113,8 @@ final class WP_Markdown_Native_SQL_Predicate {
 		private readonly string $operator,
 		private readonly array $values,
 		private readonly array $any = array(),
-		private readonly ?string $cast = null
+		private readonly ?string $cast = null,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $comparison = null
 	) {}
 
 	public function column(): WP_Markdown_Native_SQL_Identifier {
@@ -137,6 +138,22 @@ final class WP_Markdown_Native_SQL_Predicate {
 	public function cast(): ?string {
 		return $this->cast;
 	}
+
+	public function comparison(): ?WP_Markdown_Native_SQL_Identifier {
+		return $this->comparison;
+	}
+}
+
+/** A SELECT predicate whose right-hand side is another typed SELECT. */
+final class WP_Markdown_Native_SQL_Subquery_Predicate {
+	public function __construct(
+		private readonly string $operator,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $column,
+		private readonly WP_Markdown_Native_SQL_Select $query
+	) {}
+	public function operator(): string { return $this->operator; }
+	public function column(): ?WP_Markdown_Native_SQL_Identifier { return $this->column; }
+	public function query(): WP_Markdown_Native_SQL_Select { return $this->query; }
 }
 
 final class WP_Markdown_Native_SQL_Join {
@@ -179,7 +196,7 @@ final class WP_Markdown_Native_SQL_Join {
 final class WP_Markdown_Native_SQL_Found_Rows {}
 
 final class WP_Markdown_Native_SQL_Select {
-	/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates @param array<int,WP_Markdown_Native_SQL_Join> $joins @param array<int,array{expression:WP_Markdown_Native_SQL_Scalar_Expression,alias:string,position:int}> $scalar_projection */
+/** @param array<int,WP_Markdown_Native_SQL_Identifier> $projection @param array<int,WP_Markdown_Native_SQL_Predicate> $predicates @param array<int,WP_Markdown_Native_SQL_Subquery_Predicate> $subqueries @param array<int,WP_Markdown_Native_SQL_Predicate> $having @param array<int,WP_Markdown_Native_SQL_Join> $joins @param array<int,array{expression:WP_Markdown_Native_SQL_Scalar_Expression,alias:string,position:int}> $scalar_projection */
 	public function __construct(
 		private readonly bool $select_all,
 		private readonly bool $count_all,
@@ -194,9 +211,12 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly int $limit_offset = 0,
 		private readonly bool $distinct = false,
 		private readonly bool $contradiction = false,
-		private readonly ?string $group_count_alias = null,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $group_by = null,
 		private readonly array $aggregates = array(),
-		private readonly array $scalar_projection = array()
+		private readonly array $scalar_projection = array(),
+		private readonly array $having = array(),
+		private readonly array $subqueries = array(),
+		private readonly ?self $union = null
 	) {}
 
 	public function selects_all(): bool {
@@ -267,8 +287,8 @@ final class WP_Markdown_Native_SQL_Select {
 		return $this->contradiction;
 	}
 
-	public function group_count_alias(): ?string {
-		return $this->group_count_alias;
+	public function group_by(): ?WP_Markdown_Native_SQL_Identifier {
+		return $this->group_by;
 	}
 
 	/** @return array<int,array{function:string,column:?WP_Markdown_Native_SQL_Identifier,alias:string}> */
@@ -280,4 +300,14 @@ final class WP_Markdown_Native_SQL_Select {
 	public function scalar_projection(): array {
 		return $this->scalar_projection;
 	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
+	public function having(): array {
+		return $this->having;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Subquery_Predicate> */
+	public function subqueries(): array { return $this->subqueries; }
+
+	public function union(): ?self { return $this->union; }
 }

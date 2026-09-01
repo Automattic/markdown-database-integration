@@ -49,7 +49,7 @@ $checks = array(
 		&& 0 === $created->wpdb_state()['rows_affected'],
 	'created schema is atomically persisted as one canonical statement' => $ddl . ";\n" === file_get_contents( $root . '/_schema/plugin_events.sql' )
 		&& array() === ( glob( $root . '/_schema/*.tmp-*' ) ?: array() ),
-	'created tables are immediately visible through generic introspection' => 'wp_plugin_events' === ( $shown->wpdb_state()['last_result'][0]->Table ?? null )
+	'created tables are immediately visible through generic introspection' => 'wp_plugin_events' === ( $shown->wpdb_state()['last_result'][0]->{'Tables_in_'} ?? null )
 		&& array( 'event_key', 'owner_id', 'payload' ) === array_map( static fn( object $row ): string => $row->Field, $described->wpdb_state()['last_result'] )
 		&& array( 'PRIMARY', 'owner_id' ) === array_map( static fn( object $row ): string => $row->Key_name, $indexed->wpdb_state()['last_result'] ),
 	'an exact string primary key is executable while a keyless table is not' => 0 === $executable->return_value()

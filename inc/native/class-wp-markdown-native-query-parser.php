@@ -70,6 +70,14 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 
 		$predicates = array();
+		$subqueries = array();
+		foreach ( $ast->subqueries() as $subquery_predicate ) {
+				$subquery = $this->lower( $subquery_predicate->query() );
+				if ( ! $subquery instanceof WP_Markdown_Native_Query_Plan ) {
+					return $subquery;
+				}
+				$subqueries[] = new WP_Markdown_Native_Query_Subquery( $subquery_predicate->operator(), $subquery_predicate->column()?->name(), $subquery );
+		}
 		foreach ( $ast->predicates() as $predicate ) {
 			$predicates[] = $this->lower_predicate( $predicate, $base_source );
 		}
@@ -131,6 +139,7 @@ final class WP_Markdown_Native_Query_Parser {
 				'source'     => $item['column']->qualifier() ?? $base_source,
 				'numeric'    => $item['numeric'] ?? false,
 				'like'       => $item['like'] ?? null,
+				'field'      => $item['field'] ?? null,
 				'case'       => null === ( $item['case'] ?? null ) ? null : array(
 					'branches' => array_map(
 						fn( array $branch ): array => array(
@@ -144,6 +153,14 @@ final class WP_Markdown_Native_Query_Parser {
 			),
 			$ast->orders()
 		);
+		$having = array_map( fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, null ), $ast->having() );
+		$union = null;
+		if ( null !== $ast->union() ) {
+			$union = $this->lower( $ast->union() );
+			if ( ! $union instanceof WP_Markdown_Native_Query_Plan ) {
+				return $union;
+			}
+		}
 		return new WP_Markdown_Native_Query_Plan(
 			$ast->table()->name(),
 			$projection,
@@ -161,7 +178,7 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->order()?->qualifier(),
 			$order_by,
 			$ast->is_contradiction(),
-			$ast->group_count_alias(),
+			$ast->group_by()?->name(),
 			array_map(
 				static fn( array $aggregate ): array => array(
 					'function' => $aggregate['function'],
@@ -172,6 +189,10 @@ final class WP_Markdown_Native_Query_Parser {
 				$ast->aggregates()
 			),
 			$scalar_projection
+			,
+			$having,
+			$subqueries,
+			$union
 		);
 	}
 
@@ -186,7 +207,9 @@ final class WP_Markdown_Native_Query_Parser {
 			$values,
 			$predicate->column()->qualifier() ?? $base_source,
 			array_map( fn( WP_Markdown_Native_SQL_Predicate $alternative ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $alternative, $base_source ), $predicate->any() ),
-			$predicate->cast()
+			$predicate->cast(),
+			$predicate->comparison()?->name(),
+			$predicate->comparison()?->qualifier()
 		);
 	}
 
@@ -225,6 +248,10 @@ final class WP_Markdown_Native_Query_Parser {
 			}
 		}
 		foreach ( $ast->predicates() as $predicate ) {
+			if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
+				if ( null !== $predicate->column() ) { $columns[] = $predicate->column(); }
+				continue;
+			}
 			$columns = array_merge( $columns, $this->predicate_columns( $predicate ) );
 		}
 		foreach ( $ast->orders() as $item ) {
@@ -282,19 +309,24 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	public function __construct( private readonly array $tokens ) {}
 
 	public function parse(): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
+		$result = $this->select( false );
+		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
+		return $result;
+	}
+
+	private function select( bool $nested ): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
 		$this->expect_keyword( 'SELECT' );
 		if ( $this->matches_function( 'FOUND_ROWS' ) ) {
 			$this->unqualified_identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-			$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 			return new WP_Markdown_Native_SQL_Found_Rows();
 		}
 		$calculate_found_rows = $this->match_keyword( 'SQL_CALC_FOUND_ROWS' );
 		$distinct = $this->match_keyword( 'DISTINCT' );
 		$select_all = $this->match_type( WP_Markdown_Native_SQL_Token::STAR );
 		$count_all = false;
-		$group_count_alias = null;
+		$group = null;
 		$aggregates = array();
 		$projection = array();
 		$scalar_projection = array();
@@ -323,6 +355,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					);
 					continue;
 				}
+				if ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::INTEGER, WP_Markdown_Native_SQL_Token::DECIMAL, WP_Markdown_Native_SQL_Token::STRING ), true ) ) {
+					$literal = $this->literal();
+					$scalar_projection[] = array(
+						'expression' => new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $literal->value() ),
+						'alias' => (string) $literal->value(),
+						'position' => count( $projection ) + count( $scalar_projection ),
+					);
+					continue;
+				}
 				$projection[] = $this->identifier();
 			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}
@@ -332,7 +373,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$alias = null;
 		if ( $this->match_keyword( 'AS' ) ) {
 			$alias = $this->unqualified_identifier();
-		} elseif ( $this->matches_identifier() && ( $this->next_is_keyword( 'JOIN' ) || $this->next_is_keyword( 'INNER' ) || $this->next_is_keyword( 'LEFT' ) ) ) {
+		} elseif ( $this->matches_identifier() && ( $this->next_is_keyword( 'JOIN' ) || $this->next_is_keyword( 'INNER' ) || $this->next_is_keyword( 'LEFT' ) || $this->next_is_keyword( 'WHERE' ) ) ) {
 			$alias = $this->unqualified_identifier();
 		}
 		$joins = array();
@@ -376,8 +417,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$alias = $table;
 		}
 		$predicates = array();
+		$subqueries = array();
 		if ( $this->match_keyword( 'WHERE' ) ) {
-			$predicates = $this->disjunction();
+			foreach ( $this->disjunction() as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
+					$subqueries[] = $predicate;
+				} else {
+					$predicates[] = $predicate;
+				}
+			}
 		}
 		$grouped = WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type()
 			&& 0 === strcasecmp( 'GROUP', (string) $this->current()->value() );
@@ -414,9 +462,18 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				if ( array() === $aggregates && array() !== $joins ) {
 					$distinct = true;
 				}
-				if ( 1 === count( $aggregates ) && 'COUNT' === $aggregates[0]['function'] && null === $aggregates[0]['column'] && array() === $joins ) {
-					$group_count_alias = $aggregates[0]['alias'];
-					$aggregates = array();
+			}
+		}
+		$having = array();
+		if ( $this->match_keyword( 'HAVING' ) ) {
+			if ( ! $grouped || array() === $aggregates ) {
+				$this->unsupported( $this->current() );
+			}
+			$having = $this->conjunction();
+			$aggregate_aliases = array_column( $aggregates, 'alias' );
+			foreach ( $having as $predicate ) {
+				if ( ! in_array( $predicate->column()->name(), $aggregate_aliases, true ) || ! in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true ) ) {
+					$this->unsupported( $this->current() );
 				}
 			}
 		}
@@ -426,10 +483,23 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			do {
 				$parenthesized = $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 				$case = $this->match_keyword( 'CASE' ) ? $this->searched_case() : null;
+				$field = null;
 				if ( null !== $case ) {
 					$column = $case['branches'][0]['predicates'][0]->column();
 					if ( $parenthesized ) {
 						$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+					}
+				} elseif ( $this->matches_function( 'FIELD' ) ) {
+					$this->unqualified_identifier();
+					$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+					$column = $this->identifier();
+					$field = array();
+					while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+						$field[] = $this->literal()->value();
+					}
+					$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+					if ( array() === $field ) {
+						$this->unsupported( $this->current() );
 					}
 				} else {
 					if ( $parenthesized ) {
@@ -461,6 +531,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					'descending' => $descending,
 					'numeric'    => $numeric,
 					'like'       => $like,
+					'field'      => $field,
 					'case'       => $case,
 				);
 			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
@@ -477,9 +548,17 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				}
 			}
 		}
-		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
-
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group_count_alias, $aggregates, $scalar_projection );
+		$union = null;
+		if ( $this->match_keyword( 'UNION' ) ) {
+			if ( $this->match_keyword( 'ALL' ) ) {
+				$this->unsupported( $this->current() );
+			}
+			$union = $this->select( $nested );
+			if ( ! $union instanceof WP_Markdown_Native_SQL_Select ) {
+				$this->unsupported( $this->current() );
+			}
+		}
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union );
 	}
 
 	private function matches_scalar_expression(): bool {
@@ -614,6 +693,13 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( 1 === count( $groups ) ) {
 			return $groups[0];
 		}
+		foreach ( $groups as $group ) {
+			foreach ( $group as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $sql_offset, 'mdi-native supports subqueries only as conjunctive predicates.' );
+				}
+			}
+		}
 		$likes = array();
 		foreach ( $groups as $group ) {
 			if ( 1 === count( $group ) && 'LIKE' === $group[0]->operator() ) {
@@ -710,6 +796,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return $predicates;
 		}
+		if ( $this->match_keyword( 'EXISTS' ) ) {
+			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$query = $this->select( true );
+			if ( ! $query instanceof WP_Markdown_Native_SQL_Select ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return array( new WP_Markdown_Native_SQL_Subquery_Predicate( 'EXISTS', null, $query ) );
+		}
 		if ( WP_Markdown_Native_SQL_Token::INTEGER === $this->current()->type() ) {
 			$offset = $this->current()->sql_offset();
 			$left = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
@@ -729,7 +824,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	 * @return array{function:string,column:?WP_Markdown_Native_SQL_Identifier,alias:string}|null
 	 */
 	private function match_aggregate(): ?array {
-		foreach ( array( 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX' ) as $function ) {
+		foreach ( array( 'COUNT', 'SUM', 'AVG', 'MIN', 'MAX', 'GROUP_CONCAT' ) as $function ) {
 			if ( ! $this->matches_function( $function ) ) {
 				continue;
 			}
@@ -763,7 +858,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type();
 	}
 
-	private function predicate(): WP_Markdown_Native_SQL_Predicate {
+	private function predicate(): WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate {
 		if ( $this->matches_function( 'LOWER' ) ) {
 			return $this->lower_equality_predicate();
 		}
@@ -777,6 +872,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			return new WP_Markdown_Native_SQL_Predicate( $column, $operator, array() );
 		}
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::EQUALS ) ) {
+			if ( $this->matches_identifier() ) {
+				return new WP_Markdown_Native_SQL_Predicate( $column, '=', array(), array(), null, $this->identifier() );
+			}
 			return new WP_Markdown_Native_SQL_Predicate( $column, '=', array( $this->literal() ) );
 		}
 		if ( $this->match_type( WP_Markdown_Native_SQL_Token::NOT_EQUALS ) ) {
@@ -802,15 +900,32 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'LIKE' ) ) {
 			return $this->like_predicate( $column, 'LIKE' );
 		}
+		if ( $this->match_keyword( 'REGEXP' ) ) {
+			return $this->regexp_predicate( $column );
+		}
 		if ( $this->match_keyword( 'NOT' ) ) {
 			if ( $this->match_keyword( 'LIKE' ) ) {
 				return $this->like_predicate( $column, 'NOT LIKE' );
 			}
 			$this->expect_keyword( 'IN' );
-			return new WP_Markdown_Native_SQL_Predicate( $column, 'NOT IN', $this->in_list() );
+			return $this->in_predicate( $column, 'NOT IN' );
 		}
 		$this->expect_keyword( 'IN' );
-		return new WP_Markdown_Native_SQL_Predicate( $column, 'IN', $this->in_list() );
+		return $this->in_predicate( $column, 'IN' );
+	}
+
+	private function in_predicate( WP_Markdown_Native_SQL_Identifier $column, string $operator ): WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate {
+		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		if ( $this->match_keyword( 'SELECT' ) ) {
+			--$this->current;
+			$query = $this->select( true );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return new WP_Markdown_Native_SQL_Subquery_Predicate( $operator, $column, $query );
+		}
+		$values = array( $this->literal() );
+		while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) { $values[] = $this->literal(); }
+		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		return new WP_Markdown_Native_SQL_Predicate( $column, $operator, $values );
 	}
 
 	private function signed_cast_predicate(): WP_Markdown_Native_SQL_Predicate {
@@ -860,6 +975,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $pattern->sql_offset(), 'mdi-native LIKE requires a string pattern.' );
 		}
 		return new WP_Markdown_Native_SQL_Predicate( $column, $operator, array( $pattern ) );
+	}
+
+	private function regexp_predicate( WP_Markdown_Native_SQL_Identifier $column ): WP_Markdown_Native_SQL_Predicate {
+		$pattern = $this->literal();
+		if ( ! is_string( $pattern->value() ) || 1 === preg_match( '/[^\\x00-\\x7F]/', $pattern->value() ) || 1 !== preg_match( '/^\\^?[A-Za-z0-9 _.-]+\\$?$/D', $pattern->value() ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_literal', $pattern->sql_offset(), 'mdi-native REGEXP supports ASCII literal patterns with optional anchors.' );
+		}
+		return new WP_Markdown_Native_SQL_Predicate( $column, 'REGEXP', array( $pattern ) );
 	}
 
 	/** @return array<int,WP_Markdown_Native_SQL_Literal> */

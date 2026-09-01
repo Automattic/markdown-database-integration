@@ -638,6 +638,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function supports_predicate( WP_Markdown_Native_Table_Schema $schema, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'AND' === $predicate->operator() ) {
+			foreach ( $predicate->any() as $conjunct ) {
+				if ( ! $this->supports_predicate( $schema, $conjunct ) ) {
+					return false;
+				}
+			}
+			return array() !== $predicate->any();
+		}
 		if ( 'OR' === $predicate->operator() ) {
 			foreach ( $predicate->any() as $alternative ) {
 				if ( ! $this->supports_predicate( $schema, $alternative ) ) {
@@ -758,6 +766,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function matches_predicate( array $row, WP_Markdown_Native_Query_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
+		if ( 'AND' === $predicate->operator() ) {
+			foreach ( $predicate->any() as $conjunct ) {
+				if ( ! $this->matches_predicate( $row, $conjunct, $schema ) ) {
+					return false;
+				}
+			}
+			return array() !== $predicate->any();
+		}
 		if ( 'OR' === $predicate->operator() ) {
 			foreach ( $predicate->any() as $alternative ) {
 				if ( $this->matches_predicate( $row, $alternative, $schema ) ) {

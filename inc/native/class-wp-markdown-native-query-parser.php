@@ -444,13 +444,28 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$values      = array();
 		$identifier  = null;
 		$same_column = true;
+		// An alternative may be a conjunction, which is how WordPress asks for
+		// a public post or one this author owns privately.
+		$conjunctions = false;
 		foreach ( $groups as $group ) {
 			if ( 1 !== count( $group ) ) {
-				throw new WP_Markdown_Native_SQL_Parse_Error(
-					'unsupported_or',
-					$sql_offset,
-					'mdi-native supports OR only as equality or LIKE alternatives.'
-				);
+				$conjunctions = true;
+				$same_column  = false;
+			}
+			foreach ( $group as $conjunct ) {
+				if ( ! in_array( $conjunct->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =' ), true ) ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error(
+						'unsupported_or',
+						$sql_offset,
+						'mdi-native supports OR only as equality or LIKE alternatives.'
+					);
+				}
+				if ( null === $identifier ) {
+					$identifier = $conjunct->column();
+				}
+			}
+			if ( 1 !== count( $group ) ) {
+				continue;
 			}
 			$predicate = $group[0];
 			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =' ), true ) ) {
@@ -471,8 +486,13 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			}
 			$values = array_merge( $values, $predicate->values() );
 		}
-		$alternatives = array_map( static fn( array $group ): WP_Markdown_Native_SQL_Predicate => $group[0], $groups );
-		if ( ! $same_column ) {
+		$alternatives = array_map(
+			static fn( array $group ): WP_Markdown_Native_SQL_Predicate => 1 === count( $group )
+				? $group[0]
+				: new WP_Markdown_Native_SQL_Predicate( $group[0]->column(), 'AND', array(), $group ),
+			$groups
+		);
+		if ( $conjunctions || ! $same_column ) {
 			return array( new WP_Markdown_Native_SQL_Predicate( $identifier, 'OR', array(), $alternatives ) );
 		}
 		foreach ( $alternatives as $alternative ) {

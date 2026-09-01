@@ -16,7 +16,12 @@ MDI has two SQLite-backed operating modes:
 
 ## SQLite Integration API
 
-MDI requires a SQLite Database Integration release that includes the canonical
+SQLite Database Integration is optional. It is required only by the `sqlite`
+backend; the default `mdi-native` backend serves WordPress directly from the
+canonical Markdown and JSON files and never loads it.
+
+When the `sqlite` backend is selected, MDI requires a SQLite Database
+Integration release that includes the canonical
 PDO-compatible `WP_MySQL_On_SQLite` API, introduced by
 WordPress/sqlite-database-integration#449. MDI no longer uses the deprecated
 `WP_SQLite_Driver` compatibility layer. The runtime constructs the canonical

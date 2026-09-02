@@ -38,7 +38,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 define( 'MARKDOWN_DB_VERSION', '0.12.0' );
-define( 'MARKDOWN_DB_PLUGIN_DIR', plugin_dir_path( __FILE__ ) );
+define( 'MARKDOWN_DB_PLUGIN_DIR', dirname( __FILE__ ) . '/' );
 
 $markdown_database_integration_autoload = MARKDOWN_DB_PLUGIN_DIR . 'vendor/autoload.php';
 if ( function_exists( 'did_action' ) && file_exists( $markdown_database_integration_autoload ) ) {

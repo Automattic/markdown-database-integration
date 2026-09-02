@@ -88,6 +88,21 @@
     ]
   },
   "fuzz_profiles": {
+    "quick": [
+      "mdi-native-sqlite-differential"
+    ],
+    "read-only": [
+      "mdi-native-sqlite-differential"
+    ],
+    "crud": [
+      "mdi-native-sqlite-differential"
+    ],
+    "full": [
+      "mdi-native-sqlite-differential"
+    ],
+    "nightly": [
+      "mdi-native-sqlite-differential"
+    ],
     "differential": [
       "mdi-native-sqlite-differential"
     ]

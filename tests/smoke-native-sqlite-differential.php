@@ -21,6 +21,44 @@ $missing_duplicate = $outcome( array( array( 'item_id' => '1', 'label' => 'one' 
 $report = $workload(
 	array( 'runtime_env' => array( 'MDI_FUZZ_SEED' => 'generator-smoke' ) )
 )['artifacts']['mdi_native_sqlite_differential'];
+$selected = mdi_fuzz_selected_operations(
+	array( 'operation_ids' => array(), 'families' => array( 'create' ) )
+);
+$bounded = $workload(
+	array( 'execution_request' => array( 'schema' => 'homeboy/fuzz-execution-request/v1', 'seed' => 'generator-smoke', 'operation_ids' => array( 'query.read' ), 'case_budget' => 3, 'duration_budget_seconds' => 60 ) )
+)['artifacts']['mdi_native_sqlite_differential'];
+$skipped = $workload(
+	array( 'execution_request' => array( 'schema' => 'homeboy/fuzz-execution-request/v1', 'operation_ids' => array( 'wpdb.observable-state', 'concurrency.deterministic' ) ) )
+)['artifacts']['mdi_native_sqlite_differential'];
+$homeboy_request = mdi_fuzz_request(
+	array(
+		'execution_request' => array(
+			'schema' => 'homeboy/fuzz-execution-request/v1',
+			'id' => 'homeboy-shape',
+			'component' => 'markdown-database-integration',
+			'sampling' => array(
+				'seed' => 'homeboy-seed',
+				'case_budget' => 7,
+				'duration_budget_seconds' => 12,
+				'operation_strata' => array(
+					array( 'id' => 'selected-operation-families', 'kind' => 'operation_family', 'values' => array( 'create' ) ),
+					array( 'id' => 'selected-operations', 'kind' => 'operation', 'values' => array( 'schema.ddl.introspection', 'constraints.defaults-uniqueness-auto-increment' ) ),
+				),
+			),
+			'max_duration' => '2m',
+			'metadata' => array( 'planner' => array( 'profile' => 'full' ) ),
+		),
+	)
+);
+$max_duration_request = mdi_fuzz_request(
+	array( 'execution_request' => array( 'schema' => 'homeboy/fuzz-execution-request/v1', 'max_duration' => '2m' ) )
+);
+$profile_requests = array();
+foreach ( array( 'quick', 'read-only', 'crud', 'full', 'nightly' ) as $profile ) {
+	$profile_requests[ $profile ] = mdi_fuzz_request(
+		array( 'execution_request' => array( 'schema' => 'homeboy/fuzz-execution-request/v1', 'metadata' => array( 'planner' => array( 'profile' => $profile ) ) ) )
+	);
+}
 
 $checks = array(
 	'generator replays identical cases' => $first === $second,
@@ -38,6 +76,32 @@ $checks = array(
 		$report['categories']['scalar.cast']['sqlite_duration_ms']
 	) && isset( $report['mismatches'][0]['native']['columns'] ) === ( 0 < $report['mismatch_count'] )
 		&& count( $report['cases'] ) === count( $first ),
+	'operation-family filtering uses canonical Homeboy families' => array( 'schema.ddl.introspection', 'constraints.defaults-uniqueness-auto-increment' ) === $selected,
+	'Homeboy sampling request drives exact operations, seed, and budgets' => array( 'schema.ddl.introspection', 'constraints.defaults-uniqueness-auto-increment' ) === $homeboy_request['operation_ids']
+		&& array( 'create' ) === $homeboy_request['families']
+		&& 'homeboy-seed' === $homeboy_request['seed']
+		&& 7 === $homeboy_request['case_budget']
+		&& 12.0 === $homeboy_request['duration_budget_seconds'],
+	'Homeboy duration strings and profiles resolve to distinct bounded campaigns' => 120.0 === $max_duration_request['duration_budget_seconds']
+		&& array( 'query.read' ) === $profile_requests['quick']['operation_ids']
+		&& array( 'unsupported.error', 'query.read' ) === $profile_requests['read-only']['operation_ids']
+		&& array( 'dml.generic', 'constraints.defaults-uniqueness-auto-increment', 'query.read' ) === $profile_requests['crud']['operation_ids']
+		&& 256 === $profile_requests['full']['case_budget']
+		&& 512 === $profile_requests['nightly']['case_budget'],
+	'normalized request bounds cases and retains duration metadata' => 3 === count( $bounded['cases'] )
+		&& 60.0 === $bounded['campaign']['duration_budget_seconds'],
+	'coverage reports genuine unavailable surfaces as skips' => 9 === $skipped['coverage']['declared_operations']
+		&& 2 === $skipped['coverage']['skipped_operations']
+		&& 7 === $skipped['coverage']['executable_operations']
+		&& 0 === $skipped['coverage']['selected_executable_operations'],
+	'canonical Homeboy evidence is embedded without replacing the detailed report' => 'homeboy/fuzz-result-envelope/v1' === $report['result_envelope']['schema']
+		&& 'homeboy/fuzz-campaign/v1' === $report['homeboy_campaign']['schema']
+		&& 'homeboy/fuzz-coverage-summary/v1' === $report['coverage_summary']['schema']
+		&& 'homeboy/fuzz-replay/v1' === $report['replay']['schema']
+		&& 'homeboy/fuzz-case-log/v1' === $report['case_log'][0]['schema']
+		&& 'case_log' === $report['homeboy_campaign']['artifacts'][1]['kind'],
+	'direct default remains the complete 240-query campaign' => 240 === count( $report['cases'] )
+		&& array( 'query.read' ) === $report['campaign']['operation_ids'],
 	'ordered comparisons retain row sequence' => ! mdi_fuzz_compare( $ordered_expected, $reversed, true )['compatible'],
 	'unordered comparisons preserve duplicate multiplicity' => mdi_fuzz_compare( $ordered_expected, $reversed, false )['compatible']
 		&& mdi_fuzz_compare( $duplicated, $duplicated_reversed, false )['compatible']

@@ -2,6 +2,9 @@
 /** Standalone regression checks for database-neutral mutation impact semantics. */
 declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );
+if ( ! defined( 'MYSQLI_ASSOC' ) ) {
+	define( 'MYSQLI_ASSOC', 1 );
+}
 require_once __DIR__ . '/../inc/class-wp-markdown-mutation-impact.php';
 require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-impact-adapter.php';
 require_once __DIR__ . '/../inc/mysql/class-wp-markdown-mysql-outbox.php';

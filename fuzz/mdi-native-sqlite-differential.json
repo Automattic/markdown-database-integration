@@ -1,17 +1,13 @@
 {
   "schema": "homeboy/fuzz-workload/v1",
   "id": "mdi-native-sqlite-differential",
-  "label": "MDI native versus SQLite seeded query differential",
+  "label": "MDI native versus SQLite bounded full-surface differential",
   "safety_class": "isolated_mutation",
   "surface_ids": [
     "mdi-native-query-runtime",
     "sqlite-reference-runtime"
   ],
-  "operations": [
-    "seeded-query-generation",
-    "native-sqlite-result-comparison",
-    "unsupported-query-diagnostic-replay"
-  ],
+  "operations": ["query.read", "dml.generic", "schema.ddl.introspection", "constraints.defaults-uniqueness-auto-increment", "transaction.savepoint", "persistence.restart", "wpdb.observable-state", "concurrency.deterministic", "unsupported.error"],
   "case_budget": 256,
   "duration_budget_seconds": 300,
   "seed": "mdi-232-native-sqlite-v1",
@@ -23,7 +19,7 @@
     "expected_artifact_semantic_key": "fuzz.report",
     "readiness": {
       "level": "executable",
-      "coverage_contract": "A disposable WP Codebox runtime generates a deterministic SQL corpus, executes each query through MDI native and SQLite reference runtimes, compares normalized results, and replays unsupported queries to require stable native diagnostics."
+      "coverage_contract": "Selected stable operation IDs run in isolated native and SQLite fixtures. Homeboy profile metadata selects bounded quick, read-only, CRUD, full, or nightly campaigns through one runner. Query reads remain the default 240-case direct campaign; DML, DDL/introspection, constraints/defaults/uniqueness/auto-increment, transactions/savepoints, restart persistence, and unsupported diagnostics are executable. wpdb state and concurrency are explicitly skipped pending a bootstrap or deterministic coordinator."
     },
     "fixture": {
       "runtime": "wp-codebox",
@@ -50,18 +46,14 @@
         "mdi-native-query-runtime",
         "sqlite-reference-runtime"
       ],
-      "operations": [
-        "seeded-query-generation",
-        "native-sqlite-result-comparison",
-        "unsupported-query-diagnostic-replay"
-      ],
+      "operations": ["query.read", "dml.generic", "schema.ddl.introspection", "constraints.defaults-uniqueness-auto-increment", "transaction.savepoint", "persistence.restart", "wpdb.observable-state", "concurrency.deterministic", "unsupported.error"],
       "artifacts": [
         {
           "name": "mdi_native_sqlite_differential",
           "path": "files/workload-results/mdi-native-sqlite-differential.json",
           "required": true,
           "metadata": {
-            "schema": "mdi/query-compatibility-differential/v1",
+            "schema": "mdi/query-compatibility-differential/v3",
             "semantic_key": "fuzz.report"
           }
         }
@@ -98,11 +90,7 @@
       "mdi-native-query-runtime",
       "sqlite-reference-runtime"
     ],
-    "operations": [
-      "seeded-query-generation",
-      "native-sqlite-result-comparison",
-      "unsupported-query-diagnostic-replay"
-    ]
+    "operations": ["query.read", "dml.generic", "schema.ddl.introspection", "constraints.defaults-uniqueness-auto-increment", "transaction.savepoint", "persistence.restart", "wpdb.observable-state", "concurrency.deterministic", "unsupported.error"]
   },
   "artifacts": {
     "expected": [
@@ -110,7 +98,7 @@
         "name": "mdi_native_sqlite_differential",
         "role": "fuzz_report",
         "semantic_key": "fuzz.report",
-        "schema": "mdi/query-compatibility-differential/v1",
+        "schema": "mdi/query-compatibility-differential/v3",
         "required": true
       }
     ]

@@ -12,7 +12,7 @@
       "command": "wordpress.collect-workload-result",
       "args": [
         "artifact=mdi_native_sqlite_differential",
-        "schema=mdi/query-compatibility-differential/v1"
+        "schema=mdi/query-compatibility-differential/v3"
       ]
     },
     {
@@ -30,7 +30,7 @@
       "contentType": "application/json",
       "required": true,
       "metadata": {
-        "schema": "mdi/query-compatibility-differential/v1",
+        "schema": "mdi/query-compatibility-differential/v3",
         "semantic_key": "fuzz.report"
       }
     }

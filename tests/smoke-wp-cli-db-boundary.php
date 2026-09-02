@@ -7,6 +7,26 @@
 
 declare( strict_types=1 );
 
+if ( 2 === $argc && 'early-bootstrap' === $argv[1] ) {
+	define( 'ABSPATH', __DIR__ . '/' );
+	define( 'WP_CONTENT_DIR', sys_get_temp_dir() );
+
+	function markdown_db_default_content_dir(): string {
+		return WP_CONTENT_DIR . '/db';
+	}
+
+	function add_action(): void {}
+
+	require_once __DIR__ . '/../markdown-database-integration.php';
+	echo json_encode(
+		array(
+			'version'    => defined( 'MARKDOWN_DB_VERSION' ),
+			'plugin_dir' => defined( 'MARKDOWN_DB_PLUGIN_DIR' ) ? MARKDOWN_DB_PLUGIN_DIR : null,
+		)
+	);
+	exit;
+}
+
 if ( isset( $argv[1] ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );
 	if ( 'sqlite' === $argv[1] ) {
@@ -81,6 +101,9 @@ $mysql = $run( 'mysql' );
 mdi_wp_cli_db_assert( 'db check' === ( $mysql['result'] ?? null ), 'non-SQLite runtimes pass through unchanged' );
 $unowned_sqlite = $run( 'sqlite-unowned' );
 mdi_wp_cli_db_assert( 'db check' === ( $unowned_sqlite['result'] ?? null ), 'MDI does not claim another SQLite drop-in boundary' );
+$early_bootstrap = $run( 'early-bootstrap' );
+mdi_wp_cli_db_assert( true === ( $early_bootstrap['version'] ?? false ), 'the plugin entrypoint loads before WordPress formatting helpers are available' );
+mdi_wp_cli_db_assert( dirname( __DIR__ ) . '/' === ( $early_bootstrap['plugin_dir'] ?? null ), 'early bootstrap resolves the plugin directory without plugin_dir_path()' );
 
 if ( $failures ) {
 	foreach ( $failures as $failure ) {

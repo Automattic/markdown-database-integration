@@ -199,16 +199,22 @@ function mdi_fuzz_remove_fixture( string $root ): void {
 }
 
 function mdi_fuzz_create_sqlite( array $fixture ): PDO {
-	$pdo = new Pdo\Sqlite( 'sqlite::memory:', null, null, array( PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION ) );
-	$pdo->createFunction( 'CONCAT', static fn( ...$values ): ?string => in_array( null, $values, true ) ? null : implode( '', $values ), -1 );
-	$pdo->createFunction( 'FIELD', static function ( mixed $value, mixed ...$values ): int {
+	if ( class_exists( 'Pdo\\Sqlite' ) ) {
+		$pdo = new Pdo\Sqlite( 'sqlite::memory:', null, null, array( PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION ) );
+		$create_function = array( $pdo, 'createFunction' );
+	} else {
+		$pdo = new PDO( 'sqlite::memory:', null, null, array( PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION ) );
+		$create_function = array( $pdo, 'sqliteCreateFunction' );
+	}
+	$create_function( 'CONCAT', static fn( ...$values ): ?string => in_array( null, $values, true ) ? null : implode( '', $values ), -1 );
+	$create_function( 'FIELD', static function ( mixed $value, mixed ...$values ): int {
 		$index = array_search( $value, $values, true );
 		return false === $index ? 0 : $index + 1;
 	}, -1 );
-	$pdo->createFunction( 'REGEXP', static fn( string $pattern, ?string $value ): int => null === $value ? 0 : (int) preg_match( '/' . str_replace( '/', '\\/', $pattern ) . '/', $value ) );
-	$pdo->createFunction( 'YEAR', static fn( ?string $value ): ?string => null === $value ? null : substr( $value, 0, 4 ), 1 );
-	$pdo->createFunction( 'MONTH', static fn( ?string $value ): ?string => null === $value ? null : substr( $value, 5, 2 ), 1 );
-	$pdo->createFunction( 'DATE_FORMAT', static fn( ?string $value, string $format ): ?string => null === $value ? null : str_replace( array( '%Y', '%m', '%d' ), array( substr( $value, 0, 4 ), substr( $value, 5, 2 ), substr( $value, 8, 2 ) ), $format ), 2 );
+	$create_function( 'REGEXP', static fn( string $pattern, ?string $value ): int => null === $value ? 0 : (int) preg_match( '/' . str_replace( '/', '\\/', $pattern ) . '/', $value ) );
+	$create_function( 'YEAR', static fn( ?string $value ): ?string => null === $value ? null : substr( $value, 0, 4 ), 1 );
+	$create_function( 'MONTH', static fn( ?string $value ): ?string => null === $value ? null : substr( $value, 5, 2 ), 1 );
+	$create_function( 'DATE_FORMAT', static fn( ?string $value, string $format ): ?string => null === $value ? null : str_replace( array( '%Y', '%m', '%d' ), array( substr( $value, 0, 4 ), substr( $value, 5, 2 ), substr( $value, 8, 2 ) ), $format ), 2 );
 
 	$pdo->exec( 'CREATE TABLE wp_items (item_id INTEGER PRIMARY KEY, join_key INTEGER NOT NULL, status TEXT NOT NULL COLLATE NOCASE, title TEXT NOT NULL COLLATE NOCASE, nullable_text TEXT, numeric_text TEXT NOT NULL, amount INTEGER NOT NULL, event_date TEXT NOT NULL, group_key TEXT NOT NULL COLLATE NOCASE)' );
 	$pdo->exec( 'CREATE TABLE wp_meta (meta_id INTEGER PRIMARY KEY, item_ref INTEGER NOT NULL, join_key INTEGER NOT NULL, meta_key TEXT NOT NULL COLLATE NOCASE, meta_value TEXT)' );

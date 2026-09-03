@@ -68,6 +68,18 @@ $GLOBALS['mdi_test_terms']      = array();
 $GLOBALS['mdi_test_contexts']   = array();
 $GLOBALS['mdi_next_post_id']    = 100;
 $GLOBALS['mdi_test_did_action'] = array();
+$GLOBALS['mdi_test_cli_output'] = array();
+
+class WP_CLI {
+
+	public static function error( string $message ): void {
+		throw new RuntimeException( $message );
+	}
+
+	public static function line( string $message ): void {
+		$GLOBALS['mdi_test_cli_output'][] = $message;
+	}
+}
 
 function add_action( string $hook_name, callable $callback, int $priority = 10 ): void {
 	$GLOBALS['mdi_test_actions'][ $hook_name ][] = array( $callback, $priority );
@@ -223,6 +235,10 @@ function maybe_serialize( $value ) {
 	return $value;
 }
 
+function wp_json_encode( $value, int $flags = 0 ): string {
+	return (string) json_encode( $value, $flags );
+}
+
 function mdi_mysql_import_export_rm_rf( string $dir ): void {
 	if ( ! is_dir( $dir ) ) {
 		return;
@@ -324,6 +340,12 @@ if ( 'Home Updated' !== ( $GLOBALS['mdi_test_posts'][17]->post_title ?? '' ) ) {
 	$failures[] = 'second import did not update post title';
 }
 
+WP_Markdown_CLI::import_cli( array(), array( 'content-dir' => $content_dir, 'dry-run' => true, 'format' => 'json' ) );
+$cli_import = json_decode( (string) end( $GLOBALS['mdi_test_cli_output'] ), true );
+if ( $content_dir !== ( $cli_import['path'] ?? null ) || 'dry-run' !== ( $cli_import['mode'] ?? null ) ) {
+	$failures[] = 'import CLI did not route --content-dir to the markdown content root';
+}
+
 $export = call_user_func( $GLOBALS['mdi_test_abilities']['markdown-db/export']['execute_callback'], array( 'path' => $export_dir, 'post_types' => 'page' ) );
 if ( 1 !== ( $export['written_count'] ?? 0 ) || ! is_file( $export_dir . '/page/home.md' ) ) {
 	$failures[] = 'export ability did not write the current page to markdown';
@@ -341,6 +363,12 @@ if ( is_file( $export_dir . '/page/home.md' ) && false === strpos( file_get_cont
 $export_context = $GLOBALS['mdi_test_contexts']['export_content'] ?? array();
 if ( 'export' !== ( $export_context['operation'] ?? '' ) || 'page' !== ( $export_context['post_type'] ?? '' ) || 'page/home.md' !== ( $export_context['source_path'] ?? '' ) ) {
 	$failures[] = 'export content transform filter did not receive expected context';
+}
+
+WP_Markdown_CLI::export_cli( array(), array( 'content-dir' => $export_dir, 'post-type' => 'page', 'dry-run' => true, 'format' => 'json' ) );
+$cli_export = json_decode( (string) end( $GLOBALS['mdi_test_cli_output'] ), true );
+if ( $export_dir !== ( $cli_export['path'] ?? null ) || array( 'page' ) !== ( $cli_export['post_types'] ?? null ) ) {
+	$failures[] = 'export CLI did not route --content-dir to the markdown content root';
 }
 
 mdi_mysql_import_export_rm_rf( $tmp_root );

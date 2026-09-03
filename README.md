@@ -625,6 +625,7 @@ Import markdown files into the current database:
 ```bash
 wp markdown-db import --dry-run
 wp markdown-db import
+wp markdown-db import --content-dir=/path/to/markdown
 ```
 
 Export current posts, pages, and custom post types to markdown:
@@ -632,11 +633,13 @@ Export current posts, pages, and custom post types to markdown:
 ```bash
 wp markdown-db export --dry-run
 wp markdown-db export
+wp markdown-db export --content-dir=/path/to/markdown
 ```
 
-Both commands default to `MARKDOWN_DB_CONTENT_DIR`. Pass `--path=/path/to/markdown`
-to read from or write to a different root. Export accepts `--post-type=post,page,wiki`
-to limit the post types.
+Both commands default to `MARKDOWN_DB_CONTENT_DIR`. Pass
+`--content-dir=/path/to/markdown` to read from or write to a different root.
+`--path` remains the WP-CLI global option for selecting the WordPress installation.
+Export accepts `--post-type=post,page,wiki` to limit the post types.
 
 The same operations are available to agents through abilities:
 

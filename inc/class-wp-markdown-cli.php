@@ -172,7 +172,7 @@ class WP_Markdown_CLI {
 	 *
 	 * ## OPTIONS
 	 *
-	 * [--path=<path>]
+	 * [--content-dir=<dir>]
 	 * : Markdown content root. Defaults to MARKDOWN_DB_CONTENT_DIR.
 	 *
 	 * [--dry-run]
@@ -193,7 +193,7 @@ class WP_Markdown_CLI {
 	public static function import_cli( array $args, array $assoc_args ): void {
 		$result = self::import(
 			array(
-				'path'       => $assoc_args['path'] ?? '',
+				'path'       => $assoc_args['content-dir'] ?? '',
 				'dry_run'    => array_key_exists( 'dry-run', $assoc_args ),
 				'from'       => $assoc_args['from'] ?? '',
 				'to'         => $assoc_args['to'] ?? '',
@@ -210,7 +210,7 @@ class WP_Markdown_CLI {
 	 *
 	 * ## OPTIONS
 	 *
-	 * [--path=<path>]
+	 * [--content-dir=<dir>]
 	 * : Markdown content root. Defaults to MARKDOWN_DB_CONTENT_DIR.
 	 *
 	 * [--post_type=<type>]
@@ -234,7 +234,7 @@ class WP_Markdown_CLI {
 	public static function export_cli( array $args, array $assoc_args ): void {
 		$result = self::export(
 			array(
-				'path'       => $assoc_args['path'] ?? '',
+				'path'       => $assoc_args['content-dir'] ?? '',
 				'post_types' => $assoc_args['post_type'] ?? $assoc_args['post-type'] ?? '',
 				'dry_run'    => array_key_exists( 'dry-run', $assoc_args ),
 				'from'       => $assoc_args['from'] ?? '',

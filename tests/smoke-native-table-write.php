@@ -64,7 +64,21 @@ $runtime->execute(
 		'wp_'
 	)
 );
+$runtime->execute(
+	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_unique_jobs (id BIGINT NOT NULL AUTO_INCREMENT, scope VARCHAR(20) NULL, token VARCHAR(20) NULL, PRIMARY KEY (id), UNIQUE KEY scoped_token (scope, token(3)))',
+		'wp_'
+	)
+);
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_jobs (label) VALUES ('ready')", 'wp_' ) );
+foreach ( array(
+	"INSERT INTO wp_unique_jobs (scope, token) VALUES (NULL, 'abc1')",
+	"INSERT INTO wp_unique_jobs (scope, token) VALUES (NULL, 'abc2')",
+	"INSERT INTO wp_unique_jobs (scope, token) VALUES ('one', 'abc1')",
+	"INSERT INTO wp_unique_jobs (scope, token) VALUES ('one', 'def1')",
+) as $insert ) {
+	$runtime->execute( new WP_Markdown_Query_Request( $insert, 'wp_' ) );
+}
 
 foreach ( array(
 	"INSERT INTO wp_agents (instance_key, label) VALUES (NULL, 'first')",
@@ -127,6 +141,15 @@ $cross_column_or = $runtime->execute(
 $null_equality = $runtime->execute(
 	new WP_Markdown_Query_Request( 'UPDATE wp_agents SET label = 1 WHERE instance_key = NULL', 'wp_' )
 );
+$null_unique = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_unique_jobs SET token = 'abc3' WHERE scope IS NULL", 'wp_' )
+);
+$prefix_duplicate = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_unique_jobs SET token = 'abc9' WHERE id = 4", 'wp_' )
+);
+$composite_distinct = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_unique_jobs SET scope = 'two', token = 'abc9' WHERE id = 4", 'wp_' )
+);
 
 // A writer for one canonical table must not serialize an unrelated table.
 $agents_lock_path = $root . '/_tables/.mdi-native-' . hash( 'sha256', 'agents' ) . '.lock';
@@ -162,6 +185,10 @@ $checks = array(
 		&& 'unsupported_mutation_table' === ( $unknown_table->diagnostic()['reason'] ?? null ),
 	'an OR group across columns updates its disjunction' => 1 === $cross_column_or->return_value(),
 	'NULL equality fails closed' => false === $null_equality->return_value(),
+	'multiple NULL composite keys remain unique during UPDATE' => 2 === $null_unique->return_value(),
+	'UPDATE rejects a duplicate composite prefix key' => false === $prefix_duplicate->return_value()
+		&& 'duplicate_key' === ( $prefix_duplicate->diagnostic()['reason'] ?? null ),
+	'UPDATE accepts the same prefix in a distinct composite scope' => 1 === $composite_distinct->return_value(),
 	'an unrelated table writes while another table is locked' => 1 === $unrelated_write->return_value()
 		&& array( 'running' ) === column_values( $root, 'label', 'jobs' ),
 	'a rolled back generic write restores the snapshot' => array( 'x', 'second', 'one; two' ) === $after_rollback,

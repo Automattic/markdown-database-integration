@@ -384,6 +384,35 @@ class WP_Markdown_Storage {
 	}
 
 	/**
+	 * Return a safely indexed canonical file with its directory-derived parent.
+	 *
+	 * This is intentionally an index lookup rather than manifest enumeration so
+	 * callers that already know a durable post ID do not rewalk the corpus.
+	 *
+	 * @return array{absolute:string,parent_id:int|null}|null
+	 */
+	public function indexed_post_file( int $post_id ): ?array {
+		// A cold index must fall back to the provider's verified corpus scan.
+		// Building it here would parse a file before that scan can witness it.
+		$path = is_array( $this->index ) ? ( $this->index[ $post_id ] ?? null ) : null;
+		if ( null === $path || ! $this->existing_path_is_safe( $path ) ) {
+			return null;
+		}
+		if ( $this->profile_enumerates_sources() ) {
+			$post = $this->read_file( $path, true );
+			return null === $post ? null : array( 'absolute' => $path, 'parent_id' => (int) $post->post_parent );
+		}
+		$directory = dirname( $path );
+		$parent_directory = 'index.md' === basename( $path ) ? dirname( $directory ) : $directory;
+		if ( dirname( $parent_directory ) === $this->content_dir ) {
+			return array( 'absolute' => $path, 'parent_id' => 'index.md' === basename( $path ) ? 0 : null );
+		}
+		$parent_path = $parent_directory . '/index.md';
+		$parent = $this->existing_path_is_safe( $parent_path ) ? $this->read_file( $parent_path, true ) : null;
+		return array( 'absolute' => $path, 'parent_id' => (int) ( $parent->ID ?? 0 ) );
+	}
+
+	/**
 	 * Delete a post's markdown file.
 	 *
 	 * If the post is a parent (has a directory), and the directory

@@ -137,7 +137,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		$pushdown = $this->pushdown( $predicates, $schema );
-		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema ) ) {
+		if ( array() !== $predicates
+			&& null === $pushdown
+			&& ! $table['provider'] instanceof WP_Markdown_Native_JSON_Partition_Provider
+			&& ! $this->allows_residual_scan( $predicates, $schema )
+		) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
@@ -404,12 +408,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $this->last_found_rows;
 	}
 
-	/** Materialize bounded subqueries once, indexing correlated EXISTS by its outer key. */
+	/** Materialize bounded subqueries once, indexing correlated existence tests by outer key. */
 	private function prepare_subqueries( array $subqueries, WP_Markdown_Native_Table_Schema $outer_schema ): array|WP_Markdown_Query_Result {
 		$matchers = array();
 		foreach ( $subqueries as $subquery ) {
 			$query = $subquery->query();
-			if ( array() !== $query->joins() || null !== $query->union() || array() !== $query->subqueries() || array() !== $query->aggregates() || null !== $query->group_by() || array() !== $query->scalar_projection() && 'EXISTS' !== $subquery->operator() ) {
+			if ( array() !== $query->joins() || null !== $query->union() || array() !== $query->subqueries() || array() !== $query->aggregates() || null !== $query->group_by() || array() !== $query->scalar_projection() && ! in_array( $subquery->operator(), array( 'EXISTS', 'NOT EXISTS' ), true ) ) {
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native supports bounded single-table subqueries only.' );
 			}
 			$table = $this->registry->table( $query->table() );
@@ -449,7 +453,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					if ( null !== $key ) { $values[ $key ] = true; }
 					continue;
 				}
-				if ( 'EXISTS' === $subquery->operator() ) { $values['exists'] = true; break; }
+				if ( in_array( $subquery->operator(), array( 'EXISTS', 'NOT EXISTS' ), true ) ) { $values['exists'] = true; break; }
 				$value = $row[ $projection[0] ] ?? null;
 				if ( null === $value ) { $has_null = true; continue; }
 				$key = $outer_schema->value_key( (string) $subquery->column(), $value );
@@ -463,12 +467,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	private function matches_subqueries( array $row, array $matchers, WP_Markdown_Native_Table_Schema $schema ): bool {
 		foreach ( $matchers as $matcher ) {
-			if ( 'EXISTS' === $matcher['operator'] ) {
-				if ( null === $matcher['correlation'] ) { if ( ! isset( $matcher['values']['exists'] ) ) { return false; } continue; }
+			if ( in_array( $matcher['operator'], array( 'EXISTS', 'NOT EXISTS' ), true ) ) {
+				if ( null === $matcher['correlation'] ) {
+					$exists = isset( $matcher['values']['exists'] );
+					if ( ( 'EXISTS' === $matcher['operator'] && ! $exists ) || ( 'NOT EXISTS' === $matcher['operator'] && $exists ) ) { return false; }
+					continue;
+				}
 				$column = $matcher['correlation']->comparison_column();
 				if ( null === $column || ! $schema->has_column( $column ) ) { return false; }
 				$key = $schema->value_key( $column, $row[ $column ] ?? null );
-				if ( null === $key || ! isset( $matcher['values'][ $key ] ) ) { return false; }
+				$exists = null !== $key && isset( $matcher['values'][ $key ] );
+				if ( ( 'EXISTS' === $matcher['operator'] && ! $exists ) || ( 'NOT EXISTS' === $matcher['operator'] && $exists ) ) { return false; }
 				continue;
 			}
 			$key = $schema->value_key( (string) $matcher['column'], $row[ $matcher['column'] ] ?? null );

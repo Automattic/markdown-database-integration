@@ -164,7 +164,7 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 	 * @param null|callable(int,array<string,mixed>):(array<string,mixed>|WP_Markdown_Query_Result) $hydrate
 	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
-	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access, ?callable $hydrate = null ): array|WP_Markdown_Query_Result {
+	protected function bounded_rows( array $rows, WP_Markdown_Native_Table_Access $access, ?callable $hydrate = null, bool $ordered = false ): array|WP_Markdown_Query_Result {
 		$case_order = false;
 		foreach ( $access->order_by() as $item ) {
 			$case_order = $case_order || null !== ( $item['case'] ?? null );
@@ -182,13 +182,15 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 			}
 			$hydrate = null;
 		}
-		$rows = $this->schema->ordered_rows( $rows, $access->order_by() );
-		if ( null === $rows ) {
-			return $this->failure(
-				'markdown_db_native_unsupported_query',
-				'unsupported_order',
-				'mdi-native cannot apply the requested ordering collation.'
-			);
+		if ( ! $ordered ) {
+			$rows = $this->schema->ordered_rows( $rows, $access->order_by() );
+			if ( null === $rows ) {
+				return $this->failure(
+					'markdown_db_native_unsupported_query',
+					'unsupported_order',
+					'mdi-native cannot apply the requested ordering collation.'
+				);
+			}
 		}
 
 		$selected = array();
@@ -235,6 +237,10 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Provider {
 	private WP_Markdown_Storage $storage;
 	private WP_Markdown_Native_Post_Catalogue $catalogue;
+	/** @var array<string,array<int,array{post:object,row:array<string,mixed>,file:array<string,mixed>,identity:array<string,int>}>> */
+	private array $scoped_posts = array();
+	/** @var array<string,array<string,array<int,array{post:object,row:array<string,mixed>,file:array<string,mixed>,identity:array<string,int>}>>> */
+	private array $scoped_ordered_posts = array();
 
 	public function __construct(
 		string $content_root,
@@ -244,17 +250,54 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
-		// Writing a canonical file makes anything remembered about the corpus
-		// stale, so the parse is dropped the moment one changes.
+		// Writing a canonical file makes what was remembered about that file
+		// stale, so its parse is dropped the moment it changes. Files the
+		// write did not touch are still proven by the witness they were
+		// recorded under and are kept. The scoped views are lists of which
+		// files answered a read, which a new or removed file changes, so they
+		// are rebuilt — from the surviving parses, not from the corpus.
 		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
-		$this->storage->set_file_mutation_observer( function (): void {
-			$this->catalogue->forget();
+		$this->storage->set_file_mutation_observer( function ( string $path ): void {
+			$this->catalogue->forget( $path );
+			$this->scoped_posts = array();
+			$this->scoped_ordered_posts = array();
 		} );
 	}
 
 	/** A read that restricts post type parses a different part of the corpus. */
 	private function parse_key( ?array $scope ): string {
 		return null === $scope ? '*' : implode( ',', $scope );
+	}
+
+	/** Cache orderings that can be answered from metadata without body hydration. */
+	private function order_key( WP_Markdown_Native_Table_Access $access ): ?string {
+		foreach ( $access->order_by() as $item ) {
+			if ( null !== ( $item['case'] ?? null ) ) {
+				return null;
+			}
+		}
+		return hash( 'sha256', serialize( $access->order_by() ) );
+	}
+
+	/**
+	 * @param array<int,array{post:object,row:array<string,mixed>,file:array<string,mixed>,identity:array<string,int>}> $candidates
+	 * @return array{candidates:array<int,array{post:object,row:array<string,mixed>,file:array<string,mixed>,identity:array<string,int>}>,ordered:bool}
+	 */
+	private function ordered_scoped_candidates( string $scope, array $candidates, WP_Markdown_Native_Table_Access $access ): array {
+		$key = $this->order_key( $access );
+		if ( null === $key ) {
+			return array( 'candidates' => $candidates, 'ordered' => false );
+		}
+		if ( isset( $this->scoped_ordered_posts[ $scope ][ $key ] ) ) {
+			return array( 'candidates' => $this->scoped_ordered_posts[ $scope ][ $key ], 'ordered' => true );
+		}
+		$rows = array_map( static fn( array $candidate ): array => $candidate['row'], $candidates );
+		$ordered = $this->schema->ordered_rows( $rows, $access->order_by() );
+		if ( null === $ordered ) {
+			return array( 'candidates' => $candidates, 'ordered' => false );
+		}
+		$this->scoped_ordered_posts[ $scope ][ $key ] = array_map( fn( array $row, int $offset ): array => $candidates[ $offset ], $ordered, array_keys( $ordered ) );
+		return array( 'candidates' => $this->scoped_ordered_posts[ $scope ][ $key ], 'ordered' => true );
 	}
 
 	/**
@@ -309,6 +352,9 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$id = (int) $value;
 			$file = $this->catalogue->file_for( $id );
 			if ( null === $file ) {
+				$file = $this->storage->indexed_post_file( $id );
+			}
+			if ( null === $file ) {
 				return null;
 			}
 			$witness = WP_Markdown_File_Witness::take( $file['absolute'] );
@@ -346,9 +392,21 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				return $this->ordered_projection( $posts, $access );
 			}
 			$posts = array();
+			$candidates = array();
 			$ids   = array();
 			$predicate = $access->predicate();
 			$scope = $this->post_type_scope( $access );
+			$key = null === $scope ? null : $this->parse_key( $scope );
+			$ordered = false;
+			if ( null !== $key && isset( $this->scoped_posts[ $key ] ) ) {
+				$cached = $this->ordered_scoped_candidates( $key, $this->scoped_posts[ $key ], $access );
+				$posts = $cached['candidates'];
+				$ordered = $cached['ordered'];
+				if ( null !== $predicate ) {
+					$posts = array_values( array_filter( $posts, fn( array $candidate ): bool => $this->matches( $candidate['row'], $predicate ) ) );
+				}
+				return $this->ordered_projection( $posts, $access, $ordered );
+			}
 			if ( null === $scope ) {
 				$this->catalogue->begin_scan();
 			}
@@ -394,16 +452,27 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 					}
 				}
 				$this->catalogue->remember( $witness, $file, $post, $row );
-				if ( null !== $predicate && ! $this->matches( $row, $predicate ) ) {
-					continue;
+				$candidate = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
+				$candidates[] = $candidate;
+				if ( null === $predicate || $this->matches( $row, $predicate ) ) {
+					$posts[] = $candidate;
 				}
-				$posts[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 			}
 			if ( null === $scope ) {
 				$this->catalogue->complete_scan();
+			} elseif ( null !== $key ) {
+				// A scoped corpus is immutable for this runtime after its initial
+				// verified traversal. Canonical writes clear this snapshot first.
+				$this->scoped_posts[ $key ] = $candidates;
+				if ( null !== $predicate ) {
+					$posts = array_values( array_filter( $candidates, fn( array $candidate ): bool => $this->matches( $candidate['row'], $predicate ) ) );
+				}
+				$cached = $this->ordered_scoped_candidates( $key, $candidates, $access );
+				$posts = null === $predicate ? $cached['candidates'] : array_values( array_filter( $cached['candidates'], fn( array $candidate ): bool => $this->matches( $candidate['row'], $predicate ) ) );
+				$ordered = $cached['ordered'];
 			}
 
-			return $this->ordered_projection( $posts, $access );
+			return $this->ordered_projection( $posts, $access, $ordered ?? false );
 		} catch ( Throwable $error ) {
 			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
 		}
@@ -415,11 +484,11 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	 * @param array<int,array<string,mixed>> $posts
 	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
-	private function ordered_projection( array $posts, WP_Markdown_Native_Table_Access $access ): array|WP_Markdown_Query_Result {
+	private function ordered_projection( array $posts, WP_Markdown_Native_Table_Access $access, bool $ordered = false ): array|WP_Markdown_Query_Result {
 		try {
 			$rows = array_map( static fn( array $candidate ): array => $candidate['row'], $posts );
 			if ( ! in_array( 'post_content', $access->projection(), true ) ) {
-				return $this->bounded_rows( $rows, $access );
+				return $this->bounded_rows( $rows, $access, null, $ordered );
 			}
 			// A body is read only for the posts the bound actually returns,
 			// and the file must still be the one the row was taken from.
@@ -433,7 +502,8 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 						return $this->malformed( 'changed_post', 'A canonical Markdown post changed while it was being read.' );
 					}
 					return $this->row( $post );
-				}
+				},
+				$ordered
 			);
 		} catch ( Throwable $error ) {
 			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
@@ -561,15 +631,6 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
-		$predicate = $access->predicate();
-		if ( null === $predicate || $this->identity_column !== $predicate->column() ) {
-			return $this->failure(
-				'markdown_db_native_unsupported_query',
-				'unsupported_partition_access',
-				'The native partition provider requires an exact identity predicate.'
-			);
-		}
-
 		$lock = $this->partition_lock();
 		if ( $lock instanceof WP_Markdown_Query_Result ) {
 			return $lock;
@@ -583,41 +644,96 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 				return array();
 			}
 
-			$identities = array();
-			foreach ( $predicate->values() as $value ) {
-				$normalized = $this->schema->column( $this->identity_column )->normalize( $value );
-				if ( ! is_int( $normalized ) && ! is_string( $normalized ) ) {
-					return $this->malformed( 'invalid_partition_identity', 'The requested partition identity cannot be normalized.' );
-				}
-				$identity = (string) $normalized;
-				$identities[ $identity ] = $normalized;
+			$predicate = $access->predicate();
+			$rows = $this->exact_rows( $generation, $access, $predicate );
+			if ( null === $rows ) {
+				$rows = $this->generation_rows( $generation );
 			}
-			if ( $access->order() === $this->identity_column ) {
-				usort(
-					$identities,
-					fn( mixed $left, mixed $right ): int => $this->schema->compare_values( $this->identity_column, $left, $right )
-				);
+			if ( $rows instanceof WP_Markdown_Query_Result ) {
+				return $rows;
 			}
-
-			$rows = array();
-			foreach ( $identities as $normalized ) {
-				if ( $access->order() === $this->identity_column && count( $rows ) >= $access->limit() ) {
-					break;
-				}
-				$identity = (string) $normalized;
-				$row = $this->partition_row( $generation, $identity );
-				if ( $row instanceof WP_Markdown_Query_Result ) {
-					return $row;
-				}
-				if ( null !== $row ) {
-					$rows[] = $row;
-				}
+			if ( null !== $predicate ) {
+				$rows = array_values( array_filter( $rows, fn( array $row ): bool => $this->schema->matches( $row, array( $predicate ) ) ) );
 			}
 			return $this->bounded_rows( $rows, $access );
 		} finally {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	/**
+	 * Return hash-addressed rows when the executor supplied an exact identity
+	 * predicate. A null return deliberately selects the complete scan path.
+	 *
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result|null
+	 */
+	private function exact_rows( string $generation, WP_Markdown_Native_Table_Access $access, ?WP_Markdown_Native_Query_Predicate $predicate ): array|WP_Markdown_Query_Result|null {
+		if ( null === $predicate
+			|| $this->identity_column !== $predicate->column()
+			|| ! in_array( $predicate->operator(), array( '=', 'IN' ), true )
+			|| array() === $predicate->values()
+		) {
+			return null;
+		}
+
+		$identities = array();
+		foreach ( $predicate->values() as $value ) {
+			$normalized = $this->schema->column( $this->identity_column )->normalize( $value );
+			if ( ! is_int( $normalized ) && ! is_string( $normalized ) ) {
+				return $this->malformed( 'invalid_partition_identity', 'The requested partition identity cannot be normalized.' );
+			}
+			$identities[ (string) $normalized ] = $normalized;
+		}
+		if ( $access->order() === $this->identity_column ) {
+			usort( $identities, fn( mixed $left, mixed $right ): int => $this->schema->compare_values( $this->identity_column, $left, $right ) );
+		}
+
+		$rows = array();
+		foreach ( $identities as $normalized ) {
+			if ( $access->order() === $this->identity_column && count( $rows ) >= $access->limit() ) {
+				break;
+			}
+			$row = $this->partition_row( $generation, (string) $normalized );
+			if ( $row instanceof WP_Markdown_Query_Result ) {
+				return $row;
+			}
+			if ( null !== $row ) {
+				$rows[] = $row;
+			}
+		}
+		return $rows;
+	}
+
+	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	private function generation_rows( string $generation ): array|WP_Markdown_Query_Result {
+		$entries = @scandir( $generation );
+		if ( false === $entries ) {
+			return $this->malformed( 'unreadable_partition_generation', 'The active canonical partition generation cannot be enumerated.' );
+		}
+
+		$rows = array();
+		$identities = array();
+		foreach ( $entries as $entry ) {
+			// Only content-addressed v1 row files participate in the generation.
+			if ( 1 !== preg_match( '/^[a-f0-9]{64}\.json$/D', $entry ) ) {
+				continue;
+			}
+			$row = $this->partition_row( $generation, null, $entry );
+			if ( $row instanceof WP_Markdown_Query_Result ) {
+				return $row;
+			}
+			if ( null === $row ) {
+				return $this->malformed( 'missing_partition_row', 'A canonical partition row disappeared while it was being read.' );
+			}
+			$identity = (string) $this->schema->column( $this->identity_column )->normalize( $row[ $this->identity_column ] );
+			if ( isset( $identities[ $identity ] ) ) {
+				return $this->malformed( 'duplicate_partition_identity', 'The active canonical partition generation contains duplicate identities.' );
+			}
+			$identities[ $identity ] = true;
+			$rows[] = $row;
+		}
+		return $rows;
 	}
 
 	/** @return resource|WP_Markdown_Query_Result */
@@ -669,8 +785,9 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 	}
 
 	/** @return array<string,mixed>|WP_Markdown_Query_Result|null */
-	private function partition_row( string $generation, string $identity ): array|WP_Markdown_Query_Result|null {
-		$path = $generation . DIRECTORY_SEPARATOR . hash( 'sha256', $identity ) . '.json';
+	private function partition_row( string $generation, ?string $identity = null, ?string $filename = null ): array|WP_Markdown_Query_Result|null {
+		$filename ??= hash( 'sha256', (string) $identity ) . '.json';
+		$path = $generation . DIRECTORY_SEPARATOR . $filename;
 		if ( ! file_exists( $path ) && ! is_link( $path ) ) {
 			return null;
 		}
@@ -680,13 +797,25 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 		}
 		$metadata = is_array( $data ) ? ( $data['_mdi_partition'] ?? null ) : null;
 		$row      = is_array( $data ) ? ( $data['row'] ?? null ) : null;
-		if ( ! is_array( $metadata )
+		$stored_identity = is_array( $metadata ) ? ( $metadata['identity'] ?? null ) : null;
+		$normalized = is_array( $row ) ? $this->schema->column( $this->identity_column )->normalize( $row[ $this->identity_column ] ?? null ) : null;
+		if ( ! is_array( $data )
+			|| 2 !== count( $data )
+			|| array_diff_key( $data, array( '_mdi_partition' => true, 'row' => true ) )
+			|| array_diff_key( array( '_mdi_partition' => true, 'row' => true ), $data )
+			|| ! is_array( $metadata )
+			|| 3 !== count( $metadata )
+			|| array_diff_key( $metadata, array( 'version' => true, 'identity_column' => true, 'identity' => true ) )
+			|| array_diff_key( array( 'version' => true, 'identity_column' => true, 'identity' => true ), $metadata )
 			|| 1 !== ( $metadata['version'] ?? null )
 			|| $this->identity_column !== ( $metadata['identity_column'] ?? null )
-			|| $identity !== ( $metadata['identity'] ?? null )
+			|| ! is_string( $stored_identity )
+			|| ( null !== $identity && $identity !== $stored_identity )
+			|| hash( 'sha256', $stored_identity ) . '.json' !== $filename
 			|| ! is_array( $row )
 			|| true !== $this->schema->validate_row( $row )
-			|| $identity !== (string) $this->schema->column( $this->identity_column )->normalize( $row[ $this->identity_column ] )
+			|| ( ! is_int( $normalized ) && ! is_string( $normalized ) )
+			|| $stored_identity !== (string) $normalized
 		) {
 			return $this->malformed( 'invalid_partition_row', 'The requested canonical partition row does not match its identity or schema.' );
 		}

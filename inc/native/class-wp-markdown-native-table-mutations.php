@@ -147,11 +147,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( $appended instanceof WP_Markdown_Query_Result ) {
 					return $appended;
 				}
-				if ( ! $this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ), $this->transactions ) ) {
-					// A snapshot without a current index stays correct and simply
-					// costs a rebuild on the next insert.
-					$this->index->forget( $suffix, $this->transactions );
-				}
+				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
 				$provider->append_row( $row );
 				return $this->insert_result( $row, $definition );
 			}
@@ -521,7 +517,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 
 			if ( 0 === $affected ) {
-				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			$violation = $this->unique_set_violation( $retained, $definition, $schema );
@@ -532,9 +528,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
-			// The republished snapshot invalidates the previous index, so it is
-			// refreshed from the rows already in memory.
-			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ), $this->transactions );
+			// The sidecar is derived state. Keep this runtime's witnessed index
+			// current without republishing it after every canonical table write.
+			$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
 			$provider->replace_rows( $retained );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
@@ -710,10 +706,33 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 			}
-			if ( $this->duplicates_unique_index( $row, $seen, $definition, $schema ) ) {
-				return $this->failure( 'duplicate_key', 'The UPDATE row duplicates a persisted unique key.' );
+			foreach ( $definition['indexes'] as $position => $index ) {
+				if ( true !== ( $index['unique'] ?? false ) ) {
+					continue;
+				}
+				$parts = array();
+				foreach ( $index['columns'] as $column ) {
+					$name = (string) ( $column['name'] ?? '' );
+					if ( ! array_key_exists( $name, $row ) || null === $row[ $name ] ) {
+						// MySQL permits multiple NULL values in a unique index.
+						continue 2;
+					}
+					$key = $schema->value_key(
+						$name,
+						$this->unique_index_value( $row[ $name ], $column['length'] ?? null )
+					);
+					if ( null === $key ) {
+						continue 2;
+					}
+					$parts[] = $key;
+				}
+				$name = (string) ( $index['name'] ?? $position );
+				$key  = implode( "\x1f", $parts );
+				if ( isset( $seen[ $name ][ $key ] ) ) {
+					return $this->failure( 'duplicate_key', 'The UPDATE row duplicates a persisted unique key.' );
+				}
+				$seen[ $name ][ $key ] = true;
 			}
-			$seen[] = $row;
 		}
 		return null;
 	}

@@ -796,6 +796,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return $predicates;
 		}
+		if ( $this->match_keyword( 'NOT' ) ) {
+			$this->expect_keyword( 'EXISTS' );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$query = $this->select( true );
+			if ( ! $query instanceof WP_Markdown_Native_SQL_Select ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return array( new WP_Markdown_Native_SQL_Subquery_Predicate( 'NOT EXISTS', null, $query ) );
+		}
 		if ( $this->match_keyword( 'EXISTS' ) ) {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 			$query = $this->select( true );

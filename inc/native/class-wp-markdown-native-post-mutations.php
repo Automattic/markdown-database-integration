@@ -31,7 +31,21 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		}
 		$schema = $bound['schema'];
 		$definition = $schema->definition();
-		$row = $this->complete_row( $insert->values(), $definition, $this->existing_rows( $bound['provider'], $schema ) );
+		// What already exists is consulted for one reason: to derive an
+		// identifier the statement left for the table to generate. That is a
+		// question about one integer per row, so only that integer is read.
+		// Asking for whole rows would hydrate every canonical body off disk to
+		// answer it, and an INSERT would then cost the corpus.
+		$generated = $this->generated_identity_columns( $insert->values(), $definition );
+		$existing  = array() === $generated
+			? array()
+			: $this->existing_rows(
+				$bound['provider'],
+				$schema,
+				null,
+				array_values( array_unique( array_merge( $generated, array( $schema->natural_order() ) ) ) )
+			);
+		$row = $this->complete_row( $insert->values(), $definition, $existing );
 		if ( $row instanceof WP_Markdown_Query_Result ) {
 			return $row;
 		}
@@ -66,7 +80,7 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 			}
 		}
 		$affected = 0;
-		foreach ( $this->existing_rows( $bound['provider'], $schema ) as $row ) {
+		foreach ( $this->existing_rows( $bound['provider'], $schema, $this->identity_predicate( $write->predicates(), $schema ) ) as $row ) {
 			if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
 				continue;
 			}
@@ -103,14 +117,55 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		return $registered;
 	}
 
-	/** @return array<int,array<string,mixed>> */
-	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema ): array {
-		$access = new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX );
+	/**
+	 * @param  array<int,string>|null $projection Columns to read, or every column.
+	 * @return array<int,array<string,mixed>>
+	 */
+	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null ): array {
+		$access = new WP_Markdown_Native_Table_Access( $projection ?? $schema->column_names(), $predicate, $schema->natural_order(), PHP_INT_MAX, false, array(), null === $predicate ? array() : array( $predicate ) );
 		$rows = $provider->read( $access );
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
 			return array();
 		}
 		return is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
+	}
+
+	/**
+	 * The auto-increment columns this statement leaves for the table to generate.
+	 *
+	 * Mirrors the identity decision made while completing the row, so the read
+	 * that answers it is taken exactly when the answer is used.
+	 *
+	 * @param  array<string,int|string|null> $provided   Supplied columns.
+	 * @param  array<string,mixed>           $definition Compiled table definition.
+	 * @return array<int,string>
+	 */
+	private function generated_identity_columns( array $provided, array $definition ): array {
+		$columns = array();
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( true !== ( $column['auto_increment'] ?? false ) ) {
+				continue;
+			}
+			if ( ! array_key_exists( $name, $provided ) || null === $provided[ $name ] || '0' === (string) $provided[ $name ] ) {
+				$columns[] = (string) $name;
+			}
+		}
+		return $columns;
+	}
+
+	/** @param array<int,WP_Markdown_Native_Table_Predicate> $predicates */
+	private function identity_predicate( array $predicates, WP_Markdown_Native_Table_Schema $schema ): ?WP_Markdown_Native_Query_Predicate {
+		foreach ( $predicates as $predicate ) {
+			if ( $schema->natural_order() !== $predicate->column()
+				|| $predicate->matches_null()
+				|| array() === $predicate->values()
+				|| ! in_array( $predicate->operator(), array( '=', 'IN' ), true )
+			) {
+				continue;
+			}
+			return new WP_Markdown_Native_Query_Predicate( $predicate->column(), '=', $predicate->values() );
+		}
+		return null;
 	}
 
 	/**

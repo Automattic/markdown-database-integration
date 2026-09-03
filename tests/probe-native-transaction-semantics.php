@@ -155,12 +155,12 @@ $insert_after_rollback = probe_canonical_value( $root, 'probe_created' );
 // Terminating mid-transaction must leave a journal that the next boot rolls back.
 probe_statement( $runtime, 'START TRANSACTION' );
 probe_statement( $runtime, "UPDATE wp_options SET option_value = 'torn-write' WHERE option_name = 'probe_option'" );
-$journal_present = is_file( $root . '/_journal/native-transaction.json' );
+$journal_present = array() !== ( glob( $root . '/_journal/native-transaction-*.json' ) ?: array() );
 $torn_value      = probe_canonical_value( $root, 'probe_option' );
 unset( $runtime );
 $recovered_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
 $recovered_value   = probe_canonical_value( $root, 'probe_option' );
-$journal_cleared   = ! is_file( $root . '/_journal/native-transaction.json' );
+$journal_cleared   = array() === ( glob( $root . '/_journal/native-transaction-*.json' ) ?: array() );
 
 $control_executes = array_reduce(
 	$observations,

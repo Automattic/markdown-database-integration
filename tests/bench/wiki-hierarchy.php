@@ -13,18 +13,21 @@ require_once __DIR__ . '/../bench-lib/shared-helpers.php';
 
 return function (): array {
     static $seeded = false;
+    static $root_id = 0;
 
     global $wpdb;
     $runtime = mdi_bench_runtime();
 
     $root_slug = 'bench-wiki-hierarchy';
-    $root_id = (int) $wpdb->get_var(
-        $wpdb->prepare(
-            "SELECT ID FROM {$wpdb->posts} WHERE post_type = %s AND post_name = %s LIMIT 1",
-            'wiki',
-            $root_slug
-        )
-    );
+    if (!$seeded) {
+        $root_id = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} WHERE post_type = %s AND post_name = %s LIMIT 1",
+                'wiki',
+                $root_slug
+            )
+        );
+    }
 
     if (!$seeded && $root_id <= 0) {
         $root_id = (int) wp_insert_post([
@@ -65,6 +68,7 @@ return function (): array {
     }
     $seeded = true;
 
+    $query_started = hrtime(true);
     $rows = $wpdb->get_results(
         $wpdb->prepare(
             "SELECT p.ID, p.post_parent, p.post_name, p.post_title
@@ -86,6 +90,7 @@ return function (): array {
             '_intelligence_wiki_calendar_parent'
         )
     );
+    $query_duration_ms = (hrtime(true) - $query_started) / 1000000;
 
     if (!is_array($rows) || '' !== (string) $wpdb->last_error) {
         throw new RuntimeException('Wiki hierarchy query failed: ' . (string) $wpdb->last_error);
@@ -93,9 +98,10 @@ return function (): array {
 
     return [
         'metrics' => [
-            'rows_returned' => count($rows),
-            'seeded_posts'   => 1001,
-            'excluded_rows'  => 100,
+            'rows_returned'     => count($rows),
+            'seeded_posts'      => 1001,
+            'excluded_rows'     => 100,
+            'query_duration_ms' => $query_duration_ms,
         ],
         'metadata' => [
             'query_shape' => 'posts hierarchy ordered with two correlated postmeta NOT EXISTS predicates',

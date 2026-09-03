@@ -68,9 +68,11 @@ function rows( string $snapshot ): array {
 }
 
 $first = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (10, 'a')", 'wp_' ) );
+$sidecar_inode = fileinode( $index_path );
 $second = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (11, 'b')", 'wp_' ) );
 $third = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (12, 'c')", 'wp_' ) );
 $index_written = is_file( $index_path );
+$sidecar_inode_after_appends = fileinode( $index_path );
 $sequential = array_map( static fn( array $row ): string => (string) $row['id'], rows( $snapshot ) );
 
 // Appending must leave the snapshot valid and readable through the engine.
@@ -84,6 +86,7 @@ $explicit_duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT 
 
 // A discarded index must rebuild rather than corrupt the sequence.
 unlink( $index_path );
+$runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
 $after_discard = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (13, 'd')", 'wp_' ) );
 $rebuilt = is_file( $index_path );
 
@@ -115,12 +118,12 @@ $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION', 'wp_' ) )
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (17, 'rollback')", 'wp_' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK', 'wp_' ) );
 $after_rollback = count( rows( $snapshot ) );
-$post_rollback_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (16, 'g')", 'wp_' ) );
+$post_rollback_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (17, 'g')", 'wp_' ) );
 $post_rollback_ids = array_map( static fn( array $row ): string => (string) $row['id'], rows( $snapshot ) );
 
 // REPLACE should not rescan the published snapshot just to rebuild a derived
 // index. The next ordinary insert rebuilds it while preserving the sequence.
-$replaced = $runtime->execute( new WP_Markdown_Query_Request( "REPLACE INTO wp_items (code, label) VALUES (16, 'replaced')", 'wp_' ) );
+$replaced = $runtime->execute( new WP_Markdown_Query_Request( "REPLACE INTO wp_items (code, label) VALUES (17, 'replaced')", 'wp_' ) );
 $replace_deferred_index = ! is_file( $index_path );
 $after_replace = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_items (code, label) VALUES (18, 'h')", 'wp_' ) );
 $replace_rebuilt_index = is_file( $index_path );
@@ -130,6 +133,8 @@ $checks = array(
 	'appended inserts assign sequential identifiers' => 1 === $first->return_value()
 		&& array( '1', '2', '3' ) === $sequential,
 	'an index file is written alongside the snapshot' => $index_written,
+	'repeated appends do not republish the derived sidecar' => false !== $sidecar_inode
+		&& $sidecar_inode === $sidecar_inode_after_appends,
 	'an appended snapshot stays readable' => 1 === $selected->return_value()
 		&& 'c' === ( $selected->wpdb_state()['last_result'][0]->label ?? null ),
 	'a unique key recorded in the index is enforced' => false === $duplicate->return_value()
@@ -147,7 +152,7 @@ $checks = array(
 	'same-size same-mtime atomic replacement invalidates the index' => 1 === $after_replacement->return_value()
 		&& '6' === (string) ( rows( $snapshot )[5]['id'] ?? null ),
 	'a rolled back insert restores the snapshot' => $before_rollback === $after_rollback,
-	'inserts after a rollback stay coherent' => 1 === $post_rollback_insert->return_value()
+	'a rolled-back identity and unique key are immediately reusable' => 1 === $post_rollback_insert->return_value()
 		&& array( '1', '2', '3', '4', '5', '6', '7' ) === $post_rollback_ids,
 	'REPLACE defers its derived index rebuild' => 2 === $replaced->return_value()
 		&& $replace_deferred_index,

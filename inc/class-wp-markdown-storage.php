@@ -80,6 +80,15 @@ class WP_Markdown_Storage {
 	private $index = null;
 
 	/**
+	 * Whether the index was last built by a complete walk of the corpus.
+	 *
+	 * A complete index answers "no file carries this identity" as well as it
+	 * answers where a known identity lives. A partial one can only answer the
+	 * second, so it must be completed before absence is believed.
+	 */
+	private bool $index_is_complete = false;
+
+	/**
 	 * Callback to resolve a post's slug and parent ID by post ID.
 	 * Set by the write engine so we can build hierarchical paths.
 	 *
@@ -339,10 +348,15 @@ class WP_Markdown_Storage {
 				}
 				$this->index[ $id ] = $file_path;
 
-				if ( null === $previous_path ) {
-					// No prior in-memory path — populate the rest of the index
-					// by scanning disk. rebuild_index() honors the claim above,
-					// so the fresh write is safe.
+				if ( null === $previous_path && ! $this->index_is_complete ) {
+					// No prior in-memory path, and the index cannot yet speak
+					// for the whole corpus, so absence here is not proof that
+					// no other file carries this identity. Scan disk to settle
+					// it. rebuild_index() honors the claim above, so the fresh
+					// write is safe. An index already built by a complete walk
+					// has settled it, and a new identity is new: rescanning the
+					// corpus for every insert would make a write cost the
+					// corpus rather than the statement.
 					$this->rebuild_index();
 					// rebuild_index may have identified a stale copy at a
 					// different path and already unlinked it; refresh
@@ -478,6 +492,7 @@ class WP_Markdown_Storage {
 			}
 		}
 		$this->index = null;
+		$this->index_is_complete = false;
 	}
 
 	/** Delete Markdown files while propagating any incomplete filesystem mutation. */
@@ -496,6 +511,7 @@ class WP_Markdown_Storage {
 			}
 		}
 		$this->index = null;
+		$this->index_is_complete = false;
 	}
 
 	/**
@@ -1209,6 +1225,7 @@ class WP_Markdown_Storage {
 		$claimed     = is_array( $this->index ) ? $this->index : array();
 		$this->index = array();
 		$mtimes      = array();
+		$this->index_is_complete = false;
 
 		if ( ! is_dir( $this->content_dir ) ) {
 			$this->index = $claimed;
@@ -1278,6 +1295,10 @@ class WP_Markdown_Storage {
 				$this->index[ $id ] = $path;
 			}
 		}
+
+		// Every canonical file was visited, so the index now speaks for the
+		// whole corpus and not only for the identities already asked about.
+		$this->index_is_complete = true;
 	}
 
 	/**

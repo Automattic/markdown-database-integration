@@ -366,8 +366,9 @@ class WP_Markdown_Storage {
 
 				// Remove old file if path changed (slug change or reparent).
 				if ( null !== $previous_path && $previous_path !== $file_path ) {
-					$this->safe_unlink( $previous_path );
-					$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
+					if ( $this->safe_unlink_owned_by( $previous_path, $id ) ) {
+						$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
+					}
 				}
 			}
 			return $file_path;
@@ -455,7 +456,7 @@ class WP_Markdown_Storage {
 			return 'failed';
 		}
 
-		$result = $this->safe_unlink( $file_path );
+		$result = $this->safe_unlink_owned_by( $file_path, $post_id );
 
 		if ( $result ) {
 			// Clean up empty directories up to the post type dir.
@@ -748,6 +749,11 @@ class WP_Markdown_Storage {
 		return is_array( $after ) && $before['dev'] === $after['dev'] && $before['ino'] === $after['ino'] && ! is_link( $path ) && @unlink( $path );
 	}
 
+	/** Remove a cached post path only when it still carries that post's ID. */
+	private function safe_unlink_owned_by( string $path, int $post_id ): bool {
+		return $post_id === $this->extract_id_from_file( $path ) && $this->safe_unlink( $path );
+	}
+
 	/**
 	 * Parse one markdown file and apply a directory-derived parent hint.
 	 *
@@ -851,7 +857,7 @@ class WP_Markdown_Storage {
 			return false;
 		}
 		if ( null !== $old_path && $old_path !== $file_path && file_exists( $old_path ) ) {
-			if ( ! $this->safe_unlink( $old_path ) ) {
+			if ( ! $this->safe_unlink_owned_by( $old_path, $id ) ) {
 				@unlink( $tmp_path );
 				return false;
 			}
@@ -1253,8 +1259,9 @@ class WP_Markdown_Storage {
 			if ( isset( $claimed[ $id ] ) ) {
 				$canonical = $claimed[ $id ];
 				if ( $file !== $canonical ) {
-					$this->safe_unlink( $file );
-					$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+					if ( $this->safe_unlink_owned_by( $file, $id ) ) {
+						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+					}
 				}
 				$this->index[ $id ] = $canonical;
 				continue;
@@ -1276,14 +1283,16 @@ class WP_Markdown_Storage {
 				continue;
 			}
 			if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
-				$this->safe_unlink( $existing );
-				$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
+				if ( $this->safe_unlink_owned_by( $existing, $id ) ) {
+					$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
+				}
 				$this->index[ $id ] = $file;
 				$mtimes[ $id ]      = $new_mtime;
 				continue;
 			}
-			$this->safe_unlink( $file );
-			$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+			if ( $this->safe_unlink_owned_by( $file, $id ) ) {
+				$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+			}
 		}
 
 		// Ensure any claimed entries that didn't match a disk scan still

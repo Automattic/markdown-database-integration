@@ -346,6 +346,59 @@ assert_true( ! file_exists( $tmp_root . '/wiki/root-parent/mid-parent.md' ), 'ol
 assert_true( ! is_dir( $tmp_root . '/wiki/root-parent' ), 'empty parent directory removed' );
 
 // ---------------------------------------------------------------------------
+// Test 7 — a warmed index must not delete a reused cached path
+// ---------------------------------------------------------------------------
+echo "\nTest 7: stale cached paths preserve a different post that reused them\n";
+
+rm_rf( $tmp_root );
+write_leaf( $tmp_root . '/wiki/original.md', 10, 'original' );
+
+$storage = new WP_Markdown_Storage( $tmp_root, array() );
+assert_true( null !== $storage->read_post( 10 ), 'initial read completes the index' );
+
+rename( $tmp_root . '/wiki/original.md', $tmp_root . '/wiki/moved.md' );
+write_leaf( $tmp_root . '/wiki/original.md', 20, 'replacement' );
+
+$updated = (object) array(
+	'ID'           => 10,
+	'post_type'    => 'wiki',
+	'post_name'    => 'updated',
+	'post_parent'  => 0,
+	'post_status'  => 'publish',
+	'post_title'   => 'Updated',
+	'post_content' => 'updated body',
+);
+$written_path = $storage->write_post( $updated );
+
+assert_eq( $written_path, $tmp_root . '/wiki/updated.md', 'updated post is written to its new path' );
+assert_true( file_exists( $tmp_root . '/wiki/original.md' ), 'reused cached path is preserved' );
+assert_eq( $storage->read_file( $tmp_root . '/wiki/original.md', true )->ID ?? null, 20, 'reused path retains its new owner' );
+
+// ---------------------------------------------------------------------------
+// Test 8 — a fresh write still wins over a stale duplicate during first scan
+// ---------------------------------------------------------------------------
+echo "\nTest 8: fresh writes remain canonical during initial duplicate cleanup\n";
+
+rm_rf( $tmp_root );
+write_leaf( $tmp_root . '/wiki/stale/fresh.md', 30, 'fresh' );
+
+$storage = new WP_Markdown_Storage( $tmp_root, array() );
+$fresh = (object) array(
+	'ID'           => 30,
+	'post_type'    => 'wiki',
+	'post_name'    => 'fresh',
+	'post_parent'  => 0,
+	'post_status'  => 'publish',
+	'post_title'   => 'Fresh',
+	'post_content' => 'fresh body',
+);
+$written_path = $storage->write_post( $fresh );
+
+assert_eq( $written_path, $tmp_root . '/wiki/fresh.md', 'fresh write returns its canonical path' );
+assert_true( file_exists( $tmp_root . '/wiki/fresh.md' ), 'fresh write is preserved after duplicate cleanup' );
+assert_true( ! file_exists( $tmp_root . '/wiki/stale/fresh.md' ), 'stale duplicate is removed' );
+
+// ---------------------------------------------------------------------------
 // Cleanup
 // ---------------------------------------------------------------------------
 rm_rf( $tmp_root );

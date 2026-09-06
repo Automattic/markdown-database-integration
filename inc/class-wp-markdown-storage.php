@@ -54,6 +54,8 @@ if ( ! class_exists( 'WP_Markdown_Content_Layout_Profiles' ) ) {
 	require_once __DIR__ . '/class-wp-markdown-content-layout-profiles.php';
 }
 
+final class WP_Markdown_Native_Post_Write_Lock_Exception extends RuntimeException {}
+
 class WP_Markdown_Storage {
 
 
@@ -79,14 +81,11 @@ class WP_Markdown_Storage {
 	 */
 	private $index = null;
 
-	/**
-	 * Whether the index was last built by a complete walk of the corpus.
-	 *
-	 * A complete index answers "no file carries this identity" as well as it
-	 * answers where a known identity lives. A partial one can only answer the
-	 * second, so it must be completed before absence is believed.
-	 */
-	private bool $index_is_complete = false;
+	/** Reentrant depth for the native generated-post write lock. */
+	private int $native_post_write_lock_depth = 0;
+
+	/** A generated-ID scan completed while the current native write lock is held. */
+	private bool $native_post_allocation_scanned = false;
 
 	/**
 	 * Callback to resolve a post's slug and parent ID by post ID.
@@ -348,15 +347,10 @@ class WP_Markdown_Storage {
 				}
 				$this->index[ $id ] = $file_path;
 
-				if ( null === $previous_path && ! $this->index_is_complete ) {
-					// No prior in-memory path, and the index cannot yet speak
-					// for the whole corpus, so absence here is not proof that
-					// no other file carries this identity. Scan disk to settle
-					// it. rebuild_index() honors the claim above, so the fresh
-					// write is safe. An index already built by a complete walk
-					// has settled it, and a new identity is new: rescanning the
-					// corpus for every insert would make a write cost the
-					// corpus rather than the statement.
+				if ( null === $previous_path && ! $this->native_post_allocation_scanned ) {
+					// Another process may add a canonical file after any prior
+					// walk. In-memory absence is therefore never proof of absence
+					// on disk; settle it before accepting a new identity.
 					$this->rebuild_index();
 					// rebuild_index may have identified a stale copy at a
 					// different path and already unlinked it; refresh
@@ -493,7 +487,6 @@ class WP_Markdown_Storage {
 			}
 		}
 		$this->index = null;
-		$this->index_is_complete = false;
 	}
 
 	/** Delete Markdown files while propagating any incomplete filesystem mutation. */
@@ -512,7 +505,6 @@ class WP_Markdown_Storage {
 			}
 		}
 		$this->index = null;
-		$this->index_is_complete = false;
 	}
 
 	/**
@@ -1231,7 +1223,6 @@ class WP_Markdown_Storage {
 		$claimed     = is_array( $this->index ) ? $this->index : array();
 		$this->index = array();
 		$mtimes      = array();
-		$this->index_is_complete = false;
 
 		if ( ! is_dir( $this->content_dir ) ) {
 			$this->index = $claimed;
@@ -1305,9 +1296,55 @@ class WP_Markdown_Storage {
 			}
 		}
 
-		// Every canonical file was visited, so the index now speaks for the
-		// whole corpus and not only for the identities already asked about.
-		$this->index_is_complete = true;
+	}
+
+	/**
+	 * Serialize generated native post identities across processes sharing this
+	 * canonical root. The operation includes both allocation and publication.
+	 */
+	public function synchronize_native_post_write( callable $operation ): mixed {
+		if ( $this->native_post_write_lock_depth > 0 ) {
+			++$this->native_post_write_lock_depth;
+			try {
+				return $operation();
+			} finally {
+				--$this->native_post_write_lock_depth;
+			}
+		}
+
+		$root = realpath( $this->content_dir );
+		if ( false === $root || ! is_dir( $root ) || is_link( $this->content_dir ) ) {
+			throw new WP_Markdown_Native_Post_Write_Lock_Exception( 'Markdown DB: The canonical content root is unavailable for post mutation locking.' );
+		}
+		$path = $root . DIRECTORY_SEPARATOR . '.mdi-native-posts.lock';
+		if ( is_link( $path ) || ( file_exists( $path ) && ! is_file( $path ) ) ) {
+			throw new WP_Markdown_Native_Post_Write_Lock_Exception( 'Markdown DB: The native post mutation lock is unsafe.' );
+		}
+		$lock = @fopen( $path, 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			throw new WP_Markdown_Native_Post_Write_Lock_Exception( 'Markdown DB: The native post mutation lock cannot be acquired.' );
+		}
+
+		$this->native_post_write_lock_depth = 1;
+		$this->native_post_allocation_scanned = false;
+		try {
+			return $operation();
+		} finally {
+			$this->native_post_write_lock_depth = 0;
+			$this->native_post_allocation_scanned = false;
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/** The current locked operation has scanned every canonical post for an ID. */
+	public function mark_native_post_allocation_scanned(): void {
+		if ( $this->native_post_write_lock_depth > 0 ) {
+			$this->native_post_allocation_scanned = true;
+		}
 	}
 
 	/**

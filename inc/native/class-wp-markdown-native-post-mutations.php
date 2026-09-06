@@ -10,14 +10,23 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	public function __construct(
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Table_Insert_Parser $parser,
-		private WP_Markdown_Storage $storage
+		private WP_Markdown_Storage $storage,
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
 	) {}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		if ( 1 === preg_match( '/^\s*INSERT\b/i', $request->sql() ) ) {
-			return $this->insert( $request );
+		if ( null !== $this->transactions && $this->transactions->is_active() ) {
+			return $this->failure( 'unsupported_transaction_boundary', 'Native post mutations require a transaction journal that records canonical Markdown posts.' );
 		}
-		return $this->write( $request );
+		try {
+			return $this->storage->synchronize_native_post_write(
+				fn(): WP_Markdown_Query_Result => 1 === preg_match( '/^\s*INSERT\b/i', $request->sql() )
+					? $this->insert( $request )
+					: $this->write( $request )
+			);
+		} catch ( WP_Markdown_Native_Post_Write_Lock_Exception ) {
+			return $this->failure( 'post_mutation_lock_failed', 'The canonical Markdown post mutation lock could not be acquired.' );
+		}
 	}
 
 	private function insert( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -31,12 +40,19 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		}
 		$schema = $bound['schema'];
 		$definition = $schema->definition();
+		$generated = $this->generated_identity_columns( $insert->values(), $definition );
+		return $this->insert_row( $insert, $bound, $generated );
+	}
+
+	/** @param array<int,string> $generated */
+	private function insert_row( WP_Markdown_Native_Table_Insert $insert, array $bound, array $generated ): WP_Markdown_Query_Result {
+		$schema = $bound['schema'];
+		$definition = $schema->definition();
 		// What already exists is consulted for one reason: to derive an
 		// identifier the statement left for the table to generate. That is a
 		// question about one integer per row, so only that integer is read.
 		// Asking for whole rows would hydrate every canonical body off disk to
 		// answer it, and an INSERT would then cost the corpus.
-		$generated = $this->generated_identity_columns( $insert->values(), $definition );
 		$existing  = array() === $generated
 			? array()
 			: $this->existing_rows(
@@ -45,6 +61,12 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				null,
 				array_values( array_unique( array_merge( $generated, array( $schema->natural_order() ) ) ) )
 			);
+		if ( $existing instanceof WP_Markdown_Query_Result ) {
+			return $existing;
+		}
+		if ( array() !== $generated ) {
+			$this->storage->mark_native_post_allocation_scanned();
+		}
 		$row = $this->complete_row( $insert->values(), $definition, $existing );
 		if ( $row instanceof WP_Markdown_Query_Result ) {
 			return $row;
@@ -80,7 +102,11 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 			}
 		}
 		$affected = 0;
-		foreach ( $this->existing_rows( $bound['provider'], $schema, $this->identity_predicate( $write->predicates(), $schema ) ) as $row ) {
+		$existing = $this->existing_rows( $bound['provider'], $schema, $this->identity_predicate( $write->predicates(), $schema ) );
+		if ( $existing instanceof WP_Markdown_Query_Result ) {
+			return $existing;
+		}
+		foreach ( $existing as $row ) {
 			if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
 				continue;
 			}
@@ -119,13 +145,13 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 
 	/**
 	 * @param  array<int,string>|null $projection Columns to read, or every column.
-	 * @return array<int,array<string,mixed>>
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
-	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null ): array {
+	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null ): array|WP_Markdown_Query_Result {
 		$access = new WP_Markdown_Native_Table_Access( $projection ?? $schema->column_names(), $predicate, $schema->natural_order(), PHP_INT_MAX, false, array(), null === $predicate ? array() : array( $predicate ) );
 		$rows = $provider->read( $access );
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return array();
+			return $rows;
 		}
 		return is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
 	}

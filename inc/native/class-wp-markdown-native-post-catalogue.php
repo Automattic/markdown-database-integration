@@ -84,7 +84,7 @@ final class WP_Markdown_Native_Post_Catalogue {
 	}
 
 	/** Publish a catalogue only after every canonical post has been proven. */
-	public function complete_scan(): void {
+	public function complete_scan( bool $publish = true ): void {
 		if ( ! $this->scanning ) {
 			return;
 		}
@@ -102,7 +102,14 @@ final class WP_Markdown_Native_Post_Catalogue {
 			}
 		}
 		$this->seen = array();
-		$this->persist();
+		if ( $publish ) {
+			$this->persist();
+		}
+	}
+
+	public function abort_scan(): void {
+		$this->scanning = false;
+		$this->seen     = array();
 	}
 
 	/**

@@ -386,6 +386,19 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		return $this->read_posts( $access, true );
+	}
+
+	public function read_for_allocation( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		return $this->read_posts( $access, false );
+	}
+
+	/**
+	 * @param bool $publish_catalogue Whether this complete read may publish its catalogue.
+	 */
+	private function read_posts( WP_Markdown_Native_Table_Access $access, bool $publish_catalogue ): iterable|WP_Markdown_Query_Result {
+		$scanning = false;
+		$completed = false;
 		try {
 			$posts = $this->located_candidates( $access );
 			if ( null !== $posts ) {
@@ -409,6 +422,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			}
 			if ( null === $scope ) {
 				$this->catalogue->begin_scan();
+				$scanning = true;
 			}
 			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $scope ) as $file ) {
 				// The manifest looked at this file to yield it, so its witness
@@ -459,7 +473,8 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				}
 			}
 			if ( null === $scope ) {
-				$this->catalogue->complete_scan();
+				$this->catalogue->complete_scan( $publish_catalogue );
+				$completed = true;
 			} elseif ( null !== $key ) {
 				// A scoped corpus is immutable for this runtime after its initial
 				// verified traversal. Canonical writes clear this snapshot first.
@@ -475,6 +490,10 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			return $this->ordered_projection( $posts, $access, $ordered ?? false );
 		} catch ( Throwable $error ) {
 			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
+		} finally {
+			if ( $scanning && ! $completed ) {
+				$this->catalogue->abort_scan();
+			}
 		}
 	}
 

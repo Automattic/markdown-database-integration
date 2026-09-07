@@ -59,7 +59,8 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				$bound['provider'],
 				$schema,
 				null,
-				array_values( array_unique( array_merge( $generated, array( $schema->natural_order() ) ) ) )
+				array_values( array_unique( array_merge( $generated, array( $schema->natural_order() ) ) ) ),
+				true
 			);
 		if ( $existing instanceof WP_Markdown_Query_Result ) {
 			return $existing;
@@ -147,9 +148,9 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	 * @param  array<int,string>|null $projection Columns to read, or every column.
 	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
-	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null ): array|WP_Markdown_Query_Result {
+	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null, bool $allocation = false ): array|WP_Markdown_Query_Result {
 		$access = new WP_Markdown_Native_Table_Access( $projection ?? $schema->column_names(), $predicate, $schema->natural_order(), PHP_INT_MAX, false, array(), null === $predicate ? array() : array( $predicate ) );
-		$rows = $provider->read( $access );
+		$rows = $allocation ? $provider->read_for_allocation( $access ) : $provider->read( $access );
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
 			return $rows;
 		}

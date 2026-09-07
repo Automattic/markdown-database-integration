@@ -70,6 +70,12 @@ $runtime->execute(
 		'wp_'
 	)
 );
+$runtime->execute(
+	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_corrupt_jobs (id BIGINT NOT NULL AUTO_INCREMENT, token VARCHAR(20) NOT NULL, state VARCHAR(20) NOT NULL, PRIMARY KEY (id), UNIQUE KEY token (token))',
+		'wp_'
+	)
+);
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_jobs (label) VALUES ('ready')", 'wp_' ) );
 foreach ( array(
 	"INSERT INTO wp_unique_jobs (scope, token) VALUES (NULL, 'abc1')",
@@ -87,6 +93,8 @@ foreach ( array(
 ) as $insert ) {
 	$runtime->execute( new WP_Markdown_Query_Request( $insert, 'wp_' ) );
 }
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_corrupt_jobs (token, state) VALUES ('first', 'pending')", 'wp_' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_corrupt_jobs (token, state) VALUES ('second', 'pending')", 'wp_' ) );
 
 /** @return array<int,array<string,mixed>> */
 function table_rows( string $root, string $table = 'agents' ): array {
@@ -110,6 +118,14 @@ $after_backfill = column_values( $root, 'instance_key' );
 
 $unmatched = $runtime->execute(
 	new WP_Markdown_Query_Request( "UPDATE wp_agents SET label = 'none' WHERE instance_key = 'absent'", 'wp_' )
+);
+
+// A reused index must carry NULL/empty summaries across non-key updates.
+$creates_null = $runtime->execute(
+	new WP_Markdown_Query_Request( 'UPDATE wp_agents SET instance_key = NULL WHERE id = 1', 'wp_' )
+);
+$matches_new_null = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_agents SET label = 'null-target' WHERE instance_key IS NULL", 'wp_' )
 );
 
 $deleted = $runtime->execute(
@@ -151,6 +167,17 @@ $composite_distinct = $runtime->execute(
 	new WP_Markdown_Query_Request( "UPDATE wp_unique_jobs SET scope = 'two', token = 'abc9' WHERE id = 4", 'wp_' )
 );
 
+// A first non-key UPDATE must still inspect an externally corrupted snapshot.
+$corrupt_path = $root . '/_tables/corrupt_jobs.json';
+$corrupt_rows = json_decode( (string) file_get_contents( $corrupt_path ), true, 512, JSON_THROW_ON_ERROR );
+$corrupt_rows[1]['token'] = 'first';
+$corrupt_temp = $corrupt_path . '.replacement';
+file_put_contents( $corrupt_temp, json_encode( $corrupt_rows, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) );
+rename( $corrupt_temp, $corrupt_path );
+$corrupt_non_key_update = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_corrupt_jobs SET state = 'running' WHERE id = 1", 'wp_' )
+);
+
 // A writer for one canonical table must not serialize an unrelated table.
 $agents_lock_path = $root . '/_tables/.mdi-native-' . hash( 'sha256', 'agents' ) . '.lock';
 $held_agents_lock = fopen( $agents_lock_path, 'c+b' );
@@ -174,8 +201,10 @@ $checks = array(
 	'a disjunctive NULL restriction updates every matching row' => 2 === $backfill->return_value()
 		&& array( 'default', 'default', 'keep' ) === $after_backfill,
 	'an unmatched restriction reports zero affected rows' => 0 === $unmatched->return_value(),
+	'a non-key UPDATE refreshes NULL index summaries' => 1 === $creates_null->return_value()
+		&& 1 === $matches_new_null->return_value(),
 	'DELETE removes only the restricted rows' => 1 === $deleted->return_value()
-		&& array( 'first', 'second' ) === $after_delete,
+		&& array( 'null-target', 'second' ) === $after_delete,
 	'a serialized value is not read as a statement separator' => 1 === $serialized->return_value()
 		&& 'a:1:{s:3:"key";i:42;}' === ( $serialized_rows[ count( $serialized_rows ) - 1 ]['label'] ?? null ),
 	'a semicolon inside a literal survives an update' => 1 === $semicolon_text->return_value(),
@@ -189,6 +218,8 @@ $checks = array(
 	'UPDATE rejects a duplicate composite prefix key' => false === $prefix_duplicate->return_value()
 		&& 'duplicate_key' === ( $prefix_duplicate->diagnostic()['reason'] ?? null ),
 	'UPDATE accepts the same prefix in a distinct composite scope' => 1 === $composite_distinct->return_value(),
+	'a first non-key UPDATE rejects an externally corrupt unique snapshot' => false === $corrupt_non_key_update->return_value()
+		&& 'duplicate_key' === ( $corrupt_non_key_update->diagnostic()['reason'] ?? null ),
 	'an unrelated table writes while another table is locked' => 1 === $unrelated_write->return_value()
 		&& array( 'running' ) === column_values( $root, 'label', 'jobs' ),
 	'a rolled back generic write restores the snapshot' => array( 'x', 'second', 'one; two' ) === $after_rollback,

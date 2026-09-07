@@ -148,6 +148,35 @@ final class WP_Markdown_Native_Table_Index {
 	}
 
 	/**
+	 * Apply a non-key UPDATE to the summaries of an already valid index.
+	 *
+	 * Callers retain the unique keys and auto-increment maxima, so only the
+	 * NULL and empty-value counters can change.
+	 *
+	 * @param array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int} $index
+	 * @param array<string,mixed> $before
+	 * @param array<string,mixed> $after
+	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int}
+	 */
+	public static function with_non_key_update( array $index, array $before, array $after ): array {
+		foreach ( $index['summary'] as $column => $counts ) {
+			$before_value = $before[ $column ] ?? null;
+			$after_value  = $after[ $column ] ?? null;
+			if ( null === $before_value ) {
+				--$index['summary'][ $column ]['null'];
+			} elseif ( '' === $before_value ) {
+				--$index['summary'][ $column ]['empty'];
+			}
+			if ( null === $after_value ) {
+				++$index['summary'][ $column ]['null'];
+			} elseif ( '' === $after_value ) {
+				++$index['summary'][ $column ]['empty'];
+			}
+		}
+		return $index;
+	}
+
+	/**
 	 * Decide whether a row would duplicate a recorded unique key.
 	 *
 	 * @param array{unique:array<string,array<int,string>>} $index      Current index.

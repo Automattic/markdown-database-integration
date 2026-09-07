@@ -11,6 +11,8 @@ require_once __DIR__ . '/class-wp-markdown-native-table-insert-parser.php';
 final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private string $state_root;
 	private WP_Markdown_Native_Table_Index $index;
+	/** @var array<string,WP_Markdown_File_Witness> */
+	private array $unique_sets_verified = array();
 
 	public function __construct(
 		string $state_root,
@@ -503,6 +505,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 			$retained = array();
 			$affected = 0;
+			$preserves_index_values = $write->is_update() && $this->preserves_index_values( $write->values(), $definition );
+			$updated_index = $preserves_index_values ? $index : null;
 			foreach ( $rows as $row ) {
 				if ( ! $this->restricts( $row, $predicates, $schema ) ) {
 					$retained[] = $row;
@@ -516,6 +520,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_update_row', 'The UPDATE row is outside the persisted table schema.' );
 				}
+				if ( null !== $updated_index ) {
+					$updated_index = WP_Markdown_Native_Table_Index::with_non_key_update( $updated_index, $row, $updated );
+				}
 				$retained[] = $updated;
 			}
 
@@ -523,17 +530,23 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
-			$violation = $this->unique_set_violation( $retained, $definition, $schema );
-			if ( $violation instanceof WP_Markdown_Query_Result ) {
-				return $violation;
+			$unique_set_verified = $write->is_update()
+				&& $this->preserves_unique_values( $write->values(), $definition )
+				&& $this->unique_set_is_verified( $suffix, $path );
+			if ( ! $unique_set_verified ) {
+				$violation = $this->unique_set_violation( $retained, $definition, $schema );
+				if ( $violation instanceof WP_Markdown_Query_Result ) {
+					return $violation;
+				}
 			}
 			$written = $this->write( $path, $retained );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
+			$this->remember_verified_unique_set( $suffix, $path );
 			// The sidecar is derived state. Keep this runtime's witnessed index
 			// current without republishing it after every canonical table write.
-			$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
+			$this->index->remember( $suffix, $path, $updated_index ?? WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
 			$provider->replace_rows( $retained );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
@@ -764,6 +777,48 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 		}
 		return true;
+	}
+
+	/** @param array<string,int|string|null> $values @param array<string,mixed> $definition */
+	private function preserves_unique_values( array $values, array $definition ): bool {
+		foreach ( $definition['indexes'] as $index ) {
+			if ( true !== ( $index['unique'] ?? false ) ) {
+				continue;
+			}
+			foreach ( $index['columns'] as $column ) {
+				if ( array_key_exists( (string) ( $column['name'] ?? '' ), $values ) ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** @param array<string,int|string|null> $values @param array<string,mixed> $definition */
+	private function preserves_index_values( array $values, array $definition ): bool {
+		if ( ! $this->preserves_unique_values( $values, $definition ) ) {
+			return false;
+		}
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( true === ( $column['auto_increment'] ?? false ) && array_key_exists( $name, $values ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function unique_set_is_verified( string $suffix, string $path ): bool {
+		return isset( $this->unique_sets_verified[ $suffix ] )
+			&& $this->unique_sets_verified[ $suffix ]->is( WP_Markdown_File_Witness::take( $path ) );
+	}
+
+	private function remember_verified_unique_set( string $suffix, string $path ): void {
+		$witness = WP_Markdown_File_Witness::take( $path );
+		if ( null === $witness ) {
+			unset( $this->unique_sets_verified[ $suffix ] );
+			return;
+		}
+		$this->unique_sets_verified[ $suffix ] = $witness;
 	}
 
 	/**

@@ -565,6 +565,10 @@ class WP_Markdown_Storage {
 	 */
 	public function get_markdown_file_manifest_iterator( bool $strict = false, ?array $post_types = null ): \Generator {
 		$start = WP_Markdown_Operation_Profile::begin();
+		if ( null === $start ) {
+			yield from $this->iterate_file_manifest( $strict, $post_types );
+			return;
+		}
 		try {
 			foreach ( $this->iterate_file_manifest( $strict, $post_types ) as $key => $file ) {
 				WP_Markdown_Operation_Profile::end( 'manifest_advance', $start );
@@ -615,7 +619,15 @@ class WP_Markdown_Storage {
 					continue;
 				}
 				$identities[ $identity ] = $relative;
-				yield $relative => array( 'mtime' => (int) filemtime( $path ), 'size' => (int) filesize( $path ), 'absolute' => $path, 'parent_id' => (int) $post->post_parent );
+				// The lstat above is fresh and supplies both manifest metadata and
+				// the native reader's identity witness without another filesystem look.
+				yield $relative => array(
+					'mtime'     => (int) ( $stat['mtime'] ?? 0 ),
+					'size'      => (int) ( $stat['size'] ?? 0 ),
+					'absolute'  => $path,
+					'parent_id' => (int) $post->post_parent,
+					'witness'   => WP_Markdown_File_Witness::from_stat( $path, $stat ),
+				);
 			}
 			return;
 		}
@@ -922,7 +934,7 @@ class WP_Markdown_Storage {
 		$paths = is_iterable( $paths ) ? $paths : array();
 		$result = array();
 		foreach ( $paths as $path ) {
-			if ( is_string( $path ) && null !== ( $path = $this->validate_profile_path( $path ) ) && null !== $this->profile_absolute_path( $path ) ) {
+			if ( is_string( $path ) && null !== ( $path = $this->validate_profile_path( $path ) ) ) {
 				$result[] = $path;
 			}
 		}

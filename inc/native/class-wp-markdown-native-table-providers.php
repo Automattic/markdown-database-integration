@@ -608,6 +608,8 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	private bool $loaded = false;
 	/** @var array<int,array<string,mixed>>|WP_Markdown_Query_Result|null */
 	private array|WP_Markdown_Query_Result|null $snapshot = null;
+	/** @var array<string,array<string,array<int,int>>> */
+	private array $equality_indexes = array();
 
 	public function __construct(
 		string $state_root,
@@ -651,15 +653,73 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 			: $this->validate_rows( $data );
 	}
 
+	/**
+	 * Return the smallest exact-equality candidate set from this validated
+	 * request snapshot. The executor still applies every predicate afterwards.
+	 *
+	 * @param array<int,WP_Markdown_Native_Query_Predicate> $predicates
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
+	 */
+	public function equality_candidates( array $predicates ): array|WP_Markdown_Query_Result {
+		$rows = $this->rows();
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
+		}
+
+		$candidates = null;
+		foreach ( $predicates as $predicate ) {
+			if ( '=' !== $predicate->operator() || null !== $predicate->cast() || 1 !== count( $predicate->values() ) ) {
+				continue;
+			}
+			$column = $predicate->column();
+			$key = $this->schema->value_key( $column, $predicate->values()[0] );
+			if ( null === $key ) {
+				return array();
+			}
+			$offsets = $this->equality_index( $column, $rows )[ $key ] ?? array();
+			if ( null === $candidates || count( $offsets ) < count( $candidates ) ) {
+				$candidates = $offsets;
+			}
+		}
+		if ( null === $candidates ) {
+			return $rows;
+		}
+
+		return array_map( fn( int $offset ): array => $rows[ $offset ], $candidates );
+	}
+
+	/** @param array<int,array<string,mixed>> $rows @return array<string,array<int,int>> */
+	private function equality_index( string $column, array $rows ): array {
+		if ( isset( $this->equality_indexes[ $column ] ) ) {
+			return $this->equality_indexes[ $column ];
+		}
+		$index = array();
+		foreach ( $rows as $offset => $row ) {
+			$key = $this->schema->value_key( $column, $row[ $column ] ?? null );
+			if ( null !== $key ) {
+				$index[ $key ][] = $offset;
+			}
+		}
+		return $this->equality_indexes[ $column ] = $index;
+	}
+
 	/** @param array<int,array<string,mixed>> $rows */
 	public function replace_rows( array $rows ): void {
 		$this->loaded   = true;
 		$this->snapshot = $rows;
+		$this->equality_indexes = array();
 	}
 
 	/** @param array<string,mixed> $row */
 	public function append_row( array $row ): void {
 		if ( $this->loaded && is_array( $this->snapshot ) ) {
+			$offset = count( $this->snapshot );
+			foreach ( array_keys( $this->equality_indexes ) as $column ) {
+				$key = $this->schema->value_key( $column, $row[ $column ] ?? null );
+				if ( null !== $key ) {
+					$this->equality_indexes[ $column ][ $key ][] = $offset;
+				}
+			}
 			$this->snapshot[] = $row;
 		}
 	}
@@ -667,6 +727,7 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 	public function forget_rows(): void {
 		$this->loaded   = false;
 		$this->snapshot = null;
+		$this->equality_indexes = array();
 	}
 }
 

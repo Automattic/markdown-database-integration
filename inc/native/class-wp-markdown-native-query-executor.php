@@ -1097,13 +1097,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $provider->read( $access );
 		}
 
-		$rows = $provider->rows();
-		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return $rows;
-		}
 		$predicates = $access->predicates();
 		if ( array() === $predicates && null !== $access->predicate() ) {
 			$predicates[] = $access->predicate();
+		}
+		$rows = $provider->equality_candidates( $predicates );
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
 		}
 		if ( array() !== $predicates ) {
 			$rows = array_values(

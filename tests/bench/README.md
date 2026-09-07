@@ -34,6 +34,53 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 
 ## SQLite vs native decision rigs
 
+### Native cutover evidence
+
+The native-only target is tracked in #232; the current optimization candidate
+is reviewed in draft PR #370. SQLite remains the comparison reference until the
+accepted site's compatibility and performance gates pass.
+
+September 7, 2026: request-local equality candidates over JSON snapshots reduced
+the profiled 1,000-post metadata count family from 5782.38 ms to 192.60 ms.
+The unprofiled comparison used identical rigs, 1,000 posts, five measured
+iterations, one warmup, and successful reset/insert/final-count checks:
+
+| Measurement | Native | SQLite |
+| --- | ---: | ---: |
+| Total mean (ms) | 24433.429 | 24592.565 |
+| Insert loop mean (ms) | 23058.039 | 24547.312 |
+| Reset mean (ms) | 1325.577 | 7.752 |
+| Peak process RSS (MiB) | 811.855 | 1029.918 |
+
+This candidate was an uncommitted snapshot above `d435691`, not that commit
+alone. Native total samples ranged from 24114.719 to 24705.407 ms; SQLite from
+24448.836 to 24734.129 ms. The overlapping samples make the 0.65% mean edge
+parity evidence rather than a decisive overall win. This is one workload,
+not the complete representative aggregate.
+
+Operator evidence: runner job `fc10ee1e-8805-47cf-9236-6b325bdc6357`;
+native bench run `eb07d4c3-ddb3-48af-8651-5b05c791bac3`;
+SQLite bench run `b2ea47a3-aafd-43f5-b2e7-d845ec7bd060`.
+Retrieve through `homeboy runner job logs homeboy-lab <job-id>` or the runner's
+`homeboy runs show <run-id>`. These references require operator access.
+
+Before removing SQLite support:
+
+- Replay the accepted site's front-end, admin, REST, CLI, worker and plugin
+  workflows against an isolated native copy, verifying outputs and mutations.
+- Verify canonical state completeness and round-trip restoration from backups.
+- Implement and verify required post transactions, savepoints, rollback and
+  crash recovery; rejection of an active transaction is an incomplete contract.
+- Verify concurrent native writers and the documented external-file editing
+  boundary, including stale identity/path protection.
+- Run the complete representative suite on the same candidate and runtime,
+  with effective inputs and successful operation counts recorded. Require an
+  aggregate native win without severe workload regressions.
+- Validate an authorized site cutover and cold restart before removing the
+  SQLite implementation, dependencies, configuration and routing paths.
+
+These are outstanding acceptance gates, not claims of completed verification.
+
 ### Bulk-import profiling
 
 Set `--setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"1"}'`

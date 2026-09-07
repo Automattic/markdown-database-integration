@@ -43,6 +43,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-file-witness.php';
+require_once __DIR__ . '/class-wp-markdown-operation-profile.php';
 
 if ( ! class_exists( 'WP_Markdown_Yaml' ) ) {
 	require_once __DIR__ . '/class-wp-markdown-yaml.php';
@@ -267,6 +268,15 @@ class WP_Markdown_Storage {
 	 * @return string|false The file path written, or false on failure.
 	 */
 	public function write_post( object $post, bool $persist_auto_draft = false ): string|false {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->write_post_file( $post, $persist_auto_draft );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'post_write', $start );
+		}
+	}
+
+	private function write_post_file( object $post, bool $persist_auto_draft ): string|false {
 		$post_type = $post->post_type ?? 'post';
 
 		// Skip excluded post types.
@@ -554,6 +564,23 @@ class WP_Markdown_Storage {
 	 *                                           cannot derive a type from a path ignores the hint.
 	 */
 	public function get_markdown_file_manifest_iterator( bool $strict = false, ?array $post_types = null ): \Generator {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			foreach ( $this->iterate_file_manifest( $strict, $post_types ) as $key => $file ) {
+				WP_Markdown_Operation_Profile::end( 'manifest_advance', $start );
+				WP_Markdown_Operation_Profile::count( 'manifest_files' );
+				$start = null;
+				yield $key => $file;
+				$start = WP_Markdown_Operation_Profile::begin();
+			}
+		} finally {
+			// Time generator advancement, excluding work done by its consumer.
+			WP_Markdown_Operation_Profile::end( 'manifest_advance', $start );
+			WP_Markdown_Operation_Profile::count( 'manifest_scans' );
+		}
+	}
+
+	private function iterate_file_manifest( bool $strict, ?array $post_types ): \Generator {
 		if ( $strict && is_link( $this->content_dir ) ) {
 			throw new RuntimeException( 'Markdown DB: Canonical content root must not be a link.' );
 		}
@@ -1394,6 +1421,15 @@ class WP_Markdown_Storage {
 	 * @return object|null A post object, or null on parse failure.
 	 */
 	private function parse_file( string $file_path, bool $metadata_only = false ): ?object {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->parse_post_file( $file_path, $metadata_only );
+		} finally {
+			WP_Markdown_Operation_Profile::end( $metadata_only ? 'metadata_parse' : 'body_parse', $start );
+		}
+	}
+
+	private function parse_post_file( string $file_path, bool $metadata_only ): ?object {
 		if ( $metadata_only ) {
 			// Fast path: read only enough of the file to get the frontmatter.
 			// Avoids reading potentially large content bodies during boot.

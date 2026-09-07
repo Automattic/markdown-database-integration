@@ -302,16 +302,28 @@ final class WP_Markdown_Native_Query_Parser {
 }
 
 final class WP_Markdown_Native_Select_AST_Parser {
-	private int $current = 0;
+	private int $current;
 	private bool $contradiction = false;
 
 	/** @param array<int,WP_Markdown_Native_SQL_Token> $tokens */
-	public function __construct( private readonly array $tokens ) {}
+	public function __construct( private readonly array $tokens, int $position = 0 ) {
+		$this->current = $position;
+	}
 
 	public function parse(): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
 		$result = $this->select( false );
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 		return $result;
+	}
+
+	/** Parse one SELECT embedded in a statement owned by another parser. */
+	public function parse_nested(): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
+		return $this->select( true );
+	}
+
+	/** Report the next token after a nested SELECT. */
+	public function position(): int {
+		return $this->current;
 	}
 
 	private function select( bool $nested ): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {

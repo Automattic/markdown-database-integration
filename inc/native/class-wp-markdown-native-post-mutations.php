@@ -48,27 +48,17 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	private function insert_row( WP_Markdown_Native_Table_Insert $insert, array $bound, array $generated ): WP_Markdown_Query_Result {
 		$schema = $bound['schema'];
 		$definition = $schema->definition();
-		// What already exists is consulted for one reason: to derive an
-		// identifier the statement left for the table to generate. That is a
-		// question about one integer per row, so only that integer is read.
-		// Asking for whole rows would hydrate every canonical body off disk to
-		// answer it, and an INSERT would then cost the corpus.
-		$existing  = array() === $generated
+		// Reduce identities during the verified scan instead of constructing query results.
+		$maxima = array() === $generated
 			? array()
-			: $this->existing_rows(
-				$bound['provider'],
-				$schema,
-				null,
-				array_values( array_unique( array_merge( $generated, array( $schema->natural_order() ) ) ) ),
-				true
-			);
-		if ( $existing instanceof WP_Markdown_Query_Result ) {
-			return $existing;
+			: $bound['provider']->identity_maxima( $generated );
+		if ( $maxima instanceof WP_Markdown_Query_Result ) {
+			return $maxima;
 		}
 		if ( array() !== $generated ) {
 			$this->storage->mark_native_post_allocation_scanned();
 		}
-		$row = $this->complete_row( $insert->values(), $definition, $existing );
+		$row = $this->complete_row( $insert->values(), $definition, $maxima );
 		if ( $row instanceof WP_Markdown_Query_Result ) {
 			return $row;
 		}
@@ -86,6 +76,11 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		$write = $this->parser->parse_write( $request );
 		if ( $write instanceof WP_Markdown_Query_Result ) {
 			return $write;
+		}
+		foreach ( $write->predicates() as $predicate ) {
+			if ( $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native post mutations do not support IN subqueries.' );
+			}
 		}
 		$bound = $this->posts_table( $write->table(), $request->table_prefix() );
 		if ( $bound instanceof WP_Markdown_Query_Result ) {
@@ -148,9 +143,9 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	 * @param  array<int,string>|null $projection Columns to read, or every column.
 	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
 	 */
-	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null, bool $allocation = false ): array|WP_Markdown_Query_Result {
+	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null ): array|WP_Markdown_Query_Result {
 		$access = new WP_Markdown_Native_Table_Access( $projection ?? $schema->column_names(), $predicate, $schema->natural_order(), PHP_INT_MAX, false, array(), null === $predicate ? array() : array( $predicate ) );
-		$rows = $allocation ? $provider->read_for_allocation( $access ) : $provider->read( $access );
+		$rows = $provider->read( $access );
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
 			return $rows;
 		}
@@ -198,9 +193,9 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	/**
 	 * @param array<string,int|string|null>  $provided
 	 * @param array<string,mixed>            $definition
-	 * @param array<int,array<string,mixed>> $rows
+	 * @param array<string,int>             $maxima
 	 */
-	private function complete_row( array $provided, array $definition, array $rows ): array|WP_Markdown_Query_Result {
+	private function complete_row( array $provided, array $definition, array $maxima ): array|WP_Markdown_Query_Result {
 		if ( array_diff_key( $provided, $definition['columns'] ) ) {
 			return $this->failure( 'unsupported_column', 'The INSERT references an undeclared column.' );
 		}
@@ -213,11 +208,7 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				continue;
 			}
 			if ( $generate_identity ) {
-				$maximum = 0;
-				foreach ( $rows as $existing ) {
-					$maximum = max( $maximum, (int) $existing[ $name ] );
-				}
-				$row[ $name ] = $maximum + 1;
+				$row[ $name ] = $maxima[ $name ] + 1;
 				continue;
 			}
 			$default = $column['default'] ?? null;

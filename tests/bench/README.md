@@ -34,6 +34,43 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 
 ## SQLite vs native decision rigs
 
+### Bulk-import profiling
+
+Set `--setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"1"}'`
+on the Lab benchmark command to enable request-local MDI operation measurements.
+Profiling is opt-in and adds measurement overhead; use unprofiled runs for final
+performance comparisons.
+
+Bulk import reports `reset_ms`, `generation_ms`, `insert_ms`, and `verification_ms`,
+plus effective `corpus_size`, successful `imported`, and verified `stored_posts`.
+A failed reset, insert, or final row-count check fails the workload. Metadata
+records the active backend and wpdb class; Homeboy records candidate provenance.
+
+Profile measurements cover only the insert loop. `identity_allocation_ms`,
+`post_write_ms`, `metadata_parse_ms`, and `body_parse_ms` are inclusive and may
+overlap: do not add them as independent phases. `manifest_advance_ms` measures
+generator advancement, excluding its consumer. Each operation reports `_calls`;
+`manifest_scans`, `manifest_files`, and `post_parse_reuse` report counts. Missing
+operation keys mean no calls were observed, not an unavailable backend-wide timer.
+The WordPress insert timer also includes work outside MDI, while reset and final
+verification are reported separately from the operation profile.
+
+Native `query_select_ms`, `query_insert_ms`, `query_update_ms`, `query_delete_ms`,
+`query_replace_ms`, and `query_other_ms` cover runtime dispatch through result
+construction, grouped by statement verb without retaining SQL or content.
+`select_parse_ms` and `select_execute_ms` subdivide SELECT processing;
+`catalogue_publish_ms` measures durable post catalogue publication. These are
+inclusive spans, not additional independent costs. Nested execution can overlap.
+
+Native SELECT shape attribution appears in `metadata.query_shapes`, sorted by
+total duration for that iteration. SQL string and numeric literals are replaced
+with `?`; identifiers remain visible. Each shape includes calls, inclusive time,
+exact repeats, and distinct queries tracked using internal SHA-256 hashes.
+Tracking is bounded to 64 shapes and 4096 exact queries per iteration; overflow
+is reported in metrics. Shape tokenization itself adds profiling overhead and is
+outside query timers but inside the WordPress insert timer. Metadata is not a
+cross-iteration aggregate; use a single-iteration diagnostic for attribution.
+
 The repository ships `mdi-sqlite`, `mdi-primary`, and `mdi-native` rigs for an
 isolated, repeatable backend comparison. Install them from this checkout and
 point them at the same MDI worktree:

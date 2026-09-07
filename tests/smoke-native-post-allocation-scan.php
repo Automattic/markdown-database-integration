@@ -45,7 +45,13 @@ $schema = WP_Markdown_Native_Runtime_Factory::posts_schema();
 $registry = new WP_Markdown_Native_Table_Registry();
 $registry->register( 'wp_posts', $schema, new WP_Markdown_Native_Post_Provider( $root . '/content', $schema, $storage, $root . '/state' ) );
 $runtime = new WP_Markdown_Native_Query_Runtime( $registry, new WP_Markdown_Native_Query_Parser(), null, null, null, null, new WP_Markdown_Native_Post_Mutation_Runtime( $registry, new WP_Markdown_Native_Table_Insert_Parser(), $storage ) );
+WP_Markdown_Operation_Profile::start();
 $first = mdi_allocation_scan_insert( $runtime, 'first' );
+$profile = WP_Markdown_Operation_Profile::stop();
+$profile_valid = 1 === ( $profile['identity_allocation_calls'] ?? 0 )
+	&& 1 === ( $profile['query_insert_calls'] ?? 0 )
+	&& 1 === ( $profile['post_write_calls'] ?? 0 )
+	&& 1 === ( $profile['manifest_scans'] ?? 0 );
 $first_scans = $storage->manifest_scans;
 $first_catalogue = file_exists( $root . '/state/_indexes/posts.json' );
 file_put_contents( $root . '/content/post/external.md', "---\nid: 2\ntitle: External\nstatus: publish\ntype: post\nauthor: 1\ndate: 2026-09-06 00:00:00\nmodified: 2026-09-06 00:00:00\nslug: external\ncomment_status: open\nping_status: open\n---\n\n" );
@@ -57,11 +63,28 @@ file_put_contents( $root . '/content/post/malformed.md', "---\nid: 4\ntitle: Rep
 $repaired = mdi_allocation_scan_insert( $runtime, 'repaired-insert' );
 $passed = 1 === $first && 1 === $first_scans && ! $first_catalogue && 3 === $second && ! $second_catalogue && ! $failed->succeeded() && 5 === $repaired && 4 === $storage->manifest_scans;
 $passed = $passed && ! $storage->published_before_write;
+$passed = $passed && $profile_valid && $profile === WP_Markdown_Operation_Profile::stop();
 $reused = 1 === ( $storage->file_reads[ $root . '/content/post/external.md' ] ?? 0 );
 $passed = $passed && $reused;
 echo ( $reused ? 'PASS: ' : 'FAIL: ' ) . "allocation reuses the witnessed parse of an unchanged external post\n";
 $read = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts', 'wp_' ) );
 $passed = $passed && $read->succeeded() && is_file( $storage->catalogue_path );
+WP_Markdown_Operation_Profile::start();
+foreach ( array( 1, 1, 3 ) as $id ) {
+	$runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID = ' . $id, 'wp_' ) );
+}
+WP_Markdown_Operation_Profile::stop();
+$shapes = WP_Markdown_Operation_Profile::query_shapes();
+$shape = $shapes['SELECT ID FROM wp_posts WHERE ID = ?'] ?? array();
+$passed = $passed && 1 === count( $shapes ) && 3 === ( $shape['calls'] ?? 0 )
+	&& 1 === ( $shape['exact_repeats'] ?? 0 ) && 2 === ( $shape['distinct_tracked'] ?? 0 );
+$provider = $registry->table( 'wp_posts' )['provider'];
+$maxima = $provider->identity_maxima( array( 'ID' ) );
+$passed = $passed && array( 'ID' => 5 ) === $maxima;
+copy( $root . '/content/post/external.md', $root . '/content/post/duplicate.md' );
+$duplicate = $provider->identity_maxima( array( 'ID' ) );
+$passed = $passed && $duplicate instanceof WP_Markdown_Query_Result
+	&& 'duplicate_post_id' === ( $duplicate->diagnostic()['reason'] ?? null );
 echo ( $passed ? 'PASS: ' : 'FAIL: ' ) . "generated native INSERTs scan fresh without publishing and recover after malformed posts\n";
 foreach ( glob( $root . '/content/post/*.md' ) ?: array() as $file ) { @unlink( $file ); }
 @unlink( $root . '/content/.mdi-native-posts.lock' );

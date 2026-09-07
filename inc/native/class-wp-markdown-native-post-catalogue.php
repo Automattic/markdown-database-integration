@@ -6,6 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
+require_once __DIR__ . '/../class-wp-markdown-operation-profile.php';
 
 /**
  * The rows the corpus produced, held against the files that produced them.
@@ -255,6 +256,15 @@ final class WP_Markdown_Native_Post_Catalogue {
 	}
 
 	private function persist(): void {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			$this->persist_catalogue();
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'catalogue_publish', $start );
+		}
+	}
+
+	private function persist_catalogue(): void {
 		$path = $this->catalogue_path( true );
 		if ( null === $path ) {
 			return;

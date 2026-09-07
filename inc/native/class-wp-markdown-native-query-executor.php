@@ -5,6 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/../class-wp-markdown-operation-profile.php';
+
 final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
 	private ?int $last_found_rows = null;
 	private WP_Markdown_Native_Schema_Introspection $schema_introspection;
@@ -22,6 +24,33 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->execute_request( $request );
+		} finally {
+			if ( null !== $start ) {
+				$elapsed = ( hrtime( true ) - $start ) / 1e6;
+				preg_match( '/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i', $request->sql(), $match );
+				WP_Markdown_Operation_Profile::end( 'query_' . strtolower( $match[1] ?? 'other' ), $start );
+				if ( 'SELECT' === strtoupper( $match[1] ?? '' ) ) {
+					try {
+						$shape = array();
+						foreach ( ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $request->sql() ) as $token ) {
+							if ( WP_Markdown_Native_SQL_Token::END === $token->type() ) {
+								continue;
+							}
+							$shape[] = in_array( $token->type(), array( 'string', 'integer', 'decimal' ), true ) ? '?' : (string) $token->value();
+						}
+						WP_Markdown_Operation_Profile::query( implode( ' ', $shape ), hash( 'sha256', $request->sql() ), $elapsed );
+					} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+						WP_Markdown_Operation_Profile::count( 'query_shape_unavailable' );
+					}
+				}
+			}
+		}
+	}
+
+	private function execute_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		$transaction_control = WP_Markdown_SQL_Classifier::transaction_control( $request->sql() );
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
@@ -52,10 +81,29 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				? $this->failure( 'unsupported_grammar', 'mdi-native supports bounded SELECT queries only.' )
 				: $this->option_mutations->execute( $request );
 		}
-		$plan = $this->parser->parse( $request->sql() );
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			$plan = $this->parser->parse( $request->sql() );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'select_parse', $start );
+		}
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
 			return $plan;
 		}
+		return $this->execute_plan( $plan );
+	}
+
+	/** Execute an already parsed SELECT plan for another native statement. */
+	public function execute_plan( WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan $plan ): WP_Markdown_Query_Result {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->execute_select_plan( $plan );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'select_execute', $start );
+		}
+	}
+
+	private function execute_select_plan( WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan $plan ): WP_Markdown_Query_Result {
 		if ( $plan instanceof WP_Markdown_Native_Found_Rows_Plan ) {
 			return null === $this->last_found_rows
 				? $this->failure( 'missing_found_rows', 'FOUND_ROWS() requires a preceding successful SQL_CALC_FOUND_ROWS query.' )
@@ -227,7 +275,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_by() || array() !== $residual || $plan->is_distinct() || array() !== $plan->aggregates() ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by,
-				$predicates
+				$predicates,
+				1 === $plan->limit()
+					&& 0 === $plan->limit_offset()
+					&& array() === $plan->order_by()
+					&& ! $plan->counts_all()
+					&& ! $plan->calculates_found_rows()
+					&& null === $plan->group_by()
+					&& ! $plan->is_distinct()
+					&& array() === $plan->aggregates()
+					&& array() === $plan->subqueries()
 			)
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {

@@ -463,7 +463,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( ! $this->supports_unique_indexes( $definition ) ) {
 			return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 		}
-		foreach ( $write->predicates() as $predicate ) {
+		$predicates = $this->resolve_subquery_predicates( $write->predicates(), $schema, $write->table() );
+		if ( $predicates instanceof WP_Markdown_Query_Result ) {
+			return $predicates;
+		}
+		foreach ( $predicates as $predicate ) {
 			foreach ( $this->predicate_columns( $predicate ) as $column ) {
 				if ( ! $schema->has_column( $column ) ) {
 					return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
@@ -475,7 +479,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the persisted table schema.' );
 			}
 		}
-
 		$directory = $this->tables_directory();
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
@@ -489,7 +492,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$path = $directory . '/' . $suffix . '.json';
 			$provider = $table['provider'];
 			$index = $this->index->load( $suffix, $path );
-			if ( null !== $index && $this->index_excludes( $index, $write->predicates() ) ) {
+			if ( null !== $index && $this->index_excludes( $index, $predicates ) ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			$rows = $provider->rows();
@@ -501,7 +504,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$retained = array();
 			$affected = 0;
 			foreach ( $rows as $row ) {
-				if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
+				if ( ! $this->restricts( $row, $predicates, $schema ) ) {
 					$retained[] = $row;
 					continue;
 				}
@@ -537,6 +540,73 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	/**
+	 * Materialize typed IN subqueries before any target-table mutation begins.
+	 *
+	 * The SELECT executor owns query validation and provider error propagation;
+	 * this write path only turns its one projected column into its established
+	 * membership predicate.
+	 *
+	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate> $predicates
+	 * @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group>|WP_Markdown_Query_Result
+	 */
+	private function resolve_subquery_predicates( array $predicates, WP_Markdown_Native_Table_Schema $schema, string $target_table ): array|WP_Markdown_Query_Result {
+		$resolved = array();
+		$query_parser = new WP_Markdown_Native_Query_Parser();
+		$query_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, $query_parser );
+		foreach ( $predicates as $predicate ) {
+			if ( ! $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
+				$resolved[] = $predicate;
+				continue;
+			}
+			if ( ! $schema->has_column( $predicate->column() ) ) {
+				return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
+			}
+			$plan = $query_parser->lower( $predicate->query() );
+			if ( ! $plan instanceof WP_Markdown_Native_Query_Plan ) {
+				return $plan;
+			}
+			if ( 0 === strcasecmp( $target_table, $plan->table() ) ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot materialize a write subquery from its target table before the mutation lock.' );
+			}
+			if ( array() !== $plan->subqueries() || $this->has_comparison_predicate( $plan->predicates() ) ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native write subqueries must be uncorrelated single-table SELECTs.' );
+			}
+			if ( 1 !== count( $plan->projection() ) ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native IN subqueries must project exactly one column.' );
+			}
+			$result = $query_runtime->execute_plan( $plan );
+			if ( false === $result->return_value() ) {
+				return $result;
+			}
+			$state = $result->wpdb_state();
+			$columns = $state['col_info'];
+			if ( 1 !== count( $columns ) || ! is_string( $columns[0]->name ?? null ) || '' === $columns[0]->name ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native IN subqueries must return exactly one named result column.' );
+			}
+			$rows = $state['last_result'];
+			$values = array();
+			foreach ( $rows as $row ) {
+				$value = $row->{ $columns[0]->name } ?? null;
+				if ( null !== $value ) {
+					$values[] = $value;
+				}
+			}
+			$resolved[] = new WP_Markdown_Native_Table_Predicate( $predicate->column(), $values, false );
+		}
+		return $resolved;
+	}
+
+	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	private function has_comparison_predicate( array $predicates ): bool {
+		foreach ( $predicates as $predicate ) {
+			if ( null !== $predicate->comparison_column() ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** @param array{summary:array<string,array{null:int,empty:int}>} $index @param array<int,mixed> $predicates */

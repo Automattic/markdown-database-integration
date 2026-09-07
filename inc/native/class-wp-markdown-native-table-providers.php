@@ -386,19 +386,27 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 	}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
-		return $this->read_posts( $access, true );
+		return $this->read_posts( $access );
 	}
 
-	public function read_for_allocation( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
-		return $this->read_posts( $access, false );
+	/** @return array<string,int>|WP_Markdown_Query_Result */
+	public function identity_maxima( array $columns ): array|WP_Markdown_Query_Result {
+		$access = new WP_Markdown_Native_Table_Access( $columns, null, $this->schema->natural_order(), PHP_INT_MAX );
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->read_posts( $access, $columns );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'identity_allocation', $start );
+		}
 	}
 
 	/**
-	 * @param bool $publish_catalogue Whether this complete read may publish its catalogue.
+	 * @param array<int,string> $allocation_columns Identity columns to reduce instead of producing query rows.
 	 */
-	private function read_posts( WP_Markdown_Native_Table_Access $access, bool $publish_catalogue ): iterable|WP_Markdown_Query_Result {
+	private function read_posts( WP_Markdown_Native_Table_Access $access, array $allocation_columns = array() ): array|WP_Markdown_Query_Result {
 		$scanning = false;
 		$completed = false;
+		$maxima = array_fill_keys( $allocation_columns, 0 );
 		try {
 			$posts = $this->located_candidates( $access );
 			if ( null !== $posts ) {
@@ -406,17 +414,29 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			}
 			$posts = array();
 			$candidates = array();
+			$first_match = null;
 			$ids   = array();
-			$predicate = $access->predicate();
+			$predicates = $access->predicates();
+			if ( array() === $predicates && null !== $access->predicate() ) {
+				$predicates[] = $access->predicate();
+			}
+			$metadata_predicates = array_values(
+				array_filter(
+					$predicates,
+					static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => ! in_array( 'post_content', $predicate->columns(), true )
+				)
+			);
 			$scope = $this->post_type_scope( $access );
 			$key = null === $scope ? null : $this->parse_key( $scope );
 			$ordered = false;
-			if ( null !== $key && isset( $this->scoped_posts[ $key ] ) ) {
-				$cached = $this->ordered_scoped_candidates( $key, $this->scoped_posts[ $key ], $access );
-				$posts = $cached['candidates'];
-				$ordered = $cached['ordered'];
-				if ( null !== $predicate ) {
-					$posts = array_values( array_filter( $posts, fn( array $candidate ): bool => $this->matches( $candidate['row'], $predicate ) ) );
+			$retains_first_match = $access->retains_first_match() && count( $predicates ) === count( $metadata_predicates );
+			if ( ! $retains_first_match && null !== $key && isset( $this->scoped_posts[ $key ] ) ) {
+				$candidates = $this->scoped_posts[ $key ];
+				$posts = array_values( array_filter( $candidates, fn( array $candidate ): bool => $this->schema->matches( $candidate['row'], $metadata_predicates ) ) );
+				if ( count( $posts ) === count( $candidates ) ) {
+					$cached = $this->ordered_scoped_candidates( $key, $candidates, $access );
+					$posts = $cached['candidates'];
+					$ordered = $cached['ordered'];
 				}
 				return $this->ordered_projection( $posts, $access, $ordered );
 			}
@@ -436,6 +456,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				$remembered = $this->catalogue->recorded( $file['absolute'], $witness, true );
 				$reused = null !== $remembered;
 				if ( $reused ) {
+					WP_Markdown_Operation_Profile::count( 'post_parse_reuse' );
 					$post = $remembered['post'];
 					$row = $remembered['row'];
 				} else {
@@ -466,28 +487,47 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 					}
 				}
 				$this->catalogue->remember( $witness, $file, $post, $row );
-				$candidate = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
-				$candidates[] = $candidate;
-				if ( null === $predicate || $this->matches( $row, $predicate ) ) {
-					$posts[] = $candidate;
+				if ( array() !== $allocation_columns ) {
+					foreach ( $allocation_columns as $column ) {
+						$maxima[ $column ] = max( $maxima[ $column ], (int) $row[ $column ] );
+					}
+					continue;
+				}
+				// Body predicates remain executor residuals until their candidates
+				// are hydrated; metadata predicates safely reduce sorting work here.
+				$matches = $this->schema->matches( $row, $retains_first_match ? $predicates : $metadata_predicates );
+				if ( $matches ) {
+					$candidate = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
+					if ( $retains_first_match ) {
+						$first_match ??= $candidate;
+					} else {
+						$posts[] = $candidate;
+					}
+				}
+				if ( ! $retains_first_match ) {
+					$candidates[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 				}
 			}
 			if ( null === $scope ) {
-				$this->catalogue->complete_scan( $publish_catalogue );
+				$this->catalogue->complete_scan( array() === $allocation_columns );
 				$completed = true;
+				if ( $retains_first_match ) {
+					return null === $first_match ? array() : $this->ordered_projection( array( $first_match ), $access, true );
+				}
+			} elseif ( $retains_first_match ) {
+				return null === $first_match ? array() : $this->ordered_projection( array( $first_match ), $access, true );
 			} elseif ( null !== $key ) {
 				// A scoped corpus is immutable for this runtime after its initial
 				// verified traversal. Canonical writes clear this snapshot first.
 				$this->scoped_posts[ $key ] = $candidates;
-				if ( null !== $predicate ) {
-					$posts = array_values( array_filter( $candidates, fn( array $candidate ): bool => $this->matches( $candidate['row'], $predicate ) ) );
+				if ( count( $posts ) === count( $candidates ) ) {
+					$cached = $this->ordered_scoped_candidates( $key, $candidates, $access );
+					$posts = $cached['candidates'];
+					$ordered = $cached['ordered'];
 				}
-				$cached = $this->ordered_scoped_candidates( $key, $candidates, $access );
-				$posts = null === $predicate ? $cached['candidates'] : array_values( array_filter( $cached['candidates'], fn( array $candidate ): bool => $this->matches( $candidate['row'], $predicate ) ) );
-				$ordered = $cached['ordered'];
 			}
 
-			return $this->ordered_projection( $posts, $access, $ordered ?? false );
+			return array() !== $allocation_columns ? $maxima : $this->ordered_projection( $posts, $access, $ordered ?? false );
 		} catch ( Throwable $error ) {
 			return $this->malformed( 'unsafe_post_storage', 'Canonical Markdown posts cannot be read safely.' );
 		} finally {

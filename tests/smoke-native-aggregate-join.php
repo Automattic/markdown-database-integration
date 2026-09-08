@@ -44,6 +44,9 @@ $ungrouped = $runtime->execute(
 $grouped_order = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT wp_plugin_groups.id,COUNT( wp_plugin_items.id ) AS items FROM wp_plugin_groups LEFT JOIN wp_plugin_items ON wp_plugin_groups.id = wp_plugin_items.group_id GROUP BY wp_plugin_groups.id HAVING items > 0 ORDER BY items DESC LIMIT 1', 'wp_' )
 );
+$single_table_grouped_order = $runtime->execute(
+	new WP_Markdown_Query_Request( 'SELECT group_id,COUNT(*) AS items FROM wp_plugin_items GROUP BY group_id ORDER BY items DESC LIMIT 1', 'wp_' )
+);
 
 $checks = array(
 	'COUNT over a LEFT JOIN counts matched rows per group' => array( '2', '10' ) === ( $rows['first'] ?? null ),
@@ -54,6 +57,7 @@ $checks = array(
 	'an aggregate without GROUP BY fails closed' => false === $ungrouped->return_value()
 		&& 'unsupported_grammar' === ( $ungrouped->diagnostic()['reason'] ?? null ),
 	'grouped HAVING, aggregate ORDER BY, and LIMIT run after joined aggregation' => array( 'id' => '1', 'items' => '2' ) === get_object_vars( $grouped_order->wpdb_state()['last_result'][0] ?? (object) array() ),
+	'single-table grouped aggregates order and limit after aggregation' => array( 'group_id' => '1', 'items' => '2' ) === get_object_vars( $single_table_grouped_order->wpdb_state()['last_result'][0] ?? (object) array() ),
 );
 
 $failed = false;

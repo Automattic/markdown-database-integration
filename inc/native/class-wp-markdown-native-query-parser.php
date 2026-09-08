@@ -483,7 +483,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 						);
 					}
 				}
-				if ( array() === $aggregates && array() !== $joins ) {
+				if ( array() === $aggregates ) {
 					$distinct = true;
 				}
 			}
@@ -623,7 +623,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function matches_scalar_expression(): bool {
-		return in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
+		return in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type()
 			|| ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
 	}
@@ -683,7 +683,8 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$valid = match ( $function ) {
 			'CONCAT', 'COALESCE' => 2 <= count( $arguments ),
 			'SUBSTRING' => 3 === count( $arguments ),
-			'YEAR', 'MONTH', 'DATE', 'TIME', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
+			'YEAR', 'MONTH', 'DATE', 'TIME', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
+			'WEEK' => 2 === count( $arguments ) && 1 === (int) $arguments[1]->literal(),
 			'DATE_FORMAT', 'DATEDIFF', 'IFNULL', 'NULLIF', 'LEFT', 'RIGHT', 'LOCATE', 'MOD', 'POW', 'ATAN2' => 2 === count( $arguments ),
 			'ROUND' => in_array( count( $arguments ), array( 1, 2 ), true ),
 			'GREATEST', 'LEAST' => 2 <= count( $arguments ),
@@ -696,10 +697,19 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function scalar_value(): WP_Markdown_Native_SQL_Scalar_Expression {
-		$value = $this->scalar_primary();
-		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::PLUS, WP_Markdown_Native_SQL_Token::MINUS, WP_Markdown_Native_SQL_Token::STAR, WP_Markdown_Native_SQL_Token::SLASH ), true ) ) {
+		$value = $this->scalar_term();
+		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::PLUS, WP_Markdown_Native_SQL_Token::MINUS ), true ) ) {
 			$operator = $this->current()->type(); ++$this->current;
-			$value = new WP_Markdown_Native_SQL_Scalar_Expression( match ( $operator ) { WP_Markdown_Native_SQL_Token::PLUS => 'ADD', WP_Markdown_Native_SQL_Token::MINUS => 'SUBTRACT', WP_Markdown_Native_SQL_Token::STAR => 'MULTIPLY', default => 'DIVIDE' }, null, null, array( $value, $this->scalar_primary() ) );
+			$value = new WP_Markdown_Native_SQL_Scalar_Expression( WP_Markdown_Native_SQL_Token::PLUS === $operator ? 'ADD' : 'SUBTRACT', null, null, array( $value, $this->scalar_term() ) );
+		}
+		return $value;
+	}
+
+	private function scalar_term(): WP_Markdown_Native_SQL_Scalar_Expression {
+		$value = $this->scalar_primary();
+		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::STAR, WP_Markdown_Native_SQL_Token::SLASH ), true ) ) {
+			$operator = $this->current()->type(); ++$this->current;
+			$value = new WP_Markdown_Native_SQL_Scalar_Expression( WP_Markdown_Native_SQL_Token::STAR === $operator ? 'MULTIPLY' : 'DIVIDE', null, null, array( $value, $this->scalar_primary() ) );
 		}
 		return $value;
 	}

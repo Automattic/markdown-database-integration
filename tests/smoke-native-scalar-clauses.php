@@ -22,6 +22,7 @@ $group = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE_FORMAT(p
 $haversine = 'ACOS(COS(RADIANS(latitude)))';
 $ordered = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id, {$haversine} AS distance FROM wp_dates HAVING {$haversine} > 0 ORDER BY {$haversine} DESC", 'wp_' ) );
 $semantics = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE_ADD('2024-01-31', INTERVAL 1 MONTH) AS month_end, DATE_SUB('2024-03-31', INTERVAL 1 MONTH) AS previous_month_end, TIMESTAMPDIFF(MONTH, '2024-01-31', '2024-02-29') AS months, CHAR_LENGTH('éclair') AS characters, LEFT('éclair', 1) AS first_letter, ACOS(2) AS invalid_domain, NULLIF(1, '1') AS coerced_null, ROUND(-1.5) AS rounded, DATE('0000-00-00 00:00:00') AS zero_date FROM wp_dates LIMIT 1", 'wp_' ) );
+$calendar = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DAYOFWEEK('2024-01-14') AS sunday, DAYOFMONTH(published_at) AS day, DAYOFYEAR(published_at) AS ordinal, WEEKDAY(published_at) AS weekday, WEEK(published_at, 1) AS week, SECOND(published_at) AS second, ABS(1 + 2 * 3) AS precedence FROM wp_dates WHERE id = 1", 'wp_' ) );
 $checks = array(
 	'WP date WHERE evaluates DATE_ADD INTERVAL after the bounded read' => array( '2', '3' ) === array_map( static fn( object $row ): string => $row->id, $where->wpdb_state()['last_result'] ),
 	'DATE_SUB INTERVAL and TIMESTAMPDIFF use the shared WHERE scalar path' => array( '1' ) === array_map( static fn( object $row ): string => $row->id, $subtracted->wpdb_state()['last_result'] )
@@ -31,6 +32,7 @@ $checks = array(
 	'date bucketing applies scalar HAVING after aggregate inputs are filtered and grouped' => array( '2024-01' => '2' ) === array_reduce( $group->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->bucket ] = $row->total; return $values; }, array() ),
 	'nested haversine scalar expression orders by the evaluated value' => array( '3', '2', '1' ) === array_map( static fn( object $row ): string => $row->id, $ordered->wpdb_state()['last_result'] ),
 	'MariaDB month boundaries, Unicode characters, null coercion, and numeric domains retain scalar semantics' => array( 'month_end' => '2024-02-29', 'previous_month_end' => '2024-02-29', 'months' => '0', 'characters' => '6', 'first_letter' => 'é', 'invalid_domain' => null, 'coerced_null' => null, 'rounded' => '-2', 'zero_date' => '0000-00-00' ) === (array) ( $semantics->wpdb_state()['last_result'][0] ?? array() ),
+	'WP_Date_Query calendar parts and arithmetic precedence match MySQL' => array( 'sunday' => '1', 'day' => '15', 'ordinal' => '15', 'weekday' => '0', 'week' => '3', 'second' => '00', 'precedence' => '7' ) === (array) ( $calendar->wpdb_state()['last_result'][0] ?? array() ),
 );
 $failed = false;
 foreach ( $checks as $label => $passed ) { echo ( $passed ? 'PASS: ' : 'FAIL: ' ) . $label . "\n"; $failed = $failed || ! $passed; }

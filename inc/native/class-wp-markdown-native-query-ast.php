@@ -120,6 +120,21 @@ final class WP_Markdown_Native_SQL_Scalar_Predicate {
 	public function columns(): array { return array_merge( $this->left->columns(), $this->right->columns() ); }
 }
 
+/** A disjunction of conjunctions that includes a row-local scalar predicate. */
+final class WP_Markdown_Native_SQL_Boolean_Predicate {
+	/** @param array<int,array<int,WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate>> $groups */
+	public function __construct( private readonly array $groups ) {}
+	public function groups(): array { return $this->groups; }
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	public function columns(): array {
+		$columns = array();
+		foreach ( $this->groups as $group ) {
+			foreach ( $group as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		}
+		return $columns;
+	}
+}
+
 final class WP_Markdown_Native_SQL_Predicate {
 	/** @param array<int,WP_Markdown_Native_SQL_Literal> $values @param array<int,self> $any */
 	public function __construct(
@@ -233,7 +248,8 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly ?self $union = null,
 		private readonly array $scalar_predicates = array(),
 		private readonly array $scalar_having = array(),
-		private readonly ?WP_Markdown_Native_SQL_Scalar_Expression $group_expression = null
+		private readonly ?WP_Markdown_Native_SQL_Scalar_Expression $group_expression = null,
+		private readonly ?WP_Markdown_Native_SQL_Boolean_Predicate $boolean_predicate = null
 	) {}
 
 	public function selects_all(): bool {
@@ -332,4 +348,5 @@ final class WP_Markdown_Native_SQL_Select {
 	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Predicate> */
 	public function scalar_having(): array { return $this->scalar_having; }
 	public function group_expression(): ?WP_Markdown_Native_SQL_Scalar_Expression { return $this->group_expression; }
+	public function boolean_predicate(): ?WP_Markdown_Native_SQL_Boolean_Predicate { return $this->boolean_predicate; }
 }

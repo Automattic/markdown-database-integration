@@ -51,6 +51,7 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->scalar_projection()
 		);
 		$scalar_predicates = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, $base_source ), $ast->scalar_predicates() );
+		$boolean_predicate = null === $ast->boolean_predicate() ? null : new WP_Markdown_Native_Query_Boolean_Predicate( array_map( fn( array $group ): array => array_map( fn( WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate => $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ? $this->lower_scalar_predicate( $predicate, $base_source ) : $this->lower_predicate( $predicate, $base_source ), $group ), $ast->boolean_predicate()->groups() ) );
 		$scalar_having = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, null ), $ast->scalar_having() );
 		$seen = array();
 		foreach ( $ast->projection() as $column ) {
@@ -198,7 +199,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$union,
 			$scalar_predicates,
 			$scalar_having,
-			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source )
+			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source ),
+			$boolean_predicate
 		);
 	}
 
@@ -432,9 +434,17 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$predicates = array();
 		$scalar_predicates = array();
+		$boolean_predicate = null;
 		$subqueries = array();
 		if ( $this->match_keyword( 'WHERE' ) ) {
-			foreach ( $this->disjunction() as $predicate ) {
+			$where_groups = $this->boolean_disjunction();
+			$has_scalar = false;
+			$has_subquery = false;
+			foreach ( $where_groups as $where_group ) { foreach ( $where_group as $predicate ) { $has_scalar = $has_scalar || $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate; $has_subquery = $has_subquery || $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate; } }
+			if ( $has_scalar ) {
+				if ( $has_subquery ) { $this->unsupported( $this->current() ); }
+				$boolean_predicate = new WP_Markdown_Native_SQL_Boolean_Predicate( $where_groups );
+			} else foreach ( $this->coalesce_disjunction( $where_groups, $this->current()->sql_offset() ) as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
 					$subqueries[] = $predicate;
 				} elseif ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) {
@@ -586,7 +596,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				$this->unsupported( $this->current() );
 			}
 		}
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union, $scalar_predicates, $scalar_having, $grouped ? $group_expression : null );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union, $scalar_predicates, $scalar_having, $grouped ? $group_expression : null, $boolean_predicate );
 	}
 
 	private function matches_scalar_expression(): bool {
@@ -750,6 +760,35 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$groups[] = $this->conjunction();
 		}
 		return $this->coalesce_disjunction( $groups, $offset );
+	}
+
+	/** @return array<int,array<int,WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate>> */
+	private function boolean_disjunction(): array {
+		$groups = $this->boolean_conjunction();
+		while ( $this->match_keyword( 'OR' ) ) { $groups = array_merge( $groups, $this->boolean_conjunction() ); }
+		return $groups;
+	}
+
+	/** @return array<int,array<int,WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate>> */
+	private function boolean_conjunction(): array {
+		$groups = $this->boolean_predicate_term();
+		while ( $this->match_keyword( 'AND' ) ) {
+			$right = $this->boolean_predicate_term();
+			$combined = array();
+			foreach ( $groups as $left_group ) { foreach ( $right as $right_group ) { $combined[] = array_merge( $left_group, $right_group ); } }
+			$groups = $combined;
+		}
+		return $groups;
+	}
+
+	/** @return array<int,array<int,WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate>> */
+	private function boolean_predicate_term(): array {
+		if ( $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN ) ) {
+			$groups = $this->boolean_disjunction();
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return $groups;
+		}
+		return array( array( $this->predicate() ) );
 	}
 
 	/**

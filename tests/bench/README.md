@@ -37,32 +37,39 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 ### Native cutover evidence
 
 The native-only target is tracked in #232; the current optimization candidate
-is reviewed in draft PR #370 at `b2cafd2`. SQLite remains the comparison
-reference. The head removes retain-first branches while preserving
-`requires_complete_scope` full-freshness traversal.
+is draft PR #370. SQLite remains the comparison reference. The final source
+revision is `21267e1` (`b2cafd2` is the runtime change under review): it
+removes retain-first branches while preserving `requires_complete_scope`
+full-freshness traversal.
 
-Final-head local evidence: PHP 8.5.5 passed all 73 smoke-native scripts. The
-optional canonical usermeta check is intentionally skipped at
-`tests/smoke-native-usermeta-query.php:165` because it is not configured.
-The 240-case differential suite passed, as did storage-index freshness checks.
+Final-head local correctness evidence on `b2cafd2`: PHP 8.5.5 passed all 73
+smoke-native scripts. The optional canonical usermeta check is intentionally
+skipped at `tests/smoke-native-usermeta-query.php:165` because it is not
+configured. The 240-case differential suite and storage-index freshness checks
+passed.
 
-The prior Lab transaction run (`be4367f`, not final head) used five measured
-iterations, one warmup, and 90 rows per iteration: 15 commits, 5 rollbacks,
-and 120 writes. Native/SQLite totals were 114.327463/91.2719154 ms; UPDATE
-31.5225948/11.098722 ms; INSERT 73.7703446/62.9156974 ms; transaction
-7.0362866/14.3501344 ms. This is correctness and diagnostic evidence, not a
-performance acceptance result.
+#### Final-head decision matrix
 
-Historical bulk-import evidence (`4f926b3`, not final head) used 1,000 posts,
-five measured iterations, one warmup, and verified reset/count checks:
-23660.5166 ms native and 24912.0826 ms SQLite. It is not final-head
-performance evidence.
+Homeboy 0.370.0 ran the `decision` profile at `21267e1`, with one run, five
+measured iterations, one warmup, `BENCH_CORPUS_SIZE=1000`, and unprofiled
+workloads. Both cells passed: SQLite `b28d11dd-e33d-40cf-8944-683aacb5fbc3`
+and native `2cc3b041-9291-4e8b-823f-e05b92376607`. These operator run IDs are
+supplementary; the command and revision below are the reproducible evidence.
 
-The final-head matrix, `mdi-pr370-b2cafd2-fixed-hygiene`, failed before any
-workload because Homeboy 0.369.10 used a managed-extension symlink with the
-wrong detached argv (job `0c139756-c779-4de6-b078-32fd7b67e608`). Homeboy
-repairs #14446 and #14447 are merged; the latter's CI release remains pending
-(run `34266381758`). No final matrix or scaling result exists yet.
+| Workload | Native mean (ms) | SQLite mean (ms) | Verified result |
+|---|---:|---:|---|
+| bulk-import | 24627.2434754 | 24654.0637768 | 1,000 imported and 1,000 stored |
+| obsidian-bursty | 7078.3977238 | 1220.025412 | Signal only; no strict equal-result assertion |
+| read-heavy | 116.9425662 | 28.4982226 | Signal only; no strict equal-result assertion |
+| wiki-hierarchy | 92.886808 | 3.616162 | 881 rows returned |
+| plugin-table-inventory | 5.7952898 | 5.0626114 | 501 inventory, 20 repository, and 5 task rows |
+| transaction-heavy | 107.566288 | 84.0940222 | 90 committed rows, 15 commits, 5 rollbacks, and 120 writes |
+
+The seventh decision-profile entry, `boot-timing`, was skipped because
+`BENCH_BOOT_PHASE` was absent. It is excluded from performance results, not a
+boot result. The plugin workload accepts either non-false `REPLACE` result:
+native returned 2 and SQLite returned 1, a backend difference that the
+workload intentionally permits.
 
 Reproduce the representative comparison from this checkout:
 
@@ -73,20 +80,60 @@ homeboy bench markdown-database-integration --profile decision --runs 1 \
   --rig mdi-sqlite,mdi-native --runner homeboy-lab --path "$PWD"
 ```
 
-The planned scaling run is transaction-heavy with 50 iterations and an
-accumulating table. `BENCH_CORPUS_SIZE` does not size that table: each
-invocation performs 20 transactions, 6 writes, and leaves 90 committed rows.
+#### Final-head transaction scaling
 
-An experimental native merge is bounded to the verified fail-closed boundary:
-native post mutations reject active transactions because post pre-images are
-not journaled. Reviewer signoff must explicitly accept that compatibility
-boundary. Merge still requires a final-head representative seven-workload
-matrix, scaling evidence, performance budgets, and review of that boundary.
+Homeboy 0.370.0 ran `transaction-heavy` at `21267e1`, with one run, 50
+measured iterations, and one warmup. Both cells passed: SQLite
+`e98e356b-197f-48f9-9000-9c9950ced9a1` and native
+`1334ecdc-f7b2-4c8b-9a5b-34f18025ebf4` (operator records only).
+
+| Metric | Native (ms) | SQLite (ms) |
+|---|---:|---:|
+| Mean total duration | 426.07837956 | 90.88239834 |
+| INSERT duration | 234.6008429 | 62.38926462 |
+| UPDATE duration | 173.8366598 | 11.15693886 |
+| Transaction control duration | 11.64906446 | 14.29955532 |
+
+Total-duration samples ranged from 94.371189 to 822.249571 ms for native and
+83.963205 to 103.349132 ms for SQLite. The recorded distributions are sorted,
+so their endpoints are ranges, not first-to-last chronological trends.
+
+Each invocation performs 20 transactions and 6 writes per transaction, with
+15 commits, 5 rollbacks, and 90 committed rows. The table accumulates across
+invocations, but verification checks only the current invocation's rows. The
+50 measured iterations therefore add 4,500 committed rows excluding warmup;
+that theoretical accumulation was not separately asserted. `BENCH_CORPUS_SIZE`
+does not size this table.
+
+Reproduce the scaling comparison:
+
+```sh
+homeboy bench markdown-database-integration --scenario transaction-heavy \
+  --runs 1 --iterations 50 --warmup 1 \
+  --setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"0"}' \
+  --rig mdi-sqlite,mdi-native --runner homeboy-lab --path "$PWD"
+```
+
+#### Decision
+
+The execution gates are complete: both final-head matrix cells and both
+scaling cells passed. Performance acceptance is not complete: no explicit
+regression budgets exist, and there is no same-head pre-simplification
+baseline that attributes the slower native results to a new regression. The
+results show a native scaling weakness, not causal profiling. This PR is not
+declared ready to land; review must either accept the known experimental
+boundary and performance evidence or prioritize repairing the demonstrated
+gaps.
+
+Native post mutations remain a separate, fail-closed compatibility boundary:
+an active native transaction rejects the mutation before Markdown is written,
+because its journal does not record canonical Markdown posts. The bounded merge
+decision is whether reviewers accept that unsupported case; it is not native
+post transaction rollback or crash-recovery support.
 
 SQLite removal and production cutover remain separate. They require actual
 native post transaction rollback and crash recovery, then an accepted-site
-rehearsal with backups, workers, and compatibility verification. These are
-outstanding gates, not completed verification.
+rehearsal with backups, workers, and compatibility verification.
 
 ### Bulk-import profiling
 

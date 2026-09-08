@@ -536,6 +536,15 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$columns = null;
 		$seen = array();
 		foreach ( $branches as $branch_index => $branch ) {
+			if ( 0 < $branch_index && ! $branches[ $branch_index - 1 ]->union_all() ) {
+				// UNION DISTINCT de-duplicates its complete left-hand result, including
+				// duplicates retained by any preceding UNION ALL.
+				$rows = array_values( array_reduce( $rows, static function ( array $unique, array $row ): array {
+					$unique[ serialize( array_values( $row ) ) ] = $row;
+					return $unique;
+				}, array() ) );
+				$seen = array_fill_keys( array_map( static fn( array $row ): string => serialize( array_values( $row ) ), $rows ), true );
+			}
 			if ( array() === $branch->joins() && array() === $branch->subqueries() && array() === $branch->aggregates() && null === $branch->group_by() && array() === $branch->scalar_projection() && ! $branch->counts_all() && null === $branch->derived() ) {
 				// Keep simple UNION branches on the direct path: unlike a top-level
 				// query, they have always supported bounded in-memory filtering.
@@ -720,7 +729,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					$value = $row[ $known_source ][ $known_column ] ?? null;
 					$key = $target['schema']->value_key( $target_column, $value );
 					if ( null === $key ) {
-						return $this->failure( 'unsupported_join_lookup', 'mdi-native cannot normalize the requested JOIN identity.' );
+						// NULL cannot match an equality key. Leave this row in the
+						// join stream so a later LEFT JOIN can null-extend it.
+						continue;
 					}
 					if ( ! isset( $values[ $key ] ) ) {
 						$values[ $key ] = $value;
@@ -764,12 +775,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			$joined = array();
 			$null_row = array_fill_keys( $needed[ $target_source ], null );
-			$candidate_count = null === $known_source ? count( $rows ) * count( $target_rows ) : count( $rows );
+			$candidate_count = 0;
+			$row_matches = array();
+			foreach ( $rows as $row_index => $row ) {
+				if ( null === $known_source ) {
+					$row_matches[ $row_index ] = $target_rows;
+					$candidate_count += count( $row_matches[ $row_index ] );
+					continue;
+				}
+				$key = $target['schema']->value_key( (string) $target_column, $row[ $known_source ][ $known_column ] ?? null );
+				$row_matches[ $row_index ] = null === $key ? array() : ( $target_rows[ $key ] ?? array() );
+				$candidate_count += count( $row_matches[ $row_index ] );
+			}
 			if ( $candidate_count > self::MAX_JOIN_CANDIDATE_PAIRS ) {
 				return $this->failure( 'unsupported_join_cost', 'mdi-native cannot evaluate the requested JOIN within its bounded row-pair cost.' );
 			}
-			foreach ( $rows as $row ) {
-				$matched = null === $known_source ? $target_rows : ( $target_rows[ $target['schema']->value_key( (string) $target_column, $row[ $known_source ][ $known_column ] ) ] ?? array() );
+			foreach ( $rows as $row_index => $row ) {
+				$matched = $row_matches[ $row_index ];
 				$matched = array_values( array_filter( $matched, function ( array $target_row ) use ( $row, $target_source, $join, $sources, $joined_sources ): bool { $combined = $row; $combined[ $target_source ] = $target_row; return $this->matches_join_predicates( $combined, $join->on_filters(), $sources, $joined_sources + array( $target_source => true ) ); } ) );
 				if ( array() === $matched && $join->is_outer() ) {
 					$row[ $target_source ] = $null_row;

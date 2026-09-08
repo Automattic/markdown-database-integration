@@ -495,6 +495,11 @@ and transaction behavior, and removes the table in `finally`.
 Recording is tooling-only and has no effect unless a caller explicitly invokes
 the recorder.
 
+The committed `artifacts/native-mysql-coverage.json` report records the
+WordPress and raw MySQL surfaces currently answered by `mdi-native`. Regenerate
+it with `php tests/run-native-mysql-coverage.php` using WP Codebox 0.24.5 or
+newer.
+
 ### Native Shadow Verification
 
 An existing SQLite or `mysql-full` runtime can replay authoritative WordPress

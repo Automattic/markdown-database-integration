@@ -3,6 +3,8 @@
 
 declare( strict_types=1 );
 
+require_once __DIR__ . '/lib-native-lifecycle-fixture.php';
+
 function mdi_native_lifecycle_remove_tree( string $root ): void {
 	if ( ! is_dir( $root ) ) {
 		return;
@@ -15,19 +17,6 @@ function mdi_native_lifecycle_remove_tree( string $root ): void {
 		$entry->isDir() && ! $entry->isLink() ? rmdir( $entry->getPathname() ) : unlink( $entry->getPathname() );
 	}
 	rmdir( $root );
-}
-
-function mdi_native_lifecycle_option( string $root, int $id, string $name, string $value, string $autoload = 'on' ): void {
-	$encoded = json_encode(
-		array(
-			'option_id'    => $id,
-			'option_name'  => $name,
-			'option_value' => $value,
-			'autoload'     => $autoload,
-		),
-		JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR
-	);
-	file_put_contents( $root . '/_options/' . $name . '.json', $encoded . "\n" );
 }
 
 /** @return array{run:array<string,mixed>|null,lifecycle:array<string,mixed>|null,output:string,status:int} */
@@ -53,6 +42,14 @@ $repo = realpath( dirname( __DIR__ ) );
 $woocommerce = realpath( (string) getenv( 'MDI_WOOCOMMERCE_DIR' ) );
 if ( false === $repo || false === $woocommerce || ! is_file( $woocommerce . '/woocommerce.php' ) ) {
 	fwrite( STDERR, "Usage: MDI_WOOCOMMERCE_DIR=/path/to/woocommerce php tests/run-native-wordpress-lifecycle.php\n" );
+	exit( 2 );
+}
+
+$wp_codebox = (string) ( getenv( 'MDI_WP_CODEBOX_BIN' ) ?: 'wp-codebox' );
+try {
+	mdi_native_lifecycle_require_wp_codebox( $wp_codebox );
+} catch ( RuntimeException $error ) {
+	fwrite( STDERR, $error->getMessage() . "\n" );
 	exit( 2 );
 }
 
@@ -151,7 +148,6 @@ $recipe = array(
 $recipe_path = $root . '/recipe.json';
 file_put_contents( $recipe_path, json_encode( $recipe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 
-$wp_codebox = (string) ( getenv( 'MDI_WP_CODEBOX_BIN' ) ?: 'wp-codebox' );
 $first = mdi_native_lifecycle_run( $wp_codebox, $recipe_path );
 $second = null;
 if ( 0 === $first['status'] ) {

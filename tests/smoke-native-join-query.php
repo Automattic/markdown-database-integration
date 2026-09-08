@@ -93,6 +93,7 @@ $core_terms_query = 'SELECT t.*, tt.* FROM wp_terms AS t INNER JOIN wp_term_taxo
 $core_terms = $runtime->execute( new WP_Markdown_Query_Request( $core_terms_query ) );
 $derived_base_query = "SELECT d.object_id, d.term_taxonomy_id FROM ( SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 UNION ALL SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 ) AS d";
 $derived_base = $runtime->execute( new WP_Markdown_Query_Request( $derived_base_query ) );
+$derived_distinct_after_all = $runtime->execute( new WP_Markdown_Query_Request( "SELECT d.object_id, d.term_taxonomy_id FROM ( SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 UNION ALL SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 UNION SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 ) AS d" ) );
 $derived_join_query = "SELECT tr.object_id, d.taxonomy FROM wp_term_relationships tr JOIN ( SELECT term_taxonomy_id, taxonomy FROM wp_term_taxonomy WHERE taxonomy='category' UNION ALL SELECT term_taxonomy_id, taxonomy FROM wp_term_taxonomy WHERE taxonomy='category' ) AS d ON tr.term_taxonomy_id=d.term_taxonomy_id WHERE tr.object_id=41";
 $derived_join_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $derived_join_query );
 $derived_join = $runtime->execute( new WP_Markdown_Query_Request( $derived_join_query ) );
@@ -167,8 +168,13 @@ $multiplicity_registry->register( 'wp_multiplicity_left', $multiplicity_left_sch
 $multiplicity_registry->register( 'wp_multiplicity_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array( array( 'row_id' => 1, 'left_id' => 1, 'label' => 'first' ), array( 'row_id' => 2, 'left_id' => 1, 'label' => 'second' ), array( 'row_id' => 3, 'left_id' => 3, 'label' => 'other' ) ), $multiplicity_right_schema ) );
 $multiplicity_runtime = new WP_Markdown_Native_Query_Runtime( $multiplicity_registry );
 $multiplicity = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LIMIT 3' ) );
+$chained_outer = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label, s.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LEFT JOIN wp_multiplicity_right s ON r.left_id=s.left_id' ) );
 $non_equality_left = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id > r.left_id' ) );
 $or_on = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( "SELECT l.id, r.label FROM wp_multiplicity_left l JOIN wp_multiplicity_right r ON l.id=r.left_id OR r.label='other'" ) );
+$fanout_registry = new WP_Markdown_Native_Table_Registry();
+$fanout_registry->register( 'wp_fanout_left', $multiplicity_left_schema, new MDI_Native_Join_Array_Provider( array( array( 'id' => 1 ) ), $multiplicity_left_schema ) );
+$fanout_registry->register( 'wp_fanout_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array_fill( 0, 100001, array( 'row_id' => 1, 'left_id' => 1, 'label' => 'fanout' ) ), $multiplicity_right_schema ) );
+$fanout = ( new WP_Markdown_Native_Query_Runtime( $fanout_registry ) )->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_fanout_left l JOIN wp_fanout_right r ON l.id=r.left_id' ) );
 $meta_query = "SELECT p.ID, mt1.meta_value, mt2.meta_value FROM wp_posts p LEFT JOIN wp_postmeta mt1 ON (p.ID = mt1.post_id AND mt1.meta_key = 'color') LEFT JOIN wp_postmeta mt2 ON (p.ID = mt2.post_id AND mt2.meta_key = 'size') WHERE p.ID = 41";
 $meta_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $meta_query );
 $meta_registry = new WP_Markdown_Native_Table_Registry();
@@ -225,6 +231,11 @@ $checks = array(
 		array( 'object_id' => '41', 'term_taxonomy_id' => '8' ),
 		array( 'object_id' => '41', 'term_taxonomy_id' => '10' ),
 	) === array_map( 'get_object_vars', $derived_base->wpdb_state()['last_result'] ),
+	'UNION DISTINCT removes duplicates retained by a preceding UNION ALL' => array(
+		array( 'object_id' => '41', 'term_taxonomy_id' => '7' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '8' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '10' ),
+	) === array_map( 'get_object_vars', $derived_distinct_after_all->wpdb_state()['last_result'] ),
 	'parenthesized derived JOIN sources expose columns only through their alias' => $derived_join_plan instanceof WP_Markdown_Native_Query_Plan
 		&& array( 'tr', 'd' ) === $derived_join_plan->projection_sources()
 		&& array(
@@ -242,6 +253,8 @@ $checks = array(
 		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )
 		&& array( 'id' => '1000', 'label' => 'row-1000' ) === get_object_vars( $scale_rows[999] ?? (object) array() )
 		&& $right_normalizations < 10000,
+	'indexed equality JOIN fan-out is bounded before materializing row pairs' => false === $fanout->return_value()
+		&& 'unsupported_join_cost' === ( $fanout->diagnostic()['reason'] ?? null ),
 	'LEFT JOIN with identity GROUP BY and LIMIT returns distinct left keys' => array( '99', '41' ) === array_map(
 		static fn( object $row ): string => (string) $row->object_id,
 		$catalog->wpdb_state()['last_result']
@@ -273,6 +286,13 @@ $checks = array(
 			array( 'id' => '1', 'label' => 'second' ),
 			array( 'id' => '2', 'label' => null ),
 		) === array_map( 'get_object_vars', $multiplicity->wpdb_state()['last_result'] ),
+	'chained LEFT JOINs carry unmatched NULL keys into later equality joins' => array(
+		array( 'id' => '1', 'label' => 'first' ),
+		array( 'id' => '1', 'label' => 'second' ),
+		array( 'id' => '1', 'label' => 'first' ),
+		array( 'id' => '1', 'label' => 'second' ),
+		array( 'id' => '2', 'label' => null ),
+	) === array_map( 'get_object_vars', $chained_outer->wpdb_state()['last_result'] ),
 	'non-equality ON predicates evaluate before LEFT JOIN NULL extension' => array(
 		array( 'id' => '1', 'label' => null ),
 		array( 'id' => '2', 'label' => 'first' ),

@@ -568,9 +568,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function matches_scalar_expression(): bool {
-		return $this->matches_function( 'CONCAT' ) || $this->matches_function( 'COALESCE' ) || $this->matches_function( 'SUBSTRING' )
-			|| $this->matches_function( 'CAST' ) || $this->matches_function( 'YEAR' ) || $this->matches_function( 'MONTH' )
-			|| $this->matches_function( 'DATE_FORMAT' ) || ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
+		return in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
+			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type()
+			|| ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
 	}
 
 	private function scalar_alias(): string {
@@ -599,16 +599,22 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return new WP_Markdown_Native_SQL_Scalar_Expression( 'CAST_UNSIGNED', null, null, array( $argument ) );
 		}
-		$arguments = array( $this->scalar_value() );
-		while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+		$arguments = array();
+		if ( ! $this->match_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN ) ) {
 			$arguments[] = $this->scalar_value();
+			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				$arguments[] = $this->scalar_value();
+			}
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 		}
-		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 		$valid = match ( $function ) {
 			'CONCAT', 'COALESCE' => 2 <= count( $arguments ),
 			'SUBSTRING' => 3 === count( $arguments ),
-			'YEAR', 'MONTH' => 1 === count( $arguments ),
-			'DATE_FORMAT' => 2 === count( $arguments ) && '%Y-%m' === $arguments[1]->literal(),
+			'YEAR', 'MONTH', 'DATE', 'TIME', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
+			'DATE_FORMAT', 'DATEDIFF', 'IFNULL', 'NULLIF', 'LEFT', 'RIGHT', 'LOCATE', 'ROUND', 'MOD', 'POW', 'ATAN2' => 2 === count( $arguments ),
+			'GREATEST', 'LEAST' => 2 <= count( $arguments ),
+			'IF', 'REPLACE' => 3 === count( $arguments ),
+			'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'RAND' => 0 === count( $arguments ),
 			default => false,
 		};
 		if ( ! $valid ) { $this->unsupported( $this->current() ); }
@@ -616,6 +622,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function scalar_value(): WP_Markdown_Native_SQL_Scalar_Expression {
+		if ( $this->match_keyword( 'NULL' ) ) {
+			return new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, null );
+		}
 		if ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::STRING, WP_Markdown_Native_SQL_Token::INTEGER, WP_Markdown_Native_SQL_Token::DECIMAL ), true ) ) {
 			$literal = $this->literal();
 			return new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $literal->value() );

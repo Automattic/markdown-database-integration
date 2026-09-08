@@ -1142,10 +1142,85 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'CAST_UNSIGNED' => null === $values[0] ? null : max( 0, (int) $values[0] ),
 			'YEAR' => null === $values[0] ? null : substr( (string) $values[0], 0, 4 ),
 			'MONTH' => null === $values[0] ? null : substr( (string) $values[0], 5, 2 ),
-			'DATE_FORMAT' => null === $values[0] ? null : str_replace( array( '%Y', '%m', '%d' ), array( substr( (string) $values[0], 0, 4 ), substr( (string) $values[0], 5, 2 ), substr( (string) $values[0], 8, 2 ) ), (string) $values[1] ),
+			'DATE' => null === $values[0] ? null : substr( (string) $values[0], 0, 10 ),
+			'TIME' => null === $values[0] ? null : substr( (string) $values[0], 11, 8 ),
+			'DAY' => null === $values[0] ? null : substr( (string) $values[0], 8, 2 ),
+			'HOUR' => null === $values[0] ? null : substr( (string) $values[0], 11, 2 ),
+			'MINUTE' => null === $values[0] ? null : substr( (string) $values[0], 14, 2 ),
+			'DAYOFWEEK' => $this->date_part( $values[0], 'w' ),
+			'DATE_FORMAT' => $this->date_format( $values[0], $values[1] ),
+			'DATEDIFF' => $this->date_difference( $values[0], $values[1] ),
+			'UNIX_TIMESTAMP' => $this->unix_timestamp( $values[0] ?? null ),
+			'FROM_UNIXTIME' => null === $values[0] ? null : gmdate( 'Y-m-d H:i:s', (int) $values[0] ),
+			'NOW', 'UTC_TIMESTAMP' => gmdate( 'Y-m-d H:i:s' ),
+			'CURDATE' => gmdate( 'Y-m-d' ),
+			'GREATEST' => in_array( null, $values, true ) ? null : max( $values ),
+			'LEAST' => in_array( null, $values, true ) ? null : min( $values ),
+			'IF' => $this->scalar_number( $values[0] ) != 0.0 ? $values[1] : $values[2],
+			'IFNULL' => $values[0] ?? $values[1],
+			'NULLIF' => $values[0] === $values[1] ? null : $values[0],
+			'LOWER' => null === $values[0] ? null : strtolower( (string) $values[0] ),
+			'UPPER' => null === $values[0] ? null : strtoupper( (string) $values[0] ),
+			'TRIM' => null === $values[0] ? null : trim( (string) $values[0] ),
+			'LENGTH' => null === $values[0] ? null : strlen( (string) $values[0] ),
+			'CHAR_LENGTH' => null === $values[0] ? null : ( function_exists( 'mb_strlen' ) ? mb_strlen( (string) $values[0], 'UTF-8' ) : strlen( (string) $values[0] ) ),
+			'REPLACE' => in_array( null, $values, true ) ? null : str_replace( (string) $values[1], (string) $values[2], (string) $values[0] ),
+			'LEFT' => in_array( null, $values, true ) ? null : substr( (string) $values[0], 0, max( 0, (int) $values[1] ) ),
+			'RIGHT' => in_array( null, $values, true ) ? null : substr( (string) $values[0], -(int) $values[1] ),
+			'LOCATE' => in_array( null, $values, true ) ? null : ( false === strpos( (string) $values[1], (string) $values[0] ) ? 0 : strpos( (string) $values[1], (string) $values[0] ) + 1 ),
+			'MD5' => null === $values[0] ? null : md5( (string) $values[0] ),
+			'SHA1' => null === $values[0] ? null : sha1( (string) $values[0] ),
+			'ABS' => null === $values[0] ? null : $this->scalar_number( abs( $this->scalar_number( $values[0] ) ) ),
+			'ROUND' => null === $values[0] ? null : $this->scalar_number( round( $this->scalar_number( $values[0] ), (int) $values[1] ) ),
+			'FLOOR' => null === $values[0] ? null : $this->scalar_number( floor( $this->scalar_number( $values[0] ) ) ),
+			'CEIL' => null === $values[0] ? null : $this->scalar_number( ceil( $this->scalar_number( $values[0] ) ) ),
+			'MOD' => in_array( null, $values, true ) || 0.0 === $this->scalar_number( $values[1] ) ? null : $this->scalar_number( fmod( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
+			'POW' => in_array( null, $values, true ) ? null : $this->scalar_number( pow( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
+			'SQRT' => null === $values[0] ? null : $this->scalar_number( sqrt( $this->scalar_number( $values[0] ) ) ),
+			'RADIANS' => null === $values[0] ? null : $this->scalar_number( deg2rad( $this->scalar_number( $values[0] ) ) ),
+			'DEGREES' => null === $values[0] ? null : $this->scalar_number( rad2deg( $this->scalar_number( $values[0] ) ) ),
+			'SIN' => null === $values[0] ? null : $this->scalar_number( sin( $this->scalar_number( $values[0] ) ) ),
+			'COS' => null === $values[0] ? null : $this->scalar_number( cos( $this->scalar_number( $values[0] ) ) ),
+			'TAN' => null === $values[0] ? null : $this->scalar_number( tan( $this->scalar_number( $values[0] ) ) ),
+			'ACOS' => null === $values[0] ? null : $this->scalar_number( acos( $this->scalar_number( $values[0] ) ) ),
+			'ASIN' => null === $values[0] ? null : $this->scalar_number( asin( $this->scalar_number( $values[0] ) ) ),
+			'ATAN' => null === $values[0] ? null : $this->scalar_number( atan( $this->scalar_number( $values[0] ) ) ),
+			'ATAN2' => in_array( null, $values, true ) ? null : $this->scalar_number( atan2( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
+			'RAND' => $this->scalar_number( mt_rand() / mt_getrandmax() ),
 			'CASE' => $this->evaluate_case( $expression, $row, $schema ),
 			default => throw new LogicException( 'Unsupported lowered scalar expression.' ),
 		};
+	}
+
+	private function scalar_number( int|float|string|null $value ): int|string|null|float {
+		if ( null === $value ) { return null; }
+		$number = (float) $value;
+		return floor( $number ) === $number ? (int) $number : (string) $number;
+	}
+
+	private function date_part( int|string|null $value, string $format ): ?int {
+		if ( null === $value || '0000-00-00' === substr( (string) $value, 0, 10 ) ) { return null; }
+		$date = date_create_immutable( (string) $value, new DateTimeZone( 'UTC' ) );
+		return false === $date ? null : (int) $date->format( $format );
+	}
+
+	private function date_format( int|string|null $value, int|string|null $format ): ?string {
+		if ( null === $value || null === $format ) { return null; }
+		return str_replace( array( '%Y', '%m', '%d', '%H', '%i', '%s' ), array( substr( (string) $value, 0, 4 ), substr( (string) $value, 5, 2 ), substr( (string) $value, 8, 2 ), substr( (string) $value, 11, 2 ), substr( (string) $value, 14, 2 ), substr( (string) $value, 17, 2 ) ), (string) $format );
+	}
+
+	private function date_difference( int|string|null $left, int|string|null $right ): ?int {
+		if ( null === $left || null === $right ) { return null; }
+		$first = strtotime( substr( (string) $left, 0, 10 ) . ' UTC' );
+		$second = strtotime( substr( (string) $right, 0, 10 ) . ' UTC' );
+		if ( false === $first || false === $second ) { return null; }
+		return (int) ( ( $first - $second ) / 86400 );
+	}
+
+	private function unix_timestamp( int|string|null $value ): ?int {
+		if ( null === $value ) { return time(); }
+		$timestamp = strtotime( (string) $value . ' UTC' );
+		return false === $timestamp ? null : $timestamp;
 	}
 
 	private function evaluate_case( WP_Markdown_Native_Query_Scalar_Expression $expression, array $row, WP_Markdown_Native_Table_Schema $schema ): int|string|null {

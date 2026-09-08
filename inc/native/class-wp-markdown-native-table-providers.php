@@ -414,7 +414,6 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			}
 			$posts = array();
 			$candidates = array();
-			$first_match = null;
 			$ids   = array();
 			$predicates = $access->predicates();
 			if ( array() === $predicates && null !== $access->predicate() ) {
@@ -429,8 +428,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			$scope = $this->post_type_scope( $access );
 			$key = null === $scope ? null : $this->parse_key( $scope );
 			$ordered = false;
-			$retains_first_match = $access->retains_first_match() && count( $predicates ) === count( $metadata_predicates );
-			if ( ! $retains_first_match && null !== $key && isset( $this->scoped_posts[ $key ] ) ) {
+			if ( ! $access->requires_complete_scope() && null !== $key && isset( $this->scoped_posts[ $key ] ) ) {
 				$candidates = $this->scoped_posts[ $key ];
 				$posts = array_values( array_filter( $candidates, fn( array $candidate ): bool => $this->schema->matches( $candidate['row'], $metadata_predicates ) ) );
 				if ( count( $posts ) === count( $candidates ) ) {
@@ -495,27 +493,15 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				}
 				// Body predicates remain executor residuals until their candidates
 				// are hydrated; metadata predicates safely reduce sorting work here.
-				$matches = $this->schema->matches( $row, $retains_first_match ? $predicates : $metadata_predicates );
-				if ( $matches ) {
+				if ( $this->schema->matches( $row, $metadata_predicates ) ) {
 					$candidate = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
-					if ( $retains_first_match ) {
-						$first_match ??= $candidate;
-					} else {
-						$posts[] = $candidate;
-					}
+					$posts[] = $candidate;
 				}
-				if ( ! $retains_first_match ) {
-					$candidates[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
-				}
+				$candidates[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 			}
 			if ( null === $scope ) {
 				$this->catalogue->complete_scan( array() === $allocation_columns );
 				$completed = true;
-				if ( $retains_first_match ) {
-					return null === $first_match ? array() : $this->ordered_projection( array( $first_match ), $access, true );
-				}
-			} elseif ( $retains_first_match ) {
-				return null === $first_match ? array() : $this->ordered_projection( array( $first_match ), $access, true );
 			} elseif ( null !== $key ) {
 				// A scoped corpus is immutable for this runtime after its initial
 				// verified traversal. Canonical writes clear this snapshot first.

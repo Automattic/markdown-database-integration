@@ -117,6 +117,7 @@ mdi_coverage_statement( 'select.group_concat', "SELECT post_type, GROUP_CONCAT(I
 mdi_coverage_statement( 'select.order.field', "SELECT ID FROM {$posts} ORDER BY FIELD(post_status, 'publish', 'draft') LIMIT 5" );
 mdi_coverage_statement( 'select.regexp', "SELECT ID FROM {$posts} WHERE post_title REGEXP '^a'" );
 mdi_coverage_statement( 'select.found.rows', "SELECT SQL_CALC_FOUND_ROWS ID FROM {$posts} LIMIT 2" );
+mdi_coverage_statement( 'select.for.update', "SELECT ID FROM {$posts} WHERE ID = 1 FOR UPDATE" );
 mdi_coverage_statement( 'select.alias.table', "SELECT p.* FROM {$posts} AS p WHERE p.ID > 0 LIMIT 3" );
 mdi_coverage_statement( 'select.option.autoload', "SELECT option_name, option_value FROM {$options} WHERE autoload IN ('yes','on')" );
 mdi_coverage_statement( 'select.users.join.meta', "SELECT u.ID FROM {$users} u INNER JOIN {$wpdb->usermeta} um ON u.ID = um.user_id LIMIT 5" );

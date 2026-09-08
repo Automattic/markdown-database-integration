@@ -98,7 +98,8 @@ final class WP_Markdown_Native_Query_Scalar_Expression {
 		private readonly int|string|null $literal = null,
 		private readonly array $arguments = array(),
 		private readonly array $branches = array(),
-		private readonly ?self $else = null
+		private readonly ?self $else = null,
+		private readonly ?string $source = null
 	) {}
 
 	public function kind(): string {
@@ -107,6 +108,10 @@ final class WP_Markdown_Native_Query_Scalar_Expression {
 
 	public function column(): ?string {
 		return $this->column;
+	}
+
+	public function source(): ?string {
+		return $this->source;
 	}
 
 	public function literal(): int|string|null {

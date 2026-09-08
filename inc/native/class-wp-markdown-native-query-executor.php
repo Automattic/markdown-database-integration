@@ -114,9 +114,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				: $this->result( array(), $projection, $plan->table(), $schema );
 		}
 		if ( array() !== $plan->joins() ) {
-			if ( array() !== $plan->scalar_predicates() || null !== $plan->boolean_predicate() || array() !== $plan->scalar_having() ) {
-				return $this->failure( 'unsupported_join_shape', 'mdi-native cannot combine scalar clauses with JOINs.' );
-			}
 			return $this->execute_join( $plan );
 		}
 
@@ -604,7 +601,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}, array() ) );
 				$seen = array_fill_keys( array_map( static fn( array $row ): string => serialize( array_values( $row ) ), $rows ), true );
 			}
-			if ( array() === $branch->joins() && array() === $branch->subqueries() && array() === $branch->aggregates() && null === $branch->group_by() && array() === $branch->scalar_projection() && ! $branch->counts_all() && null === $branch->derived() ) {
+			if ( array() === $branch->joins() && array() === $branch->subqueries() && array() === $branch->aggregates() && null === $branch->group_by() && array() === $branch->scalar_projection() && array() === $branch->scalar_predicates() && null === $branch->boolean_predicate() && array() === $branch->scalar_having() && ! $branch->counts_all() && null === $branch->derived() ) {
 				// Keep simple UNION branches on the direct path: unlike a top-level
 				// query, they have always supported bounded in-memory filtering.
 				$table = $this->registry->table( $branch->table() );
@@ -693,6 +690,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$needed[ $source ][] = $expanded;
 			}
 		}
+		foreach ( $plan->scalar_projection() as $scalar ) {
+			if ( ! $this->add_join_scalar_columns( $scalar['expression'], $sources, $needed ) ) {
+				return $this->failure( 'unsupported_column', 'mdi-native cannot evaluate the requested JOIN scalar projection.' );
+			}
+		}
 		$predicates = array_fill_keys( array_keys( $sources ), array() );
 		foreach ( $plan->predicates() as $predicate ) {
 			$source = $predicate->source();
@@ -704,6 +706,24 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			$predicates[ $source ][] = $predicate;
 			$needed[ $source ][] = $predicate->column();
+		}
+		foreach ( $plan->scalar_predicates() as $predicate ) {
+			if ( ! $this->add_join_scalar_columns( $predicate->left(), $sources, $needed ) || ! $this->add_join_scalar_columns( $predicate->right(), $sources, $needed ) ) {
+				return $this->failure( 'unsupported_column', 'mdi-native cannot evaluate the requested JOIN scalar predicate.' );
+			}
+		}
+		if ( null !== $plan->boolean_predicate() ) {
+			foreach ( $plan->boolean_predicate()->groups() as $group ) {
+				foreach ( $group as $term ) {
+					if ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate ) {
+						if ( ! $this->add_join_scalar_columns( $term->left(), $sources, $needed ) || ! $this->add_join_scalar_columns( $term->right(), $sources, $needed ) ) {
+							return $this->failure( 'unsupported_column', 'mdi-native cannot evaluate the requested JOIN scalar predicate.' );
+						}
+					} elseif ( ! $this->add_join_predicate_columns( $term, $sources, $needed ) ) {
+						return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN predicate.' );
+					}
+				}
+			}
 		}
 		foreach ( $plan->aggregates() as $aggregate ) {
 			if ( null === $aggregate['column'] ) {
@@ -725,6 +745,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $plan->order_by() as $item ) {
 			$order_source = $item['source'] ?? $plan->order_source();
 			$numeric = true === ( $item['numeric'] ?? false );
+			if ( null !== ( $item['expression'] ?? null ) ) {
+				if ( ! $this->add_join_scalar_columns( $item['expression'], $sources, $needed ) ) {
+					return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN scalar ordering.' );
+				}
+				continue;
+			}
 			if ( null === $order_source || ! isset( $sources[ $order_source ] )
 				|| ( $numeric ? ! $sources[ $order_source ]['schema']->has_column( $item['column'] ) : ! $sources[ $order_source ]['schema']->allows_order( $item['column'] ) ) ) {
 				return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN ordering collation.' );
@@ -865,10 +891,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$rows = $joined;
 			$joined_sources[ $target_source ] = true;
 		}
-		$rows = array_values( array_filter( $rows, fn( array $row ): bool => $this->matches_join_predicates( $row, $plan->predicates(), $sources, $joined_sources ) ) );
+		$rows = array_values( array_filter( $rows, fn( array $row ): bool => $this->matches_join_predicates( $row, $plan->predicates(), $sources, $joined_sources ) && $this->matches_join_scalar_predicates( $row, $plan->scalar_predicates() ) && $this->matches_join_boolean_predicate( $row, $plan->boolean_predicate(), $sources, $joined_sources ) ) );
 
 		if ( array() !== $plan->order_by() ) {
 			foreach ( $plan->order_by() as $item ) {
+				if ( null !== ( $item['expression'] ?? null ) ) {
+					continue;
+				}
 				if ( true === ( $item['numeric'] ?? false ) ) {
 					continue;
 				}
@@ -882,6 +911,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$rows,
 				function ( array $left, array $right ) use ( $plan, $sources ): int {
 					foreach ( $plan->order_by() as $item ) {
+						if ( null !== ( $item['expression'] ?? null ) ) {
+							$comparison = $this->compare_scalar_values( $this->evaluate_scalar( $item['expression'], $left, $sources[ (string) ( $item['source'] ?? $plan->table_alias() ) ]['schema'] ), $this->evaluate_scalar( $item['expression'], $right, $sources[ (string) ( $item['source'] ?? $plan->table_alias() ) ]['schema'] ) );
+							if ( 0 !== $comparison ) { return $item['descending'] ? -$comparison : $comparison; }
+							continue;
+						}
 						$source = (string) ( $item['source'] ?? $plan->order_source() );
 						$column = $item['column'];
 						$left_value = $left[ $source ][ $column ] ?? null;
@@ -915,12 +949,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$selected_rows = array();
 		$seen = array();
 		foreach ( $rows as $row ) {
-			$selected_row = array();
+			$regular = array();
 			foreach ( $projection as $column_index => $column ) {
 				$source = $projection_sources[ $column_index ];
 				$value = $row[ $source ][ $column ];
-				$selected_row[ $column ] = null === $value ? null : (string) $value;
+				$regular[] = array( $column => null === $value ? null : (string) $value );
 			}
+			$selected_row = $this->interleave_scalar_projection( $regular, $plan->scalar_projection(), fn( array $scalar ): array => array( $scalar['alias'] => $this->string_scalar( $this->evaluate_scalar( $scalar['expression'], $row, $sources[ (string) ( $scalar['expression']->source() ?? $plan->table_alias() ) ]['schema'] ) ) ) );
 			$key = serialize( $selected_row );
 			if ( array() !== $plan->aggregates() || ! $plan->is_distinct() || ! isset( $seen[ $key ] ) ) {
 				$seen[ $key ] = true;
@@ -976,6 +1011,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$source = $projection_sources[ $index ];
 			$columns[] = array( 'name' => $column, 'table' => $sources[ $source ]['table'], 'type' => $sources[ $source ]['schema']->column( $column )->type() );
 		}
+		foreach ( $plan->scalar_projection() as $scalar ) {
+			$columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 );
+		}
+		ksort( $columns );
 		foreach ( $aggregates as $aggregate ) {
 			$columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 8 );
 		}
@@ -1004,6 +1043,57 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		return true;
+	}
+
+	/** Add every qualified scalar input to its owning JOIN source. */
+	private function add_join_scalar_columns( WP_Markdown_Native_Query_Scalar_Expression $expression, array $sources, array &$needed ): bool {
+		if ( null !== $expression->column() ) {
+			$source = $expression->source();
+			if ( null === $source || ! isset( $sources[ $source ] ) || ! $sources[ $source ]['schema']->has_column( $expression->column() ) ) {
+				return false;
+			}
+			$needed[ $source ][] = $expression->column();
+		}
+		foreach ( $expression->arguments() as $argument ) {
+			if ( ! $this->add_join_scalar_columns( $argument, $sources, $needed ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function matches_join_scalar_predicates( array $row, array $predicates ): bool {
+		foreach ( $predicates as $predicate ) {
+			$schema = new WP_Markdown_Native_Table_Schema( array( '__scalar' => new WP_Markdown_Native_Column( 253, true ) ), '__scalar' );
+			$left = $this->evaluate_scalar( $predicate->left(), $row, $schema );
+			$right = $this->evaluate_scalar( $predicate->right(), $row, $schema );
+			if ( null === $left || null === $right ) {
+				return false;
+			}
+			$comparison = $this->compare_scalar_values( $left, $right );
+			if ( ! match ( $predicate->operator() ) { '=' => 0 === $comparison, '<>' => 0 !== $comparison, '<' => $comparison < 0, '<=' => $comparison <= 0, '>' => $comparison > 0, default => $comparison >= 0 } ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function matches_join_boolean_predicate( array $row, ?WP_Markdown_Native_Query_Boolean_Predicate $predicate, array $sources, array $joined_sources ): bool {
+		if ( null === $predicate ) {
+			return true;
+		}
+		foreach ( $predicate->groups() as $group ) {
+			$matches = true;
+			foreach ( $group as $term ) {
+				$matches = $matches && ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate
+					? $this->matches_join_scalar_predicates( $row, array( $term ) )
+					: $this->matches_join_predicates( $row, array( $term ), $sources, $joined_sources ) );
+			}
+			if ( $matches ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** Evaluate an ON or post-join WHERE boolean expression against all aliases. */
@@ -1346,7 +1436,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		);
 		return match ( $expression->kind() ) {
 			'literal' => $expression->literal(),
-			'column' => $row[ (string) $expression->column() ] ?? null,
+			'column' => null === $expression->source()
+				? ( $row[ (string) $expression->column() ] ?? null )
+				: ( $row[ $expression->source() ][ (string) $expression->column() ] ?? null ),
 			'CONCAT' => in_array( null, $values, true ) ? null : implode( '', $values ),
 			'COALESCE' => $this->first_non_null( $values ),
 			'SUBSTRING' => in_array( null, $values, true ) ? null : substr( (string) $values[0], max( 0, (int) $values[1] - 1 ), (int) $values[2] ),

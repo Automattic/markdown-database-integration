@@ -171,6 +171,7 @@ $multiplicity = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( '
 $chained_outer = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label, s.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LEFT JOIN wp_multiplicity_right s ON r.left_id=s.left_id' ) );
 $non_equality_left = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id > r.left_id' ) );
 $or_on = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( "SELECT l.id, r.label FROM wp_multiplicity_left l JOIN wp_multiplicity_right r ON l.id=r.left_id OR r.label='other'" ) );
+$scalar_join = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( "SELECT l.id, CONCAT(r.label, '!') AS marked FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id WHERE LENGTH(r.label) > 5 ORDER BY LENGTH(r.label) DESC LIMIT 1" ) );
 $fanout_registry = new WP_Markdown_Native_Table_Registry();
 $fanout_registry->register( 'wp_fanout_left', $multiplicity_left_schema, new MDI_Native_Join_Array_Provider( array( array( 'id' => 1 ) ), $multiplicity_left_schema ) );
 $fanout_registry->register( 'wp_fanout_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array_fill( 0, 100001, array( 'row_id' => 1, 'left_id' => 1, 'label' => 'fanout' ) ), $multiplicity_right_schema ) );
@@ -304,6 +305,9 @@ $checks = array(
 		array( 'id' => '1', 'label' => 'other' ),
 		array( 'id' => '2', 'label' => 'other' ),
 	) === array_map( 'get_object_vars', $or_on->wpdb_state()['last_result'] ),
+	'scalar WHERE, projection, hidden ORDER BY, and LIMIT share the joined row stage' => array(
+		array( 'id' => '1', 'marked' => 'second!' ),
+	) === array_map( 'get_object_vars', $scalar_join->wpdb_state()['last_result'] ),
 	'unknown JOIN aliases fail closed' => false === $unknown_alias->return_value()
 		&& 'unsupported_column' === ( $unknown_alias->diagnostic()['reason'] ?? null ),
 );

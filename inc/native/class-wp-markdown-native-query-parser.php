@@ -243,10 +243,11 @@ final class WP_Markdown_Native_Query_Parser {
 						$branch['predicates']
 					),
 					'value' => $this->lower_scalar_expression( $branch['value'], $base_source ),
-				),
-				$expression->branches()
 			),
-			null === $expression->else() ? null : $this->lower_scalar_expression( $expression->else(), $base_source )
+			$expression->branches()
+		),
+			null === $expression->else() ? null : $this->lower_scalar_expression( $expression->else(), $base_source ),
+			$expression->identifier()?->qualifier() ?? $base_source
 		);
 	}
 
@@ -812,6 +813,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$groups = $this->boolean_disjunction();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return $groups;
+		}
+		if ( $this->match_keyword( 'EXISTS' ) ) {
+			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$query = $this->select( true );
+			if ( ! $query instanceof WP_Markdown_Native_SQL_Select ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return array( array( new WP_Markdown_Native_SQL_Subquery_Predicate( 'EXISTS', null, $query ) ) );
 		}
 		return array( array( $this->predicate() ) );
 	}

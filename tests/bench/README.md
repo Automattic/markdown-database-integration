@@ -37,49 +37,56 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 ### Native cutover evidence
 
 The native-only target is tracked in #232; the current optimization candidate
-is reviewed in draft PR #370. SQLite remains the comparison reference until the
-accepted site's compatibility and performance gates pass.
+is reviewed in draft PR #370 at `b2cafd2`. SQLite remains the comparison
+reference. The head removes retain-first branches while preserving
+`requires_complete_scope` full-freshness traversal.
 
-September 7, 2026: request-local equality candidates over JSON snapshots reduced
-the profiled 1,000-post metadata count family from 5782.38 ms to 192.60 ms.
-The unprofiled comparison used identical rigs, 1,000 posts, five measured
-iterations, one warmup, and successful reset/insert/final-count checks:
+Final-head local evidence: PHP 8.5.5 passed all 73 smoke-native scripts. The
+optional canonical usermeta check is intentionally skipped at
+`tests/smoke-native-usermeta-query.php:165` because it is not configured.
+The 240-case differential suite passed, as did storage-index freshness checks.
 
-| Measurement | Native | SQLite |
-| --- | ---: | ---: |
-| Total mean (ms) | 24433.429 | 24592.565 |
-| Insert loop mean (ms) | 23058.039 | 24547.312 |
-| Reset mean (ms) | 1325.577 | 7.752 |
-| Peak process RSS (MiB) | 811.855 | 1029.918 |
+The prior Lab transaction run (`be4367f`, not final head) used five measured
+iterations, one warmup, and 90 rows per iteration: 15 commits, 5 rollbacks,
+and 120 writes. Native/SQLite totals were 114.327463/91.2719154 ms; UPDATE
+31.5225948/11.098722 ms; INSERT 73.7703446/62.9156974 ms; transaction
+7.0362866/14.3501344 ms. This is correctness and diagnostic evidence, not a
+performance acceptance result.
 
-This candidate was an uncommitted snapshot above `d435691`, not that commit
-alone. Native total samples ranged from 24114.719 to 24705.407 ms; SQLite from
-24448.836 to 24734.129 ms. The overlapping samples make the 0.65% mean edge
-parity evidence rather than a decisive overall win. This is one workload,
-not the complete representative aggregate.
+Historical bulk-import evidence (`4f926b3`, not final head) used 1,000 posts,
+five measured iterations, one warmup, and verified reset/count checks:
+23660.5166 ms native and 24912.0826 ms SQLite. It is not final-head
+performance evidence.
 
-Operator evidence: runner job `fc10ee1e-8805-47cf-9236-6b325bdc6357`;
-native bench run `eb07d4c3-ddb3-48af-8651-5b05c791bac3`;
-SQLite bench run `b2ea47a3-aafd-43f5-b2e7-d845ec7bd060`.
-Retrieve through `homeboy runner job logs homeboy-lab <job-id>` or the runner's
-`homeboy runs show <run-id>`. These references require operator access.
+The final-head matrix, `mdi-pr370-b2cafd2-fixed-hygiene`, failed before any
+workload because Homeboy 0.369.10 used a managed-extension symlink with the
+wrong detached argv (job `0c139756-c779-4de6-b078-32fd7b67e608`). Homeboy
+repairs #14446 and #14447 are merged; the latter's CI release remains pending
+(run `34266381758`). No final matrix or scaling result exists yet.
 
-Before removing SQLite support:
+Reproduce the representative comparison from this checkout:
 
-- Replay the accepted site's front-end, admin, REST, CLI, worker and plugin
-  workflows against an isolated native copy, verifying outputs and mutations.
-- Verify canonical state completeness and round-trip restoration from backups.
-- Implement and verify required post transactions, savepoints, rollback and
-  crash recovery; rejection of an active transaction is an incomplete contract.
-- Verify concurrent native writers and the documented external-file editing
-  boundary, including stale identity/path protection.
-- Run the complete representative suite on the same candidate and runtime,
-  with effective inputs and successful operation counts recorded. Require an
-  aggregate native win without severe workload regressions.
-- Validate an authorized site cutover and cold restart before removing the
-  SQLite implementation, dependencies, configuration and routing paths.
+```sh
+homeboy bench markdown-database-integration --profile decision --runs 1 \
+  --iterations 5 --warmup 1 \
+  --setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"0"}' \
+  --rig mdi-sqlite,mdi-native --runner homeboy-lab --path "$PWD"
+```
 
-These are outstanding acceptance gates, not claims of completed verification.
+The planned scaling run is transaction-heavy with 50 iterations and an
+accumulating table. `BENCH_CORPUS_SIZE` does not size that table: each
+invocation performs 20 transactions, 6 writes, and leaves 90 committed rows.
+
+An experimental native merge is bounded to the verified fail-closed boundary:
+native post mutations reject active transactions because post pre-images are
+not journaled. Reviewer signoff must explicitly accept that compatibility
+boundary. Merge still requires a final-head representative seven-workload
+matrix, scaling evidence, performance budgets, and review of that boundary.
+
+SQLite removal and production cutover remain separate. They require actual
+native post transaction rollback and crash recovery, then an accepted-site
+rehearsal with backups, workers, and compatibility verification. These are
+outstanding gates, not completed verification.
 
 ### Bulk-import profiling
 

@@ -125,6 +125,24 @@ declared ready to land; review must either accept the known experimental
 boundary and performance evidence or prioritize repairing the demonstrated
 gaps.
 
+#### Corrected bursty A/B diagnostic
+
+Direct Lab A/B profiling used the same corrected benchmark hash
+`e456e89dc0e350e10fbc4d6b3a088a9013505934efbd3af90c43321dd3fda86e`,
+`BENCH_CORPUS_SIZE=1000`, one run, five measured iterations, one warmup, and
+`BENCH_PROFILE=0`. Baseline `c89490a` (run
+`9ea77ddd-b18b-4fc3-809a-c1afafe3d9ce`, job
+`7f38f96e-1b9d-43ce-be55-4aeea8811894`) averaged 3854.9958552 ms
+(3608.71965-4088.386191); the candidate runtime averaged 3734.1098676 ms
+(3467.557242-3889.180371), 3.136% lower. The ranges overlap and this one
+sequential pair is diagnostic evidence, not a statistical performance claim.
+
+Both runs completed all 50 operations per iteration with the same verified
+plan checksum, `9a11101c424387b131b497548a6a01cc73725e1fecc885ffea30927029851d3a`.
+The observed mix was 37 updates, 10 creates, 2 reparents, and 1 delete. The
+historical bursty matrix result (7.08 ms versus 1.22 ms) used process-global
+RNG and different mixes, so it is not a controlled runtime-halving comparison.
+
 Native post mutations remain a separate, fail-closed compatibility boundary:
 an active native transaction rejects the mutation before Markdown is written,
 because its journal does not record canonical Markdown posts. The bounded merge

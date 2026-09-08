@@ -587,6 +587,12 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			if ( ! $union instanceof WP_Markdown_Native_SQL_Select ) {
 				$this->unsupported( $this->current() );
 			}
+			// Without parenthesized UNION branch support, a trailing ORDER/LIMIT
+			// belongs to the combined result, not the final branch. Reject it rather
+			// than applying it to only that branch and returning wrong rows.
+			if ( array() !== $union->orders() || null !== $union->limit() ) {
+				$this->unsupported( $this->current() );
+			}
 		}
 		// The native backend has one writer, so row locks have no additional
 		// effect. Accept this common lock-then-write hint without weakening the

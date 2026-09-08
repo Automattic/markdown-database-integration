@@ -25,12 +25,14 @@ $in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts
 $not_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE ID NOT IN ( SELECT post_id FROM wp_postmeta WHERE meta_key = 'coverage_probe' )" ) );
 $exists = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.post_id = p.ID )' ) );
 $union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft'" ) );
+$ordered_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1" ) );
 $invalid = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID IN ( SELECT post_id, meta_id FROM wp_postmeta )' ) );
 $checks = array(
 	'IN materializes one typed column and treats NULL non-matches as SQL unknown' => array( array( 'ID' => '1' ) ) === $rows( $in ),
 	'NOT IN becomes unknown for non-matches when the subquery contains NULL' => array() === $rows( $not_in ),
 	'EXISTS indexes one qualified correlation against the outer row' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $exists ),
 	'UNION deduplicates compatible projections with first-branch metadata' => array( array( 'ID' => '1' ), array( 'ID' => '3' ), array( 'ID' => '2' ) ) === $rows( $union ) && 'wp_posts' === ( $union->wpdb_state()['col_info'][0]->table ?? null ),
+	'UNION ORDER BY and LIMIT fail closed rather than binding to only the final branch' => false === $ordered_union->return_value(),
 	'multi-column IN subqueries fail closed' => false === $invalid->return_value() && 'unsupported_subquery_shape' === ( $invalid->diagnostic()['reason'] ?? null ),
 );
 $failed = 0;

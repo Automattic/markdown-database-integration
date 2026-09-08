@@ -20,7 +20,6 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 
 	private WP_Markdown_Query_Runtime $native_runtime;
 	private string $native_table_prefix;
-	private bool $multisite_switch_hook_registered = false;
 
 	public function __construct( WP_Markdown_Query_Runtime $runtime, string $table_prefix = 'wp_' ) {
 		if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $table_prefix ) ) {
@@ -42,27 +41,6 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		$this->check_current_query = false;
 	}
 
-	/** Keep the active native request scope aligned with WordPress blog switches. */
-	public function set_blog_id( $blog_id, $network_id = 0 ) {
-		$result = parent::set_blog_id( $blog_id, $network_id );
-		$this->blogid = (int) $blog_id;
-		if ( 0 !== (int) $network_id ) {
-			$this->siteid = (int) $network_id;
-		}
-		if ( is_multisite() ) {
-			$this->prefix = 1 === $this->blogid ? $this->base_prefix : $this->base_prefix . $this->blogid . '_';
-			foreach ( $this->tables( 'blog' ) as $table ) {
-				$this->{$table} = $this->prefix . $table;
-			}
-		}
-		return $result;
-	}
-
-	/** Restore the native table properties when WordPress changes blog scope. */
-	public function synchronize_blog_scope( $new_blog_id, $previous_blog_id = 0, $context = 'switch' ): void {
-		$this->set_blog_id( (int) $new_blog_id );
-	}
-
 	/** Execute one bounded native query and expose the normal wpdb result state. */
 	public function query( $query ) {
 		if ( ! is_string( $query ) || '' === trim( $query ) ) {
@@ -77,11 +55,6 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 			return false;
 		}
 		$query = $this->remove_placeholder_escape( $query );
-		if ( ! $this->multisite_switch_hook_registered && function_exists( 'add_action' ) ) {
-			add_action( 'switch_blog', array( $this, 'synchronize_blog_scope' ), 0, 3 );
-			$this->multisite_switch_hook_registered = true;
-		}
-
 		$this->flush();
 		$this->func_call  = "\$db->query(\"$query\")";
 		$this->last_query = $query;

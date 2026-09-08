@@ -6,7 +6,7 @@ declare( strict_types=1 );
 if ( ! function_exists( 'mdi_native_lifecycle_require_wp_codebox' ) ) {
 	/** Require the WP Codebox recipe contract used by native lifecycle probes. */
 	function mdi_native_lifecycle_require_wp_codebox( string $wp_codebox ): void {
-		$minimum = '0.24.5';
+		$minimum = '0.26.3';
 		$output = array();
 		exec( escapeshellarg( $wp_codebox ) . ' --version 2>&1', $output, $status );
 		$reported = implode( "\n", $output );

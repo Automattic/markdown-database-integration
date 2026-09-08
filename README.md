@@ -497,7 +497,7 @@ the recorder.
 
 The committed `artifacts/native-mysql-coverage.json` report records the
 WordPress and raw MySQL surfaces currently answered by `mdi-native`. Regenerate
-it with `php tests/run-native-mysql-coverage.php` using WP Codebox 0.24.5 or
+it with `php tests/run-native-mysql-coverage.php` using WP Codebox 0.26.3 or
 newer.
 
 ### Native Shadow Verification

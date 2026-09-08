@@ -135,7 +135,7 @@ SQLite removal and production cutover remain separate. They require actual
 native post transaction rollback and crash recovery, then an accepted-site
 rehearsal with backups, workers, and compatibility verification.
 
-### Bulk-import profiling
+### Operation profiling
 
 Set `--setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"1"}'`
 on the Lab benchmark command to enable request-local MDI operation measurements.
@@ -288,13 +288,14 @@ return function (): array {
 };
 ```
 
-The dispatcher discovers each file, runs the callable
-`HOMEBOY_BENCH_ITERATIONS` times (plus one warmup, discarded), and emits
-p50/p95/p99/mean/min/max in the BenchResults envelope. Numeric values returned
-under `metrics` are aggregated into the same scenario metrics object; the
-latest returned `metadata` payload is attached to that scenario. Each iteration
-is a fresh PHP-WASM boot — there is no cross-iteration WordPress state. The
-shared-state file IS persistent across iterations within a run.
+The dispatcher discovers each file, retains its callable in one PHP process, and
+runs it `HOMEBOY_BENCH_ITERATIONS` times plus one discarded warmup. Workloads
+may intentionally retain static state across those invocations; for example,
+`obsidian-bursty` seeds during warmup and mutates the same corpus in subsequent
+iterations. Numeric values returned under `metrics` are aggregated into the
+same scenario metrics object; the latest returned `metadata` payload is attached
+to that scenario. The shared-state file is also persistent across iterations
+within a run.
 
 ## Constants the workloads read
 

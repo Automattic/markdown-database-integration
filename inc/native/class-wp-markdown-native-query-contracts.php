@@ -190,12 +190,13 @@ final class WP_Markdown_Native_Query_Join {
 	public function __construct(
 		private readonly string $table,
 		private readonly string $alias,
-		private readonly string $left_source,
-		private readonly string $left_column,
-		private readonly string $right_source,
-		private readonly string $right_column,
+		private readonly ?string $left_source,
+		private readonly ?string $left_column,
+		private readonly ?string $right_source,
+		private readonly ?string $right_column,
 		private readonly bool $outer = false,
-		private readonly array $on_filters = array()
+		private readonly array $on_filters = array(),
+		private readonly ?WP_Markdown_Native_Query_Plan $derived = null
 	) {}
 
 	public function table(): string {
@@ -206,19 +207,19 @@ final class WP_Markdown_Native_Query_Join {
 		return $this->alias;
 	}
 
-	public function left_source(): string {
+	public function left_source(): ?string {
 		return $this->left_source;
 	}
 
-	public function left_column(): string {
+	public function left_column(): ?string {
 		return $this->left_column;
 	}
 
-	public function right_source(): string {
+	public function right_source(): ?string {
 		return $this->right_source;
 	}
 
-	public function right_column(): string {
+	public function right_column(): ?string {
 		return $this->right_column;
 	}
 
@@ -229,6 +230,10 @@ final class WP_Markdown_Native_Query_Join {
 	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
 	public function on_filters(): array {
 		return $this->on_filters;
+	}
+
+	public function derived(): ?WP_Markdown_Native_Query_Plan {
+		return $this->derived;
 	}
 }
 
@@ -262,7 +267,9 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly array $scalar_predicates = array(),
 		private readonly array $scalar_having = array(),
 		private readonly ?WP_Markdown_Native_Query_Scalar_Expression $group_expression = null,
-		private readonly ?WP_Markdown_Native_Query_Boolean_Predicate $boolean_predicate = null
+		private readonly ?WP_Markdown_Native_Query_Boolean_Predicate $boolean_predicate = null,
+		private readonly ?self $derived = null,
+		private readonly bool $union_all = false
 	) {}
 
 	public function table(): string {
@@ -379,6 +386,10 @@ final class WP_Markdown_Native_Query_Plan {
 	public function scalar_having(): array { return $this->scalar_having; }
 	public function group_expression(): ?WP_Markdown_Native_Query_Scalar_Expression { return $this->group_expression; }
 	public function boolean_predicate(): ?WP_Markdown_Native_Query_Boolean_Predicate { return $this->boolean_predicate; }
+
+	public function derived(): ?self { return $this->derived; }
+
+	public function union_all(): bool { return $this->union_all; }
 }
 
 final class WP_Markdown_Native_Table_Access {

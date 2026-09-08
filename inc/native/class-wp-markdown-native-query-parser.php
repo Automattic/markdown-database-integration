@@ -436,7 +436,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			if ( $has_scalar ) {
 				if ( $has_subquery ) { $this->unsupported( $this->current() ); }
 				$boolean_predicate = new WP_Markdown_Native_SQL_Boolean_Predicate( $where_groups );
-			} else foreach ( $this->coalesce_disjunction( $where_groups, $this->current()->sql_offset() ) as $predicate ) {
+			} else foreach ( $this->coalesce_boolean_groups( $where_groups, $this->current()->sql_offset() ) as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
 					$subqueries[] = $predicate;
 				} elseif ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) {
@@ -823,7 +823,35 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return array( array( new WP_Markdown_Native_SQL_Subquery_Predicate( 'EXISTS', null, $query ) ) );
 		}
+		if ( WP_Markdown_Native_SQL_Token::INTEGER === $this->current()->type() ) {
+			$left = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
+			$right = $this->integer( 'overflow_scalar', 'mdi-native cannot decode an overflowing integer literal.' );
+			if ( $left !== $right ) {
+				$this->contradiction = true;
+			}
+			return array( array() );
+		}
 		return array( array( $this->predicate() ) );
+	}
+
+	/** Factor conjuncts shared by every OR branch before preserving the residual OR. */
+	private function coalesce_boolean_groups( array $groups, int $sql_offset ): array {
+		if ( 1 >= count( $groups ) ) {
+			return $this->coalesce_disjunction( $groups, $sql_offset );
+		}
+		$common = array();
+		foreach ( $groups[0] as $candidate ) {
+			$key = serialize( $candidate );
+			if ( array_reduce( $groups, static fn( bool $present, array $group ): bool => $present && in_array( $key, array_map( 'serialize', $group ), true ), true ) ) {
+				$common[ $key ] = $candidate;
+			}
+		}
+		if ( array() === $common ) {
+			return $this->coalesce_disjunction( $groups, $sql_offset );
+		}
+		$remainders = array_map( static fn( array $group ): array => array_values( array_filter( $group, static fn( object $predicate ): bool => ! isset( $common[ serialize( $predicate ) ] ) ) ), $groups );
+		return array_merge( array_values( $common ), $this->coalesce_disjunction( $remainders, $sql_offset ) );
 	}
 
 	/**

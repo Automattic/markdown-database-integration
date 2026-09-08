@@ -143,12 +143,34 @@ $multiplicity_registry->register( 'wp_multiplicity_left', $multiplicity_left_sch
 $multiplicity_registry->register( 'wp_multiplicity_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array( array( 'row_id' => 1, 'left_id' => 1, 'label' => 'first' ), array( 'row_id' => 2, 'left_id' => 1, 'label' => 'second' ), array( 'row_id' => 3, 'left_id' => 3, 'label' => 'other' ) ), $multiplicity_right_schema ) );
 $multiplicity_runtime = new WP_Markdown_Native_Query_Runtime( $multiplicity_registry );
 $multiplicity = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LIMIT 3' ) );
+$meta_query = "SELECT p.ID, mt1.meta_value, mt2.meta_value FROM wp_posts p LEFT JOIN wp_postmeta mt1 ON (p.ID = mt1.post_id AND mt1.meta_key = 'color') LEFT JOIN wp_postmeta mt2 ON (p.ID = mt2.post_id AND mt2.meta_key = 'size') WHERE p.ID = 41";
+$meta_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $meta_query );
+$meta_registry = new WP_Markdown_Native_Table_Registry();
+$posts_schema = new WP_Markdown_Native_Table_Schema( array( 'ID' => $integer( array( '=' ) ) ), 'ID' );
+$postmeta_schema = new WP_Markdown_Native_Table_Schema(
+	array(
+		'meta_id' => $integer(),
+		'post_id' => $integer( array( '=', 'IN' ) ),
+		'meta_key' => new WP_Markdown_Native_Column( 253, false, 'is_string', null, array( '=', 'IN' ) ),
+		'meta_value' => new WP_Markdown_Native_Column( 253, true, 'is_string' ),
+	),
+	'meta_id'
+);
+$meta_registry->register( 'wp_posts', $posts_schema, new MDI_Native_Join_Array_Provider( array( array( 'ID' => 41 ) ), $posts_schema ) );
+$meta_registry->register( 'wp_postmeta', $postmeta_schema, new MDI_Native_Join_Array_Provider( array( array( 'meta_id' => 1, 'post_id' => 41, 'meta_key' => 'color', 'meta_value' => 'blue' ), array( 'meta_id' => 2, 'post_id' => 41, 'meta_key' => 'size', 'meta_value' => 'large' ) ), $postmeta_schema ) );
+$meta_result = ( new WP_Markdown_Native_Query_Runtime( $meta_registry ) )->execute( new WP_Markdown_Query_Request( $meta_query ) );
 
 $checks = array(
 	'tokenizer and parser lower aliases and chained equality JOINs into typed contracts' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'tr' === $plan->table_alias()
 		&& array( 'tr', 'tt', 't' ) === $plan->projection_sources()
 		&& array( 'tt', 't' ) === array_map( static fn( WP_Markdown_Native_Query_Join $join ): string => $join->alias(), $plan->joins() ),
+	'parser accepts WordPress meta-query self-joins with constant ON filters' => $meta_plan instanceof WP_Markdown_Native_Query_Plan
+		&& array( 'p', 'mt1', 'mt2' ) === $meta_plan->projection_sources()
+		&& array( 1, 1 ) === array_map( static fn( WP_Markdown_Native_Query_Join $join ): int => count( $join->on_filters() ), $meta_plan->joins() ),
+	'WordPress meta-query self-joins retain each alias-specific ON filter' => array(
+		array( 'ID' => '41', 'meta_value' => 'large' ),
+	) === array_map( 'get_object_vars', $meta_result->wpdb_state()['last_result'] ),
 	'retained taxonomy equality JOIN executes through registered generic providers' => array(
 		array( 'object_id' => '41', 'taxonomy' => 'category', 'slug' => 'news' ),
 		array( 'object_id' => '41', 'taxonomy' => 'post_tag', 'slug' => 'featured' ),

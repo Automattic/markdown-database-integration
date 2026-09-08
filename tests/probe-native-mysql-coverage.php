@@ -103,6 +103,8 @@ mdi_coverage_statement( 'select.aggregate.sum', "SELECT SUM(ID) AS total, AVG(ID
 mdi_coverage_statement( 'select.join.inner', "SELECT p.ID, m.meta_key FROM {$posts} p INNER JOIN {$postmeta} m ON p.ID = m.post_id LIMIT 5" );
 mdi_coverage_statement( 'select.join.left', "SELECT p.ID, m.meta_key FROM {$posts} p LEFT JOIN {$postmeta} m ON p.ID = m.post_id LIMIT 5" );
 mdi_coverage_statement( 'select.join.three', "SELECT p.ID FROM {$posts} p INNER JOIN {$tr} r ON p.ID = r.object_id INNER JOIN {$tt} t ON r.term_taxonomy_id = t.term_taxonomy_id LIMIT 5" );
+mdi_coverage_statement( 'select.join.meta.aliases', "SELECT p.ID FROM {$posts} p LEFT JOIN {$postmeta} mt1 ON (p.ID = mt1.post_id AND mt1.meta_key = 'coverage_probe') LEFT JOIN {$postmeta} mt2 ON (p.ID = mt2.post_id AND mt2.meta_key = 'coverage_probe_secondary') LIMIT 5" );
+mdi_coverage_statement( 'select.from.derived.union.all', "SELECT d.ID FROM (SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION ALL SELECT ID FROM {$posts} WHERE post_status = 'draft') AS d LIMIT 5" );
 mdi_coverage_statement( 'select.subquery.in', "SELECT ID FROM {$posts} WHERE ID IN ( SELECT post_id FROM {$postmeta} WHERE meta_key = 'coverage_probe' )" );
 mdi_coverage_statement( 'select.subquery.exists', "SELECT ID FROM {$posts} p WHERE EXISTS ( SELECT 1 FROM {$postmeta} m WHERE m.post_id = p.ID )" );
 mdi_coverage_statement( 'select.union', "SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION SELECT ID FROM {$posts} WHERE post_status = 'draft'" );
@@ -138,12 +140,25 @@ mdi_coverage_operation( 'post.insert', function () use ( &$post_id ) {
 mdi_coverage_operation( 'post.get', fn() => is_object( get_post( $post_id ) ) );
 mdi_coverage_operation( 'post.update', fn() => wp_update_post( array( 'ID' => $post_id, 'post_title' => 'Coverage probe updated' ), true ) === $post_id );
 mdi_coverage_operation( 'meta.add', fn() => (bool) update_post_meta( $post_id, 'coverage_probe', '42' ) );
+mdi_coverage_operation( 'meta.add.secondary', fn() => (bool) update_post_meta( $post_id, 'coverage_probe_secondary', 'blue' ) );
 mdi_coverage_operation( 'meta.get', fn() => get_post_meta( $post_id, 'coverage_probe', true ) );
 mdi_coverage_operation( 'meta.query.numeric', function () {
 	$query = new WP_Query( array(
 		'post_type'  => 'post',
 		'meta_query' => array( array( 'key' => 'coverage_probe', 'value' => 10, 'compare' => '>', 'type' => 'NUMERIC' ) ),
 		'fields'     => 'ids',
+	) );
+	return count( $query->posts );
+} );
+mdi_coverage_operation( 'meta.query.multiple.aliases', function () {
+	$query = new WP_Query( array(
+		'post_type'  => 'post',
+		'fields'     => 'ids',
+		'meta_query' => array(
+			'relation' => 'AND',
+			array( 'key' => 'coverage_probe', 'value' => '42' ),
+			array( 'key' => 'coverage_probe_secondary', 'value' => 'blue' ),
+		),
 	) );
 	return count( $query->posts );
 } );

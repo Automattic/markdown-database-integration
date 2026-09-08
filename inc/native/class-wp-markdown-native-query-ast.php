@@ -99,6 +99,9 @@ final class WP_Markdown_Native_SQL_Scalar_Expression {
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
 	private function predicate_columns( WP_Markdown_Native_SQL_Predicate $predicate ): array {
 		$columns = array( $predicate->column() );
+		if ( null !== $predicate->comparison() ) {
+			$columns[] = $predicate->comparison();
+		}
 		foreach ( $predicate->any() as $alternative ) {
 			$columns = array_merge( $columns, $this->predicate_columns( $alternative ) );
 		}
@@ -161,10 +164,11 @@ final class WP_Markdown_Native_SQL_Join {
 	public function __construct(
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
 		private readonly WP_Markdown_Native_SQL_Identifier $alias,
-		private readonly WP_Markdown_Native_SQL_Identifier $left,
-		private readonly WP_Markdown_Native_SQL_Identifier $right,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $left,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $right,
 		private readonly bool $outer = false,
-		private readonly array $on_predicates = array()
+		private readonly array $on_predicates = array(),
+		private readonly ?WP_Markdown_Native_SQL_Select $derived = null
 	) {}
 
 	public function table(): WP_Markdown_Native_SQL_Identifier {
@@ -175,11 +179,11 @@ final class WP_Markdown_Native_SQL_Join {
 		return $this->alias;
 	}
 
-	public function left(): WP_Markdown_Native_SQL_Identifier {
+	public function left(): ?WP_Markdown_Native_SQL_Identifier {
 		return $this->left;
 	}
 
-	public function right(): WP_Markdown_Native_SQL_Identifier {
+	public function right(): ?WP_Markdown_Native_SQL_Identifier {
 		return $this->right;
 	}
 
@@ -190,6 +194,10 @@ final class WP_Markdown_Native_SQL_Join {
 	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
 	public function on_predicates(): array {
 		return $this->on_predicates;
+	}
+
+	public function derived(): ?WP_Markdown_Native_SQL_Select {
+		return $this->derived;
 	}
 }
 
@@ -216,7 +224,9 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly array $scalar_projection = array(),
 		private readonly array $having = array(),
 		private readonly array $subqueries = array(),
-		private readonly ?self $union = null
+		private readonly ?self $union = null,
+		private readonly ?self $derived = null,
+		private readonly bool $union_all = false
 	) {}
 
 	public function selects_all(): bool {
@@ -310,4 +320,8 @@ final class WP_Markdown_Native_SQL_Select {
 	public function subqueries(): array { return $this->subqueries; }
 
 	public function union(): ?self { return $this->union; }
+
+	public function derived(): ?self { return $this->derived; }
+
+	public function union_all(): bool { return $this->union_all; }
 }

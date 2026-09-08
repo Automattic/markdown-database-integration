@@ -5,7 +5,32 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+/** Materialized parenthesized SELECT source used only during its enclosing query. */
+final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Native_Table_Provider {
+	/** @param array<int,array<string,mixed>> $rows */
+	public function __construct(
+		private readonly array $rows,
+		private readonly WP_Markdown_Native_Table_Schema $schema
+	) {}
+
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		$rows = array();
+		foreach ( $this->rows as $row ) {
+			if ( null !== $access->predicate() && ! $this->schema->matches( $row, array( $access->predicate() ) ) ) {
+				continue;
+			}
+			$selected = array();
+			foreach ( $access->projection() as $column ) {
+				$selected[ $column ] = $row[ $column ];
+			}
+			$rows[] = $selected;
+		}
+		return $rows;
+	}
+}
+
 final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
+	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
 	private ?int $last_found_rows = null;
 	private WP_Markdown_Native_Schema_Introspection $schema_introspection;
 
@@ -64,11 +89,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					array( array( 'name' => 'FOUND_ROWS()', 'table' => '', 'type' => 8 ) )
 				);
 		}
-		if ( null !== $plan->union() ) {
+		return $this->execute_plan( $plan );
+	}
+
+	private function execute_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
+		if ( $allow_union && null !== $plan->union() ) {
 			return $this->execute_union( $plan );
 		}
 		if ( $plan->is_unsatisfiable() ) {
-			$table = $this->registry->table( $plan->table() );
+			$table = null === $plan->derived()
+				? $this->registry->table( $plan->table() )
+				: $this->derived_source( $plan->derived(), $plan->table() );
+			if ( $table instanceof WP_Markdown_Query_Result ) {
+				return $table;
+			}
 			if ( null === $table ) {
 				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
 			}
@@ -83,7 +117,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->execute_join( $plan );
 		}
 
-		$table = $this->registry->table( $plan->table() );
+		$table = null === $plan->derived()
+			? $this->registry->table( $plan->table() )
+			: $this->derived_source( $plan->derived(), $plan->table() );
+		if ( $table instanceof WP_Markdown_Query_Result ) {
+			return $table;
+		}
 		if ( null === $table ) {
 			return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
 		}
@@ -496,25 +535,58 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$rows = array();
 		$columns = null;
 		$seen = array();
-		foreach ( $branches as $branch ) {
-			if ( array() !== $branch->joins() || array() !== $branch->subqueries() || array() !== $branch->aggregates() || null !== $branch->group_by() || array() !== $branch->scalar_projection() || $branch->counts_all() ) { return $this->failure( 'unsupported_union_shape', 'mdi-native UNION supports compatible simple row projections only.' ); }
-			$table = $this->registry->table( $branch->table() );
-			if ( null === $table ) { return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested UNION table.' ); }
-			$schema = $table['schema']; $projection = array( '*' ) === $branch->projection() ? $schema->column_names() : $branch->projection();
-			foreach ( $projection as $column ) { if ( ! $schema->has_column( $column ) ) { return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested UNION column.' ); } }
-			$types = array_map( static fn( string $column ): int => $schema->column( $column )->type(), $projection );
-			if ( null === $columns ) { $columns = array_map( fn( string $column ): array => array( 'name' => $column, 'table' => $branch->table(), 'type' => $schema->column( $column )->type() ), $projection ); }
-			elseif ( count( $columns ) !== count( $projection ) || $types !== array_column( $columns, 'type' ) ) { return $this->failure( 'unsupported_union_type', 'mdi-native UNION requires compatible projection types.' ); }
-			$provided = $this->read_provider( $table['provider'], $schema, new WP_Markdown_Native_Table_Access( array_values( array_unique( array_merge( $projection, ...array_map( static fn( WP_Markdown_Native_Query_Predicate $p ): array => $p->columns(), $branch->predicates() ) ) ) ), null, $schema->natural_order(), PHP_INT_MAX ) );
-			if ( $provided instanceof WP_Markdown_Query_Result ) { return $provided; }
-			foreach ( $provided as $row ) { if ( is_array( $row ) && $this->matches( $row, $branch->predicates(), $schema ) ) { $selected = $this->string_row( $row, $projection, array(), $schema ); $key = serialize( array_values( $selected ) ); if ( ! isset( $seen[ $key ] ) ) { $seen[ $key ] = true; $rows[] = $selected; } } }
+		foreach ( $branches as $branch_index => $branch ) {
+			if ( array() === $branch->joins() && array() === $branch->subqueries() && array() === $branch->aggregates() && null === $branch->group_by() && array() === $branch->scalar_projection() && ! $branch->counts_all() && null === $branch->derived() ) {
+				// Keep simple UNION branches on the direct path: unlike a top-level
+				// query, they have always supported bounded in-memory filtering.
+				$table = $this->registry->table( $branch->table() );
+				if ( null === $table ) { return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested UNION table.' ); }
+				$schema = $table['schema'];
+				$projection = array( '*' ) === $branch->projection() ? $schema->column_names() : $branch->projection();
+				foreach ( $projection as $column ) { if ( ! $schema->has_column( $column ) ) { return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested UNION column.' ); } }
+				$types = array_map( static fn( string $column ): int => $schema->column( $column )->type(), $projection );
+				if ( null === $columns ) { $columns = array_map( fn( string $column ): array => array( 'name' => $column, 'table' => $branch->table(), 'type' => $schema->column( $column )->type() ), $projection ); }
+				elseif ( count( $columns ) !== count( $projection ) || $types !== array_column( $columns, 'type' ) ) { return $this->failure( 'unsupported_union_type', 'mdi-native UNION requires compatible projection types.' ); }
+				$provided = $this->read_provider( $table['provider'], $schema, new WP_Markdown_Native_Table_Access( array_values( array_unique( array_merge( $projection, ...array_map( static fn( WP_Markdown_Native_Query_Predicate $p ): array => $p->columns(), $branch->predicates() ) ) ) ), null, $schema->natural_order(), PHP_INT_MAX ) );
+				if ( $provided instanceof WP_Markdown_Query_Result ) { return $provided; }
+				foreach ( $provided as $row ) {
+					if ( ! is_array( $row ) || ! $this->matches( $row, $branch->predicates(), $schema ) ) { continue; }
+					$selected = $this->string_row( $row, $projection, array(), $schema );
+					$key = serialize( array_values( $selected ) );
+					if ( 0 === $branch_index || $branches[ $branch_index - 1 ]->union_all() || ! isset( $seen[ $key ] ) ) { $seen[ $key ] = true; $rows[] = $selected; }
+				}
+				continue;
+			}
+			$result = $this->execute_plan( $branch, false );
+			if ( false === $result->return_value() ) {
+				return $result;
+			}
+			$branch_columns = $result->wpdb_state()['col_info'] ?? array();
+			if ( null === $columns ) {
+				$columns = array_map( static fn( object $column ): array => array( 'name' => $column->name, 'table' => $column->table, 'type' => $column->type ), $branch_columns );
+			} elseif ( count( $columns ) !== count( $branch_columns ) || array_column( $columns, 'type' ) !== array_map( static fn( object $column ): mixed => $column->type, $branch_columns ) ) {
+				return $this->failure( 'unsupported_union_type', 'mdi-native UNION requires compatible projection types.' );
+			}
+			foreach ( $result->wpdb_state()['last_result'] ?? array() as $row ) {
+				$selected = get_object_vars( $row );
+				$key = serialize( array_values( $selected ) );
+				if ( 0 === $branch_index || $branches[ $branch_index - 1 ]->union_all() || ! isset( $seen[ $key ] ) ) {
+					$seen[ $key ] = true;
+					$rows[] = $selected;
+				}
+			}
 		}
 		return WP_Markdown_Query_Result::selected( $rows, $columns ?? array() );
 	}
 
 	private function execute_join( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {
 		$base_alias = $plan->table_alias();
-		$base = $this->registry->table( $plan->table() );
+		$base = null === $plan->derived()
+			? $this->registry->table( $plan->table() )
+			: $this->derived_source( $plan->derived(), $plan->table() );
+		if ( $base instanceof WP_Markdown_Query_Result ) {
+			return $base;
+		}
 		if ( null === $base_alias || null === $base ) {
 			return $this->failure( 'unsupported_join_shape', 'mdi-native requires a registered JOIN source.' );
 		}
@@ -523,7 +595,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$base_alias => array( 'table' => $plan->table(), 'schema' => $base['schema'], 'provider' => $base['provider'] ),
 		);
 		foreach ( $plan->joins() as $join ) {
-			$table = $this->registry->table( $join->table() );
+			$table = null === $join->derived()
+				? $this->registry->table( $join->table() )
+				: $this->derived_source( $join->derived(), $join->table() );
+			if ( $table instanceof WP_Markdown_Query_Result ) {
+				return $table;
+			}
 			if ( null === $table || isset( $sources[ $join->alias() ] ) ) {
 				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested JOIN table.' );
 			}
@@ -571,20 +648,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$needed[ $aggregate_source ][] = $aggregate['column'];
 		}
 		foreach ( $plan->joins() as $join ) {
-			if ( ! isset( $sources[ $join->left_source() ], $sources[ $join->right_source() ] )
-				|| ! $sources[ $join->left_source() ]['schema']->has_column( $join->left_column() )
-				|| ! $sources[ $join->right_source() ]['schema']->has_column( $join->right_column() )
-			) {
-				return $this->failure( 'unsupported_join_shape', 'mdi-native cannot apply the requested equality JOIN.' );
-			}
-			$needed[ $join->left_source() ][] = $join->left_column();
-			$needed[ $join->right_source() ][] = $join->right_column();
 			foreach ( $join->on_filters() as $filter ) {
-				$filter_source = $filter->source();
-				if ( null === $filter_source || ! isset( $sources[ $filter_source ] ) || ! $sources[ $filter_source ]['schema']->supports_predicate( $filter ) ) {
+				if ( ! $this->add_join_predicate_columns( $filter, $sources, $needed ) ) {
 					return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN ON predicate.' );
 				}
-				$needed[ $filter_source ][] = $filter->column();
 			}
 		}
 		foreach ( $plan->order_by() as $item ) {
@@ -601,23 +668,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		unset( $columns );
 
-		$seed_source = null;
-		$seed_predicate = null;
-		foreach ( $sources as $source => $definition ) {
-			$candidate = $this->pushdown( $predicates[ $source ], $definition['schema'] );
-			if ( null === $candidate ) {
-				continue;
-			}
-			if ( null === $seed_predicate || $this->compare_pushdowns( $candidate, $seed_predicate ) < 0 ) {
-				$seed_source = $source;
-				$seed_predicate = $candidate;
-			}
-		}
-		// Without a selective predicate, read the declared left source and hash
-		// each later equality source once. This preserves JOIN multiplicity while
-		// avoiding a Cartesian nested-loop scan.
-		$full_source_scan = null === $seed_source;
-		$seed_source ??= $base_alias;
+		$seed_source = $base_alias;
+		$seed_predicate = $this->pushdown( $predicates[ $seed_source ], $sources[ $seed_source ]['schema'] );
 		$seed = $sources[ $seed_source ];
 		$provided = $this->read_provider(
 			$seed['provider'],
@@ -640,35 +692,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		$joined_sources = array( $seed_source => true );
-		$remaining = $plan->joins();
-		while ( array() !== $remaining ) {
-			$join_index = null;
-			foreach ( $remaining as $index => $candidate ) {
-				$left_joined = isset( $joined_sources[ $candidate->left_source() ] );
-				$right_joined = isset( $joined_sources[ $candidate->right_source() ] );
-				if ( $left_joined xor $right_joined ) {
-					$join_index = $index;
-					break;
-				}
-			}
-			if ( null === $join_index ) {
-				return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN sources must form one connected equality graph.' );
-			}
-			$join = $remaining[ $join_index ];
-			unset( $remaining[ $join_index ] );
-			if ( isset( $joined_sources[ $join->left_source() ] ) ) {
-				$known_source = $join->left_source();
-				$known_column = $join->left_column();
-				$target_source = $join->right_source();
-				$target_column = $join->right_column();
-			} else {
-				$known_source = $join->right_source();
-				$known_column = $join->right_column();
-				$target_source = $join->left_source();
-				$target_column = $join->left_column();
+		foreach ( $plan->joins() as $join ) {
+			$target_source = $join->alias();
+			if ( isset( $joined_sources[ $target_source ] ) ) {
+				return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN sources must extend the declared source chain.' );
 			}
 			$target = $sources[ $target_source ];
-			if ( $full_source_scan ) {
+			$known_source = null;
+			$known_column = null;
+			$target_column = null;
+			if ( null !== $join->left_source() && null !== $join->right_source() && null !== $join->left_column() && null !== $join->right_column() ) {
+				if ( $target_source === $join->right_source() && isset( $joined_sources[ $join->left_source() ] ) ) {
+					$known_source = $join->left_source(); $known_column = $join->left_column(); $target_column = $join->right_column();
+				} elseif ( $target_source === $join->left_source() && isset( $joined_sources[ $join->right_source() ] ) ) {
+					$known_source = $join->right_source(); $known_column = $join->right_column(); $target_column = $join->left_column();
+				}
+			}
+			if ( null === $known_source || null === $known_column || null === $target_column ) {
 				$provided = $this->read_provider(
 					$target['provider'],
 					$target['schema'],
@@ -677,7 +717,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			} else {
 				$values = array();
 				foreach ( $rows as $row ) {
-					$value = $row[ $known_source ][ $known_column ];
+					$value = $row[ $known_source ][ $known_column ] ?? null;
 					$key = $target['schema']->value_key( $target_column, $value );
 					if ( null === $key ) {
 						return $this->failure( 'unsupported_join_lookup', 'mdi-native cannot normalize the requested JOIN identity.' );
@@ -716,21 +756,21 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( ! $target_validated && ( ! is_array( $target_row ) || true !== $target['schema']->validate_projection( $target_row, $needed[ $target_source ] ) ) ) {
 					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned a row outside its declared schema.' );
 				}
-				if ( ! $this->matches( $target_row, array_merge( $predicates[ $target_source ], $join->on_filters() ), $target['schema'] ) ) {
-					continue;
-				}
-				$key = $target['schema']->value_key( $target_column, $target_row[ $target_column ] );
-				if ( null === $key ) {
-					return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned an invalid JOIN identity.' );
-				}
-				$target_rows[ $key ][] = $target_row;
+				if ( null !== $target_column ) {
+					$key = $target['schema']->value_key( $target_column, $target_row[ $target_column ] );
+					if ( null === $key ) { return $this->failure( 'invalid_provider_row', 'The native JOIN provider returned an invalid JOIN identity.' ); }
+					$target_rows[ $key ][] = $target_row;
+				} else { $target_rows[] = $target_row; }
 			}
 			$joined = array();
 			$null_row = array_fill_keys( $needed[ $target_source ], null );
+			$candidate_count = null === $known_source ? count( $rows ) * count( $target_rows ) : count( $rows );
+			if ( $candidate_count > self::MAX_JOIN_CANDIDATE_PAIRS ) {
+				return $this->failure( 'unsupported_join_cost', 'mdi-native cannot evaluate the requested JOIN within its bounded row-pair cost.' );
+			}
 			foreach ( $rows as $row ) {
-				$value = $row[ $known_source ][ $known_column ];
-				$key = $target['schema']->value_key( $target_column, $value );
-				$matched = null === $key ? array() : ( $target_rows[ $key ] ?? array() );
+				$matched = null === $known_source ? $target_rows : ( $target_rows[ $target['schema']->value_key( (string) $target_column, $row[ $known_source ][ $known_column ] ) ] ?? array() );
+				$matched = array_values( array_filter( $matched, function ( array $target_row ) use ( $row, $target_source, $join, $sources, $joined_sources ): bool { $combined = $row; $combined[ $target_source ] = $target_row; return $this->matches_join_predicates( $combined, $join->on_filters(), $sources, $joined_sources + array( $target_source => true ) ); } ) );
 				if ( array() === $matched && $join->is_outer() ) {
 					$row[ $target_source ] = $null_row;
 					$joined[] = $row;
@@ -744,6 +784,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$rows = $joined;
 			$joined_sources[ $target_source ] = true;
 		}
+		$rows = array_values( array_filter( $rows, fn( array $row ): bool => $this->matches_join_predicates( $row, $plan->predicates(), $sources, $joined_sources ) ) );
 
 		if ( array() !== $plan->order_by() ) {
 			foreach ( $plan->order_by() as $item ) {
@@ -858,6 +899,95 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 8 );
 		}
 		return WP_Markdown_Query_Result::selected( $selected_rows, $columns );
+	}
+
+	/** @param array<string,array{schema:WP_Markdown_Native_Table_Schema}> $sources @param array<string,array<int,string>> $needed */
+	private function add_join_predicate_columns( WP_Markdown_Native_Query_Predicate $predicate, array $sources, array &$needed ): bool {
+		$source = $predicate->source();
+		if ( null === $source || ! isset( $sources[ $source ] ) || ! $sources[ $source ]['schema']->has_column( $predicate->column() ) ) {
+			return false;
+		}
+		$needed[ $source ][] = $predicate->column();
+		if ( null !== $predicate->comparison_column() ) {
+			$comparison_source = $predicate->comparison_source();
+			if ( null === $comparison_source || ! isset( $sources[ $comparison_source ] ) || ! $sources[ $comparison_source ]['schema']->has_column( $predicate->comparison_column() ) || ! in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true ) ) {
+				return false;
+			}
+			$needed[ $comparison_source ][] = $predicate->comparison_column();
+		} elseif ( ! in_array( $predicate->operator(), array( 'AND', 'OR' ), true ) && ! $sources[ $source ]['schema']->supports_predicate( $predicate ) ) {
+			return false;
+		}
+		foreach ( $predicate->any() as $nested ) {
+			if ( ! $this->add_join_predicate_columns( $nested, $sources, $needed ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/** Evaluate an ON or post-join WHERE boolean expression against all aliases. */
+	private function matches_join_predicates( array $row, array $predicates, array $sources, array $joined_sources ): bool {
+		foreach ( $predicates as $predicate ) {
+			$source = $predicate->source();
+			if ( null === $source || ! isset( $joined_sources[ $source ], $sources[ $source ] ) ) {
+				return false;
+			}
+			if ( 'AND' === $predicate->operator() ) {
+				if ( ! $this->matches_join_predicates( $row, $predicate->any(), $sources, $joined_sources ) ) { return false; }
+				continue;
+			}
+			if ( 'OR' === $predicate->operator() ) {
+				$matched = false;
+				foreach ( $predicate->any() as $alternative ) { if ( $this->matches_join_predicates( $row, array( $alternative ), $sources, $joined_sources ) ) { $matched = true; break; } }
+				if ( ! $matched ) { return false; }
+				continue;
+			}
+			if ( null === $predicate->comparison_column() ) {
+				if ( ! $sources[ $source ]['schema']->matches( $row[ $source ], array( $predicate ) ) ) { return false; }
+				continue;
+			}
+			$comparison_source = $predicate->comparison_source();
+			if ( null === $comparison_source || ! isset( $joined_sources[ $comparison_source ], $sources[ $comparison_source ] ) ) { return false; }
+			$left = $row[ $source ][ $predicate->column() ] ?? null;
+			$right = $row[ $comparison_source ][ $predicate->comparison_column() ] ?? null;
+			if ( null === $left || null === $right ) { return false; }
+			$comparison = $sources[ $comparison_source ]['schema']->ordered_comparison( $predicate->comparison_column(), $left, $right );
+			if ( '=' === $predicate->operator() || '<>' === $predicate->operator() ) {
+				$left_key = $sources[ $comparison_source ]['schema']->value_key( $predicate->comparison_column(), $left );
+				$right_key = $sources[ $comparison_source ]['schema']->value_key( $predicate->comparison_column(), $right );
+				if ( null === $left_key || null === $right_key || ( '=' === $predicate->operator() ? $left_key !== $right_key : $left_key === $right_key ) ) { return false; }
+			} elseif ( null === $comparison || ! match ( $predicate->operator() ) { '<' => $comparison < 0, '<=' => $comparison <= 0, '>' => $comparison > 0, '>=' => $comparison >= 0 } ) { return false; }
+		}
+		return true;
+	}
+
+	/** @return array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider}|WP_Markdown_Query_Result */
+	private function derived_source( WP_Markdown_Native_Query_Plan $plan, string $name ): array|WP_Markdown_Query_Result {
+		$result = $this->execute_plan( $plan );
+		if ( false === $result->return_value() ) {
+			return $result;
+		}
+		$columns = $result->wpdb_state()['col_info'] ?? array();
+		if ( array() === $columns ) {
+			return $this->failure( 'unsupported_derived_shape', 'mdi-native derived SELECTs must project at least one column.' );
+		}
+		$schema_columns = array();
+		foreach ( $columns as $column ) {
+			$schema_columns[ $column->name ] = new WP_Markdown_Native_Column(
+				$column->type,
+				true,
+				static fn( mixed $value ): bool => is_int( $value ) || is_string( $value ),
+				static fn( mixed $value ): ?string => null === $value ? null : (string) $value,
+				array( '=', 'IN' )
+			);
+		}
+		$rows = array_map( 'get_object_vars', $result->wpdb_state()['last_result'] ?? array() );
+		$schema = new WP_Markdown_Native_Table_Schema( $schema_columns, (string) $columns[0]->name, array_keys( $schema_columns ) );
+		return array(
+			'table' => $name,
+			'schema' => $schema,
+			'provider' => new WP_Markdown_Native_Derived_Table_Provider( $rows, $schema ),
+		);
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */

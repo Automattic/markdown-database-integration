@@ -142,8 +142,17 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			return $this->failure( 'unknown_table', 'mdi-native cannot alter a table it does not persist.' );
 		}
 
-		if ( 1 === preg_match( '/^ADD\s+(?:UNIQUE\s+)?(?:INDEX|KEY)\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)$/is', $action ) ) {
+		if ( 1 === preg_match( '/^ADD\s+(?:(?:UNIQUE\s+)?(?:INDEX|KEY)\s+`?[A-Za-z0-9_]+`?|PRIMARY\s+KEY)\s*\(.+\)$/is', $action ) ) {
 			return $this->execute_add_index( $table, $suffix, $action );
+		}
+		if ( 1 === preg_match( '/^DROP\s+(?:INDEX|KEY)\s+`?([A-Za-z0-9_]+)`?$/i', $action, $index ) ) {
+			return $this->execute_drop_index( $table, $suffix, $index[1] );
+		}
+		if ( 1 === preg_match( '/^CHANGE\s+(?:COLUMN\s+)?`?([A-Za-z_][A-Za-z0-9_]*)`?\s+`?([A-Za-z_][A-Za-z0-9_]*)`?\s+(.+)$/is', $action, $change ) ) {
+			if ( 0 !== strcasecmp( $change[1], $change[2] ) ) {
+				return $this->failure( 'unsupported_schema', 'mdi-native cannot rename a column with CHANGE COLUMN.' );
+			}
+			return $this->execute_alter( $request, 'ALTER TABLE `' . $table . '` MODIFY `' . $change[1] . '` ' . $change[3] );
 		}
 
 		if ( 1 === preg_match( '/^(MODIFY|ADD|DROP)\s+(?:COLUMN\s+)?`?([A-Za-z_][A-Za-z0-9_]*)`?\s*(.*)$/is', $action, $parts ) ) {
@@ -195,7 +204,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				return $this->failure( 'unsupported_schema', 'The altered table definition could not be compiled.' );
 			}
 
-			$reconciled = $this->reconcile_rows( $suffix, $operation, $column, $schema );
+			$reconciled = $this->reconcile_rows( $suffix, $operation, $column, $schema, $definition );
 			if ( $reconciled instanceof WP_Markdown_Query_Result ) {
 				return $reconciled;
 			}
@@ -311,13 +320,14 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	}
 
 	private function execute_add_index( string $table, string $suffix, string $action ): WP_Markdown_Query_Result {
-		if ( 1 !== preg_match( '/^ADD\s+(UNIQUE\s+)?(?:INDEX|KEY)\s+`?([A-Za-z0-9_]+)`?\s*\((.+)\)$/is', $action, $matched ) ) {
+		if ( 1 !== preg_match( '/^ADD\s+(?:(PRIMARY)\s+KEY|(UNIQUE\s+)?(?:INDEX|KEY)\s+`?([A-Za-z0-9_]+)`?)\s*\((.+)\)$/is', $action, $matched ) ) {
 			return $this->failure( 'unsupported_schema', 'mdi-native supports bounded ADD INDEX statements.' );
 		}
-		$unique = '' !== trim( (string) $matched[1] );
-		$name = $matched[2];
+		$primary = '' !== trim( (string) $matched[1] );
+		$unique = $primary || '' !== trim( (string) $matched[2] );
+		$name = $primary ? 'PRIMARY' : $matched[3];
 		$index_columns = array();
-		foreach ( explode( ',', $matched[3] ) as $column ) {
+		foreach ( explode( ',', $matched[4] ) as $column ) {
 			if ( ! preg_match( '/^\s*`?([A-Za-z0-9_]+)`?(?:\(([0-9]+)\))?\s*$/', $column, $part ) ) {
 				return $this->failure( 'unsupported_schema', 'mdi-native cannot add an unsupported index expression.' );
 			}
@@ -362,7 +372,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			$path = $directory . '/' . $suffix . '.sql';
 			if ( is_file( $path ) && ! is_link( $path ) ) {
 				$persisted = (string) file_get_contents( $path );
-				$rewritten = $this->append_index( $persisted, $unique, $name, $index_columns );
+				$rewritten = $this->append_index( $persisted, $primary, $unique, $name, $index_columns );
 				if ( $rewritten instanceof WP_Markdown_Query_Result ) {
 					return $rewritten;
 				}
@@ -408,7 +418,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	}
 
 	/** @param array<int,array{name:string,length:int|null}> $index_columns */
-	private function append_index( string $persisted, bool $unique, string $name, array $index_columns ): string|WP_Markdown_Query_Result {
+	private function append_index( string $persisted, bool $primary, bool $unique, string $name, array $index_columns ): string|WP_Markdown_Query_Result {
 		if ( 1 !== preg_match( '/CREATE\s+TABLE\s+`?[A-Za-z0-9_]+`?\s*\(/is', $persisted, $header, PREG_OFFSET_CAPTURE ) ) {
 			return $this->failure( 'unsupported_schema', 'The persisted table definition could not be parsed.' );
 		}
@@ -425,7 +435,76 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				$index_columns
 			)
 		);
-		$entries[] = ( $unique ? 'UNIQUE KEY' : 'KEY' ) . ' `' . $name . '` (' . $columns . ')';
+		$entries[] = $primary
+			? 'PRIMARY KEY (' . $columns . ')'
+			: ( $unique ? 'UNIQUE KEY' : 'KEY' ) . ' `' . $name . '` (' . $columns . ')';
+		return substr( $persisted, 0, $open ) . "\n\t" . implode( ",\n\t", $entries ) . "\n" . substr( $persisted, $close );
+	}
+
+	/** Remove one secondary index from the persisted CREATE TABLE definition. */
+	private function execute_drop_index( string $table, string $suffix, string $name ): WP_Markdown_Query_Result {
+		if ( 'PRIMARY' === strtoupper( $name ) ) {
+			return $this->failure( 'unsupported_schema', 'mdi-native cannot drop a primary key.' );
+		}
+		$definition = $this->registry->definition( $table );
+		if ( ! is_array( $definition ) || ! array_filter( $definition['indexes'], static fn( array $index ): bool => 0 === strcasecmp( (string) $index['name'], $name ) ) ) {
+			return $this->failure( 'unknown_index', 'mdi-native cannot drop an index the table does not define.' );
+		}
+		$directory = $this->schema_directory();
+		if ( $directory instanceof WP_Markdown_Query_Result ) {
+			return $directory;
+		}
+		$lock = @fopen( $directory . '/.mdi-native.lock', 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			return $this->failure( 'mutation_lock_failed', 'The canonical schema mutation lock could not be acquired.' );
+		}
+		try {
+			$path = $directory . '/' . $suffix . '.sql';
+			if ( ! is_file( $path ) || is_link( $path ) ) {
+				return $this->failure( 'unknown_table', 'The persisted table definition is unavailable.' );
+			}
+			$rewritten = $this->remove_index( (string) file_get_contents( $path ), $name );
+			if ( $rewritten instanceof WP_Markdown_Query_Result ) {
+				return $rewritten;
+			}
+			try {
+				$compiled = WP_Markdown_Native_Schema_Catalog::compile( $rewritten, array( $this->table_prefix_from( $table, $suffix ) ) );
+			} catch ( InvalidArgumentException ) {
+				return $this->failure( 'unsupported_schema', 'The altered table definition could not be compiled.' );
+			}
+			if ( array( $suffix ) !== array_keys( $compiled ) ) {
+				return $this->failure( 'unsupported_schema', 'The altered table definition did not resolve to one prefixed table.' );
+			}
+			$definition = $compiled[ $suffix ];
+			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
+			$written = $this->write( $path, $rewritten );
+			if ( $written instanceof WP_Markdown_Query_Result ) {
+				return $written;
+			}
+			$this->registry->reregister( $table, $schema, null === $schema ? null : new WP_Markdown_Native_JSON_Snapshot_Provider( $this->state_root, $schema, $suffix . '.json' ), $definition );
+			return WP_Markdown_Query_Result::schema_changed();
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	private function remove_index( string $persisted, string $name ): string|WP_Markdown_Query_Result {
+		if ( 1 !== preg_match( '/CREATE\s+TABLE\s+`?[A-Za-z0-9_]+`?\s*\(/is', $persisted, $header, PREG_OFFSET_CAPTURE ) ) {
+			return $this->failure( 'unsupported_schema', 'The persisted table definition could not be parsed.' );
+		}
+		$open = $header[0][1] + strlen( $header[0][0] );
+		$close = $this->matching_paren( $persisted, $open - 1 );
+		if ( null === $close ) {
+			return $this->failure( 'unsupported_schema', 'The persisted table definition is unbalanced.' );
+		}
+		$entries = $this->split_entries( substr( $persisted, $open, $close - $open ) );
+		$entries = array_values( array_filter( $entries, static function ( string $entry ) use ( $name ): bool {
+			return 1 !== preg_match( '/^(?:UNIQUE\s+)?(?:KEY|INDEX)\s+`?(' . preg_quote( $name, '/' ) . ')`?\s*\(/i', trim( $entry ) );
+		} ) );
 		return substr( $persisted, 0, $open ) . "\n\t" . implode( ",\n\t", $entries ) . "\n" . substr( $persisted, $close );
 	}
 
@@ -481,7 +560,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	}
 
 	/** Reconcile persisted snapshot rows with an added or dropped column. */
-	private function reconcile_rows( string $suffix, string $operation, string $column, ?WP_Markdown_Native_Table_Schema $schema ): true|WP_Markdown_Query_Result {
+	private function reconcile_rows( string $suffix, string $operation, string $column, ?WP_Markdown_Native_Table_Schema $schema, array $definition ): true|WP_Markdown_Query_Result {
 		if ( 'MODIFY' === $operation || null === $schema ) {
 			return true;
 		}
@@ -498,7 +577,8 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				return $this->failure( 'unsupported_schema', 'The persisted table snapshot contains an unsupported row.' );
 			}
 			if ( 'ADD' === $operation ) {
-				$rows[ $position ][ $column ] = null;
+				// MySQL materializes a deterministic default for rows that predate ADD COLUMN.
+				$rows[ $position ][ $column ] = $definition['columns'][ $column ]['default'] ?? null;
 				continue;
 			}
 			unset( $rows[ $position ][ $column ] );

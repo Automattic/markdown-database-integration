@@ -128,6 +128,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				? null
 				: $this->index->load( $suffix, $path );
 			if ( null !== $index ) {
+				// The index enforces this candidate's keys, while this witnessed
+				// snapshot proves the pre-existing keys were already unique.
+				$unique_set_verified = $this->unique_set_is_verified( $suffix, $path );
 				// The index answers identity and uniqueness, so the snapshot is
 				// appended to rather than read, decoded, and republished.
 				$row = $this->complete_row( $insert->values(), $definition, array(), $index['max'] );
@@ -150,6 +153,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					return $appended;
 				}
 				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
+				if ( $unique_set_verified ) {
+					$this->remember_verified_unique_set( $suffix, $path );
+				}
 				$provider->append_row( $row );
 				return $this->insert_result( $row, $definition );
 			}

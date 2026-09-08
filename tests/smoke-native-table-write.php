@@ -76,6 +76,18 @@ $runtime->execute(
 		'wp_'
 	)
 );
+$runtime->execute(
+	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_proof_jobs (id BIGINT NOT NULL AUTO_INCREMENT, token VARCHAR(20) NOT NULL, state VARCHAR(20) NOT NULL, PRIMARY KEY (id), UNIQUE KEY token (token))',
+		'wp_'
+	)
+);
+$runtime->execute(
+	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_initial_corrupt_jobs (id BIGINT NOT NULL AUTO_INCREMENT, token VARCHAR(20) NOT NULL, state VARCHAR(20) NOT NULL, PRIMARY KEY (id), UNIQUE KEY token (token))',
+		'wp_'
+	)
+);
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_jobs (label) VALUES ('ready')", 'wp_' ) );
 foreach ( array(
 	"INSERT INTO wp_unique_jobs (scope, token) VALUES (NULL, 'abc1')",
@@ -95,6 +107,9 @@ foreach ( array(
 }
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_corrupt_jobs (token, state) VALUES ('first', 'pending')", 'wp_' ) );
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_corrupt_jobs (token, state) VALUES ('second', 'pending')", 'wp_' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_proof_jobs (token, state) VALUES ('first', 'pending')", 'wp_' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_initial_corrupt_jobs (token, state) VALUES ('first', 'pending')", 'wp_' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_initial_corrupt_jobs (token, state) VALUES ('second', 'pending')", 'wp_' ) );
 
 /** @return array<int,array<string,mixed>> */
 function table_rows( string $root, string $table = 'agents' ): array {
@@ -167,6 +182,42 @@ $composite_distinct = $runtime->execute(
 	new WP_Markdown_Query_Request( "UPDATE wp_unique_jobs SET scope = 'two', token = 'abc9' WHERE id = 4", 'wp_' )
 );
 
+// A verified set survives a normal append, but supplied identities still scan
+// the canonical snapshot and enforce every unique key.
+$proof_initial_update = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_proof_jobs SET state = 'ready' WHERE id = 1", 'wp_' )
+);
+$proof_append = $runtime->execute(
+	new WP_Markdown_Query_Request( "INSERT INTO wp_proof_jobs (token, state) VALUES ('second', 'pending')", 'wp_' )
+);
+$proof_interleaved_update = $runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_proof_jobs SET state = 'done' WHERE token = 'second'", 'wp_' )
+);
+$proof_explicit_duplicate = $runtime->execute(
+	new WP_Markdown_Query_Request( "INSERT INTO wp_proof_jobs (id, token, state) VALUES (1, 'third', 'pending')", 'wp_' )
+);
+$runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION', 'wp_' ) );
+$proof_rolled_back_insert = $runtime->execute(
+	new WP_Markdown_Query_Request( "INSERT INTO wp_proof_jobs (token, state) VALUES ('rolled-back', 'pending')", 'wp_' )
+);
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK', 'wp_' ) );
+$proof_after_rollback = column_values( $root, 'token', 'proof_jobs' );
+
+// An INSERT that encounters a corrupt initial snapshot must not certify it.
+$initial_corrupt_path = $root . '/_tables/initial_corrupt_jobs.json';
+$initial_corrupt_rows = json_decode( (string) file_get_contents( $initial_corrupt_path ), true, 512, JSON_THROW_ON_ERROR );
+$initial_corrupt_rows[1]['token'] = 'first';
+$initial_corrupt_temp = $initial_corrupt_path . '.replacement';
+file_put_contents( $initial_corrupt_temp, json_encode( $initial_corrupt_rows, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) );
+rename( $initial_corrupt_temp, $initial_corrupt_path );
+$initial_corrupt_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
+$initial_corrupt_insert = $initial_corrupt_runtime->execute(
+	new WP_Markdown_Query_Request( "INSERT INTO wp_initial_corrupt_jobs (token, state) VALUES ('third', 'pending')", 'wp_' )
+);
+$initial_corrupt_update = $initial_corrupt_runtime->execute(
+	new WP_Markdown_Query_Request( "UPDATE wp_initial_corrupt_jobs SET state = 'running' WHERE id = 1", 'wp_' )
+);
+
 // A first non-key UPDATE must still inspect an externally corrupted snapshot.
 $corrupt_path = $root . '/_tables/corrupt_jobs.json';
 $corrupt_rows = json_decode( (string) file_get_contents( $corrupt_path ), true, 512, JSON_THROW_ON_ERROR );
@@ -218,6 +269,16 @@ $checks = array(
 	'UPDATE rejects a duplicate composite prefix key' => false === $prefix_duplicate->return_value()
 		&& 'duplicate_key' === ( $prefix_duplicate->diagnostic()['reason'] ?? null ),
 	'UPDATE accepts the same prefix in a distinct composite scope' => 1 === $composite_distinct->return_value(),
+	'a verified unique set remains valid through an interleaved append and UPDATE' => 1 === $proof_initial_update->return_value()
+		&& 1 === $proof_append->return_value()
+		&& 1 === $proof_interleaved_update->return_value(),
+	'an explicit identity still enforces the primary-key constraint' => false === $proof_explicit_duplicate->return_value()
+		&& 'duplicate_key' === ( $proof_explicit_duplicate->diagnostic()['reason'] ?? null ),
+	'a rolled back append restores the canonical unique set' => 1 === $proof_rolled_back_insert->return_value()
+		&& array( 'first', 'second' ) === $proof_after_rollback,
+	'an INSERT never certifies an initially corrupt unique snapshot' => 1 === $initial_corrupt_insert->return_value()
+		&& false === $initial_corrupt_update->return_value()
+		&& 'duplicate_key' === ( $initial_corrupt_update->diagnostic()['reason'] ?? null ),
 	'a first non-key UPDATE rejects an externally corrupt unique snapshot' => false === $corrupt_non_key_update->return_value()
 		&& 'duplicate_key' === ( $corrupt_non_key_update->diagnostic()['reason'] ?? null ),
 	'an unrelated table writes while another table is locked' => 1 === $unrelated_write->return_value()

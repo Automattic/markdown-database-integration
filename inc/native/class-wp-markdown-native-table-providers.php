@@ -484,7 +484,8 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 						return $this->malformed( 'invalid_post_row', 'A canonical Markdown post is outside the wp_posts schema.' );
 					}
 				}
-				$this->catalogue->remember( $witness, $file, $post, $row );
+				// Strict manifest traversal already proved this is a canonical path.
+				$this->catalogue->remember( $witness, $file, $post, $row, true );
 				if ( array() !== $allocation_columns ) {
 					foreach ( $allocation_columns as $column ) {
 						$maxima[ $column ] = max( $maxima[ $column ], (int) $row[ $column ] );
@@ -493,11 +494,16 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				}
 				// Body predicates remain executor residuals until their candidates
 				// are hydrated; metadata predicates safely reduce sorting work here.
-				if ( $this->schema->matches( $row, $metadata_predicates ) ) {
+				$matches = $this->schema->matches( $row, $metadata_predicates );
+				if ( $matches || null !== $key ) {
 					$candidate = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
-					$posts[] = $candidate;
+					if ( $matches ) {
+						$posts[] = $candidate;
+					}
+					if ( null !== $key ) {
+						$candidates[] = $candidate;
+					}
 				}
-				$candidates[] = array( 'post' => $post, 'row' => $row, 'file' => $file, 'identity' => $identity );
 			}
 			if ( null === $scope ) {
 				$this->catalogue->complete_scan( array() === $allocation_columns );

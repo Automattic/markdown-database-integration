@@ -39,11 +39,12 @@ final class WP_Markdown_Native_Post_Catalogue {
 	/**
 	 * @param array<string,mixed> $file The manifest entry the row came from.
 	 * @param array<string,mixed> $row
+	 * @param bool                $path_is_canonical The strict manifest already verified this path is under the canonical root.
 	 */
-	public function remember( WP_Markdown_File_Witness $witness, array $file, object $post, array $row ): void {
+	public function remember( WP_Markdown_File_Witness $witness, array $file, object $post, array $row, bool $path_is_canonical = false ): void {
 		$this->load();
 		$path = (string) ( $file['absolute'] ?? '' );
-		if ( null === $this->relative_path( $path ) ) {
+		if ( ! $path_is_canonical && null === $this->relative_path( $path ) ) {
 			return;
 		}
 		$this->entries[ $path ] = array( 'witness' => $witness, 'file' => $file, 'post' => $post, 'row' => $row );

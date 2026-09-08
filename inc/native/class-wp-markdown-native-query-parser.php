@@ -50,6 +50,8 @@ final class WP_Markdown_Native_Query_Parser {
 			),
 			$ast->scalar_projection()
 		);
+		$scalar_predicates = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, $base_source ), $ast->scalar_predicates() );
+		$scalar_having = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, null ), $ast->scalar_having() );
 		$seen = array();
 		foreach ( $ast->projection() as $column ) {
 			$key = ( $column->qualifier() ?? '' ) . '.' . $column->name();
@@ -150,6 +152,7 @@ final class WP_Markdown_Native_Query_Parser {
 					),
 					'else' => $item['case']['else'],
 				),
+				'expression' => null === ( $item['expression'] ?? null ) ? null : $this->lower_scalar_expression( $item['expression'], $base_source ),
 			),
 			$ast->orders()
 		);
@@ -192,7 +195,10 @@ final class WP_Markdown_Native_Query_Parser {
 			,
 			$having,
 			$subqueries,
-			$union
+			$union,
+			$scalar_predicates,
+			$scalar_having,
+			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source )
 		);
 	}
 
@@ -236,6 +242,10 @@ final class WP_Markdown_Native_Query_Parser {
 		);
 	}
 
+	private function lower_scalar_predicate( WP_Markdown_Native_SQL_Scalar_Predicate $predicate, ?string $base_source ): WP_Markdown_Native_Query_Scalar_Predicate {
+		return new WP_Markdown_Native_Query_Scalar_Predicate( $this->lower_scalar_expression( $predicate->left(), $base_source ), $predicate->operator(), $this->lower_scalar_expression( $predicate->right(), $base_source ) );
+	}
+
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
 	private function referenced_columns( WP_Markdown_Native_SQL_Select $ast ): array {
 		$columns = $ast->projection();
@@ -254,7 +264,11 @@ final class WP_Markdown_Native_Query_Parser {
 			}
 			$columns = array_merge( $columns, $this->predicate_columns( $predicate ) );
 		}
+		foreach ( $ast->scalar_predicates() as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		foreach ( $ast->scalar_having() as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		if ( null !== $ast->group_expression() ) { $columns = array_merge( $columns, $ast->group_expression()->columns() ); }
 		foreach ( $ast->orders() as $item ) {
+			if ( null !== ( $item['expression'] ?? null ) ) { $columns = array_merge( $columns, $item['expression']->columns() ); continue; }
 			if ( null === ( $item['case'] ?? null ) ) {
 				$columns[] = $item['column'];
 				continue;
@@ -417,11 +431,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$alias = $table;
 		}
 		$predicates = array();
+		$scalar_predicates = array();
 		$subqueries = array();
 		if ( $this->match_keyword( 'WHERE' ) ) {
 			foreach ( $this->disjunction() as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
 					$subqueries[] = $predicate;
+				} elseif ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) {
+					$scalar_predicates[] = $predicate;
 				} else {
 					$predicates[] = $predicate;
 				}
@@ -440,7 +457,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			}
 			$this->expect_keyword( 'GROUP' );
 			$this->expect_keyword( 'BY' );
-			$group = $this->identifier();
+			$group_expression = $this->scalar_value();
+			$group = $group_expression->identifier();
+			if ( null === $group ) {
+				$group = new WP_Markdown_Native_SQL_Identifier( '__scalar_group', $this->current()->sql_offset() );
+			}
 			if ( WP_Markdown_Native_SQL_Token::COMMA === $this->current()->type() ) {
 				$this->unsupported( $this->current() );
 			}
@@ -465,11 +486,12 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			}
 		}
 		$having = array();
+		$scalar_having = array();
 		if ( $this->match_keyword( 'HAVING' ) ) {
-			if ( ! $grouped || array() === $aggregates ) {
-				$this->unsupported( $this->current() );
+			foreach ( $this->conjunction() as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { $scalar_having[] = $predicate; } else { $having[] = $predicate; }
 			}
-			$having = $this->conjunction();
+			if ( array() !== $having && ( ! $grouped || array() === $aggregates ) ) { $this->unsupported( $this->current() ); }
 			$aggregate_aliases = array_column( $aggregates, 'alias' );
 			foreach ( $having as $predicate ) {
 				if ( ! in_array( $predicate->column()->name(), $aggregate_aliases, true ) || ! in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true ) ) {
@@ -481,6 +503,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'ORDER' ) ) {
 			$this->expect_keyword( 'BY' );
 			do {
+				$expression = null;
 				$parenthesized = $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 				$case = $this->match_keyword( 'CASE' ) ? $this->searched_case() : null;
 				$field = null;
@@ -501,6 +524,10 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					if ( array() === $field ) {
 						$this->unsupported( $this->current() );
 					}
+				} elseif ( $this->matches_scalar_expression() ) {
+					$expression = $this->scalar_expression();
+					$columns = $expression->columns();
+					$column = $columns[0] ?? new WP_Markdown_Native_SQL_Identifier( '__scalar_order', $this->current()->sql_offset() );
 				} else {
 					if ( $parenthesized ) {
 						$this->unsupported( $this->current() );
@@ -533,6 +560,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					'like'       => $like,
 					'field'      => $field,
 					'case'       => $case,
+					'expression' => $expression ?? null,
 				);
 			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}
@@ -558,11 +586,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				$this->unsupported( $this->current() );
 			}
 		}
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union, $scalar_predicates, $scalar_having, $grouped ? $group_expression : null );
 	}
 
 	private function matches_scalar_expression(): bool {
-		return in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
+		return in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type()
 			|| ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
 	}
@@ -593,6 +621,24 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return new WP_Markdown_Native_SQL_Scalar_Expression( 'CAST_UNSIGNED', null, null, array( $argument ) );
 		}
+		if ( in_array( $function, array( 'DATE_ADD', 'DATE_SUB' ), true ) ) {
+			$arguments = array( $this->scalar_value() );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::COMMA );
+			$this->expect_keyword( 'INTERVAL' );
+			$value = $this->scalar_value();
+			$unit = strtoupper( $this->unqualified_identifier()->name() );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return new WP_Markdown_Native_SQL_Scalar_Expression( $function, null, null, array( $arguments[0], $value, new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $unit ) ) );
+		}
+		if ( 'TIMESTAMPDIFF' === $function ) {
+			$unit = strtoupper( $this->unqualified_identifier()->name() );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::COMMA );
+			$arguments = array( new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $unit ), $this->scalar_value() );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::COMMA );
+			$arguments[] = $this->scalar_value();
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return new WP_Markdown_Native_SQL_Scalar_Expression( $function, null, null, $arguments );
+		}
 		$arguments = array();
 		if ( ! $this->match_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN ) ) {
 			$arguments[] = $this->scalar_value();
@@ -605,7 +651,8 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			'CONCAT', 'COALESCE' => 2 <= count( $arguments ),
 			'SUBSTRING' => 3 === count( $arguments ),
 			'YEAR', 'MONTH', 'DATE', 'TIME', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DAY', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
-			'DATE_FORMAT', 'DATEDIFF', 'IFNULL', 'NULLIF', 'LEFT', 'RIGHT', 'LOCATE', 'ROUND', 'MOD', 'POW', 'ATAN2' => 2 === count( $arguments ),
+			'DATE_FORMAT', 'DATEDIFF', 'IFNULL', 'NULLIF', 'LEFT', 'RIGHT', 'LOCATE', 'MOD', 'POW', 'ATAN2' => 2 === count( $arguments ),
+			'ROUND' => in_array( count( $arguments ), array( 1, 2 ), true ),
 			'GREATEST', 'LEAST' => 2 <= count( $arguments ),
 			'IF', 'REPLACE' => 3 === count( $arguments ),
 			'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'RAND' => 0 === count( $arguments ),
@@ -616,6 +663,19 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function scalar_value(): WP_Markdown_Native_SQL_Scalar_Expression {
+		$value = $this->scalar_primary();
+		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::PLUS, WP_Markdown_Native_SQL_Token::MINUS, WP_Markdown_Native_SQL_Token::STAR, WP_Markdown_Native_SQL_Token::SLASH ), true ) ) {
+			$operator = $this->current()->type(); ++$this->current;
+			$value = new WP_Markdown_Native_SQL_Scalar_Expression( match ( $operator ) { WP_Markdown_Native_SQL_Token::PLUS => 'ADD', WP_Markdown_Native_SQL_Token::MINUS => 'SUBTRACT', WP_Markdown_Native_SQL_Token::STAR => 'MULTIPLY', default => 'DIVIDE' }, null, null, array( $value, $this->scalar_primary() ) );
+		}
+		return $value;
+	}
+
+	private function scalar_primary(): WP_Markdown_Native_SQL_Scalar_Expression {
+		if ( $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN ) ) { $value = $this->scalar_value(); $this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN ); return $value; }
+		if ( $this->match_type( WP_Markdown_Native_SQL_Token::MINUS ) ) {
+			return new WP_Markdown_Native_SQL_Scalar_Expression( 'SUBTRACT', null, null, array( new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, 0 ), $this->scalar_primary() ) );
+		}
 		if ( $this->match_keyword( 'NULL' ) ) {
 			return new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, null );
 		}
@@ -706,6 +766,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			foreach ( $group as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $sql_offset, 'mdi-native supports subqueries only as conjunctive predicates.' );
+				}
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_or', $sql_offset, 'mdi-native scalar predicates are supported only as conjunctive filters.' );
 				}
 			}
 		}
@@ -867,12 +930,20 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type();
 	}
 
-	private function predicate(): WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate {
+	private function predicate(): WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate {
+		// Keep the established indexed forms on their schema pushdown path.
 		if ( $this->matches_function( 'LOWER' ) ) {
 			return $this->lower_equality_predicate();
 		}
 		if ( $this->matches_function( 'CAST' ) ) {
 			return $this->signed_cast_predicate();
+		}
+		if ( $this->matches_scalar_expression() ) {
+			$left = $this->scalar_expression();
+			foreach ( array( WP_Markdown_Native_SQL_Token::EQUALS => '=', WP_Markdown_Native_SQL_Token::NOT_EQUALS => '<>', WP_Markdown_Native_SQL_Token::LESS_EQUALS => '<=', WP_Markdown_Native_SQL_Token::GREATER_EQUALS => '>=', WP_Markdown_Native_SQL_Token::LESS_THAN => '<', WP_Markdown_Native_SQL_Token::GREATER_THAN => '>' ) as $type => $operator ) {
+				if ( $this->match_type( $type ) ) { return new WP_Markdown_Native_SQL_Scalar_Predicate( $left, $operator, $this->scalar_value() ); }
+			}
+			$this->unsupported( $this->current() );
 		}
 		$column = $this->identifier();
 		if ( $this->match_keyword( 'IS' ) ) {

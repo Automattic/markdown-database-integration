@@ -90,6 +90,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 		$schema     = $table['schema'];
 		$predicates = $plan->predicates();
+		$scalar_predicates = $plan->scalar_predicates();
+		$has_scalar_order = array() !== array_filter( $plan->order_by(), static fn( array $item ): bool => null !== ( $item['expression'] ?? null ) );
 		$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
 		$scalar_projection = $plan->scalar_projection();
 		$scalar_columns = array();
@@ -97,6 +99,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$scalar_columns = array_merge( $scalar_columns, $scalar['expression']->columns() );
 		}
 		$columns = array_merge( $projection, $scalar_columns );
+		foreach ( $scalar_predicates as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		if ( null !== $plan->group_expression() ) { $columns = array_merge( $columns, $plan->group_expression()->columns() ); }
 		foreach ( $plan->subqueries() as $subquery ) {
 			if ( null !== $subquery->column() ) {
 				$columns[] = $subquery->column();
@@ -115,6 +119,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		foreach ( $plan->order_by() as $item ) {
+			if ( null !== ( $item['expression'] ?? null ) ) { $columns = array_merge( $columns, $item['expression']->columns() ); continue; }
 			if ( null === ( $item['case'] ?? null ) ) {
 				$columns[] = $item['column'];
 				continue;
@@ -141,6 +146,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
+			if ( null !== ( $item['expression'] ?? null ) ) { continue; }
 			if ( null !== ( $item['case'] ?? null ) ) {
 				foreach ( $item['case']['branches'] as $branch ) {
 					foreach ( $branch['predicates'] as $predicate ) {
@@ -173,6 +179,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			? array()
 			: array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
 		$provider_projection = $plan->counts_all() ? array() : array_merge( $projection, $scalar_columns );
+		foreach ( $scalar_predicates as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); }
+		if ( null !== $plan->group_expression() ) { $provider_projection = array_merge( $provider_projection, $plan->group_expression()->columns() ); }
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
 				$provider_projection[] = $column;
@@ -202,7 +210,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$provider_projection[] = $column;
 		}
 		$provider_projection = array_values( array_unique( $provider_projection ) );
-		$order_by = $plan->order_by();
+		$order_by = array_values( array_filter( $plan->order_by(), static fn( array $item ): bool => null === ( $item['expression'] ?? null ) ) );
 		if ( array() === $order_by ) {
 			$order_by = array(
 				array(
@@ -220,7 +228,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$order_by[0]['column'],
 				// DISTINCT collapses rows after the source read, so a bounded
 				// read would spend its bound on duplicates.
-				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_by() || array() !== $residual || $plan->is_distinct() || array() !== $plan->aggregates() ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
+				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_by() || array() !== $residual || $plan->is_distinct() || array() !== $plan->aggregates() || $has_scalar_order ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by,
 				$predicates
@@ -228,6 +236,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {
 			return $provided;
+		}
+		if ( $has_scalar_order ) {
+			$provided = is_array( $provided ) ? $provided : iterator_to_array( $provided );
+			usort( $provided, function ( array $left, array $right ) use ( $plan, $schema ): int {
+				foreach ( $plan->order_by() as $item ) {
+					$comparison = null === ( $item['expression'] ?? null )
+						? ( true === ( $item['numeric'] ?? false ) ? ( (float) ( $left[ $item['column'] ] ?? 0 ) <=> (float) ( $right[ $item['column'] ] ?? 0 ) ) : $schema->compare_rows( $item['column'], $left, $right ) )
+						: $this->compare_scalar_values( $this->evaluate_scalar( $item['expression'], $left, $schema ), $this->evaluate_scalar( $item['expression'], $right, $schema ) );
+					if ( 0 !== $comparison ) { return $item['descending'] ? -$comparison : $comparison; }
+				}
+				return 0;
+			} );
 		}
 		$subquery_matchers = $this->prepare_subqueries( $plan->subqueries(), $schema );
 		if ( $subquery_matchers instanceof WP_Markdown_Query_Result ) {
@@ -245,13 +265,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$aggregates = $plan->aggregates();
 		$aggregate_state = array();
 		foreach ( $provided as $row ) {
-			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_by() && array() === $aggregates && count( $rows ) >= $plan->limit() ) {
+			if ( ! $plan->counts_all() && ! $plan->calculates_found_rows() && null === $plan->group_by() && array() === $aggregates && ! $has_scalar_order && count( $rows ) >= $plan->limit() ) {
 				break;
 			}
 			if ( ! $validated && ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
-			if ( $this->matches( $row, $residual, $schema ) && $this->matches_subqueries( $row, $subquery_matchers, $schema ) ) {
+			if ( $this->matches( $row, $residual, $schema ) && $this->matches_scalar_predicates( $row, $scalar_predicates, $schema ) && $this->matches_scalar_predicates( $row, $plan->scalar_having(), $schema ) && $this->matches_subqueries( $row, $subquery_matchers, $schema ) ) {
 				$selected = null;
 				if ( $distinct && ! $plan->counts_all() && null === $plan->group_by() ) {
 					// DISTINCT resolves before the bound and before the count,
@@ -269,7 +289,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( array() !== $aggregates ) {
 					if ( null !== $plan->group_by() ) {
 						$group_by = $plan->group_by();
-						$value = $row[ $group_by ] ?? null;
+						$value = null === $plan->group_expression() ? ( $row[ $group_by ] ?? null ) : $this->evaluate_scalar( $plan->group_expression(), $row, $schema );
 						$key = null === $value ? "\0" : serialize( $value );
 						$groups[ $key ] ??= array( 'value' => $value, 'state' => array() );
 						$this->accumulate_aggregates( $groups[ $key ]['state'], $row, $aggregates, $schema );
@@ -292,7 +312,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( array() !== $aggregates ) {
 			if ( null !== $plan->group_by() ) {
-				return $this->grouped_aggregate_result( $groups, $plan->group_by(), $aggregates, $plan->having(), $plan->table(), $schema );
+				return $this->grouped_aggregate_result( $groups, $plan->group_by(), $aggregates, $plan->having(), $plan->scalar_having(), $plan->table(), $schema, $plan->scalar_projection() );
 			}
 			return $this->aggregate_result( $aggregate_state, $aggregates );
 		}
@@ -373,18 +393,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		};
 	}
 
-	private function grouped_aggregate_result( array $groups, string $column, array $aggregates, array $having, string $table, WP_Markdown_Native_Table_Schema $schema ): WP_Markdown_Query_Result {
+	private function grouped_aggregate_result( array $groups, string $column, array $aggregates, array $having, array $scalar_having, string $table, WP_Markdown_Native_Table_Schema $schema, array $scalar_projection ): WP_Markdown_Query_Result {
 		$rows = array();
 		foreach ( $groups as $group ) {
 			$row = array( $column => null === $group['value'] ? null : (string) $group['value'] );
 			foreach ( $aggregates as $index => $aggregate ) {
 				$row[ $aggregate['alias'] ] = $this->aggregate_value( $group['state'][ $index ] ?? array(), $aggregate['function'] );
 			}
-			if ( $this->matches_having( $row, $having ) ) {
+			if ( $this->matches_having( $row, $having ) && $this->matches_scalar_predicates( $row, $scalar_having, $schema ) ) {
 				$rows[] = $row;
 			}
 		}
-		$columns = array( array( 'name' => $column, 'table' => $table, 'type' => $schema->column( $column )->type() ) );
+		$group_name = $scalar_projection[0]['alias'] ?? $column;
+		if ( $group_name !== $column ) { foreach ( $rows as &$row ) { $row[ $group_name ] = $row[ $column ]; unset( $row[ $column ] ); } unset( $row ); }
+		$columns = array( array( 'name' => $group_name, 'table' => $group_name === $column ? $table : '', 'type' => $group_name === $column ? $schema->column( $column )->type() : 253 ) );
 		foreach ( $aggregates as $aggregate ) { $columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 'GROUP_CONCAT' === $aggregate['function'] ? 253 : 8 ); }
 		return WP_Markdown_Query_Result::selected( $rows, $columns );
 	}
@@ -398,6 +420,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( ! match ( $predicate->operator() ) { '=' => 0 === $comparison, '<>' => 0 !== $comparison, '<' => $comparison < 0, '<=' => $comparison <= 0, '>' => $comparison > 0, default => $comparison >= 0 } ) { return false; }
 		}
 		return true;
+	}
+
+	/** Scalar conditions deliberately run after the schema-bounded read. */
+	private function matches_scalar_predicates( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+		foreach ( $predicates as $predicate ) {
+			$left = $this->evaluate_scalar( $predicate->left(), $row, $schema );
+			$right = $this->evaluate_scalar( $predicate->right(), $row, $schema );
+			if ( null === $left || null === $right ) { return false; }
+			$comparison = $this->compare_scalar_values( $left, $right );
+			if ( ! match ( $predicate->operator() ) { '=' => 0 === $comparison, '<>' => 0 !== $comparison, '<' => $comparison < 0, '<=' => $comparison <= 0, '>' => $comparison > 0, default => $comparison >= 0 } ) { return false; }
+		}
+		return true;
+	}
+
+	private function compare_scalar_values( int|string|null $left, int|string|null $right ): int {
+		if ( null === $left || null === $right ) { return 0; }
+		return is_numeric( $left ) && is_numeric( $right ) ? ( $left + 0 <=> $right + 0 ) : strcmp( (string) $left, (string) $right );
 	}
 
 	public function last_found_rows(): ?int {
@@ -1150,6 +1189,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'DAYOFWEEK' => $this->date_part( $values[0], 'w' ),
 			'DATE_FORMAT' => $this->date_format( $values[0], $values[1] ),
 			'DATEDIFF' => $this->date_difference( $values[0], $values[1] ),
+			'DATE_ADD' => $this->date_interval( $values[0], $values[1], $values[2], 1 ),
+			'DATE_SUB' => $this->date_interval( $values[0], $values[1], $values[2], -1 ),
+			'TIMESTAMPDIFF' => $this->timestamp_difference( $values[0], $values[1], $values[2] ),
 			'UNIX_TIMESTAMP' => $this->unix_timestamp( $values[0] ?? null ),
 			'FROM_UNIXTIME' => null === $values[0] ? null : gmdate( 'Y-m-d H:i:s', (int) $values[0] ),
 			'NOW', 'UTC_TIMESTAMP' => gmdate( 'Y-m-d H:i:s' ),
@@ -1158,35 +1200,39 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'LEAST' => in_array( null, $values, true ) ? null : min( $values ),
 			'IF' => $this->scalar_number( $values[0] ) != 0.0 ? $values[1] : $values[2],
 			'IFNULL' => $values[0] ?? $values[1],
-			'NULLIF' => $values[0] === $values[1] ? null : $values[0],
-			'LOWER' => null === $values[0] ? null : strtolower( (string) $values[0] ),
-			'UPPER' => null === $values[0] ? null : strtoupper( (string) $values[0] ),
+			'NULLIF' => null !== $values[0] && null !== $values[1] && 0 === $this->compare_scalar_values( $values[0], $values[1] ) ? null : $values[0],
+			'LOWER' => null === $values[0] ? null : ( function_exists( 'mb_strtolower' ) ? mb_strtolower( (string) $values[0], 'UTF-8' ) : strtolower( (string) $values[0] ) ),
+			'UPPER' => null === $values[0] ? null : ( function_exists( 'mb_strtoupper' ) ? mb_strtoupper( (string) $values[0], 'UTF-8' ) : strtoupper( (string) $values[0] ) ),
 			'TRIM' => null === $values[0] ? null : trim( (string) $values[0] ),
 			'LENGTH' => null === $values[0] ? null : strlen( (string) $values[0] ),
-			'CHAR_LENGTH' => null === $values[0] ? null : ( function_exists( 'mb_strlen' ) ? mb_strlen( (string) $values[0], 'UTF-8' ) : strlen( (string) $values[0] ) ),
+			'CHAR_LENGTH' => null === $values[0] ? null : $this->character_length( (string) $values[0] ),
 			'REPLACE' => in_array( null, $values, true ) ? null : str_replace( (string) $values[1], (string) $values[2], (string) $values[0] ),
-			'LEFT' => in_array( null, $values, true ) ? null : substr( (string) $values[0], 0, max( 0, (int) $values[1] ) ),
-			'RIGHT' => in_array( null, $values, true ) ? null : substr( (string) $values[0], -(int) $values[1] ),
+			'LEFT' => in_array( null, $values, true ) ? null : $this->character_slice( (string) $values[0], 0, max( 0, (int) $values[1] ) ),
+			'RIGHT' => in_array( null, $values, true ) ? null : $this->character_slice( (string) $values[0], -(int) $values[1] ),
 			'LOCATE' => in_array( null, $values, true ) ? null : ( false === strpos( (string) $values[1], (string) $values[0] ) ? 0 : strpos( (string) $values[1], (string) $values[0] ) + 1 ),
 			'MD5' => null === $values[0] ? null : md5( (string) $values[0] ),
 			'SHA1' => null === $values[0] ? null : sha1( (string) $values[0] ),
 			'ABS' => null === $values[0] ? null : $this->scalar_number( abs( $this->scalar_number( $values[0] ) ) ),
-			'ROUND' => null === $values[0] ? null : $this->scalar_number( round( $this->scalar_number( $values[0] ), (int) $values[1] ) ),
+			'ROUND' => null === $values[0] ? null : $this->scalar_number( round( $this->scalar_number( $values[0] ), (int) ( $values[1] ?? 0 ) ) ),
 			'FLOOR' => null === $values[0] ? null : $this->scalar_number( floor( $this->scalar_number( $values[0] ) ) ),
 			'CEIL' => null === $values[0] ? null : $this->scalar_number( ceil( $this->scalar_number( $values[0] ) ) ),
 			'MOD' => in_array( null, $values, true ) || 0.0 === $this->scalar_number( $values[1] ) ? null : $this->scalar_number( fmod( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
 			'POW' => in_array( null, $values, true ) ? null : $this->scalar_number( pow( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
-			'SQRT' => null === $values[0] ? null : $this->scalar_number( sqrt( $this->scalar_number( $values[0] ) ) ),
+			'SQRT' => null === $values[0] || 0 > (float) $this->scalar_number( $values[0] ) ? null : $this->scalar_number( sqrt( $this->scalar_number( $values[0] ) ) ),
 			'RADIANS' => null === $values[0] ? null : $this->scalar_number( deg2rad( $this->scalar_number( $values[0] ) ) ),
 			'DEGREES' => null === $values[0] ? null : $this->scalar_number( rad2deg( $this->scalar_number( $values[0] ) ) ),
 			'SIN' => null === $values[0] ? null : $this->scalar_number( sin( $this->scalar_number( $values[0] ) ) ),
 			'COS' => null === $values[0] ? null : $this->scalar_number( cos( $this->scalar_number( $values[0] ) ) ),
 			'TAN' => null === $values[0] ? null : $this->scalar_number( tan( $this->scalar_number( $values[0] ) ) ),
-			'ACOS' => null === $values[0] ? null : $this->scalar_number( acos( $this->scalar_number( $values[0] ) ) ),
-			'ASIN' => null === $values[0] ? null : $this->scalar_number( asin( $this->scalar_number( $values[0] ) ) ),
+			'ACOS' => null === $values[0] || abs( (float) $this->scalar_number( $values[0] ) ) > 1 ? null : $this->scalar_number( acos( $this->scalar_number( $values[0] ) ) ),
+			'ASIN' => null === $values[0] || abs( (float) $this->scalar_number( $values[0] ) ) > 1 ? null : $this->scalar_number( asin( $this->scalar_number( $values[0] ) ) ),
 			'ATAN' => null === $values[0] ? null : $this->scalar_number( atan( $this->scalar_number( $values[0] ) ) ),
 			'ATAN2' => in_array( null, $values, true ) ? null : $this->scalar_number( atan2( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
 			'RAND' => $this->scalar_number( mt_rand() / mt_getrandmax() ),
+			'ADD' => in_array( null, $values, true ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) + $this->scalar_number( $values[1] ) ),
+			'SUBTRACT' => in_array( null, $values, true ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) - $this->scalar_number( $values[1] ) ),
+			'MULTIPLY' => in_array( null, $values, true ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) * $this->scalar_number( $values[1] ) ),
+			'DIVIDE' => in_array( null, $values, true ) || 0.0 === (float) $this->scalar_number( $values[1] ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) / $this->scalar_number( $values[1] ) ),
 			'CASE' => $this->evaluate_case( $expression, $row, $schema ),
 			default => throw new LogicException( 'Unsupported lowered scalar expression.' ),
 		};
@@ -1196,6 +1242,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $value ) { return null; }
 		$number = (float) $value;
 		return floor( $number ) === $number ? (int) $number : (string) $number;
+	}
+
+	private function character_length( string $value ): int {
+		if ( function_exists( 'mb_strlen' ) ) { return mb_strlen( $value, 'UTF-8' ); }
+		return preg_match_all( '/./us', $value, $matches ) ?: strlen( $value );
+	}
+
+	private function character_slice( string $value, int $offset, ?int $length = null ): string {
+		if ( function_exists( 'mb_substr' ) ) { return mb_substr( $value, $offset, $length, 'UTF-8' ); }
+		preg_match_all( '/./us', $value, $matches );
+		$characters = $matches[0] ?? str_split( $value );
+		return implode( '', array_slice( $characters, $offset, $length ) );
 	}
 
 	private function date_part( int|string|null $value, string $format ): ?int {
@@ -1215,6 +1273,39 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$second = strtotime( substr( (string) $right, 0, 10 ) . ' UTC' );
 		if ( false === $first || false === $second ) { return null; }
 		return (int) ( ( $first - $second ) / 86400 );
+	}
+
+	private function date_interval( int|string|null $date, int|string|null $amount, int|string|null $unit, int $direction ): ?string {
+		if ( null === $date || null === $amount || null === $unit ) { return null; }
+		$parsed = date_create_immutable( (string) $date, new DateTimeZone( 'UTC' ) );
+		$units = array( 'SECOND' => 'seconds', 'MINUTE' => 'minutes', 'HOUR' => 'hours', 'DAY' => 'days', 'WEEK' => 'weeks', 'MONTH' => 'months', 'YEAR' => 'years' );
+		if ( false === $parsed || ! isset( $units[ (string) $unit ] ) ) { return null; }
+		if ( in_array( (string) $unit, array( 'MONTH', 'YEAR' ), true ) ) {
+			$months = (int) $amount * ( 'YEAR' === $unit ? 12 : 1 ) * $direction;
+			$year = (int) $parsed->format( 'Y' );
+			$month = (int) $parsed->format( 'n' ) + $months;
+			$year += (int) floor( ( $month - 1 ) / 12 );
+			$month = ( ( $month - 1 ) % 12 + 12 ) % 12 + 1;
+			$day = min( (int) $parsed->format( 'j' ), cal_days_in_month( CAL_GREGORIAN, $month, $year ) );
+			return $parsed->setDate( $year, $month, $day )->format( str_contains( (string) $date, ' ' ) ? 'Y-m-d H:i:s' : 'Y-m-d' );
+		}
+		return $parsed->modify( ( 0 > $direction ? '-' : '+' ) . (int) $amount . ' ' . $units[ (string) $unit ] )?->format( str_contains( (string) $date, ' ' ) ? 'Y-m-d H:i:s' : 'Y-m-d' );
+	}
+
+	private function timestamp_difference( int|string|null $unit, int|string|null $left, int|string|null $right ): ?int {
+		if ( null === $unit || null === $left || null === $right ) { return null; }
+		$start = strtotime( (string) $left . ' UTC' ); $end = strtotime( (string) $right . ' UTC' );
+		if ( false === $start || false === $end ) { return null; }
+		$seconds = $end - $start;
+		if ( in_array( (string) $unit, array( 'MONTH', 'QUARTER', 'YEAR' ), true ) ) {
+			$start_date = date_create_immutable( (string) $left, new DateTimeZone( 'UTC' ) );
+			$end_date = date_create_immutable( (string) $right, new DateTimeZone( 'UTC' ) );
+			if ( false === $start_date || false === $end_date ) { return null; }
+			$months = ( (int) $end_date->format( 'Y' ) - (int) $start_date->format( 'Y' ) ) * 12 + (int) $end_date->format( 'n' ) - (int) $start_date->format( 'n' );
+			if ( $end_date->format( 'd H:i:s' ) < $start_date->format( 'd H:i:s' ) ) { $months -= 0 < $months ? 1 : -1; }
+			return match ( (string) $unit ) { 'MONTH' => $months, 'QUARTER' => (int) ( $months / 3 ), default => (int) ( $months / 12 ) };
+		}
+		return match ( (string) $unit ) { 'SECOND' => $seconds, 'MINUTE' => (int) ( $seconds / 60 ), 'HOUR' => (int) ( $seconds / 3600 ), 'DAY' => (int) ( $seconds / 86400 ), 'WEEK' => (int) ( $seconds / 604800 ), default => null };
 	}
 
 	private function unix_timestamp( int|string|null $value ): ?int {

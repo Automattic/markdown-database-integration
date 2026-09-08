@@ -75,15 +75,25 @@ $recipe_path = $root . '/recipe.json';
 file_put_contents( $recipe_path, json_encode( $recipe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 $wp_codebox = (string) ( getenv( 'MDI_WP_CODEBOX_BIN' ) ?: 'wp-codebox' );
 $command = escapeshellarg( $wp_codebox ) . ' recipe-run --recipe ' . escapeshellarg( $recipe_path ) . ' --timeout 20m --json';
-$output = array();
-exec( $command, $output, $status );
-$run = json_decode( implode( "\n", $output ), true );
-$report = is_array( $run ) ? json_decode( (string) ( $run['executions'][0]['stdout'] ?? $run['stepFailures'][0]['stdout'] ?? '' ), true ) : null;
-$passed = 0 === $status && is_array( $report ) && true === ( $report['passed'] ?? false );
-$summary = array( 'schema' => 'mdi-native-multisite-wordpress-run/v1', 'candidate' => trim( (string) shell_exec( 'git -C ' . escapeshellarg( $repo ) . ' rev-parse HEAD' ) ), 'passed' => $passed, 'report' => $report );
+$runs = array();
+foreach ( array( 'install_and_switch', 'cold_reload' ) as $phase ) {
+	$output = array();
+	exec( $command, $output, $status );
+	$run = json_decode( implode( "\n", $output ), true );
+	$report = is_array( $run ) ? json_decode( (string) ( $run['executions'][0]['stdout'] ?? $run['stepFailures'][0]['stdout'] ?? '' ), true ) : null;
+	$runs[ $phase ] = array( 'status' => $status, 'report' => $report, 'output' => $output );
+}
+$passed = array_reduce( $runs, static fn( bool $passed, array $run ): bool => $passed && 0 === $run['status'] && is_array( $run['report'] ) && true === ( $run['report']['passed'] ?? false ), true );
+$candidate = (string) getenv( 'MDI_CANDIDATE_SHA' );
+if ( '' === $candidate ) {
+	$candidate = trim( (string) shell_exec( 'git -C ' . escapeshellarg( $repo ) . ' rev-parse HEAD' ) );
+}
+$summary = array( 'schema' => 'mdi-native-multisite-wordpress-run/v1', 'candidate' => $candidate, 'passed' => $passed, 'runs' => array_map( static fn( array $run ): ?array => $run['report'], $runs ) );
 fwrite( $passed ? STDOUT : STDERR, json_encode( $summary, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 if ( ! $passed ) {
-	fwrite( STDERR, implode( "\n", $output ) . "\n" );
+	foreach ( $runs as $run ) {
+		fwrite( STDERR, implode( "\n", $run['output'] ) . "\n" );
+	}
 }
 if ( $passed && '1' !== getenv( 'MDI_KEEP_MULTISITE_ARTIFACTS' ) ) {
 	mdi_native_multisite_runner_remove_tree( $root );

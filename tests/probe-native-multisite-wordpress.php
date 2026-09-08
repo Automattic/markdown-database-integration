@@ -41,21 +41,19 @@ try {
 	if ( ! get_network( 1 ) ) {
 		populate_network( 1, 'example.com', '/' );
 	}
-	$blog_id = get_id_from_blogname( 'mdi-site-two' );
-	if ( ! $blog_id ) {
+	$site_id = get_id_from_blogname( 'mdi-site-two' );
+	if ( ! $site_id ) {
 		$created = wpmu_create_blog( 'example.com', '/mdi-site-two/', 'MDI Site Two', 1 );
 		if ( is_wp_error( $created ) ) {
 			throw new RuntimeException( $created->get_error_message() );
 		}
-		$blog_id = (int) $created;
+		$site_id = (int) $created;
 	}
-	$report['blog_id'] = $blog_id;
-	mdi_native_multisite_probe_assert( $blog_id > 1, 'site_created', $checks );
+	$report['site_id'] = $site_id;
+	mdi_native_multisite_probe_assert( $site_id > 1, 'site_created', $checks );
 
 	$base_prefix = $wpdb->prefix;
 	update_option( 'mdi_network_option', 'network-value' );
-	$network_user_id = 1;
-	$report['network_user_id'] = $network_user_id;
 
 	// wpmu_create_blog() may temporarily switch the current blog. Return to the
 	// network primary site before exercising the caller-visible switch sequence.
@@ -65,46 +63,54 @@ try {
 	if ( 1 !== get_current_blog_id() ) {
 		switch_to_blog( 1 );
 	}
-	$report['switch_return'] = switch_to_blog( $blog_id );
-	// WordPress's switch API owns the caller-visible context. Reapply the same
-	// selected scope to the replacement wpdb so its table properties cannot lag
-	// a switch that occurred while db.php was loading.
-	$wpdb->set_blog_id( $blog_id );
-	$GLOBALS['blog_id'] = $blog_id;
-	$GLOBALS['table_prefix'] = $wpdb->prefix;
+	$report['switch_return'] = switch_to_blog( $site_id );
 	$site_prefix = $wpdb->prefix;
 	$report['site_blogid'] = $wpdb->blogid;
 	$report['global_blog_id'] = $GLOBALS['blog_id'] ?? null;
+	mdi_native_multisite_probe_assert( $site_prefix === $wpdb->base_prefix . $site_id . '_', 'switch_sets_site_prefix', $checks );
+	mdi_native_multisite_probe_assert( $wpdb->blogid === $site_id && $report['global_blog_id'] === $site_id, 'switch_sets_blog_identity', $checks );
 	update_option( 'mdi_site_option', 'site-value' );
 	$post_id = wp_insert_post( array( 'post_title' => 'MDI site post', 'post_content' => 'site-specific body', 'post_status' => 'publish' ), true );
 	if ( is_wp_error( $post_id ) ) {
 		throw new RuntimeException( $post_id->get_error_message() );
 	}
 	$site_tables = mdi_native_multisite_probe_tables();
-	$site_transaction = $wpdb->query( 'START TRANSACTION' ) && $wpdb->query( "UPDATE {$wpdb->options} SET option_value = 'rolled-back' WHERE option_name = 'mdi_site_option'" ) && $wpdb->query( 'ROLLBACK' );
-	mdi_native_multisite_probe_assert( $site_transaction && 'site-value' === get_option( 'mdi_site_option' ), 'site_transaction_rollback', $checks );
+	$site_transaction = array(
+		'begin' => $wpdb->query( 'START TRANSACTION' ),
+		'update' => $wpdb->query( "UPDATE {$wpdb->options} SET option_value = 'rolled-back' WHERE option_name = 'mdi_site_option'" ),
+		'rollback' => $wpdb->query( 'ROLLBACK' ),
+	);
+	$site_option_after_rollback = get_option( 'mdi_site_option' );
+	$report['site_transaction'] = $site_transaction;
+	mdi_native_multisite_probe_assert( ! in_array( false, $site_transaction, true ) && 'site-value' === $site_option_after_rollback, 'site_transaction_rollback', $checks );
 	mdi_native_multisite_probe_assert( get_post( $post_id ) instanceof WP_Post, 'site_post', $checks );
 	mdi_native_multisite_probe_assert( in_array( $site_prefix . 'options', $site_tables, true ) && in_array( $site_prefix . 'posts', $site_tables, true ), 'site_show_tables', $checks );
-	mdi_native_multisite_probe_assert( $wpdb->get_var( "SELECT COUNT(*) FROM {$wpdb->base_prefix}users WHERE ID = " . (int) $network_user_id ) === '1', 'site_reads_shared_users', $checks );
 	mdi_native_multisite_probe_assert( false === $wpdb->query( "SELECT option_value FROM {$wpdb->base_prefix}options WHERE option_name = 'mdi_network_option'" ), 'cross_prefix_site_table_rejected', $checks );
 	restore_current_blog();
 
 	$base_tables = mdi_native_multisite_probe_tables();
-	$network_transaction = $wpdb->query( 'START TRANSACTION' ) && $wpdb->query( "UPDATE {$wpdb->options} SET option_value = 'rolled-back' WHERE option_name = 'mdi_network_option'" ) && $wpdb->query( 'ROLLBACK' );
+	$network_transaction = array(
+		'begin' => $wpdb->query( 'START TRANSACTION' ),
+		'update' => $wpdb->query( "UPDATE {$wpdb->options} SET option_value = 'rolled-back' WHERE option_name = 'mdi_network_option'" ),
+		'rollback' => $wpdb->query( 'ROLLBACK' ),
+	);
+	$network_option_after_rollback = get_option( 'mdi_network_option' );
+	$report['network_transaction'] = $network_transaction;
 	mdi_native_multisite_probe_assert( $base_prefix === $wpdb->prefix, 'restore_base_prefix', $checks );
-	mdi_native_multisite_probe_assert( $network_transaction && 'network-value' === get_option( 'mdi_network_option' ), 'network_transaction_rollback', $checks );
+	mdi_native_multisite_probe_assert( ! in_array( false, $network_transaction, true ) && 'network-value' === $network_option_after_rollback, 'network_transaction_rollback', $checks );
 	mdi_native_multisite_probe_assert( in_array( $base_prefix . 'blogs', $base_tables, true ) && in_array( $base_prefix . 'users', $base_tables, true ), 'network_show_tables', $checks );
-	mdi_native_multisite_probe_assert( false !== $wpdb->get_var( $wpdb->prepare( "SELECT blog_id FROM {$wpdb->base_prefix}blogs WHERE blog_id = %d", $blog_id ) ), 'network_lists_site', $checks );
+	mdi_native_multisite_probe_assert( false !== $wpdb->get_var( $wpdb->prepare( "SELECT blog_id FROM {$wpdb->base_prefix}blogs WHERE blog_id = %d", $site_id ) ), 'network_lists_site', $checks );
 
 	$report['site_prefix'] = $site_prefix;
 	$report['base_tables'] = $base_tables;
 	$report['site_tables'] = $site_tables;
 	$report['state_paths'] = array(
 		'network_option' => file_exists( MARKDOWN_DB_STATE_DIR . '/_options/mdi_network_option.json' ),
-		'site_option' => file_exists( MARKDOWN_DB_STATE_DIR . '/sites/' . $blog_id . '/_options/mdi_site_option.json' ),
-		'site_post' => is_dir( MARKDOWN_DB_CONTENT_DIR . '/sites/' . $blog_id . '/post' ),
+		'site_option' => file_exists( MARKDOWN_DB_STATE_DIR . '/sites/' . $site_id . '/_options/mdi_site_option.json' ),
+		'site_post' => is_dir( MARKDOWN_DB_CONTENT_DIR . '/sites/' . $site_id . '/post' ),
 	);
-	mdi_native_multisite_probe_assert( ! in_array( $site_prefix . 'options', $base_tables, true ) && in_array( $base_prefix . 'blogs', $site_tables, true ), 'scope_table_isolation', $checks );
+	mdi_native_multisite_probe_assert( ! in_array( $site_prefix . 'options', $base_tables, true ) && ! in_array( $base_prefix . 'blogs', $site_tables, true ), 'scope_table_isolation', $checks );
+	mdi_native_multisite_probe_assert( in_array( $base_prefix . 'users', $base_tables, true ) && ! in_array( $site_prefix . 'users', $site_tables, true ), 'user_table_is_network_global', $checks );
 	mdi_native_multisite_probe_assert( ! in_array( false, $report['state_paths'], true ), 'canonical_scope_paths', $checks );
 } catch ( Throwable $error ) {
 	$report['error'] = get_class( $error );

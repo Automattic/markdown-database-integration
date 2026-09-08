@@ -108,9 +108,10 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 		if ( array() !== $joins ) {
 			$base_alias = $ast->alias()?->name();
-			if ( null === $base_alias || $ast->selects_all() ) {
-				return $this->failure( 'unsupported_join_shape', 'mdi-native supports retained bounded equality JOIN queries only.', $ast->table()->sql_offset() );
+			if ( $ast->selects_all() ) {
+				return $this->failure( 'unsupported_join_shape', 'mdi-native JOIN projections must name their source columns.', $ast->table()->sql_offset() );
 			}
+			$base_alias ??= $ast->table()->name();
 			$available = array( $base_alias => true );
 			foreach ( $ast->joins() as $join ) {
 				$alias = $join->alias()->name();
@@ -386,17 +387,24 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				$join_alias = $this->unqualified_identifier();
 			}
 			$this->expect_keyword( 'ON' );
-			$wrapped = $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
-			$left = $this->identifier();
-			$this->expect_type( WP_Markdown_Native_SQL_Token::EQUALS );
-			$right = $this->identifier();
-			$on_predicates = array();
-			while ( $this->match_keyword( 'AND' ) ) {
-				$on_predicates[] = $this->predicate();
+			$on_predicates = $this->disjunction();
+			$equality = null;
+			foreach ( $on_predicates as $index => $predicate ) {
+				if ( '=' === $predicate->operator() && null !== $predicate->comparison() ) {
+					$equality = $predicate;
+					unset( $on_predicates[ $index ] );
+					break;
+				}
 			}
-			if ( $wrapped ) {
-				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			if ( null === $equality ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error(
+					'unsupported_join_shape',
+					$join_table->sql_offset(),
+					'mdi-native JOINs require one qualified equality predicate.'
+				);
 			}
+			$left = $equality->column();
+			$right = $equality->comparison();
 			if ( null === $left->qualifier() && null === $right->qualifier() ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_join_shape',
@@ -411,7 +419,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			if ( null === $right->qualifier() ) {
 				$right = new WP_Markdown_Native_SQL_Identifier( $right->name(), $right->sql_offset(), $base_source->name() );
 			}
-			$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, $left, $right, 'left' === $join_kind, $on_predicates );
+			$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, $left, $right, 'left' === $join_kind, array_values( $on_predicates ) );
 		}
 		if ( null === $alias && array() !== $joins ) {
 			$alias = $table;

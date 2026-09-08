@@ -745,6 +745,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $plan->order_by() as $item ) {
 			$order_source = $item['source'] ?? $plan->order_source();
 			$numeric = true === ( $item['numeric'] ?? false );
+			if ( null === $order_source && in_array( $item['column'], array_column( $plan->aggregates(), 'alias' ), true ) ) {
+				continue;
+			}
 			if ( null !== ( $item['expression'] ?? null ) ) {
 				if ( ! $this->add_join_scalar_columns( $item['expression'], $sources, $needed ) ) {
 					return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN scalar ordering.' );
@@ -902,6 +905,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					continue;
 				}
 				$order_source = (string) ( $item['source'] ?? $plan->order_source() );
+				if ( '' === $order_source && in_array( $item['column'], array_column( $plan->aggregates(), 'alias' ), true ) ) {
+					continue;
+				}
 				$extracted = array_map( static fn( array $row ): array => $row[ $order_source ], $rows );
 				if ( null !== $sources[ $order_source ]['schema']->unsupported_order_reason( array( $item ), $extracted ) ) {
 					return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested JOIN ordering collation.' );
@@ -914,6 +920,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 						if ( null !== ( $item['expression'] ?? null ) ) {
 							$comparison = $this->compare_scalar_values( $this->evaluate_scalar( $item['expression'], $left, $sources[ (string) ( $item['source'] ?? $plan->table_alias() ) ]['schema'] ), $this->evaluate_scalar( $item['expression'], $right, $sources[ (string) ( $item['source'] ?? $plan->table_alias() ) ]['schema'] ) );
 							if ( 0 !== $comparison ) { return $item['descending'] ? -$comparison : $comparison; }
+							continue;
+						}
+						if ( null === ( $item['source'] ?? null ) && in_array( $item['column'], array_column( $plan->aggregates(), 'alias' ), true ) ) {
 							continue;
 						}
 						$source = (string) ( $item['source'] ?? $plan->order_source() );
@@ -999,6 +1008,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$selected_rows[] = $grouped_row;
 			}
 			$selected_rows = array_values( $selected_rows );
+			$schema = new WP_Markdown_Native_Table_Schema( array( '__aggregate' => new WP_Markdown_Native_Column( 253, true ) ), '__aggregate' );
+			$selected_rows = array_values( array_filter( $selected_rows, fn( array $row ): bool => $this->matches_having( $row, $plan->having() ) && $this->matches_scalar_predicates( $row, $plan->scalar_having(), $schema ) ) );
+			$aggregate_orders = array_values( array_filter( $plan->order_by(), static fn( array $item ): bool => null === ( $item['source'] ?? null ) ) );
+			if ( array() !== $aggregate_orders ) {
+				usort( $selected_rows, function ( array $left, array $right ) use ( $aggregate_orders ): int {
+					foreach ( $aggregate_orders as $item ) {
+						$comparison = $this->compare_scalar_values( $left[ $item['column'] ] ?? null, $right[ $item['column'] ] ?? null );
+						if ( 0 !== $comparison ) { return $item['descending'] ? -$comparison : $comparison; }
+					}
+					return 0;
+				} );
+			}
 		}
 		if ( $plan->calculates_found_rows() ) {
 			$this->last_found_rows = count( $selected_rows );

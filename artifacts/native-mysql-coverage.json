@@ -100,6 +100,18 @@
             "failure": null
         },
         {
+            "feature": "select.join.meta.aliases",
+            "sql": "SELECT p.ID FROM wp_posts p LEFT JOIN wp_postmeta mt1 ON (p.ID = mt1.post_id AND mt1.meta_key = 'coverage_probe') LEFT JOIN wp_postmeta mt2 ON (p.ID = mt2.post_id AND mt2.meta_key = 'coverage_probe_secondary') LIMIT 5",
+            "supported": true,
+            "failure": null
+        },
+        {
+            "feature": "select.from.derived.union.all",
+            "sql": "SELECT d.ID FROM (SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION ALL SELECT ID FROM wp_posts WHERE post_status = 'draft') AS d LIMIT 5",
+            "supported": true,
+            "failure": null
+        },
+        {
             "feature": "select.subquery.in",
             "sql": "SELECT ID FROM wp_posts WHERE ID IN ( SELECT post_id FROM wp_postmeta WHERE meta_key = 'coverage_probe' )",
             "supported": true,
@@ -160,6 +172,24 @@
             "failure": null
         },
         {
+            "feature": "select.scalar.where.date",
+            "sql": "SELECT ID FROM wp_posts WHERE DATE_ADD(post_date, INTERVAL 1 DAY) >= '2000-01-01' LIMIT 5",
+            "supported": true,
+            "failure": null
+        },
+        {
+            "feature": "select.scalar.group.date",
+            "sql": "SELECT DATE(post_date) AS day, COUNT(*) AS total FROM wp_posts GROUP BY DATE(post_date) HAVING total > 0",
+            "supported": true,
+            "failure": null
+        },
+        {
+            "feature": "select.scalar.order.math",
+            "sql": "SELECT ID, ACOS(COS(RADIANS(ID))) AS distance FROM wp_posts HAVING ACOS(COS(RADIANS(ID))) >= 0 ORDER BY ACOS(COS(RADIANS(ID))) DESC LIMIT 5",
+            "supported": true,
+            "failure": null
+        },
+        {
             "feature": "select.group_concat",
             "sql": "SELECT post_type, GROUP_CONCAT(ID) AS ids FROM wp_posts GROUP BY post_type",
             "supported": true,
@@ -180,6 +210,12 @@
         {
             "feature": "select.found.rows",
             "sql": "SELECT SQL_CALC_FOUND_ROWS ID FROM wp_posts LIMIT 2",
+            "supported": true,
+            "failure": null
+        },
+        {
+            "feature": "select.for.update",
+            "sql": "SELECT ID FROM wp_posts WHERE ID = 1 FOR UPDATE",
             "supported": true,
             "failure": null
         },
@@ -246,6 +282,12 @@
             "failure": null
         },
         {
+            "operation": "meta.add.secondary",
+            "result": true,
+            "supported": true,
+            "failure": null
+        },
+        {
             "operation": "meta.get",
             "result": "42",
             "supported": true,
@@ -253,6 +295,12 @@
         },
         {
             "operation": "meta.query.numeric",
+            "result": 1,
+            "supported": true,
+            "failure": null
+        },
+        {
+            "operation": "meta.query.multiple.aliases",
             "result": 1,
             "supported": true,
             "failure": null
@@ -367,11 +415,11 @@
         }
     ],
     "summary": {
-        "statements_total": 36,
-        "statements_supported": 36,
+        "statements_total": 42,
+        "statements_supported": 42,
         "statements_failed": 0,
-        "operations_total": 24,
-        "operations_supported": 24,
+        "operations_total": 26,
+        "operations_supported": 26,
         "operations_failed": 0,
         "failure_reasons": [],
         "unsupported_features": [],

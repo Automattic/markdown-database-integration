@@ -135,11 +135,12 @@ final class WP_Markdown_Native_Query_Parser {
 			}
 		}
 
+		$aggregate_aliases = array_column( $ast->aggregates(), 'alias' );
 		$order_by = array_map(
 			fn( array $item ): array => array(
 				'column'     => $item['column']->name(),
 				'descending' => $item['descending'],
-				'source'     => $item['column']->qualifier() ?? $base_source,
+				'source'     => in_array( $item['column']->name(), $aggregate_aliases, true ) ? null : ( $item['column']->qualifier() ?? $base_source ),
 				'numeric'    => $item['numeric'] ?? false,
 				'like'       => $item['like'] ?? null,
 				'field'      => $item['field'] ?? null,

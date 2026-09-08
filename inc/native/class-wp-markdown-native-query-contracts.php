@@ -171,6 +171,20 @@ final class WP_Markdown_Native_Query_Scalar_Predicate {
 	public function columns(): array { return array_values( array_unique( array_merge( $this->left->columns(), $this->right->columns() ) ) ); }
 }
 
+final class WP_Markdown_Native_Query_Boolean_Predicate {
+	/** @param array<int,array<int,WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate>> $groups */
+	public function __construct( private readonly array $groups ) {}
+	public function groups(): array { return $this->groups; }
+	/** @return array<int,string> */
+	public function columns(): array {
+		$columns = array();
+		foreach ( $this->groups as $group ) {
+			foreach ( $group as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		}
+		return array_values( array_unique( $columns ) );
+	}
+}
+
 final class WP_Markdown_Native_Query_Join {
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $on_filters */
 	public function __construct(
@@ -247,7 +261,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly ?self $union = null,
 		private readonly array $scalar_predicates = array(),
 		private readonly array $scalar_having = array(),
-		private readonly ?WP_Markdown_Native_Query_Scalar_Expression $group_expression = null
+		private readonly ?WP_Markdown_Native_Query_Scalar_Expression $group_expression = null,
+		private readonly ?WP_Markdown_Native_Query_Boolean_Predicate $boolean_predicate = null
 	) {}
 
 	public function table(): string {
@@ -363,6 +378,7 @@ final class WP_Markdown_Native_Query_Plan {
 	/** @return array<int,WP_Markdown_Native_Query_Scalar_Predicate> */
 	public function scalar_having(): array { return $this->scalar_having; }
 	public function group_expression(): ?WP_Markdown_Native_Query_Scalar_Expression { return $this->group_expression; }
+	public function boolean_predicate(): ?WP_Markdown_Native_Query_Boolean_Predicate { return $this->boolean_predicate; }
 }
 
 final class WP_Markdown_Native_Table_Access {

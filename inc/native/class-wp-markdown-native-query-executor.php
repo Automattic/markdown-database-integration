@@ -80,6 +80,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				: $this->result( array(), $projection, $plan->table(), $schema );
 		}
 		if ( array() !== $plan->joins() ) {
+			if ( array() !== $plan->scalar_predicates() || null !== $plan->boolean_predicate() || array() !== $plan->scalar_having() ) {
+				return $this->failure( 'unsupported_join_shape', 'mdi-native cannot combine scalar clauses with JOINs.' );
+			}
 			return $this->execute_join( $plan );
 		}
 
@@ -91,6 +94,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$schema     = $table['schema'];
 		$predicates = $plan->predicates();
 		$scalar_predicates = $plan->scalar_predicates();
+		$boolean_predicate = $plan->boolean_predicate();
 		$has_scalar_order = array() !== array_filter( $plan->order_by(), static fn( array $item ): bool => null !== ( $item['expression'] ?? null ) );
 		$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
 		$scalar_projection = $plan->scalar_projection();
@@ -100,6 +104,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$columns = array_merge( $projection, $scalar_columns );
 		foreach ( $scalar_predicates as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		if ( null !== $boolean_predicate ) { $columns = array_merge( $columns, $boolean_predicate->columns() ); }
+		if ( array() === $plan->aggregates() ) { foreach ( $plan->scalar_having() as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); } }
 		if ( null !== $plan->group_expression() ) { $columns = array_merge( $columns, $plan->group_expression()->columns() ); }
 		foreach ( $plan->subqueries() as $subquery ) {
 			if ( null !== $subquery->column() ) {
@@ -180,6 +186,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			: array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
 		$provider_projection = $plan->counts_all() ? array() : array_merge( $projection, $scalar_columns );
 		foreach ( $scalar_predicates as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); }
+		if ( null !== $boolean_predicate ) { $provider_projection = array_merge( $provider_projection, $boolean_predicate->columns() ); }
+		if ( array() === $plan->aggregates() ) { foreach ( $plan->scalar_having() as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); } }
 		if ( null !== $plan->group_expression() ) { $provider_projection = array_merge( $provider_projection, $plan->group_expression()->columns() ); }
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
@@ -228,7 +236,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$order_by[0]['column'],
 				// DISTINCT collapses rows after the source read, so a bounded
 				// read would spend its bound on duplicates.
-				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_by() || array() !== $residual || $plan->is_distinct() || array() !== $plan->aggregates() || $has_scalar_order ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
+				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_by() || array() !== $residual || array() !== $scalar_predicates || null !== $boolean_predicate || array() !== $plan->scalar_having() || $plan->is_distinct() || array() !== $plan->aggregates() || $has_scalar_order ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by,
 				$predicates
@@ -271,7 +279,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( ! $validated && ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
-			if ( $this->matches( $row, $residual, $schema ) && $this->matches_scalar_predicates( $row, $scalar_predicates, $schema ) && $this->matches_scalar_predicates( $row, $plan->scalar_having(), $schema ) && $this->matches_subqueries( $row, $subquery_matchers, $schema ) ) {
+			if ( $this->matches( $row, $residual, $schema ) && $this->matches_scalar_predicates( $row, $scalar_predicates, $schema ) && $this->matches_boolean_predicate( $row, $boolean_predicate, $schema ) && ( array() !== $aggregates || $this->matches_scalar_predicates( $row, $plan->scalar_having(), $schema ) ) && $this->matches_subqueries( $row, $subquery_matchers, $schema ) ) {
 				$selected = null;
 				if ( $distinct && ! $plan->counts_all() && null === $plan->group_by() ) {
 					// DISTINCT resolves before the bound and before the count,
@@ -432,6 +440,18 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( ! match ( $predicate->operator() ) { '=' => 0 === $comparison, '<>' => 0 !== $comparison, '<' => $comparison < 0, '<=' => $comparison <= 0, '>' => $comparison > 0, default => $comparison >= 0 } ) { return false; }
 		}
 		return true;
+	}
+
+	private function matches_boolean_predicate( array $row, ?WP_Markdown_Native_Query_Boolean_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
+		if ( null === $predicate ) { return true; }
+		foreach ( $predicate->groups() as $group ) {
+			$matches = true;
+			foreach ( $group as $term ) {
+				$matches = $matches && ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate ? $this->matches_scalar_predicates( $row, array( $term ), $schema ) : $this->matches( $row, array( $term ), $schema ) );
+			}
+			if ( $matches ) { return true; }
+		}
+		return false;
 	}
 
 	private function compare_scalar_values( int|string|null $left, int|string|null $right ): int {

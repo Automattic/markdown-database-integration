@@ -433,7 +433,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$has_scalar = false;
 			$has_subquery = false;
 			foreach ( $where_groups as $where_group ) { foreach ( $where_group as $predicate ) { $has_scalar = $has_scalar || $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate; $has_subquery = $has_subquery || $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate; } }
-			if ( $has_scalar ) {
+			if ( $has_scalar || $this->requires_boolean_plan( $where_groups ) ) {
 				if ( $has_subquery ) { $this->unsupported( $this->current() ); }
 				$boolean_predicate = new WP_Markdown_Native_SQL_Boolean_Predicate( $where_groups );
 			} else foreach ( $this->coalesce_boolean_groups( $where_groups, $this->current()->sql_offset() ) as $predicate ) {
@@ -852,6 +852,20 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$remainders = array_map( static fn( array $group ): array => array_values( array_filter( $group, static fn( object $predicate ): bool => ! isset( $common[ serialize( $predicate ) ] ) ) ), $groups );
 		return array_merge( array_values( $common ), $this->coalesce_disjunction( $remainders, $sql_offset ) );
+	}
+
+	/** Keep large nested WordPress boolean trees intact instead of lossy OR coalescing. */
+	private function requires_boolean_plan( array $groups ): bool {
+		if ( 2 >= count( $groups ) ) {
+			return false;
+		}
+		$common = array_intersect( ...array_map( static fn( array $group ): array => array_map( 'serialize', $group ), $groups ) );
+		foreach ( $groups as $group ) {
+			if ( 1 < count( array_filter( $group, static fn( object $predicate ): bool => ! in_array( serialize( $predicate ), $common, true ) ) ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**

@@ -106,6 +106,20 @@ final class WP_Markdown_Native_SQL_Scalar_Expression {
 	}
 }
 
+/** A comparison over row-local expressions, evaluated after bounded reads. */
+final class WP_Markdown_Native_SQL_Scalar_Predicate {
+	public function __construct(
+		private readonly WP_Markdown_Native_SQL_Scalar_Expression $left,
+		private readonly string $operator,
+		private readonly WP_Markdown_Native_SQL_Scalar_Expression $right
+	) {}
+	public function left(): WP_Markdown_Native_SQL_Scalar_Expression { return $this->left; }
+	public function operator(): string { return $this->operator; }
+	public function right(): WP_Markdown_Native_SQL_Scalar_Expression { return $this->right; }
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	public function columns(): array { return array_merge( $this->left->columns(), $this->right->columns() ); }
+}
+
 final class WP_Markdown_Native_SQL_Predicate {
 	/** @param array<int,WP_Markdown_Native_SQL_Literal> $values @param array<int,self> $any */
 	public function __construct(
@@ -216,7 +230,10 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly array $scalar_projection = array(),
 		private readonly array $having = array(),
 		private readonly array $subqueries = array(),
-		private readonly ?self $union = null
+		private readonly ?self $union = null,
+		private readonly array $scalar_predicates = array(),
+		private readonly array $scalar_having = array(),
+		private readonly ?WP_Markdown_Native_SQL_Scalar_Expression $group_expression = null
 	) {}
 
 	public function selects_all(): bool {
@@ -310,4 +327,9 @@ final class WP_Markdown_Native_SQL_Select {
 	public function subqueries(): array { return $this->subqueries; }
 
 	public function union(): ?self { return $this->union; }
+	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Predicate> */
+	public function scalar_predicates(): array { return $this->scalar_predicates; }
+	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Predicate> */
+	public function scalar_having(): array { return $this->scalar_having; }
+	public function group_expression(): ?WP_Markdown_Native_SQL_Scalar_Expression { return $this->group_expression; }
 }

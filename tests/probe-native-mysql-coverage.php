@@ -113,6 +113,9 @@ mdi_coverage_statement( 'select.substring', "SELECT SUBSTRING(post_title, 1, 3) 
 mdi_coverage_statement( 'select.cast', "SELECT CAST(ID AS UNSIGNED) AS numeric_id FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.date.year', "SELECT YEAR(post_date) AS y, MONTH(post_date) AS m FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.date.format', "SELECT DATE_FORMAT(post_date, '%Y-%m') AS period FROM {$posts} LIMIT 5" );
+mdi_coverage_statement( 'select.scalar.where.date', "SELECT ID FROM {$posts} WHERE DATE_ADD(post_date, INTERVAL 1 DAY) >= '2000-01-01' LIMIT 5" );
+mdi_coverage_statement( 'select.scalar.group.date', "SELECT DATE(post_date) AS day, COUNT(*) AS total FROM {$posts} GROUP BY DATE(post_date) HAVING total > 0" );
+mdi_coverage_statement( 'select.scalar.order.math', "SELECT ID, ACOS(COS(RADIANS(ID))) AS distance FROM {$posts} HAVING ACOS(COS(RADIANS(ID))) >= 0 ORDER BY ACOS(COS(RADIANS(ID))) DESC LIMIT 5" );
 mdi_coverage_statement( 'select.group_concat', "SELECT post_type, GROUP_CONCAT(ID) AS ids FROM {$posts} GROUP BY post_type" );
 mdi_coverage_statement( 'select.order.field', "SELECT ID FROM {$posts} ORDER BY FIELD(post_status, 'publish', 'draft') LIMIT 5" );
 mdi_coverage_statement( 'select.regexp', "SELECT ID FROM {$posts} WHERE post_title REGEXP '^a'" );

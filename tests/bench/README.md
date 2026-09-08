@@ -143,6 +143,20 @@ The observed mix was 37 updates, 10 creates, 2 reparents, and 1 delete. The
 historical bursty matrix result (7.08 ms versus 1.22 ms) used process-global
 RNG and different mixes, so it is not a controlled runtime-halving comparison.
 
+#### Predicate-normalization candidate
+
+The predicate-normalization candidate atop `57e459a` ran in Lab job
+`8f8eb80c-81e1-457a-8d80-1b3bd8169205`, run
+`6311b125-6012-47bd-bf96-06ea4e11b99f`, with the same corrected benchmark hash
+`e456e89dc0e350e10fbc4d6b3a088a9013505934efbd3af90c43321dd3fda86e`, five
+measured iterations, one warmup, corpus size 1,000, and `BENCH_PROFILE=0`.
+Its mean was 3575.981257 ms (3333.300395-3780.202275), versus 3734.1098676 ms
+(3467.557242-3889.180371) for the prior runtime measurement: 4.23% lower mean.
+The ranges overlap, and this single sequential comparison is diagnostic only,
+not causal or statistical performance proof. All five candidate iterations
+completed 50 operations; corpus progression was 1013, 1019, 1026, 1039, and
+1044, with the same final plan checksum above.
+
 Native post mutations remain a separate, fail-closed compatibility boundary:
 an active native transaction rejects the mutation before Markdown is written,
 because its journal does not record canonical Markdown posts. The bounded merge

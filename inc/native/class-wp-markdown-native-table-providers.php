@@ -247,7 +247,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		WP_Markdown_Native_Table_Schema $schema,
 		?WP_Markdown_Storage $storage = null,
 		?string $state_root = null,
-		bool $network_root = false
+		private bool $network_root = false
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
@@ -352,7 +352,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		foreach ( $predicate->values() as $value ) {
 			$id = (int) $value;
 			$file = $this->catalogue->file_for( $id );
-			if ( null === $file ) {
+			if ( null === $file && ! $this->network_root ) {
 				$file = $this->storage->indexed_post_file( $id );
 			}
 			if ( null === $file ) {

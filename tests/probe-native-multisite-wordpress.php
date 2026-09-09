@@ -86,7 +86,26 @@ try {
 	mdi_native_multisite_probe_assert( get_post( $post_id ) instanceof WP_Post, 'site_post', $checks );
 	mdi_native_multisite_probe_assert( in_array( $site_prefix . 'options', $site_tables, true ) && in_array( $site_prefix . 'posts', $site_tables, true ), 'site_show_tables', $checks );
 	mdi_native_multisite_probe_assert( false === $wpdb->query( "SELECT option_value FROM {$wpdb->base_prefix}options WHERE option_name = 'mdi_network_option'" ), 'cross_prefix_site_table_rejected', $checks );
+	$foreign_id = wp_insert_attachment(
+		array(
+			'import_id'      => 987654321,
+			'post_title'     => 'MDI foreign attachment',
+			'post_status'    => 'inherit',
+			'post_mime_type' => 'image/png',
+		),
+		'foreign-logo.png',
+		0,
+		true
+	);
+	if ( is_wp_error( $foreign_id ) ) {
+		throw new RuntimeException( $foreign_id->get_error_message() );
+	}
+	$foreign_id = (int) $foreign_id;
+	mdi_native_multisite_probe_assert( get_post( $foreign_id ) instanceof WP_Post, 'foreign_attachment_exists_on_site', $checks );
 	restore_current_blog();
+
+	$foreign_post = get_post( $foreign_id );
+	mdi_native_multisite_probe_assert( null === $foreign_post, 'foreign_attachment_is_not_visible_after_restore', $checks );
 
 	$base_tables = mdi_native_multisite_probe_tables();
 	$network_transaction = array(

@@ -207,7 +207,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 		}
 		if ( 'posts' === $suffix ) {
 			$posts = self::posts_schema();
-			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root ), $provider_state_root ) );
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root, $multisite && $prefix === $base_prefix ), $provider_state_root ) );
 			return true;
 		}
 		$bespoke = array(
@@ -269,7 +269,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			new WP_Markdown_Native_Post_Mutation_Runtime(
 				$registry,
 				$parser,
-				self::shared_storage( $content_root ?? $state_root ),
+				self::shared_storage( $content_root ?? $state_root, $multisite && $prefix === $resolved_base ),
 				$transactions
 			),
 			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root )
@@ -367,10 +367,11 @@ final class WP_Markdown_Native_Runtime_Factory {
 	 * a read that remembers what it parsed must be told when a write changes
 	 * a file underneath it.
 	 */
-	private static function shared_storage( string $content_root ): WP_Markdown_Storage {
-		$key = rtrim( $content_root, '/\\' );
+	private static function shared_storage( string $content_root, bool $network_root = false ): WP_Markdown_Storage {
+		$key = ( $network_root ? 'network:' : 'site:' ) . rtrim( $content_root, '/\\' );
 		if ( ! isset( self::$storages[ $key ] ) ) {
-			self::$storages[ $key ] = new WP_Markdown_Storage( $content_root );
+			// The network root owns sites/{blog_id}; it is not a post-type tree.
+			self::$storages[ $key ] = new WP_Markdown_Storage( $content_root, $network_root ? array( 'sites' ) : array() );
 		}
 		return self::$storages[ $key ];
 	}

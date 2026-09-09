@@ -664,7 +664,7 @@ final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Qu
 	private string $content_root;
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		$multisite = ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
+		$multisite = ( defined( 'WP_INSTALLING_NETWORK' ) && WP_INSTALLING_NETWORK ) || ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
 		if ( ! $multisite ) {
 			return $this->prefix_runtime->execute( $request );
 		}

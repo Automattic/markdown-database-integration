@@ -161,6 +161,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$row = array();
 		$columns = array();
 		foreach ( $projection as $scalar ) {
+			if ( 'JSON_VALID' === $scalar['expression']->kind() && $this->json_depth_exceeded( $scalar['expression'] ) ) {
+				return $this->mysql_json_depth_failure();
+			}
 			$value = $this->evaluate_scalar( $scalar['expression'], array(), $schema );
 			$row[ $scalar['alias'] ] = $this->string_scalar( $value );
 			$columns[] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => $this->tableless_scalar_type( $scalar['expression'], $value ) );
@@ -190,6 +193,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return null;
 		}
 		$column = 'JSON_VALID(' . $tokens[3]->lexeme() . ')';
+		if ( null !== $value && $this->json_depth_exceeded_value( (string) $value ) ) {
+			return $this->mysql_json_depth_failure();
+		}
 		return WP_Markdown_Query_Result::selected(
 			array( array( $column => null === $value ? null : $this->json_valid( (string) $value ) ) ),
 			array( array( 'name' => $column, 'table' => '', 'type' => 3 ) )
@@ -2111,13 +2117,40 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	private function json_valid( string $value ): string {
 		try {
-			// MariaDB 11.4 rejects JSON nesting at 32 levels; its parser counts
-			// the outermost array/object as the first level.
-			json_decode( $value, true, 32, JSON_THROW_ON_ERROR );
+			// MySQL 8.4 accepts 100 containers and rejects the 101st. PHP counts
+			// the scalar below those containers too, hence the decode depth of 101.
+			json_decode( $value, true, 101, JSON_THROW_ON_ERROR );
 			return '1';
 		} catch ( JsonException ) {
 			return '0';
 		}
+	}
+
+	private function json_depth_exceeded( WP_Markdown_Native_Query_Scalar_Expression $expression ): bool {
+		$arguments = $expression->arguments();
+		if ( 1 !== count( $arguments ) || 'literal' !== $arguments[0]->kind() || ! is_string( $arguments[0]->literal() ) ) {
+			return false;
+		}
+		return $this->json_depth_exceeded_value( $arguments[0]->literal() );
+	}
+
+	private function json_depth_exceeded_value( string $value ): bool {
+		try {
+			json_decode( $value, true, 101, JSON_THROW_ON_ERROR );
+			return false;
+		} catch ( JsonException $error ) {
+			return JSON_ERROR_DEPTH === $error->getCode();
+		}
+	}
+
+	private function mysql_json_depth_failure(): WP_Markdown_Query_Result {
+		return WP_Markdown_Query_Result::failure(
+			array(
+				'code'    => 3157,
+				'reason'  => 'json_document_too_deep',
+				'message' => 'The JSON document exceeds the maximum depth.',
+			)
+		);
 	}
 
 	/** Cast through decimal digits instead of PHP floats, which lose declared scale. */

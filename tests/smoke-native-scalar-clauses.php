@@ -36,8 +36,10 @@ $json_valid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VAL
 $json_invalid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('{broken}')", 'wp_' ) );
 $json_null = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT JSON_VALID(NULL)', 'wp_' ) );
 $json_alias = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('[]') AS valid_json", 'wp_' ) );
-$json_depth_31 = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('" . str_repeat( '[', 31 ) . '0' . str_repeat( ']', 31 ) . "') AS valid_json", 'wp_' ) );
-$json_depth_32 = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('" . str_repeat( '[', 32 ) . '0' . str_repeat( ']', 32 ) . "') AS valid_json", 'wp_' ) );
+$json_array_depth_100 = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('" . str_repeat( '[', 100 ) . '0' . str_repeat( ']', 100 ) . "') AS valid_json", 'wp_' ) );
+$json_array_depth_101 = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('" . str_repeat( '[', 101 ) . '0' . str_repeat( ']', 101 ) . "') AS valid_json", 'wp_' ) );
+$json_object_depth_100 = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('" . str_repeat( '{\"key\":', 100 ) . '0' . str_repeat( '}', 100 ) . "') AS valid_json", 'wp_' ) );
+$json_object_depth_101 = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('" . str_repeat( '{\"key\":', 101 ) . '0' . str_repeat( '}', 101 ) . "') AS valid_json", 'wp_' ) );
 $statement_scalars = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT NOW() AS now_a, UTC_TIMESTAMP() AS now_b, RAND(1) AS rand_a, RAND(1) AS rand_b', 'wp_' ) );
 $literals = $runtime->execute( new WP_Markdown_Query_Request( "SELECT 1 AS one, 'event' AS label, NULL AS missing", 'wp_' ) );
 $checks = array(
@@ -74,8 +76,10 @@ $checks = array(
 		&& 'JSON_VALID(\'{"event":true}\')' === ( $json_valid->wpdb_state()['col_info'][0]->name ?? null )
 		&& 3 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null )
 		&& '1' === ( $json_alias->wpdb_state()['last_result'][0]->valid_json ?? null )
-		&& '1' === ( $json_depth_31->wpdb_state()['last_result'][0]->valid_json ?? null )
-		&& '0' === ( $json_depth_32->wpdb_state()['last_result'][0]->valid_json ?? null ),
+		&& '1' === ( $json_array_depth_100->wpdb_state()['last_result'][0]->valid_json ?? null )
+		&& 3157 === ( $json_array_depth_101->wpdb_state()['last_errno'] ?? null )
+		&& '1' === ( $json_object_depth_100->wpdb_state()['last_result'][0]->valid_json ?? null )
+		&& 3157 === ( $json_object_depth_101->wpdb_state()['last_errno'] ?? null ),
 	'tableless scalar evaluation uses one fresh per-statement state' => ( $statement_scalars->wpdb_state()['last_result'][0]->now_a ?? null ) === ( $statement_scalars->wpdb_state()['last_result'][0]->now_b ?? null )
 		&& ( $statement_scalars->wpdb_state()['last_result'][0]->rand_a ?? null ) === ( $statement_scalars->wpdb_state()['last_result'][0]->rand_b ?? null ),
 	'tableless numeric, string, and NULL literals preserve aliases, values, and MySQL field types' => array( 'one' => '1', 'label' => 'event', 'missing' => null ) === (array) ( $literals->wpdb_state()['last_result'][0] ?? array() )

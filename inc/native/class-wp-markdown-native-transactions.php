@@ -17,11 +17,15 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private const JOURNAL_PREFIX    = 'native-transaction-';
 	private const JOURNAL_SUFFIX    = '.json';
 	private const CLAIM_SUFFIX      = '.lock';
+	private const WRITE_LOCK_SUFFIX = '-write.lock';
+	private const WRITE_LOCK_WAIT_US = 5000000;
 
 	private string $state_root;
 	private string $owner;
 	/** @var resource|null */
 	private $claim = null;
+	/** @var resource|null */
+	private $write_lock = null;
 	private bool $active = false;
 	private bool $autocommit = true;
 	private bool $in_transaction = false;
@@ -67,6 +71,11 @@ final class WP_Markdown_Native_Transaction_Journal {
 	 * a transaction another process is still running.
 	 */
 	public function recover(): bool {
+		$locked = $this->begin_write();
+		if ( true !== $locked ) {
+			return false;
+		}
+		try {
 		$directory = $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY;
 		if ( ! is_dir( $directory ) || is_link( $directory ) ) {
 			return false;
@@ -98,6 +107,48 @@ final class WP_Markdown_Native_Transaction_Journal {
 			$recovered = true;
 		}
 		return $recovered;
+		} finally {
+			$this->finish_write();
+		}
+	}
+
+	/**
+	 * Serialize canonical writes before a mutation reads its pre-image or
+	 * allocates an identifier. Lock order is root transaction lock, then the
+	 * narrower statement/table lock; recovery uses this same root lock.
+	 */
+	public function begin_write(): true|string {
+		if ( null !== $this->write_lock ) {
+			return true;
+		}
+		$directory = $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY;
+		if ( ! is_dir( $directory ) && ! @mkdir( $directory, 0777, true ) && ! is_dir( $directory ) ) {
+			return 'The canonical transaction lock directory could not be created.';
+		}
+		$handle = @fopen( $directory . DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . self::WRITE_LOCK_SUFFIX, 'c+b' );
+		if ( false === $handle ) {
+			return 'The canonical transaction write lock could not be opened.';
+		}
+		$deadline = hrtime( true ) + ( self::WRITE_LOCK_WAIT_US * 1000 );
+		do {
+			if ( flock( $handle, LOCK_EX | LOCK_NB ) ) {
+				$this->write_lock = $handle;
+				return true;
+			}
+			usleep( 10000 );
+		} while ( hrtime( true ) < $deadline );
+		fclose( $handle );
+		return 'The canonical transaction write lock timed out.';
+	}
+
+	/** Release an autocommit statement's root lock after it has published. */
+	public function finish_write(): void {
+		if ( $this->active || null === $this->write_lock ) {
+			return;
+		}
+		flock( $this->write_lock, LOCK_UN );
+		fclose( $this->write_lock );
+		$this->write_lock = null;
 	}
 
 	/**
@@ -201,16 +252,17 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( ! $this->active ) {
 			return true;
 		}
+		$path = $this->journal_path();
+		if ( is_file( $path ) && ! @unlink( $path ) ) {
+			return 'The canonical transaction journal could not be cleared.';
+		}
 		$this->active     = false;
 		$this->in_transaction = false;
 		$this->entries    = array();
 		$this->savepoints = array();
 		$this->restore_observers = array();
-		$path = $this->journal_path();
 		$this->release();
-		if ( is_file( $path ) && ! @unlink( $path ) ) {
-			return 'The canonical transaction journal could not be cleared.';
-		}
+		$this->finish_write();
 		return true;
 	}
 

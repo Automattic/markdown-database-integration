@@ -95,12 +95,28 @@ final class WP_Markdown_Native_Table_Predicate_Group {
 	}
 }
 
+/** A typed single-column IN predicate whose members come from a typed SELECT. */
+final class WP_Markdown_Native_Table_Subquery_Predicate {
+	public function __construct(
+		private readonly string $column,
+		private readonly WP_Markdown_Native_SQL_Select $query
+	) {}
+
+	public function column(): string {
+		return $this->column;
+	}
+
+	public function query(): WP_Markdown_Native_SQL_Select {
+		return $this->query;
+	}
+}
+
 /** One generic UPDATE or DELETE against a persisted snapshot table. */
 final class WP_Markdown_Native_Table_Write {
 
 	/**
 	 * @param array<string,int|string|null>              $values     Assignments for an UPDATE.
-	 * @param array<int,WP_Markdown_Native_Table_Predicate> $predicates Conjunctive restrictions.
+	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate> $predicates Conjunctive restrictions.
 	 */
 	public function __construct(
 		private string $kind,
@@ -122,7 +138,7 @@ final class WP_Markdown_Native_Table_Write {
 		return $this->values;
 	}
 
-	/** @return array<int,WP_Markdown_Native_Table_Predicate> */
+	/** @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate> */
 	public function predicates(): array {
 		return $this->predicates;
 	}

@@ -5,6 +5,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/../class-wp-markdown-operation-profile.php';
 /** Materialized parenthesized SELECT source used only during its enclosing query. */
 final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Native_Table_Provider {
 	/** @param array<int,array<string,mixed>> $rows */
@@ -62,6 +63,33 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->execute_request( $request );
+		} finally {
+			if ( null !== $start ) {
+				$elapsed = ( hrtime( true ) - $start ) / 1e6;
+				preg_match( '/^\s*(SELECT|INSERT|UPDATE|DELETE|REPLACE)\b/i', $request->sql(), $match );
+				WP_Markdown_Operation_Profile::end( 'query_' . strtolower( $match[1] ?? 'other' ), $start );
+				if ( 'SELECT' === strtoupper( $match[1] ?? '' ) ) {
+					try {
+						$shape = array();
+						foreach ( ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $request->sql() ) as $token ) {
+							if ( WP_Markdown_Native_SQL_Token::END === $token->type() ) {
+								continue;
+							}
+							$shape[] = in_array( $token->type(), array( 'string', 'integer', 'decimal' ), true ) ? '?' : (string) $token->value();
+						}
+						WP_Markdown_Operation_Profile::query( implode( ' ', $shape ), hash( 'sha256', $request->sql() ), $elapsed );
+					} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+						WP_Markdown_Operation_Profile::count( 'query_shape_unavailable' );
+					}
+				}
+			}
+		}
+	}
+
+	private function execute_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		self::trace_runtime_phase( 'executor', $request->sql() );
 		if ( strlen( $request->sql() ) > self::MAX_SQL_BYTES ) {
 			return $this->failure( 'request_too_large', 'mdi-native cannot execute a request larger than max_allowed_packet.' );
@@ -126,10 +154,29 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				? $this->failure( 'unsupported_grammar', 'mdi-native supports bounded SELECT queries only.' )
 				: $this->option_mutations->execute( $request );
 		}
-		$plan = $this->parser->parse( $request->sql() );
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			$plan = $this->parser->parse( $request->sql() );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'select_parse', $start );
+		}
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
 			return $plan;
 		}
+		return $this->execute_plan( $plan );
+	}
+
+	/** Execute an already parsed SELECT plan for another native statement. */
+	public function execute_plan( WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan $plan ): WP_Markdown_Query_Result {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->execute_select_plan( $plan );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'select_execute', $start );
+		}
+	}
+
+	private function execute_select_plan( WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan $plan ): WP_Markdown_Query_Result {
 		if ( $plan instanceof WP_Markdown_Native_Found_Rows_Plan ) {
 			return null === $this->last_found_rows
 				? $this->failure( 'missing_found_rows', 'FOUND_ROWS() requires a preceding successful SQL_CALC_FOUND_ROWS query.' )
@@ -138,7 +185,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					array( array( 'name' => 'FOUND_ROWS()', 'table' => '', 'type' => 8 ) )
 				);
 		}
-		return $this->execute_plan( $plan );
+		return $this->execute_query_plan( $plan );
 	}
 
 	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
@@ -284,7 +331,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		);
 	}
 
-	private function execute_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
+	private function execute_query_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
 		if ( $allow_union && null !== $plan->union() ) {
 			return $this->execute_union( $plan );
 		}
@@ -382,7 +429,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		$pushdown = $this->pushdown( $predicates, $schema );
-		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema ) ) {
+		if ( array() !== $predicates
+			&& null === $pushdown
+			&& ! $table['provider'] instanceof WP_Markdown_Native_JSON_Partition_Provider
+			&& ! $this->allows_residual_scan( $predicates, $schema )
+		) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
@@ -477,7 +528,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$plan->counts_all() || $plan->calculates_found_rows() || null !== $plan->group_by() || array() !== $residual || array() !== $scalar_predicates || null !== $boolean_predicate || array() !== $plan->scalar_having() || $plan->is_distinct() || array() !== $plan->aggregates() || $has_scalar_order ? PHP_INT_MAX : $plan->limit_offset() + $plan->limit(),
 				$order_by[0]['descending'],
 				$order_by,
-				$predicates
+				$predicates,
+				1 === $plan->limit()
+					&& 0 === $plan->limit_offset()
+					&& array() === $plan->order_by()
+					&& ! $plan->counts_all()
+					&& ! $plan->calculates_found_rows()
+					&& null === $plan->group_by()
+					&& ! $plan->is_distinct()
+					&& array() === $plan->aggregates()
+					&& array() === $plan->subqueries()
 			)
 		);
 		if ( $provided instanceof WP_Markdown_Query_Result ) {
@@ -780,7 +840,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	/** Use the normal plan executor for uncorrelated subqueries of every supported shape. */
 	private function materialize_subquery_plan( WP_Markdown_Native_Query_Subquery $subquery, WP_Markdown_Native_Table_Schema $outer_schema ): array|WP_Markdown_Query_Result {
-		$result = $this->execute_plan( $subquery->query() );
+		$result = $this->execute_query_plan( $subquery->query() );
 		if ( false === $result->return_value() ) {
 			return $result;
 		}
@@ -901,7 +961,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$column = $matcher['correlation']->comparison_column();
 				if ( null === $column || ! $schema->has_column( $column ) ) { return false; }
 				$key = $schema->value_key( $column, $row[ $column ] ?? null );
-				if ( null === $key || ! isset( $matcher['values'][ $key ] ) ) { return false; }
+				$exists = null !== $key && isset( $matcher['values'][ $key ] );
+				if ( ( 'EXISTS' === $matcher['operator'] && ! $exists ) || ( 'NOT EXISTS' === $matcher['operator'] && $exists ) ) { return false; }
 				continue;
 			}
 			$key = $schema->value_key( (string) $matcher['column'], $row[ $matcher['column'] ] ?? null );
@@ -947,20 +1008,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$this->correlated_subquery_failure = $this->failure( 'unsupported_subquery_correlation', 'mdi-native cannot bind the requested correlated subquery.' );
 				return false;
 			}
-			$result = $this->execute_plan( $bound );
+			$result = $this->execute_query_plan( $bound );
 			if ( false === $result->return_value() ) {
 				$this->correlated_subquery_failure = $result;
 				return false;
 			}
 			$columns = $result->wpdb_state()['col_info'] ?? array();
-			if ( 'EXISTS' !== $matcher['operator'] && 1 !== count( $columns ) ) {
+			if ( ! in_array( $matcher['operator'], array( 'EXISTS', 'NOT EXISTS' ), true ) && 1 !== count( $columns ) ) {
 				$this->correlated_subquery_failure = $this->failure( 'unsupported_subquery_shape', 'mdi-native IN subqueries must project exactly one column.' );
 				return false;
 			}
 			$values = array();
 			$has_null = false;
 			foreach ( $result->wpdb_state()['last_result'] ?? array() as $result_row ) {
-				if ( 'EXISTS' === $matcher['operator'] ) { $values['exists'] = true; break; }
+				if ( in_array( $matcher['operator'], array( 'EXISTS', 'NOT EXISTS' ), true ) ) { $values['exists'] = true; break; }
 				$value = get_object_vars( $result_row )[ $columns[0]->name ] ?? null;
 				if ( null === $value ) { $has_null = true; continue; }
 				$typed = is_numeric( $value ) && in_array( $schema->column( (string) $matcher['column'] )->type(), array( 1, 2, 3, 4, 5, 8, 9, 246 ), true ) ? $value + 0 : $value;
@@ -974,7 +1035,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$this->correlated_subquery_cache[ $key ] = array( 'values' => $values, 'has_null' => $has_null );
 		}
 		$materialized = $this->correlated_subquery_cache[ $key ];
-		if ( 'EXISTS' === $matcher['operator'] ) { return isset( $materialized['values']['exists'] ); }
+		if ( in_array( $matcher['operator'], array( 'EXISTS', 'NOT EXISTS' ), true ) ) {
+			$exists = isset( $materialized['values']['exists'] );
+			return 'EXISTS' === $matcher['operator'] ? $exists : ! $exists;
+		}
 		$row_key = $schema->value_key( (string) $matcher['column'], $row[ $matcher['column'] ] ?? null );
 		$matched = null !== $row_key && isset( $materialized['values'][ $row_key ] );
 		return 'NOT IN' === $matcher['operator']
@@ -1096,7 +1160,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}
 				continue;
 			}
-			$result = $this->execute_plan( $branch, false );
+			$result = $this->execute_query_plan( $branch, false );
 			if ( false === $result->return_value() ) {
 				return $result;
 			}
@@ -1771,7 +1835,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	/** @return array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider}|WP_Markdown_Query_Result */
 	private function derived_source( WP_Markdown_Native_Query_Plan $plan, string $name ): array|WP_Markdown_Query_Result {
-		$result = $this->execute_plan( $plan );
+		$result = $this->execute_query_plan( $plan );
 		if ( false === $result->return_value() ) {
 			return $result;
 		}
@@ -1972,13 +2036,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $provider->read( $access );
 		}
 
-		$rows = $provider->rows();
-		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return $rows;
-		}
 		$predicates = $access->predicates();
 		if ( array() === $predicates && null !== $access->predicate() ) {
 			$predicates[] = $access->predicate();
+		}
+		$rows = $provider->equality_candidates( $predicates );
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
 		}
 		if ( array() !== $predicates ) {
 			$rows = array_values(

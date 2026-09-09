@@ -20,6 +20,9 @@ final class WP_Markdown_Native_Table_Index {
 	public const SCHEMA = 'mdi-native-table-index/v2';
 	private const DIRECTORY = '.index';
 
+	/** @var array<string,array{path:string,witness:WP_Markdown_File_Witness,index:array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int}}> */
+	private array $cached = array();
+
 	public function __construct( private string $tables_directory ) {}
 
 	public function path( string $suffix ): string {
@@ -32,6 +35,11 @@ final class WP_Markdown_Native_Table_Index {
 	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int}|null
 	 */
 	public function load( string $suffix, string $snapshot_path ): ?array {
+		$witness = WP_Markdown_File_Witness::take( $snapshot_path );
+		$cached = $this->cached[ $suffix ] ?? null;
+		if ( null !== $witness && is_array( $cached ) && $snapshot_path === $cached['path'] && $cached['witness']->is( $witness ) ) {
+			return $cached['index'];
+		}
 		$path = $this->path( $suffix );
 		if ( ! is_file( $path ) || is_link( $path ) ) {
 			return null;
@@ -40,7 +48,7 @@ final class WP_Markdown_Native_Table_Index {
 		if ( ! is_array( $decoded ) || self::SCHEMA !== ( $decoded['schema'] ?? null ) ) {
 			return null;
 		}
-		if ( ! $this->describes( $decoded, $snapshot_path ) ) {
+		if ( null === $witness || ! $this->describes( $decoded, $witness ) ) {
 			return null;
 		}
 		$index = array(
@@ -64,7 +72,26 @@ final class WP_Markdown_Native_Table_Index {
 				'empty' => (int) ( $counts['empty'] ?? 0 ),
 			);
 		}
+		$this->cached[ $suffix ] = array(
+			'path'    => $snapshot_path,
+			'witness' => $witness,
+			'index'   => $index,
+		);
 		return $index;
+	}
+
+	/** Remember an index after an append without republishing its derived sidecar. */
+	public function remember( string $suffix, string $snapshot_path, array $index ): void {
+		$witness = WP_Markdown_File_Witness::take( $snapshot_path );
+		if ( null === $witness ) {
+			unset( $this->cached[ $suffix ] );
+			return;
+		}
+		$this->cached[ $suffix ] = array(
+			'path'    => $snapshot_path,
+			'witness' => $witness,
+			'index'   => $index,
+		);
 	}
 
 	/**
@@ -117,6 +144,35 @@ final class WP_Markdown_Native_Table_Index {
 			}
 		}
 		++$index['row_count'];
+		return $index;
+	}
+
+	/**
+	 * Apply a non-key UPDATE to the summaries of an already valid index.
+	 *
+	 * Callers retain the unique keys and auto-increment maxima, so only the
+	 * NULL and empty-value counters can change.
+	 *
+	 * @param array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int} $index
+	 * @param array<string,mixed> $before
+	 * @param array<string,mixed> $after
+	 * @return array{max:array<string,int>,unique:array<string,array<int,string>>,summary:array<string,array{null:int,empty:int}>,row_count:int}
+	 */
+	public static function with_non_key_update( array $index, array $before, array $after ): array {
+		foreach ( $index['summary'] as $column => $counts ) {
+			$before_value = $before[ $column ] ?? null;
+			$after_value  = $after[ $column ] ?? null;
+			if ( null === $before_value ) {
+				--$index['summary'][ $column ]['null'];
+			} elseif ( '' === $before_value ) {
+				--$index['summary'][ $column ]['empty'];
+			}
+			if ( null === $after_value ) {
+				++$index['summary'][ $column ]['null'];
+			} elseif ( '' === $after_value ) {
+				++$index['summary'][ $column ]['empty'];
+			}
+		}
 		return $index;
 	}
 
@@ -180,6 +236,7 @@ final class WP_Markdown_Native_Table_Index {
 
 	/** Discard an index that no longer describes its snapshot. */
 	public function forget( string $suffix, ?WP_Markdown_Native_Transaction_Journal $transactions ): void {
+		unset( $this->cached[ $suffix ] );
 		$path = $this->path( $suffix );
 		if ( ! is_file( $path ) ) {
 			return;
@@ -191,10 +248,9 @@ final class WP_Markdown_Native_Table_Index {
 	}
 
 	/** @param array<string,mixed> $decoded */
-	private function describes( array $decoded, string $snapshot_path ): bool {
-		$witness = WP_Markdown_File_Witness::take( $snapshot_path );
+	private function describes( array $decoded, WP_Markdown_File_Witness $witness ): bool {
 		$fingerprint = $decoded['fingerprint'] ?? array();
-		return null !== $witness && is_array( $fingerprint ) && $fingerprint === $witness->identity();
+		return is_array( $fingerprint ) && $fingerprint === $witness->identity();
 	}
 
 	/**

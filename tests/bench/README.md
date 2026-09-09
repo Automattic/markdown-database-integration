@@ -34,6 +34,204 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 
 ## SQLite vs native decision rigs
 
+### Native cutover evidence
+
+The native-only target is tracked in #232; the current optimization candidate
+is draft PR #370. SQLite remains the comparison reference. The final source
+revision is `21267e1` (`b2cafd2` is the runtime change under review): it
+removes retain-first branches while preserving `requires_complete_scope`
+full-freshness traversal.
+
+Final-head local correctness evidence on `b2cafd2`: PHP 8.5.5 passed all 73
+smoke-native scripts. The optional canonical usermeta check is intentionally
+skipped at `tests/smoke-native-usermeta-query.php:165` because it is not
+configured. The 240-case differential suite and storage-index freshness checks
+passed.
+
+#### Final-head decision matrix
+
+Homeboy 0.370.0 ran the `decision` profile at `21267e1`, with one run, five
+measured iterations, one warmup, `BENCH_CORPUS_SIZE=1000`, and unprofiled
+workloads. Both cells passed: SQLite `b28d11dd-e33d-40cf-8944-683aacb5fbc3`
+and native `2cc3b041-9291-4e8b-823f-e05b92376607`. These operator run IDs are
+supplementary; the command and revision below are the reproducible evidence.
+
+| Workload | Native mean (ms) | SQLite mean (ms) | Verified result |
+|---|---:|---:|---|
+| bulk-import | 24627.2434754 | 24654.0637768 | 1,000 imported and 1,000 stored |
+| obsidian-bursty | 7078.3977238 | 1220.025412 | Signal only; no strict equal-result assertion |
+| read-heavy | 116.9425662 | 28.4982226 | Signal only; no strict equal-result assertion |
+| wiki-hierarchy | 92.886808 | 3.616162 | 881 rows returned |
+| plugin-table-inventory | 5.7952898 | 5.0626114 | 501 inventory, 20 repository, and 5 task rows |
+| transaction-heavy | 107.566288 | 84.0940222 | 90 committed rows, 15 commits, 5 rollbacks, and 120 writes |
+
+The seventh decision-profile entry, `boot-timing`, was skipped because
+`BENCH_BOOT_PHASE` was absent. It is excluded from performance results, not a
+boot result. The plugin workload accepts either non-false `REPLACE` result:
+native returned 2 and SQLite returned 1, a backend difference that the
+workload intentionally permits.
+
+Reproduce the representative comparison from this checkout:
+
+```sh
+homeboy bench markdown-database-integration --profile decision --runs 1 \
+  --iterations 5 --warmup 1 \
+  --setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"0"}' \
+  --rig mdi-sqlite,mdi-native --runner homeboy-lab --path "$PWD"
+```
+
+#### Final-head transaction scaling
+
+Homeboy 0.370.0 ran `transaction-heavy` at `21267e1`, with one run, 50
+measured iterations, and one warmup. Both cells passed: SQLite
+`e98e356b-197f-48f9-9000-9c9950ced9a1` and native
+`1334ecdc-f7b2-4c8b-9a5b-34f18025ebf4` (operator records only).
+
+| Metric | Native (ms) | SQLite (ms) |
+|---|---:|---:|
+| Mean total duration | 426.07837956 | 90.88239834 |
+| INSERT duration | 234.6008429 | 62.38926462 |
+| UPDATE duration | 173.8366598 | 11.15693886 |
+| Transaction control duration | 11.64906446 | 14.29955532 |
+
+Total-duration samples ranged from 94.371189 to 822.249571 ms for native and
+83.963205 to 103.349132 ms for SQLite. The recorded distributions are sorted,
+so their endpoints are ranges, not first-to-last chronological trends.
+
+Each invocation performs 20 transactions and 6 writes per transaction, with
+15 commits, 5 rollbacks, and 90 committed rows. The table accumulates across
+invocations, but verification checks only the current invocation's rows. The
+50 measured iterations therefore add 4,500 committed rows excluding warmup;
+that theoretical accumulation was not separately asserted. `BENCH_CORPUS_SIZE`
+does not size this table.
+
+Reproduce the scaling comparison:
+
+```sh
+homeboy bench markdown-database-integration --scenario transaction-heavy \
+  --runs 1 --iterations 50 --warmup 1 \
+  --setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"0"}' \
+  --rig mdi-sqlite,mdi-native --runner homeboy-lab --path "$PWD"
+```
+
+#### Decision
+
+The execution gates are complete: both final-head matrix cells and both
+scaling cells passed. Performance acceptance is not complete: no explicit
+regression budgets exist, and there is no same-head pre-simplification
+baseline that attributes the slower native results to a new regression. The
+results show a native scaling weakness, not causal profiling. This PR is not
+declared ready to land; review must either accept the known experimental
+boundary and performance evidence or prioritize repairing the demonstrated
+gaps.
+
+#### Corrected bursty A/B diagnostic
+
+Direct Lab A/B profiling used the same corrected benchmark hash
+`e456e89dc0e350e10fbc4d6b3a088a9013505934efbd3af90c43321dd3fda86e`,
+`BENCH_CORPUS_SIZE=1000`, one run, five measured iterations, one warmup, and
+`BENCH_PROFILE=0`. Baseline `c89490a` (run
+`9ea77ddd-b18b-4fc3-809a-c1afafe3d9ce`, job
+`7f38f96e-1b9d-43ce-be55-4aeea8811894`) averaged 3854.9958552 ms
+(3608.71965-4088.386191); the candidate runtime averaged 3734.1098676 ms
+(3467.557242-3889.180371), 3.136% lower. The ranges overlap and this one
+sequential pair is diagnostic evidence, not a statistical performance claim.
+
+Both runs completed all 50 operations per iteration with the same verified
+plan checksum, `9a11101c424387b131b497548a6a01cc73725e1fecc885ffea30927029851d3a`.
+The observed mix was 37 updates, 10 creates, 2 reparents, and 1 delete. The
+historical bursty matrix result (7.08 ms versus 1.22 ms) used process-global
+RNG and different mixes, so it is not a controlled runtime-halving comparison.
+
+#### Predicate-normalization candidate
+
+The predicate-normalization candidate atop `57e459a` ran in Lab job
+`8f8eb80c-81e1-457a-8d80-1b3bd8169205`, run
+`6311b125-6012-47bd-bf96-06ea4e11b99f`, with the same corrected benchmark hash
+`e456e89dc0e350e10fbc4d6b3a088a9013505934efbd3af90c43321dd3fda86e`, five
+measured iterations, one warmup, corpus size 1,000, and `BENCH_PROFILE=0`.
+Its mean was 3575.981257 ms (3333.300395-3780.202275), versus 3734.1098676 ms
+(3467.557242-3889.180371) for the prior runtime measurement: 4.23% lower mean.
+The ranges overlap, and this single sequential comparison is diagnostic only,
+not causal or statistical performance proof. All five candidate iterations
+completed 50 operations; corpus progression was 1013, 1019, 1026, 1039, and
+1044, with the same final plan checksum above.
+
+Native post mutations remain a separate, fail-closed compatibility boundary:
+an active native transaction rejects the mutation before Markdown is written,
+because its journal does not record canonical Markdown posts. The bounded merge
+decision is whether reviewers accept that unsupported case; it is not native
+post transaction rollback or crash-recovery support.
+
+SQLite removal and production cutover remain separate. They require actual
+native post transaction rollback and crash recovery, then an accepted-site
+rehearsal with backups, workers, and compatibility verification.
+
+#### `82496a0` landing verification
+
+Direct Lab verification ran the exact `82496a0` source archive through the WP
+Codebox bench adapter on PHP 8.5.4. The corrected bursty source hash was
+`e456e89dc0e350e10fbc4d6b3a088a9013505934efbd3af90c43321dd3fda86e`.
+Each backend ran sequentially with five measured iterations, one warmup,
+`BENCH_CORPUS_SIZE=1000`, and `BENCH_PROFILE=0`. All six executable decision
+workloads passed their assertions; `boot-timing` is explicitly excluded because
+the direct adapter had no `BENCH_BOOT_PHASE` orchestration.
+
+| Workload | Native mean (ms) | SQLite mean (ms) | Verified result |
+|---|---:|---:|---|
+| bulk-import | 20979.5895828 | 23417.1083924 | 1,000 imported and stored per iteration |
+| obsidian-bursty | 5869.5756488 | 1168.0614782 | 50 operations per iteration; shared plan checksum |
+| read-heavy | 96.971733 | 27.741137 | 1,000-post corpus and 100 operations per iteration |
+| wiki-hierarchy | 65.1619966 | 3.6566216 | 881 rows returned per iteration |
+| plugin-table-inventory | 5.5260672 | 4.8947472 | 501 inventory, 20 repository, and 5 task rows |
+| transaction-heavy | 103.6012634 | 81.0144764 | 90 committed rows, 15 commits, 5 rollbacks, and 120 writes |
+
+This is one sequential diagnostic pair, not a statistical or causal
+performance claim. It confirms the known native scaling weakness in bursty,
+read, and hierarchy workloads. The PR remains experimental and not ready to
+land without reviewer acceptance of that boundary and the separate native post
+transaction limitation.
+
+OpenAI GPT-5.6 Terra through OpenCode assisted Chris Huber with this evidence
+collection and documentation.
+
+### Operation profiling
+
+Set `--setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"1"}'`
+on the Lab benchmark command to enable request-local MDI operation measurements.
+Profiling is opt-in and adds measurement overhead; use unprofiled runs for final
+performance comparisons.
+
+Bulk import reports `reset_ms`, `generation_ms`, `insert_ms`, and `verification_ms`,
+plus effective `corpus_size`, successful `imported`, and verified `stored_posts`.
+A failed reset, insert, or final row-count check fails the workload. Metadata
+records the active backend and wpdb class; Homeboy records candidate provenance.
+
+Profile measurements cover only the insert loop. `identity_allocation_ms`,
+`post_write_ms`, `metadata_parse_ms`, and `body_parse_ms` are inclusive and may
+overlap: do not add them as independent phases. `manifest_advance_ms` measures
+generator advancement, excluding its consumer. Each operation reports `_calls`;
+`manifest_scans`, `manifest_files`, and `post_parse_reuse` report counts. Missing
+operation keys mean no calls were observed, not an unavailable backend-wide timer.
+The WordPress insert timer also includes work outside MDI, while reset and final
+verification are reported separately from the operation profile.
+
+Native `query_select_ms`, `query_insert_ms`, `query_update_ms`, `query_delete_ms`,
+`query_replace_ms`, and `query_other_ms` cover runtime dispatch through result
+construction, grouped by statement verb without retaining SQL or content.
+`select_parse_ms` and `select_execute_ms` subdivide SELECT processing;
+`catalogue_publish_ms` measures durable post catalogue publication. These are
+inclusive spans, not additional independent costs. Nested execution can overlap.
+
+Native SELECT shape attribution appears in `metadata.query_shapes`, sorted by
+total duration for that iteration. SQL string and numeric literals are replaced
+with `?`; identifiers remain visible. Each shape includes calls, inclusive time,
+exact repeats, and distinct queries tracked using internal SHA-256 hashes.
+Tracking is bounded to 64 shapes and 4096 exact queries per iteration; overflow
+is reported in metrics. Shape tokenization itself adds profiling overhead and is
+outside query timers but inside the WordPress insert timer. Metadata is not a
+cross-iteration aggregate; use a single-iteration diagnostic for attribution.
+
 The repository ships `mdi-sqlite`, `mdi-primary`, and `mdi-native` rigs for an
 isolated, repeatable backend comparison. Install them from this checkout and
 point them at the same MDI worktree:
@@ -150,13 +348,14 @@ return function (): array {
 };
 ```
 
-The dispatcher discovers each file, runs the callable
-`HOMEBOY_BENCH_ITERATIONS` times (plus one warmup, discarded), and emits
-p50/p95/p99/mean/min/max in the BenchResults envelope. Numeric values returned
-under `metrics` are aggregated into the same scenario metrics object; the
-latest returned `metadata` payload is attached to that scenario. Each iteration
-is a fresh PHP-WASM boot — there is no cross-iteration WordPress state. The
-shared-state file IS persistent across iterations within a run.
+The dispatcher discovers each file, retains its callable in one PHP process, and
+runs it `HOMEBOY_BENCH_ITERATIONS` times plus one discarded warmup. Workloads
+may intentionally retain static state across those invocations; for example,
+`obsidian-bursty` seeds during warmup and mutates the same corpus in subsequent
+iterations. Numeric values returned under `metrics` are aggregated into the
+same scenario metrics object; the latest returned `metadata` payload is attached
+to that scenario. The shared-state file is also persistent across iterations
+within a run.
 
 ## Constants the workloads read
 

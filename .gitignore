@@ -4,6 +4,9 @@
 # Bench result outputs are timestamped run artifacts, not source.
 /tests/bench/results/
 
+# WP Codebox runtime evidence is generated locally and can be very large.
+/artifacts/
+
 # Playground bench dispatcher writes intermediate envelopes here at the
 # plugin root. They get hand-fed to homeboy core's --output, but if a run
 # crashes mid-flight the file lingers.

@@ -424,7 +424,8 @@ final class WP_Markdown_Native_Table_Access {
 		private readonly int $limit,
 		private readonly bool $order_descending = false,
 		private readonly array $order_by = array(),
-		private readonly array $predicates = array()
+		private readonly array $predicates = array(),
+		private readonly bool $requires_complete_scope = false
 	) {
 		if ( array() === $projection || $limit < 0 ) {
 			throw new InvalidArgumentException( 'Native table access requires a projection and nonnegative bound.' );
@@ -451,6 +452,11 @@ final class WP_Markdown_Native_Table_Access {
 
 	public function limit(): int {
 		return $this->limit;
+	}
+
+	/** A scoped read that must traverse its canonical corpus before returning. */
+	public function requires_complete_scope(): bool {
+		return $this->requires_complete_scope;
 	}
 
 	public function order_descending(): bool {

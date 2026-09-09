@@ -1,5 +1,5 @@
 <?php
-/** Typed bounded IN, correlated EXISTS, and UNION execution. */
+/** Typed bounded IN, correlated EXISTS/NOT EXISTS, and UNION execution. */
 
 declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );

@@ -76,7 +76,12 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 
 	/** Only snapshot discovery, never an unregistered native table, proves absence. */
 	private function has_explicitly_absent_source( string $sql ): bool {
-		$absent = array_column( array_filter( $this->provenance, static fn( array $table ): bool => false === $table['exists'] ), 'table' );
+		$absent = array();
+		foreach ( $this->provenance as $table ) {
+			if ( is_array( $table ) && false === ( $table['exists'] ?? null ) && is_string( $table['table'] ?? null ) ) {
+				$absent[] = $table['table'];
+			}
+		}
 		return array() !== array_intersect( self::tables_in( $sql ), $absent );
 	}
 

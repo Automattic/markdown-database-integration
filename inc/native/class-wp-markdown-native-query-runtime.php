@@ -246,8 +246,14 @@ final class WP_Markdown_Native_Runtime_Factory {
 		?string $transaction_state_root = null
 	): WP_Markdown_Native_Query_Runtime {
 		$state_root = self::materialize_state_root( $state_root );
+		if ( null !== $content_root ) {
+			$content_root = self::materialize_state_root( $content_root );
+		}
 		if ( null !== $global_state_root ) {
 			$global_state_root = self::materialize_state_root( $global_state_root );
+		}
+		if ( null !== $global_content_root ) {
+			$global_content_root = self::materialize_state_root( $global_content_root );
 		}
 		$transactions = self::shared_transactions(
 			$transaction_state_root ?? $state_root,
@@ -318,6 +324,9 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root, $admitted_roots );
 			$transactions->recover();
 			self::$transactions[ $state_root ] = $transactions;
+		} else {
+			// Later prefix and multisite runtimes may add factory-configured roots.
+			self::$transactions[ $state_root ]->admit_roots( $admitted_roots );
 		}
 		return self::$transactions[ $state_root ];
 	}

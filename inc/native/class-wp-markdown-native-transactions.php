@@ -49,6 +49,12 @@ final class WP_Markdown_Native_Transaction_Journal {
 		}
 		$this->state_root = rtrim( $root, DIRECTORY_SEPARATOR );
 		$this->admitted_roots = array( $this->state_root );
+		$this->admit_roots( $admitted_roots );
+		$this->owner = bin2hex( random_bytes( 8 ) );
+	}
+
+	/** Add canonical roots validated by the runtime factory, never journal data. */
+	public function admit_roots( array $admitted_roots ): void {
 		foreach ( $admitted_roots as $admitted_root ) {
 			$resolved = realpath( $admitted_root );
 			if ( false === $resolved || ! is_dir( $resolved ) || is_link( $admitted_root ) ) {
@@ -57,7 +63,6 @@ final class WP_Markdown_Native_Transaction_Journal {
 			$this->admitted_roots[] = rtrim( $resolved, DIRECTORY_SEPARATOR );
 		}
 		$this->admitted_roots = array_values( array_unique( $this->admitted_roots ) );
-		$this->owner = bin2hex( random_bytes( 8 ) );
 	}
 
 	public function is_active(): bool {
@@ -156,6 +161,8 @@ final class WP_Markdown_Native_Transaction_Journal {
 	 * A malformed or un-restorable journal remains claimed for a later safe retry.
 	 */
 	private function recover_locked(): true|string {
+		// Every failed scan must be retried before an active owner can write again.
+		$this->recovery_required = true;
 		$directory = $this->journal_directory();
 		if ( false === $directory ) {
 			return 'The canonical transaction journal directory is unsafe.';

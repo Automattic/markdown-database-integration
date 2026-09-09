@@ -25,7 +25,8 @@ $root = sys_get_temp_dir() . '/mdi-native-split-root-' . bin2hex( random_bytes( 
 $state = $root . '/state';
 $content = $root . '/content';
 mkdir( $state . '/_options', 0755, true );
-mkdir( $content . '/post', 0755, true );
+// Cache the state-only owner first, then configure a fresh split content root.
+WP_Markdown_Native_Runtime_Factory::runtime( $state );
 $runtime = WP_Markdown_Native_Runtime_Factory::runtime( $state, 'wp_', null, false, $content );
 $insert = "INSERT INTO wp_posts (ID, post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_password, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) VALUES (1, 1, '2026-09-09 00:00:00', '2026-09-09 00:00:00', '', 'base', '', 'publish', 'open', 'open', '', 'base', '', '', '2026-09-09 00:00:00', '2026-09-09 00:00:00', '', 0, '', 0, 'post', '', 0)";
 mdi_split_root_request( $runtime, $insert );

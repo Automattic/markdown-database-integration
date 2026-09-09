@@ -78,6 +78,23 @@ mkdir( $retry_root . '/missing', 0755 );
 $third_retry = $retry->begin_write();
 $retry->rollback();
 
+// An unsafe foreign claim is an earlier recovery failure than restore(), and
+// a cached active writer must retry it before admitting another mutation.
+$early = new WP_Markdown_Native_Transaction_Journal( $root );
+$early->begin();
+$foreign_owner = 'foreignowner0001';
+$foreign_journal = $root . '/_journal/native-transaction-' . $foreign_owner . '.json';
+file_put_contents( $foreign_journal, '[]' );
+$foreign_claim = $root . '/_journal/native-transaction-' . $foreign_owner . '.lock';
+$foreign_claim_target = $root . '/foreign-claim-target';
+file_put_contents( $foreign_claim_target, 'claim' );
+$unsafe_foreign_claim = @symlink( $foreign_claim_target, $foreign_claim );
+$first_unsafe_claim = $unsafe_foreign_claim ? $early->begin_write() : null;
+$second_unsafe_claim = $unsafe_foreign_claim ? $early->begin_write() : null;
+@unlink( $foreign_claim );
+$third_unsafe_claim = $early->begin_write();
+$early->rollback();
+
 // Root lock files must never follow aliases or use a multi-link inode.
 $lock_path = $root . '/_journal/native-transaction--write.lock';
 $lock_target = $root . '/lock-target';
@@ -98,6 +115,8 @@ $checks = array(
 	'an abandoned transaction is rolled back' => '[{"restored":true}]' === $after_explicit_recovery,
 	'failed recovery blocks repeated active writes' => true !== $first_retry && true !== $second_retry,
 	'active writer retries recovery before later admission' => true === $third_retry && is_file( $retry_root . '/missing/value.json' ),
+	'unsafe foreign claim blocks repeated active writes' => ! $unsafe_foreign_claim || ( true !== $first_unsafe_claim && true !== $second_unsafe_claim ),
+	'active writer retries an earlier unsafe-claim recovery failure' => true === $third_unsafe_claim,
 	'hardlinked root lock is rejected' => ! $hardlinked || true !== $unsafe_lock,
 	'nonregular root lock is rejected' => ! $fifo_lock || true !== $unsafe_fifo_lock,
 );

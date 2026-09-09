@@ -3,7 +3,7 @@ import { mkdir, writeFile } from "node:fs/promises"
 import { dirname, join } from "node:path"
 import { promisify } from "node:util"
 
-import { buildWordPressPhpunitRecipe } from process.env.CODEBOX_RECIPE_BUILDERS ?? "/home/chubes/labs/mdi-parity-wave2-consumer/codebox/packages/runtime-core/src/recipe-builders.js"
+import { buildWordPressPhpunitRecipe } from "/home/chubes/labs/mdi-parity-wave2-consumer/codebox/packages/runtime-core/dist/recipe-builders.js"
 
 const execFileAsync = promisify(execFile)
 const root = process.env.DME_CONSUMER_ROOT ?? "/home/chubes/labs/mdi-parity-wave2-consumer"

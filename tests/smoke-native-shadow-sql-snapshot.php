@@ -24,6 +24,7 @@ final class MDI_Snapshot_Connection {
 	public array $global_rows = array( array( 'meta_id' => '1', 'site_id' => '1', 'meta_key' => 'site_name', 'meta_value' => 'Example' ) );
 	/** @var array<int,array<string,mixed>> */
 	public array $plugin_rows = array( array( 'id' => '1', 'name' => 'Agent' ) );
+	public array $catalog_rows = array( array( 'COLUMN_NAME' => 'status', 'DATA_TYPE' => 'varchar', 'CHARACTER_MAXIMUM_LENGTH' => '64', 'IS_NULLABLE' => 'NO' ) );
 	public bool $blog_table_absent = true;
 	public int $errno = 0;
 	/** @var array<int,MDI_Snapshot_Result> */
@@ -65,6 +66,9 @@ final class MDI_Snapshot_Connection {
 		}
 		if ( 'SELECT * FROM `wp_2_options` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'ID' => '1', 'option_value' => 'created' ) ) );
+		}
+		if ( str_starts_with( $sql, 'SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE FROM information_schema.COLUMNS' ) ) {
+			$result = new MDI_Snapshot_Result( $this->catalog_rows );
 		}
 		if ( $result instanceof MDI_Snapshot_Result ) {
 			$this->results[] = $result;
@@ -300,6 +304,9 @@ $checks = array(
 	'catalog capture snapshots requested physical DDL and independently executes COLUMNS metadata' => array( 'wp_plugin_jobs' ) === array_column( $catalog_columns->provenance()['tables'], 'table' )
 		&& 251 === ( $catalog_result->wpdb_state()['col_info'][1]->type ?? null )
 		&& array( 'status' => '64', 'payload' => '4294967295' ) === array_reduce( $catalog_result->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() ),
+	'catalog capture records stable same-connection source metadata before and after the physical snapshot' => 1 === ( $catalog_columns->provenance()['catalog_observation']['before']['rows'] ?? null )
+		&& ( $catalog_columns->provenance()['catalog_observation']['before'] ?? null ) === ( $catalog_columns->provenance()['catalog_observation']['after'] ?? null )
+		&& 64 === strlen( (string) ( $catalog_columns->provenance()['catalog_observation']['before']['sha256'] ?? '' ) ),
 	'catalog ENGINE remains an explicit unsupported projection after source discovery' => false === $catalog_engine->return_value()
 		&& 'unsupported_column' === ( $catalog_engine->diagnostic()['reason'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

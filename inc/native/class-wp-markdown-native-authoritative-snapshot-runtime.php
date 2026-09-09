@@ -11,7 +11,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private const MAX_BYTES_PER_TABLE = 8388608;
 
 	/** @param array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}> $provenance */
-	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance, private ?string $database_name = null ) {}
+	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance, private ?string $database_name = null, private ?array $catalog_observation = null ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
 		self::trace_runtime_phase( 'capture', $sql );
@@ -28,6 +28,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 
 		$prefixes = self::schema_prefixes( $database, $prefix );
 		$database_name = self::database_name( $connection );
+		$catalog_observation = self::catalog_observation( $connection, $sql );
 		$registry = new WP_Markdown_Native_Table_Registry();
 		$provenance = array();
 		foreach ( $tables as $table ) {
@@ -49,7 +50,11 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
 			$provenance[] = array( 'table' => $table, 'exists' => true, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
-		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance, $database_name );
+		$catalog_observation = null === $catalog_observation ? null : array(
+			'before' => $catalog_observation,
+			'after'  => self::catalog_observation( $connection, $sql ),
+		);
+		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance, $database_name, $catalog_observation );
 	}
 
 	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
@@ -113,7 +118,24 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 
 	/** @return array{read_connection:string,database_sha256:?string,tables:array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}>} */
 	public function provenance(): array {
-		return array( 'read_connection' => 'authoritative_mysql_connection_pre_query', 'database_sha256' => null === $this->database_name ? null : hash( 'sha256', $this->database_name ), 'tables' => $this->provenance );
+		return array_filter(
+			array(
+				'read_connection'     => 'authoritative_mysql_connection_pre_query',
+				'database_sha256'     => null === $this->database_name ? null : hash( 'sha256', $this->database_name ),
+				'tables'              => $this->provenance,
+				'catalog_observation' => $this->catalog_observation,
+			),
+			static fn( mixed $value ): bool => null !== $value
+		);
+	}
+
+	/** @return array{rows:int,sha256:string}|null */
+	private static function catalog_observation( object $connection, string $sql ): ?array {
+		if ( null === WP_Markdown_Native_Schema_Introspection::requested_information_schema_tables( $sql ) ) {
+			return null;
+		}
+		$rows = self::rows( $connection, $sql );
+		return array( 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ) );
 	}
 
 	/** @return array<int,string> */

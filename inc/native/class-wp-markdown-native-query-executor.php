@@ -301,7 +301,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			} );
 		}
 		$subqueries = array_merge( $plan->subqueries(), $this->boolean_subqueries( $boolean_predicate ) );
-		$subquery_matchers = $this->prepare_subqueries( $subqueries, $schema );
+		$subquery_matchers = $this->prepare_subqueries( $subqueries, array( $plan->table_alias() ?? $plan->table() => $schema ) );
 		if ( $subquery_matchers instanceof WP_Markdown_Query_Result ) {
 			return $subquery_matchers;
 		}
@@ -538,9 +538,15 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	/** Materialize bounded subqueries once, indexing correlated EXISTS by its outer key. */
-	private function prepare_subqueries( array $subqueries, WP_Markdown_Native_Table_Schema $outer_schema ): array|WP_Markdown_Query_Result {
+	/** @param array<string,WP_Markdown_Native_Table_Schema> $outer_schemas */
+	private function prepare_subqueries( array $subqueries, array $outer_schemas ): array|WP_Markdown_Query_Result {
 		$matchers = array();
 		foreach ( $subqueries as $subquery ) {
+			$outer_source = $subquery->source() ?? array_key_first( $outer_schemas );
+			$outer_schema = $outer_schemas[ $outer_source ] ?? null;
+			if ( null === $outer_schema ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot resolve the requested outer subquery source.' );
+			}
 			$query = $subquery->query();
 			if ( array() !== $query->joins() || null !== $query->union() || array() !== $query->subqueries() || array() !== $this->boolean_subqueries( $query->boolean_predicate() ) || array() !== $query->aggregates() || null !== $query->group_by() || array() !== $query->scalar_projection() && 'EXISTS' !== $subquery->operator() ) {
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native supports bounded single-table subqueries only.' );
@@ -567,7 +573,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			foreach ( $query->predicates() as $predicate ) {
 				if ( null !== $predicate->comparison_column() ) {
-					if ( null !== $correlation || null === $predicate->comparison_source() || ! $schema->has_column( $predicate->column() ) ) {
+					if ( null !== $correlation || null === $predicate->comparison_source() || ! isset( $outer_schemas[ $predicate->comparison_source() ] ) || ! $schema->has_column( $predicate->column() ) ) {
 						return $this->failure( 'unsupported_subquery_shape', 'mdi-native supports one qualified equality correlation.' );
 					}
 					$correlation = $predicate;
@@ -811,9 +817,31 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 							return $this->failure( 'unsupported_column', 'mdi-native cannot evaluate the requested JOIN subquery predicate.' );
 						}
 						if ( null !== $term->column() ) { $needed[ $source ][] = $term->column(); }
+						foreach ( $term->query()->predicates() as $subquery_predicate ) {
+							$correlation_source = $subquery_predicate->comparison_source();
+							$correlation_column = $subquery_predicate->comparison_column();
+							if ( null !== $correlation_source && null !== $correlation_column ) {
+								if ( ! isset( $sources[ $correlation_source ] ) || ! $sources[ $correlation_source ]['schema']->has_column( $correlation_column ) ) {
+									return $this->failure( 'unsupported_column', 'mdi-native cannot load the requested correlated JOIN column.' );
+								}
+								$needed[ $correlation_source ][] = $correlation_column;
+							}
+						}
 					} elseif ( ! $this->add_join_predicate_columns( $term, $sources, $needed ) ) {
 						return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested JOIN predicate.' );
 					}
+				}
+			}
+		}
+		foreach ( $plan->subqueries() as $subquery ) {
+			foreach ( $subquery->query()->predicates() as $subquery_predicate ) {
+				$correlation_source = $subquery_predicate->comparison_source();
+				$correlation_column = $subquery_predicate->comparison_column();
+				if ( null !== $correlation_source && null !== $correlation_column ) {
+					if ( ! isset( $sources[ $correlation_source ] ) || ! $sources[ $correlation_source ]['schema']->has_column( $correlation_column ) ) {
+						return $this->failure( 'unsupported_column', 'mdi-native cannot load the requested correlated JOIN column.' );
+					}
+					$needed[ $correlation_source ][] = $correlation_column;
 				}
 			}
 		}
@@ -987,14 +1015,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$joined_sources[ $target_source ] = true;
 		}
 		$join_subqueries = array_merge( $plan->subqueries(), $this->boolean_subqueries( $plan->boolean_predicate() ) );
-		foreach ( $join_subqueries as $subquery ) {
-			if ( null !== $subquery->source() && $base_alias !== $subquery->source() ) {
-				return $this->failure( 'unsupported_subquery_shape', 'mdi-native JOIN subquery predicates must reference the base source.' );
-			}
-		}
-		$join_subquery_matchers = $this->prepare_subqueries( $join_subqueries, $sources[ $base_alias ]['schema'] );
+		$outer_schemas = array_map( static fn( array $source ): WP_Markdown_Native_Table_Schema => $source['schema'], $sources );
+		$join_subquery_matchers = $this->prepare_subqueries( $join_subqueries, $outer_schemas );
 		if ( $join_subquery_matchers instanceof WP_Markdown_Query_Result ) { return $join_subquery_matchers; }
-		$rows = array_values( array_filter( $rows, fn( array $row ): bool => $this->matches_join_predicates( $row, $plan->predicates(), $sources, $joined_sources ) && $this->matches_join_scalar_predicates( $row, $plan->scalar_predicates() ) && $this->matches_join_boolean_predicate( $row, $plan->boolean_predicate(), $sources, $joined_sources, $join_subquery_matchers ) && $this->matches_subqueries( $row[ $base_alias ], $this->plain_subquery_matchers( $plan->subqueries(), $join_subquery_matchers ), $sources[ $base_alias ]['schema'] ) ) );
+		$rows = array_values( array_filter( $rows, fn( array $row ): bool => $this->matches_join_predicates( $row, $plan->predicates(), $sources, $joined_sources ) && $this->matches_join_scalar_predicates( $row, $plan->scalar_predicates() ) && $this->matches_join_boolean_predicate( $row, $plan->boolean_predicate(), $sources, $joined_sources, $join_subquery_matchers ) && $this->matches_join_subqueries( $row, $this->plain_subquery_matchers( $plan->subqueries(), $join_subquery_matchers ), $sources ) ) );
 
 		if ( array() !== $plan->order_by() ) {
 			foreach ( $plan->order_by() as $item ) {
@@ -1209,7 +1233,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$matches = $matches && ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate
 					? $this->matches_join_scalar_predicates( $row, array( $term ) )
 					: ( $term instanceof WP_Markdown_Native_Query_Subquery
-						? isset( $subquery_matchers[ spl_object_id( $term ) ] ) && $this->matches_subqueries( $row[ $term->source() ?? array_key_first( $row ) ], array( $subquery_matchers[ spl_object_id( $term ) ] ), $sources[ $term->source() ?? array_key_first( $row ) ]['schema'] )
+						? isset( $subquery_matchers[ spl_object_id( $term ) ] ) && $this->matches_join_subqueries( $row, array( $subquery_matchers[ spl_object_id( $term ) ] ), $sources )
 					: $this->matches_join_predicates( $row, array( $term ), $sources, $joined_sources ) ) );
 			}
 			if ( $matches ) {
@@ -1217,6 +1241,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		return false;
+	}
+
+	/** Apply each JOIN subquery matcher to the alias that owns its outer column. */
+	private function matches_join_subqueries( array $row, array $matchers, array $sources ): bool {
+		foreach ( $matchers as $matcher ) {
+			$source = $matcher['term']->source() ?? $matcher['correlation']?->comparison_source() ?? array_key_first( $row );
+			if ( ! isset( $row[ $source ], $sources[ $source ] ) || ! $this->matches_subqueries( $row[ $source ], array( $matcher ), $sources[ $source ]['schema'] ) ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** Evaluate an ON or post-join WHERE boolean expression against all aliases. */

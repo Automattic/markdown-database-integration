@@ -8,12 +8,12 @@ UNION plans now retain a separate combined-result ORDER BY/LIMIT stage. Unparent
 
 ## Adversarial Coverage
 
-- `tests/smoke-native-subquery-union.php` covers scalar `DATE()` plus `IN`, nested scalar/EXISTS/NOT IN disjunctions, NULL-bearing membership sources, mixed UNION/ALL accumulation, global descending LIMIT, scalar output aliases, and ordinal global ordering.
+- `tests/smoke-native-subquery-union.php` covers scalar `DATE()` plus `IN`, nested scalar/EXISTS/NOT IN disjunctions, NULL-bearing membership sources, correlation against base and joined aliases with hidden correlation-column loading, mixed UNION/ALL accumulation, global descending LIMIT, scalar output aliases, and ordinal global ordering.
 - The disposable MariaDB reference on Lab returned `1`, `1`, `3`, and `2024-01-03` for the matching scalar/subquery, nested boolean, global UNION, and ordinal-alias UNION probes. The native regression asserts the same rows.
 - The Codebox corpus includes `select.subquery.scalar.in` and `select.union.global.order.limit`; both completed on the final candidate.
 
 ## Remaining Limits
 
-- Subqueries remain bounded single-table plans with one qualified equality correlation. JOIN subquery predicates currently require the outer reference to be the base JOIN source.
+- Subqueries remain bounded single-table plans with one qualified equality correlation. A correlated predicate may reference any available outer JOIN alias.
 - UNION branches require equal projection counts and compatible native column types. Global ORDER BY accepts first-branch output names or positive ordinals, not arbitrary expressions.
 - Parenthesized SELECTs are supported as derived sources; arbitrary parenthesized top-level UNION syntax remains outside the bounded grammar.

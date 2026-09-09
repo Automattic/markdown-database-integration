@@ -12,7 +12,14 @@ final class WP_Markdown_Native_Query_Parser {
 
 	public function parse( string $sql ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
 		$ast = $this->parse_ast( $sql );
-		return $ast instanceof WP_Markdown_Query_Result ? $ast : $this->lower( $ast );
+		if ( $ast instanceof WP_Markdown_Query_Result ) {
+			return $ast;
+		}
+		try {
+			return $this->lower( $ast );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
+			return $this->failure( $error->reason(), $error->getMessage(), $error->sql_offset() );
+		}
 	}
 
 	public function parse_ast( string $sql ): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows|WP_Markdown_Query_Result {

@@ -542,7 +542,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$matchers = array();
 		foreach ( $subqueries as $subquery ) {
 			$query = $subquery->query();
-			if ( array() !== $query->joins() || null !== $query->union() || array() !== $query->subqueries() || array() !== $query->aggregates() || null !== $query->group_by() || array() !== $query->scalar_projection() && 'EXISTS' !== $subquery->operator() ) {
+			if ( array() !== $query->joins() || null !== $query->union() || array() !== $query->subqueries() || array() !== $this->boolean_subqueries( $query->boolean_predicate() ) || array() !== $query->aggregates() || null !== $query->group_by() || array() !== $query->scalar_projection() && 'EXISTS' !== $subquery->operator() ) {
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native supports bounded single-table subqueries only.' );
 			}
 			$table = $this->registry->table( $query->table() );
@@ -554,6 +554,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			$correlation = null;
 			$needed = $projection;
+			$boolean = $query->boolean_predicate();
+			if ( null !== $boolean ) {
+				$needed = array_merge( $needed, $boolean->columns() );
+				foreach ( $boolean->groups() as $group ) {
+					foreach ( $group as $term ) {
+						if ( $term instanceof WP_Markdown_Native_Query_Predicate && ( null !== $term->comparison_column() || ! $schema->has_column( $term->column() ) || ! $schema->supports_predicate( $term ) ) ) {
+							return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot compose the requested subquery boolean predicate.' );
+						}
+					}
+				}
+			}
 			foreach ( $query->predicates() as $predicate ) {
 				if ( null !== $predicate->comparison_column() ) {
 					if ( null !== $correlation || null === $predicate->comparison_source() || ! $schema->has_column( $predicate->column() ) ) {
@@ -576,7 +587,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			foreach ( $provided as $row ) {
 				if ( ! is_array( $row ) || ! $schema->validate_projection( $row, array_values( array_unique( $needed ) ) ) ) { return $this->failure( 'invalid_provider_row', 'The native subquery provider returned a row outside its declared schema.' ); }
 				$filters = array_values( array_filter( $query->predicates(), static fn( WP_Markdown_Native_Query_Predicate $p ): bool => null === $p->comparison_column() ) );
-				if ( ! $this->matches( $row, $filters, $schema ) ) { continue; }
+				if ( ! $this->matches( $row, $filters, $schema ) || ! $this->matches_scalar_predicates( $row, $query->scalar_predicates(), $schema ) || ! $this->matches_boolean_predicate( $row, $boolean, $schema ) ) { continue; }
 				if ( null !== $correlation ) {
 					$key = $schema->value_key( $correlation->column(), $row[ $correlation->column() ] ?? null );
 					if ( null !== $key ) { $values[ $key ] = true; }

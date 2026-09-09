@@ -89,6 +89,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
 		}
+		$write_admitted = null !== $this->transactions && null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
+		if ( $write_admitted ) {
+			$locked = $this->transactions->begin_write();
+			if ( true !== $locked ) {
+				return $this->failure( 'transaction_write_lock_failed', $locked );
+			}
+		}
+		try {
+			return $this->execute_unlocked_request( $request );
+		} finally {
+			if ( $write_admitted ) {
+				$this->transactions->finish_write();
+			}
+		}
+	}
+
+	private function execute_unlocked_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
 		}

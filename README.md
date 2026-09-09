@@ -468,6 +468,14 @@ boundary and are reported by diagnostics.
 
 ### Query Compatibility Corpus
 
+Native transaction writes take one bounded, canonical-root lock across processes
+from the first journaled mutation through commit or rollback. This prevents a
+rollback from restoring over another writer's committed post, option, or JSON
+table change; it is write serialization, not MVCC read isolation. Runtime
+instances for the same root in one PHP process deliberately share one logical
+transaction owner, so independent same-process connection isolation is not
+currently supported.
+
 The `mdi-native` query-runtime program uses a versioned, backend-neutral corpus
 to preserve caller-visible `wpdb` behavior without making MySQL part of the
 future engine. `WP_Markdown_Query_Compatibility_Recorder` wraps one query at a

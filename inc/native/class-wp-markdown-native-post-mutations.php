@@ -15,10 +15,18 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	) {}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		if ( 1 === preg_match( '/^\s*INSERT\b/i', $request->sql() ) ) {
-			return $this->insert( $request );
+		if ( null !== $this->transactions && $this->transactions->is_active() ) {
+			return $this->failure( 'unsupported_transaction_boundary', 'Native post mutations require a transaction journal that records canonical Markdown posts.' );
 		}
-		return $this->write( $request );
+		try {
+			return $this->storage->synchronize_native_post_write(
+				fn(): WP_Markdown_Query_Result => 1 === preg_match( '/^\s*INSERT\b/i', $request->sql() )
+					? $this->insert( $request )
+					: $this->write( $request )
+			);
+		} catch ( WP_Markdown_Native_Post_Write_Lock_Exception ) {
+			return $this->failure( 'post_mutation_lock_failed', 'The canonical Markdown post mutation lock could not be acquired.' );
+		}
 	}
 
 	private function insert( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -32,7 +40,25 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		}
 		$schema = $bound['schema'];
 		$definition = $schema->definition();
-		$row = $this->complete_row( $insert->values(), $definition, $this->existing_rows( $bound['provider'], $schema ) );
+		$generated = $this->generated_identity_columns( $insert->values(), $definition );
+		return $this->insert_row( $insert, $bound, $generated );
+	}
+
+	/** @param array<int,string> $generated */
+	private function insert_row( WP_Markdown_Native_Table_Insert $insert, array $bound, array $generated ): WP_Markdown_Query_Result {
+		$schema = $bound['schema'];
+		$definition = $schema->definition();
+		// Reduce identities during the verified scan instead of constructing query results.
+		$maxima = array() === $generated
+			? array()
+			: $bound['provider']->identity_maxima( $generated );
+		if ( $maxima instanceof WP_Markdown_Query_Result ) {
+			return $maxima;
+		}
+		if ( array() !== $generated ) {
+			$this->storage->mark_native_post_allocation_scanned();
+		}
+		$row = $this->complete_row( $insert->values(), $definition, $maxima );
 		if ( $row instanceof WP_Markdown_Query_Result ) {
 			return $row;
 		}
@@ -51,6 +77,11 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		if ( $write instanceof WP_Markdown_Query_Result ) {
 			return $write;
 		}
+		foreach ( $write->predicates() as $predicate ) {
+			if ( $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native post mutations do not support IN subqueries.' );
+			}
+		}
 		$bound = $this->posts_table( $write->table(), $request->table_prefix() );
 		if ( $bound instanceof WP_Markdown_Query_Result ) {
 			return $bound;
@@ -67,7 +98,11 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 			}
 		}
 		$affected = 0;
-		foreach ( $this->existing_rows( $bound['provider'], $schema ) as $row ) {
+		$existing = $this->existing_rows( $bound['provider'], $schema, $this->identity_predicate( $write->predicates(), $schema ) );
+		if ( $existing instanceof WP_Markdown_Query_Result ) {
+			return $existing;
+		}
+		foreach ( $existing as $row ) {
 			if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
 				continue;
 			}
@@ -120,22 +155,63 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		return $registered;
 	}
 
-	/** @return array<int,array<string,mixed>> */
-	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema ): array {
-		$access = new WP_Markdown_Native_Table_Access( $schema->column_names(), null, $schema->natural_order(), PHP_INT_MAX );
+	/**
+	 * @param  array<int,string>|null $projection Columns to read, or every column.
+	 * @return array<int,array<string,mixed>>|WP_Markdown_Query_Result
+	 */
+	private function existing_rows( WP_Markdown_Native_Post_Provider $provider, WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Query_Predicate $predicate = null, ?array $projection = null ): array|WP_Markdown_Query_Result {
+		$access = new WP_Markdown_Native_Table_Access( $projection ?? $schema->column_names(), $predicate, $schema->natural_order(), PHP_INT_MAX, false, array(), null === $predicate ? array() : array( $predicate ) );
 		$rows = $provider->read( $access );
 		if ( $rows instanceof WP_Markdown_Query_Result ) {
-			return array();
+			return $rows;
 		}
 		return is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
 	}
 
 	/**
+	 * The auto-increment columns this statement leaves for the table to generate.
+	 *
+	 * Mirrors the identity decision made while completing the row, so the read
+	 * that answers it is taken exactly when the answer is used.
+	 *
+	 * @param  array<string,int|string|null> $provided   Supplied columns.
+	 * @param  array<string,mixed>           $definition Compiled table definition.
+	 * @return array<int,string>
+	 */
+	private function generated_identity_columns( array $provided, array $definition ): array {
+		$columns = array();
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( true !== ( $column['auto_increment'] ?? false ) ) {
+				continue;
+			}
+			if ( ! array_key_exists( $name, $provided ) || null === $provided[ $name ] || '0' === (string) $provided[ $name ] ) {
+				$columns[] = (string) $name;
+			}
+		}
+		return $columns;
+	}
+
+	/** @param array<int,WP_Markdown_Native_Table_Predicate> $predicates */
+	private function identity_predicate( array $predicates, WP_Markdown_Native_Table_Schema $schema ): ?WP_Markdown_Native_Query_Predicate {
+		foreach ( $predicates as $predicate ) {
+			if ( $schema->natural_order() !== $predicate->column()
+				|| $predicate->matches_null()
+				|| array() === $predicate->values()
+				|| ! in_array( $predicate->operator(), array( '=', 'IN' ), true )
+			) {
+				continue;
+			}
+			return new WP_Markdown_Native_Query_Predicate( $predicate->column(), '=', $predicate->values() );
+		}
+		return null;
+	}
+
+	/**
 	 * @param array<string,int|string|null>  $provided
 	 * @param array<string,mixed>            $definition
-	 * @param array<int,array<string,mixed>> $rows
+	 * @param array<string,int>             $maxima
 	 */
-	private function complete_row( array $provided, array $definition, array $rows ): array|WP_Markdown_Query_Result {
+	private function complete_row( array $provided, array $definition, array $maxima ): array|WP_Markdown_Query_Result {
 		if ( array_diff_key( $provided, $definition['columns'] ) ) {
 			return $this->failure( 'unsupported_column', 'The INSERT references an undeclared column.' );
 		}
@@ -148,11 +224,7 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				continue;
 			}
 			if ( $generate_identity ) {
-				$maximum = 0;
-				foreach ( $rows as $existing ) {
-					$maximum = max( $maximum, (int) $existing[ $name ] );
-				}
-				$row[ $name ] = $maximum + 1;
+				$row[ $name ] = $maxima[ $name ] + 1;
 				continue;
 			}
 			$default = $column['default'] ?? null;

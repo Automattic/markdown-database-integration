@@ -168,7 +168,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 	/**
 	 * Parse a bounded WHERE clause with SQL precedence: AND binds tighter than OR.
 	 *
-	 * @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group>
+	 * @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate>
 	 */
 	private function where_predicates(): array {
 		if ( WP_Markdown_Native_SQL_Token::END === $this->current()->type()
@@ -185,7 +185,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		return array_filter( $predicates );
 	}
 
-	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|null */
+	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
 	private function where_disjunction() {
 		$alternatives = array( $this->where_factor() );
 		while ( $this->is_word( 'OR' ) ) {
@@ -196,12 +196,17 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		if ( array() === $alternatives ) {
 			return null;
 		}
+		foreach ( $alternatives as $alternative ) {
+			if ( $alternative instanceof WP_Markdown_Native_Table_Subquery_Predicate && 1 !== count( $alternatives ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $this->current()->sql_offset(), 'mdi-native supports IN subqueries only as conjunctive write restrictions.' );
+			}
+		}
 		return 1 === count( $alternatives )
 			? $alternatives[0]
 			: new WP_Markdown_Native_Table_Predicate_Group( $alternatives );
 	}
 
-	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|null */
+	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
 	private function where_factor() {
 		if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type() ) {
 			++$this->position;
@@ -229,6 +234,19 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		}
 		if ( 0 === strcasecmp( 'IN', (string) $token->value() ) ) {
 			++$this->position;
+			if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
+				&& 0 === strcasecmp( 'SELECT', (string) $this->tokens[ $this->position + 1 ]->value() )
+			) {
+				++$this->position;
+				$parser = new WP_Markdown_Native_Select_AST_Parser( $this->tokens, $this->position );
+				$query = $parser->parse_nested();
+				if ( ! $query instanceof WP_Markdown_Native_SQL_Select ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $token->sql_offset(), 'mdi-native IN restrictions require a SELECT row projection.' );
+				}
+				$this->position = $parser->position();
+				$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+				return new WP_Markdown_Native_Table_Subquery_Predicate( $column, $query );
+			}
 			$values = array();
 			foreach ( $this->literal_list() as $value ) {
 				if ( null === $value ) {

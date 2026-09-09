@@ -14,6 +14,12 @@ require_once __DIR__ . '/../inc/native/class-wp-markdown-native-shadow-verifier.
 final class MDI_Observed_Post_Storage extends WP_Markdown_Storage {
 	public int $metadata_reads = 0;
 	public int $content_reads = 0;
+	public int $manifest_traversals = 0;
+
+	public function get_markdown_file_manifest_iterator( bool $strict = false, ?array $post_types = null ): Generator {
+		++$this->manifest_traversals;
+		yield from parent::get_markdown_file_manifest_iterator( $strict, $post_types );
+	}
 
 	public function read_file( string $file_path, bool $metadata_only = false, ?int $parent_id = null ): ?object {
 		$metadata_only ? ++$this->metadata_reads : ++$this->content_reads;
@@ -119,6 +125,24 @@ $observed_runtime = new WP_Markdown_Native_Query_Runtime( $observed_registry );
 $observed_runtime->execute( new WP_Markdown_Query_Request( 'SELECT post_title FROM wp_posts WHERE ID = 41 LIMIT 1' ) );
 $content_reads_before = $observed_storage->content_reads;
 $observed_runtime->execute( new WP_Markdown_Query_Request( 'SELECT post_content FROM wp_posts WHERE ID = 41 LIMIT 1' ) );
+$content_reads_after_body = $observed_storage->content_reads;
+$scoped_first = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT ID, post_title FROM wp_posts WHERE post_type = 'post'" ) );
+$scoped_metadata_reads = $observed_storage->metadata_reads;
+$scoped_manifest_traversals = $observed_storage->manifest_traversals;
+$scoped_second = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT ID, post_title FROM wp_posts WHERE post_type = 'post'" ) );
+$scoped_second_metadata_reads = $observed_storage->metadata_reads;
+$scoped_second_manifest_traversals = $observed_storage->manifest_traversals;
+$ordered_scoped_first = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT ID, post_title FROM wp_posts WHERE post_type = 'post' ORDER BY post_title ASC, ID DESC" ) );
+$ordered_scoped_second = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT ID, post_title FROM wp_posts WHERE post_type = 'post' ORDER BY post_title ASC, ID DESC" ) );
+$ordered_scoped_content = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT post_content FROM wp_posts WHERE post_type = 'post' ORDER BY post_title ASC, ID DESC LIMIT 1" ) );
+$ordered_scoped_manifest_traversals = $observed_storage->manifest_traversals;
+$updated_post = $observed_storage->read_post( 42 );
+if ( null === $updated_post ) {
+	throw new RuntimeException( 'Failed to read the post-cache invalidation fixture.' );
+}
+$updated_post->post_title = 'Updated title';
+$observed_storage->write_post( $updated_post );
+$scoped_after_write = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT ID, post_title FROM wp_posts WHERE post_type = 'post'" ) );
 
 $shadow_db = new MDI_Post_Shadow_DB();
 $shadow_db->result( array( array( 'ID' => '41' ) ), array( array( 'name' => 'ID', 'type' => 8 ) ) );
@@ -147,8 +171,19 @@ $checks = array(
 	'WordPress search filters canonical bodies and applies CASE relevance' => 1 === $search->return_value()
 		&& '41' === ( $search->wpdb_state()['last_result'][0]->ID ?? null ),
 	'metadata projections skip bodies and content hydration is bounded to selected posts' => 0 === $content_reads_before
-		&& 1 === $observed_storage->content_reads
+		&& 1 === $content_reads_after_body
 		&& 0 < $observed_storage->metadata_reads,
+	'a repeated post-type scope reuses the verified in-request corpus' => 3 === $scoped_first->return_value()
+		&& 3 === $scoped_second->return_value()
+		&& $scoped_metadata_reads === $scoped_second_metadata_reads
+		&& $scoped_manifest_traversals === $scoped_second_manifest_traversals,
+	'a repeated ordered post-type scope preserves its cached candidate order' => 3 === $ordered_scoped_first->return_value()
+		&& array_map( 'get_object_vars', $ordered_scoped_first->wpdb_state()['last_result'] ) === array_map( 'get_object_vars', $ordered_scoped_second->wpdb_state()['last_result'] )
+		&& 'Other body' === ( $ordered_scoped_content->wpdb_state()['last_result'][0]->post_content ?? null )
+		&& $scoped_second_manifest_traversals === $ordered_scoped_manifest_traversals,
+	'a canonical write invalidates the scoped corpus before the next read' => 3 === $scoped_after_write->return_value()
+		&& 'Updated title' === ( $scoped_after_write->wpdb_state()['last_result'][1]->post_title ?? null )
+		&& $scoped_second_metadata_reads < $observed_storage->metadata_reads,
 	'same-size same-mtime atomic replacement fails closed' => $replacing_storage->replaced
 		&& false === $replaced->return_value()
 		&& array() === $replaced->wpdb_state()['last_result']

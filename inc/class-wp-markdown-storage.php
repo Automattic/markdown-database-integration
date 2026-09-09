@@ -43,6 +43,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-file-witness.php';
+require_once __DIR__ . '/class-wp-markdown-operation-profile.php';
 
 if ( ! class_exists( 'WP_Markdown_Yaml' ) ) {
 	require_once __DIR__ . '/class-wp-markdown-yaml.php';
@@ -53,6 +54,8 @@ if ( ! class_exists( 'WP_Markdown_Frontmatter_Profiles' ) ) {
 if ( ! class_exists( 'WP_Markdown_Content_Layout_Profiles' ) ) {
 	require_once __DIR__ . '/class-wp-markdown-content-layout-profiles.php';
 }
+
+final class WP_Markdown_Native_Post_Write_Lock_Exception extends RuntimeException {}
 
 class WP_Markdown_Storage {
 
@@ -78,6 +81,12 @@ class WP_Markdown_Storage {
 	 * @var array<int, string>|null
 	 */
 	private $index = null;
+
+	/** Reentrant depth for the native generated-post write lock. */
+	private int $native_post_write_lock_depth = 0;
+
+	/** A generated-ID scan completed while the current native write lock is held. */
+	private bool $native_post_allocation_scanned = false;
 
 	/**
 	 * Callback to resolve a post's slug and parent ID by post ID.
@@ -296,6 +305,15 @@ class WP_Markdown_Storage {
 	 * @return string|false The file path written, or false on failure.
 	 */
 	public function write_post( object $post, bool $persist_auto_draft = false ): string|false {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->write_post_file( $post, $persist_auto_draft );
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'post_write', $start );
+		}
+	}
+
+	private function write_post_file( object $post, bool $persist_auto_draft ): string|false {
 		$post_type = $post->post_type ?? 'post';
 
 		// Skip excluded post types.
@@ -376,10 +394,10 @@ class WP_Markdown_Storage {
 				}
 				$this->index[ $id ] = $file_path;
 
-				if ( null === $previous_path ) {
-					// No prior in-memory path — populate the rest of the index
-					// by scanning disk. rebuild_index() honors the claim above,
-					// so the fresh write is safe.
+				if ( null === $previous_path && ! $this->native_post_allocation_scanned ) {
+					// Another process may add a canonical file after any prior
+					// walk. In-memory absence is therefore never proof of absence
+					// on disk; settle it before accepting a new identity.
 					$this->rebuild_index();
 					// rebuild_index may have identified a stale copy at a
 					// different path and already unlinked it; refresh
@@ -389,8 +407,9 @@ class WP_Markdown_Storage {
 
 				// Remove old file if path changed (slug change or reparent).
 				if ( null !== $previous_path && $previous_path !== $file_path ) {
-					$this->safe_unlink( $previous_path );
-					$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
+					if ( $this->safe_unlink_owned_by( $previous_path, $id ) ) {
+						$this->cleanup_empty_dirs( dirname( $previous_path ), $type_dir );
+					}
 				}
 			}
 			return $file_path;
@@ -418,6 +437,35 @@ class WP_Markdown_Storage {
 	/** Return the currently indexed canonical path for a post. */
 	public function path_for_post( int $post_id ): string|false {
 		return $this->find_file_by_id( $post_id ) ?? false;
+	}
+
+	/**
+	 * Return a safely indexed canonical file with its directory-derived parent.
+	 *
+	 * This is intentionally an index lookup rather than manifest enumeration so
+	 * callers that already know a durable post ID do not rewalk the corpus.
+	 *
+	 * @return array{absolute:string,parent_id:int|null}|null
+	 */
+	public function indexed_post_file( int $post_id ): ?array {
+		// A cold index must fall back to the provider's verified corpus scan.
+		// Building it here would parse a file before that scan can witness it.
+		$path = is_array( $this->index ) ? ( $this->index[ $post_id ] ?? null ) : null;
+		if ( null === $path || ! $this->existing_path_is_safe( $path ) ) {
+			return null;
+		}
+		if ( $this->profile_enumerates_sources() ) {
+			$post = $this->read_file( $path, true );
+			return null === $post ? null : array( 'absolute' => $path, 'parent_id' => (int) $post->post_parent );
+		}
+		$directory = dirname( $path );
+		$parent_directory = 'index.md' === basename( $path ) ? dirname( $directory ) : $directory;
+		if ( dirname( $parent_directory ) === $this->content_dir ) {
+			return array( 'absolute' => $path, 'parent_id' => 'index.md' === basename( $path ) ? 0 : null );
+		}
+		$parent_path = $parent_directory . '/index.md';
+		$parent = $this->existing_path_is_safe( $parent_path ) ? $this->read_file( $parent_path, true ) : null;
+		return array( 'absolute' => $path, 'parent_id' => (int) ( $parent->ID ?? 0 ) );
 	}
 
 	/**
@@ -449,8 +497,7 @@ class WP_Markdown_Storage {
 			return 'failed';
 		}
 
-		$this->observe_file_mutation( $file_path );
-		$result = $this->safe_unlink( $file_path );
+		$result = $this->safe_unlink_owned_by( $file_path, $post_id );
 
 		if ( $result ) {
 			// Clean up empty directories up to the post type dir.
@@ -554,6 +601,27 @@ class WP_Markdown_Storage {
 	 *                                           cannot derive a type from a path ignores the hint.
 	 */
 	public function get_markdown_file_manifest_iterator( bool $strict = false, ?array $post_types = null ): \Generator {
+		$start = WP_Markdown_Operation_Profile::begin();
+		if ( null === $start ) {
+			yield from $this->iterate_file_manifest( $strict, $post_types );
+			return;
+		}
+		try {
+			foreach ( $this->iterate_file_manifest( $strict, $post_types ) as $key => $file ) {
+				WP_Markdown_Operation_Profile::end( 'manifest_advance', $start );
+				WP_Markdown_Operation_Profile::count( 'manifest_files' );
+				$start = null;
+				yield $key => $file;
+				$start = WP_Markdown_Operation_Profile::begin();
+			}
+		} finally {
+			// Time generator advancement, excluding work done by its consumer.
+			WP_Markdown_Operation_Profile::end( 'manifest_advance', $start );
+			WP_Markdown_Operation_Profile::count( 'manifest_scans' );
+		}
+	}
+
+	private function iterate_file_manifest( bool $strict, ?array $post_types ): \Generator {
 		if ( $strict && is_link( $this->content_dir ) ) {
 			throw new RuntimeException( 'Markdown DB: Canonical content root must not be a link.' );
 		}
@@ -588,7 +656,15 @@ class WP_Markdown_Storage {
 					continue;
 				}
 				$identities[ $identity ] = $relative;
-				yield $relative => array( 'mtime' => (int) filemtime( $path ), 'size' => (int) filesize( $path ), 'absolute' => $path, 'parent_id' => (int) $post->post_parent );
+				// The lstat above is fresh and supplies both manifest metadata and
+				// the native reader's identity witness without another filesystem look.
+				yield $relative => array(
+					'mtime'     => (int) ( $stat['mtime'] ?? 0 ),
+					'size'      => (int) ( $stat['size'] ?? 0 ),
+					'absolute'  => $path,
+					'parent_id' => (int) $post->post_parent,
+					'witness'   => WP_Markdown_File_Witness::from_stat( $path, $stat ),
+				);
 			}
 			return;
 		}
@@ -741,6 +817,11 @@ class WP_Markdown_Storage {
 		return is_array( $after ) && $before['dev'] === $after['dev'] && $before['ino'] === $after['ino'] && ! is_link( $path ) && @unlink( $path );
 	}
 
+	/** Remove a cached post path only when it still carries that post's ID. */
+	private function safe_unlink_owned_by( string $path, int $post_id ): bool {
+		return $post_id === $this->extract_id_from_file( $path ) && $this->safe_unlink( $path );
+	}
+
 	/**
 	 * Parse one markdown file and apply a directory-derived parent hint.
 	 *
@@ -844,7 +925,7 @@ class WP_Markdown_Storage {
 			return false;
 		}
 		if ( null !== $old_path && $old_path !== $file_path && file_exists( $old_path ) ) {
-			if ( ! $this->safe_unlink( $old_path ) ) {
+			if ( ! $this->safe_unlink_owned_by( $old_path, $id ) ) {
 				@unlink( $tmp_path );
 				return false;
 			}
@@ -890,7 +971,7 @@ class WP_Markdown_Storage {
 		$paths = is_iterable( $paths ) ? $paths : array();
 		$result = array();
 		foreach ( $paths as $path ) {
-			if ( is_string( $path ) && null !== ( $path = $this->validate_profile_path( $path ) ) && null !== $this->profile_absolute_path( $path ) ) {
+			if ( is_string( $path ) && null !== ( $path = $this->validate_profile_path( $path ) ) ) {
 				$result[] = $path;
 			}
 		}
@@ -1245,8 +1326,9 @@ class WP_Markdown_Storage {
 			if ( isset( $claimed[ $id ] ) ) {
 				$canonical = $claimed[ $id ];
 				if ( $file !== $canonical ) {
-					$this->safe_unlink( $file );
-					$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+					if ( $this->safe_unlink_owned_by( $file, $id ) ) {
+						$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+					}
 				}
 				$this->index[ $id ] = $canonical;
 				continue;
@@ -1268,14 +1350,16 @@ class WP_Markdown_Storage {
 				continue;
 			}
 			if ( false === $existing_mtime || $new_mtime > $existing_mtime ) {
-				$this->safe_unlink( $existing );
-				$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
+				if ( $this->safe_unlink_owned_by( $existing, $id ) ) {
+					$this->cleanup_empty_dirs( dirname( $existing ), $this->content_dir );
+				}
 				$this->index[ $id ] = $file;
 				$mtimes[ $id ]      = $new_mtime;
 				continue;
 			}
-			$this->safe_unlink( $file );
-			$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+			if ( $this->safe_unlink_owned_by( $file, $id ) ) {
+				$this->cleanup_empty_dirs( dirname( $file ), $this->content_dir );
+			}
 		}
 
 		// Ensure any claimed entries that didn't match a disk scan still
@@ -1286,6 +1370,56 @@ class WP_Markdown_Storage {
 			if ( ! isset( $this->index[ $id ] ) ) {
 				$this->index[ $id ] = $path;
 			}
+		}
+
+	}
+
+	/**
+	 * Serialize generated native post identities across processes sharing this
+	 * canonical root. The operation includes both allocation and publication.
+	 */
+	public function synchronize_native_post_write( callable $operation ): mixed {
+		if ( $this->native_post_write_lock_depth > 0 ) {
+			++$this->native_post_write_lock_depth;
+			try {
+				return $operation();
+			} finally {
+				--$this->native_post_write_lock_depth;
+			}
+		}
+
+		$root = realpath( $this->content_dir );
+		if ( false === $root || ! is_dir( $root ) || is_link( $this->content_dir ) ) {
+			throw new WP_Markdown_Native_Post_Write_Lock_Exception( 'Markdown DB: The canonical content root is unavailable for post mutation locking.' );
+		}
+		$path = $root . DIRECTORY_SEPARATOR . '.mdi-native-posts.lock';
+		if ( is_link( $path ) || ( file_exists( $path ) && ! is_file( $path ) ) ) {
+			throw new WP_Markdown_Native_Post_Write_Lock_Exception( 'Markdown DB: The native post mutation lock is unsafe.' );
+		}
+		$lock = @fopen( $path, 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			throw new WP_Markdown_Native_Post_Write_Lock_Exception( 'Markdown DB: The native post mutation lock cannot be acquired.' );
+		}
+
+		$this->native_post_write_lock_depth = 1;
+		$this->native_post_allocation_scanned = false;
+		try {
+			return $operation();
+		} finally {
+			$this->native_post_write_lock_depth = 0;
+			$this->native_post_allocation_scanned = false;
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/** The current locked operation has scanned every canonical post for an ID. */
+	public function mark_native_post_allocation_scanned(): void {
+		if ( $this->native_post_write_lock_depth > 0 ) {
+			$this->native_post_allocation_scanned = true;
 		}
 	}
 
@@ -1336,6 +1470,15 @@ class WP_Markdown_Storage {
 	 * @return object|null A post object, or null on parse failure.
 	 */
 	private function parse_file( string $file_path, bool $metadata_only = false ): ?object {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			return $this->parse_post_file( $file_path, $metadata_only );
+		} finally {
+			WP_Markdown_Operation_Profile::end( $metadata_only ? 'metadata_parse' : 'body_parse', $start );
+		}
+	}
+
+	private function parse_post_file( string $file_path, bool $metadata_only ): ?object {
 		if ( $metadata_only ) {
 			// Fast path: read only enough of the file to get the frontmatter.
 			// Avoids reading potentially large content bodies during boot.

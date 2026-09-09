@@ -168,6 +168,13 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( null !== $restore_observer ) {
 			$this->restore_observers[ $path ] = $restore_observer;
 		}
+		$segment_start = $this->savepoints ? max( $this->savepoints ) : 0;
+		for ( $index = count( $this->entries ) - 1; $index >= $segment_start; $index-- ) {
+			if ( $path === $this->entries[ $index ]['path'] ) {
+				// The segment-start pre-image already restores every later write.
+				return true;
+			}
+		}
 		$existed  = is_file( $path );
 		$contents = null;
 		if ( $existed ) {

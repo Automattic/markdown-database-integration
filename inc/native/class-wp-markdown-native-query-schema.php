@@ -72,6 +72,10 @@ final class WP_Markdown_Native_Column {
 }
 
 final class WP_Markdown_Native_Table_Schema {
+	/** @var array<int,string> */
+	private array $column_names;
+	/** @var \WeakMap<WP_Markdown_Native_Query_Predicate,array<int,mixed>> */
+	private \WeakMap $normalized_predicate_values;
 
 	/**
 	 * @param array<string,WP_Markdown_Native_Column> $columns       Column declarations.
@@ -105,11 +109,13 @@ final class WP_Markdown_Native_Table_Schema {
 				throw new InvalidArgumentException( 'Every order column must exist in the schema.' );
 			}
 		}
+		$this->column_names = array_keys( $this->columns );
+		$this->normalized_predicate_values = new \WeakMap();
 	}
 
 	/** @return array<int,string> */
 	public function column_names(): array {
-		return array_keys( $this->columns );
+		return $this->column_names;
 	}
 
 	public function column( string $column ): WP_Markdown_Native_Column {
@@ -575,6 +581,19 @@ final class WP_Markdown_Native_Table_Schema {
 		if ( $negated && null === ( $row[ $predicate->column() ] ?? null ) ) {
 			return false;
 		}
+		if ( in_array( $predicate->operator(), array( '=', 'IN', 'NOT IN', '<>' ), true ) ) {
+			$left = $this->column( $predicate->column() )->normalize( $row[ $predicate->column() ] ?? null );
+			if ( null === $left ) {
+				return false;
+			}
+			foreach ( $this->normalized_predicate_values( $predicate ) as $value ) {
+				$compare = null !== $value && ( '<>' === $predicate->operator() ? $left !== $value : $left === $value );
+				if ( $compare ) {
+					return ! $negated;
+				}
+			}
+			return $negated;
+		}
 		foreach ( $predicate->values() as $value ) {
 			$compare = match ( $predicate->operator() ) {
 				'<>' => $this->values_differ( $predicate->column(), $row[ $predicate->column() ] ?? null, $value ),
@@ -587,6 +606,18 @@ final class WP_Markdown_Native_Table_Schema {
 			}
 		}
 		return $negated;
+	}
+
+	/** @return array<int,mixed> */
+	private function normalized_predicate_values( WP_Markdown_Native_Query_Predicate $predicate ): array {
+		if ( isset( $this->normalized_predicate_values[ $predicate ] ) ) {
+			return $this->normalized_predicate_values[ $predicate ];
+		}
+		$column = $this->column( $predicate->column() );
+		return $this->normalized_predicate_values[ $predicate ] = array_map(
+			static fn( mixed $value ): mixed => $column->normalize( $value ),
+			$predicate->values()
+		);
 	}
 
 	/** Convert a scalar the way MySQL's signed integer cast begins its comparison. */

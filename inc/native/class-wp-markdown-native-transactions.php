@@ -154,8 +154,8 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	/** Capture the current state of a canonical path before it is mutated. */
 	public function record( string $path, ?callable $restore_observer = null ): true|string {
-		// With autocommit disabled, the first transactional write starts the
-		// implicit transaction. Reads must not allocate a journal or change state.
+		// With autocommit disabled, the first transactional access starts the
+		// implicit transaction. Non-table statements never call record().
 		if ( ! $this->active && ! $this->autocommit ) {
 			$begun = $this->begin();
 			if ( true !== $begun ) {
@@ -183,6 +183,11 @@ final class WP_Markdown_Native_Transaction_Journal {
 			'contents' => $contents,
 		);
 		return $this->persist();
+	}
+
+	/** Start an autocommit-off transaction when a transactional table is read. */
+	public function access(): true|string {
+		return ! $this->active && ! $this->autocommit ? $this->begin() : true;
 	}
 
 	public function commit(): true|string {

@@ -1797,6 +1797,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		WP_Markdown_Native_Table_Schema $schema,
 		WP_Markdown_Native_Table_Access $access
 	): iterable|WP_Markdown_Query_Result {
+		if ( null !== $this->transactions && true !== ( $accessed = $this->transactions->access() ) ) {
+			return $this->failure( 'transaction_access_failed', $accessed );
+		}
 		if ( ! $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider ) {
 			return $provider->read( $access );
 		}
@@ -1988,24 +1991,54 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$precision = (int) $precision;
 		$scale = (int) $scale;
 		$input = trim( (string) $value );
-		if ( 1 !== preg_match( '/^([+-]?)(\d*)(?:\.(\d*))?/', $input, $match ) || ( '' === $match[2] && '' === ( $match[3] ?? '' ) ) ) {
-			$match = array( '', '', '0', '' );
+		if ( 1 !== preg_match( '/^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?/', $input, $match ) || ( '' === $match[2] && '' === ( $match[3] ?? '' ) ) ) {
+			$match = array( '', '', '0', '', '0' );
 		}
 		$negative = '-' === $match[1];
-		$whole = ltrim( $match[2], '0' );
-		$whole = '' === $whole ? '0' : $whole;
-		$fraction = $match[3] ?? '';
-		$digits = $whole . str_pad( substr( $fraction, 0, $scale ), $scale, '0' );
-		if ( isset( $fraction[ $scale ] ) && $fraction[ $scale ] >= '5' ) {
-			$digits = $this->increment_decimal_digits( $digits );
+		$digits = $match[2] . ( $match[3] ?? '' );
+		$leading = strlen( $digits ) - strlen( ltrim( $digits, '0' ) );
+		$digits = substr( $digits, $leading );
+		if ( '' === $digits ) {
+			return '0' . ( 0 === $scale ? '' : '.' . str_repeat( '0', $scale ) );
 		}
-		$digits = str_pad( $digits, $scale + 1, '0', STR_PAD_LEFT );
+		$decimal = strlen( $match[2] ) - $leading + $this->bounded_decimal_exponent( $match[4] ?? '0' );
+		$cutoff = $decimal + $scale;
+		if ( $cutoff > $precision + 1 ) {
+			return $this->decimal_limit( $negative, $precision, $scale );
+		}
+		$rounded = $cutoff <= 0 ? '0' : substr( $digits, 0, $cutoff );
+		$rounded = str_pad( $rounded, max( 1, $cutoff ), '0' );
+		if ( $cutoff >= 0 && isset( $digits[ $cutoff ] ) && $digits[ $cutoff ] >= '5' ) {
+			$rounded = $this->increment_decimal_digits( $rounded );
+		}
+		$rounded = ltrim( $rounded, '0' );
+		if ( '' === $rounded ) {
+			$rounded = '0';
+		}
+		if ( strlen( $rounded ) > $precision ) {
+			return $this->decimal_limit( $negative, $precision, $scale );
+		}
+		$rounded = str_pad( $rounded, $scale + 1, '0', STR_PAD_LEFT );
+		$whole = 0 === $scale ? $rounded : substr( $rounded, 0, -$scale );
+		$fraction = 0 === $scale ? '' : substr( $rounded, -$scale );
+		return ( $negative && '' !== ltrim( $rounded, '0' ) ? '-' : '' ) . $whole . ( 0 === $scale ? '' : '.' . $fraction );
+	}
+
+	/** Bound exponents before they can allocate beyond the declared DECIMAL domain. */
+	private function bounded_decimal_exponent( string $value ): int {
+		$negative = str_starts_with( $value, '-' );
+		$digits = ltrim( $value, '+-' );
+		if ( strlen( ltrim( $digits, '0' ) ) > 3 ) {
+			return $negative ? -1000 : 1000;
+		}
+		return (int) $value;
+	}
+
+	private function decimal_limit( bool $negative, int $precision, int $scale ): string {
+		$digits = str_repeat( '9', $precision );
 		$whole = 0 === $scale ? $digits : substr( $digits, 0, -$scale );
 		$fraction = 0 === $scale ? '' : substr( $digits, -$scale );
-		if ( strlen( ltrim( $whole, '0' ) ?: '0' ) > $precision - $scale ) {
-			throw new LogicException( 'DECIMAL value exceeds its declared precision.' );
-		}
-		return ( $negative && '0' !== $whole . $fraction ? '-' : '' ) . $whole . ( 0 === $scale ? '' : '.' . $fraction );
+		return ( $negative ? '-' : '' ) . $whole . ( 0 === $scale ? '' : '.' . $fraction );
 	}
 
 	private function increment_decimal_digits( string $digits ): string {

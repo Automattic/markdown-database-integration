@@ -47,6 +47,7 @@ final class WP_Markdown_Native_Query_Parser {
 			return $this->failure( 'unsupported_select_modifier', 'DISTINCT requires a row projection.', $ast->table()->sql_offset() );
 		}
 		$base_source = array() === $ast->joins() ? null : ( $ast->alias()?->name() ?? $ast->table()->name() );
+		$flat_source = array() === $ast->joins() ? ( $ast->alias()?->name() ?? $ast->table()->name() ) : null;
 		$child_outer_sources = $outer_sources;
 		$child_outer_sources[ $ast->alias()?->name() ?? $ast->table()->name() ] = true;
 		foreach ( $ast->joins() as $join ) { $child_outer_sources[ $join->alias()->name() ] = true; }
@@ -55,21 +56,21 @@ final class WP_Markdown_Native_Query_Parser {
 			: array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): string => $column->name(), $ast->projection() );
 		$scalar_projection = array_map(
 			fn( array $scalar ): array => array(
-				'expression' => $this->lower_scalar_expression( $scalar['expression'], $base_source ?? null ),
+				'expression' => $this->lower_scalar_expression( $scalar['expression'], $base_source, $flat_source ),
 				'alias'      => $scalar['alias'],
 				'position'   => $scalar['position'],
 			),
 			$ast->scalar_projection()
 		);
-		$scalar_predicates = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, $base_source ), $ast->scalar_predicates() );
-		$boolean_predicate = null === $ast->boolean_predicate() ? null : new WP_Markdown_Native_Query_Boolean_Predicate( array_map( function ( array $group ) use ( $base_source, $child_outer_sources ): array {
-			return array_map( function ( WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate $predicate ) use ( $base_source, $child_outer_sources ): WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate|WP_Markdown_Native_Query_Subquery {
-				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { return $this->lower_scalar_predicate( $predicate, $base_source ); }
+		$scalar_predicates = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, $base_source, $flat_source ), $ast->scalar_predicates() );
+		$boolean_predicate = null === $ast->boolean_predicate() ? null : new WP_Markdown_Native_Query_Boolean_Predicate( array_map( function ( array $group ) use ( $base_source, $flat_source, $child_outer_sources ): array {
+			return array_map( function ( WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate $predicate ) use ( $base_source, $flat_source, $child_outer_sources ): WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate|WP_Markdown_Native_Query_Subquery {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { return $this->lower_scalar_predicate( $predicate, $base_source, $flat_source ); }
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) { return $this->lower_subquery( $predicate, $child_outer_sources ); }
 				return $this->lower_predicate( $predicate, $base_source );
 			}, $group );
 		}, $ast->boolean_predicate()->groups() ) );
-		$scalar_having = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, null ), $ast->scalar_having() );
+		$scalar_having = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, null, $flat_source ), $ast->scalar_having() );
 		$seen = array();
 		foreach ( $ast->projection() as $column ) {
 			$key = ( $column->qualifier() ?? '' ) . '.' . $column->name();
@@ -165,7 +166,7 @@ final class WP_Markdown_Native_Query_Parser {
 					),
 					'else' => $item['case']['else'],
 				),
-				'expression' => null === ( $item['expression'] ?? null ) ? null : $this->lower_scalar_expression( $item['expression'], $base_source ),
+				'expression' => null === ( $item['expression'] ?? null ) ? null : $this->lower_scalar_expression( $item['expression'], $base_source, $flat_source ),
 			),
 			$ast->orders()
 		);
@@ -205,6 +206,7 @@ final class WP_Markdown_Native_Query_Parser {
 					'column'   => $aggregate['column']?->name(),
 					'source'   => $aggregate['column']?->qualifier() ?? $base_source,
 					'alias'    => $aggregate['alias'],
+					'distinct' => $aggregate['distinct'] ?? false,
 				),
 				$ast->aggregates()
 			),
@@ -215,13 +217,14 @@ final class WP_Markdown_Native_Query_Parser {
 			$union,
 			$scalar_predicates,
 			$scalar_having,
-			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source ),
+			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source, $flat_source ),
 			$boolean_predicate,
 			$derived,
 			$ast->union_all(),
 			array_map( fn( array $item ): array => array( 'column' => $item['column']->name(), 'descending' => $item['descending'], 'numeric' => str_starts_with( $item['column']->name(), '__union_ordinal_' ) ), $ast->union_orders() ),
 			$ast->union_limit(),
-			$ast->union_limit_offset()
+			$ast->union_limit_offset(),
+			array_map( fn( WP_Markdown_Native_SQL_Scalar_Expression $expression ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $expression, $base_source, $flat_source ), $ast->group_expressions() )
 		);
 	}
 
@@ -251,13 +254,13 @@ final class WP_Markdown_Native_Query_Parser {
 		);
 	}
 
-	private function lower_scalar_expression( WP_Markdown_Native_SQL_Scalar_Expression $expression, ?string $base_source ): WP_Markdown_Native_Query_Scalar_Expression {
+	private function lower_scalar_expression( WP_Markdown_Native_SQL_Scalar_Expression $expression, ?string $base_source, ?string $flat_source = null ): WP_Markdown_Native_Query_Scalar_Expression {
 		return new WP_Markdown_Native_Query_Scalar_Expression(
 			$expression->kind(),
 			$expression->identifier()?->name(),
 			$expression->literal(),
 			array_map(
-				fn( WP_Markdown_Native_SQL_Scalar_Expression $argument ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $argument, $base_source ),
+				fn( WP_Markdown_Native_SQL_Scalar_Expression $argument ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $argument, $base_source, $flat_source ),
 				$expression->arguments()
 			),
 			array_map(
@@ -266,17 +269,17 @@ final class WP_Markdown_Native_Query_Parser {
 						fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $base_source ),
 						$branch['predicates']
 					),
-					'value' => $this->lower_scalar_expression( $branch['value'], $base_source ),
+					'value' => $this->lower_scalar_expression( $branch['value'], $base_source, $flat_source ),
 			),
 			$expression->branches()
 		),
-			null === $expression->else() ? null : $this->lower_scalar_expression( $expression->else(), $base_source ),
-			$expression->identifier()?->qualifier() ?? $base_source
+			null === $expression->else() ? null : $this->lower_scalar_expression( $expression->else(), $base_source, $flat_source ),
+			$flat_source === ( $expression->identifier()?->qualifier() ?? $base_source ) ? null : ( $expression->identifier()?->qualifier() ?? $base_source )
 		);
 	}
 
-	private function lower_scalar_predicate( WP_Markdown_Native_SQL_Scalar_Predicate $predicate, ?string $base_source ): WP_Markdown_Native_Query_Scalar_Predicate {
-		return new WP_Markdown_Native_Query_Scalar_Predicate( $this->lower_scalar_expression( $predicate->left(), $base_source ), $predicate->operator(), $this->lower_scalar_expression( $predicate->right(), $base_source ) );
+	private function lower_scalar_predicate( WP_Markdown_Native_SQL_Scalar_Predicate $predicate, ?string $base_source, ?string $flat_source = null ): WP_Markdown_Native_Query_Scalar_Predicate {
+		return new WP_Markdown_Native_Query_Scalar_Predicate( $this->lower_scalar_expression( $predicate->left(), $base_source, $flat_source ), $predicate->operator(), $this->lower_scalar_expression( $predicate->right(), $base_source, $flat_source ) );
 	}
 
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
@@ -470,7 +473,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$this->expect_keyword( 'FROM' );
 		list( $table, $alias, $derived ) = $this->source( true );
 		$joins = array();
-		while ( null !== ( $join_kind = $this->match_join_kind() ) ) {
+		while ( true ) {
+			if ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				list( $join_table, $join_alias, $join_derived ) = $this->source( false );
+				$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, null, null, false, array(), $join_derived );
+				continue;
+			}
+			$join_kind = $this->match_join_kind();
+			if ( null === $join_kind ) {
+				break;
+			}
 			list( $join_table, $join_alias, $join_derived ) = $this->source( false );
 			$this->expect_keyword( 'ON' );
 			$on_predicates = $this->disjunction( true );
@@ -529,18 +541,22 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->unsupported( $this->current() );
 		}
 		if ( $grouped ) {
-			if ( $count_all || $select_all || $distinct ) {
+			if ( $count_all ) {
 				$this->unsupported( $this->current() );
 			}
 			$this->expect_keyword( 'GROUP' );
 			$this->expect_keyword( 'BY' );
 			$group_expression = $this->scalar_value();
+			$group_expressions = array( $group_expression );
 			$group = $group_expression->identifier();
 			if ( null === $group ) {
 				$group = new WP_Markdown_Native_SQL_Identifier( '__scalar_group', $this->current()->sql_offset() );
 			}
-			if ( WP_Markdown_Native_SQL_Token::COMMA === $this->current()->type() ) {
-				$this->unsupported( $this->current() );
+			// Aggregate rows are keyed from their complete scalar projection at
+			// execution time. Retain the first expression for legacy plan fields
+			// while accepting each additional projected grouping expression.
+			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				$group_expressions[] = $this->scalar_value();
 			}
 			if ( ! $this->contradiction ) {
 				// Every projected column must be functionally dependent on the
@@ -567,6 +583,19 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( $this->match_keyword( 'HAVING' ) ) {
 			foreach ( $this->conjunction() as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { $scalar_having[] = $predicate; } else { $having[] = $predicate; }
+			}
+			if ( ! $grouped && array() !== $having ) {
+				$scalar_by_alias = array_column( $scalar_projection, 'expression', 'alias' );
+				foreach ( $having as $index => $predicate ) {
+					$values = $predicate->values();
+					$expression = $scalar_by_alias[ $predicate->column()->name() ] ?? null;
+					if ( null === $expression || 1 !== count( $values ) || ! in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true ) ) {
+						continue;
+					}
+					$scalar_having[] = new WP_Markdown_Native_SQL_Scalar_Predicate( $expression, $predicate->operator(), new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $values[0]->value() ) );
+					unset( $having[ $index ] );
+				}
+				$having = array_values( $having );
 			}
 			if ( array() !== $having && ( ! $grouped || array() === $aggregates ) ) { $this->unsupported( $this->current() ); }
 			$aggregate_aliases = array_column( $aggregates, 'alias' );
@@ -621,6 +650,12 @@ final class WP_Markdown_Native_Select_AST_Parser {
 						$column = new WP_Markdown_Native_SQL_Identifier( '__union_ordinal_' . $ordinal, $ordinal_offset );
 					} else {
 						$column = $this->identifier();
+						foreach ( $scalar_projection as $scalar ) {
+							if ( $scalar['alias'] === $column->name() && null === $column->qualifier() ) {
+								$expression = $scalar['expression'];
+								break;
+							}
+						}
 					}
 				}
 				$numeric = false;
@@ -692,7 +727,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( ! $nested && $this->match_keyword( 'FOR' ) ) {
 			$this->expect_keyword( 'UPDATE' );
 		}
-		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union, $scalar_predicates, $scalar_having, $grouped ? $group_expression : null, $boolean_predicate, $derived, $union_all, $union_orders, $union_limit, $union_limit_offset );
+		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union, $scalar_predicates, $scalar_having, $grouped ? $group_expression : null, $boolean_predicate, $derived, $union_all, $union_orders, $union_limit, $union_limit_offset, $grouped ? $group_expressions : array() );
 	}
 
 	/** @return array{WP_Markdown_Native_SQL_Identifier,?WP_Markdown_Native_SQL_Identifier,?WP_Markdown_Native_SQL_Select} */
@@ -722,7 +757,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 	private function matches_scalar_expression(): bool {
 		return WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
-			|| in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
+			|| in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'SUBSTRING_INDEX', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type()
 			|| ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
 	}
@@ -754,9 +789,23 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( 'CAST' === $function ) {
 			$argument = $this->scalar_value();
 			$this->expect_keyword( 'AS' );
-			$this->expect_keyword( 'UNSIGNED' );
+			$type = strtoupper( $this->unqualified_identifier()->name() );
+			$decimal = array();
+			if ( 'DECIMAL' === $type && $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN ) ) {
+				$precision = $this->literal();
+				$this->expect_type( WP_Markdown_Native_SQL_Token::COMMA );
+				$scale = $this->literal();
+				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+				if ( ! is_int( $precision->value() ) || ! is_int( $scale->value() ) || $precision->value() < 1 || $precision->value() > 65 || $scale->value() < 0 || $scale->value() > min( 30, $precision->value() ) ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_decimal_domain', $precision->sql_offset(), 'mdi-native supports DECIMAL precision 1..65 and scale 0..min(30, precision).' );
+				}
+				$decimal = array(
+					new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $precision->value() ),
+					new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $scale->value() ),
+				);
+			}
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-			return new WP_Markdown_Native_SQL_Scalar_Expression( 'CAST_UNSIGNED', null, null, array( $argument ) );
+			return new WP_Markdown_Native_SQL_Scalar_Expression( 'UNSIGNED' === $type ? 'CAST_UNSIGNED' : 'CAST_DECIMAL', null, null, array_merge( array( $argument ), $decimal ) );
 		}
 		if ( in_array( $function, array( 'DATE_ADD', 'DATE_SUB' ), true ) ) {
 			$arguments = array( $this->scalar_value() );
@@ -786,7 +835,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$valid = match ( $function ) {
 			'CONCAT', 'COALESCE' => 2 <= count( $arguments ),
-			'SUBSTRING' => 3 === count( $arguments ),
+			'SUBSTRING', 'SUBSTRING_INDEX' => 3 === count( $arguments ),
 			'YEAR', 'MONTH', 'DATE', 'TIME', 'FROM_UNIXTIME', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
 			'UNIX_TIMESTAMP', 'RAND' => 0 === count( $arguments ) || 1 === count( $arguments ),
 			'WEEK' => 2 === count( $arguments ) && 1 === (int) $arguments[1]->literal(),
@@ -805,6 +854,17 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$value = $this->scalar_term();
 		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::PLUS, WP_Markdown_Native_SQL_Token::MINUS ), true ) ) {
 			$operator = $this->current()->type(); ++$this->current;
+			if ( $this->match_keyword( 'INTERVAL' ) ) {
+				$interval = $this->scalar_value();
+				$unit = strtoupper( $this->unqualified_identifier()->name() );
+				$value = new WP_Markdown_Native_SQL_Scalar_Expression(
+					WP_Markdown_Native_SQL_Token::PLUS === $operator ? 'DATE_ADD' : 'DATE_SUB',
+					null,
+					null,
+					array( $value, $interval, new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $unit ) )
+				);
+				continue;
+			}
 			$value = new WP_Markdown_Native_SQL_Scalar_Expression( WP_Markdown_Native_SQL_Token::PLUS === $operator ? 'ADD' : 'SUBTRACT', null, null, array( $value, $this->scalar_term() ) );
 		}
 		return $value;
@@ -831,7 +891,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$literal = $this->literal();
 			return new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $literal->value() );
 		}
-		if ( $this->matches_scalar_expression() && ! $this->matches_function( 'CAST' ) ) {
+		if ( $this->matches_scalar_expression() ) {
 			return $this->scalar_expression();
 		}
 		return new WP_Markdown_Native_SQL_Scalar_Expression( 'column', $this->identifier() );
@@ -861,6 +921,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function match_join_kind(): ?string {
+		if ( $this->match_keyword( 'STRAIGHT_JOIN' ) ) {
+			return 'inner';
+		}
 		if ( $this->match_keyword( 'JOIN' ) ) {
 			return 'inner';
 		}
@@ -972,6 +1035,24 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 	/** Keep large nested WordPress boolean trees intact instead of lossy OR coalescing. */
 	private function requires_boolean_plan( array $groups ): bool {
+		$has_composite_group = false;
+		$has_non_coalescible = false;
+		foreach ( $groups as $group ) {
+			$has_composite_group = $has_composite_group || 1 < count( $group );
+			foreach ( $group as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate
+					|| $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate
+				) {
+					return true;
+				}
+				$has_non_coalescible = $has_non_coalescible
+					|| null !== $predicate->cast()
+					|| ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =', 'LIKE' ), true );
+			}
+		}
+		if ( 1 < count( $groups ) && $has_composite_group && $has_non_coalescible ) {
+			return true;
+		}
 		if ( 2 >= count( $groups ) ) {
 			return false;
 		}
@@ -1141,11 +1222,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 			$argument = $this->current();
-			if ( WP_Markdown_Native_SQL_Token::KEYWORD === $argument->type() && 0 === strcasecmp( 'DISTINCT', (string) $argument->value() ) ) {
-				// A distinct aggregate argument is its own feature.
+			$distinct = $this->match_keyword( 'DISTINCT' );
+			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
+			if ( $distinct && ( 'COUNT' !== $function || null === $column ) ) {
 				$this->unsupported( $argument );
 			}
-			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			if ( 'COUNT' !== $function && null === $column ) {
 				// Only COUNT reports over rows rather than over a column.
@@ -1163,6 +1244,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				'function' => $function,
 				'column'   => $column,
 				'alias'    => $alias,
+				'distinct' => $distinct,
 			);
 		}
 		return null;

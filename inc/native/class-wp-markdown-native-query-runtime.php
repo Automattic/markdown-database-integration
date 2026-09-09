@@ -39,6 +39,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'lookup_operators' => array( '=', 'IN' ),
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
+					// WordPress options use a nonbinary text column. Limit native CAS
+					// matching to the ASCII portion of that collation rather than guess
+					// at an unsupported Unicode collation.
+					'option_value' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci_padded' ) ),
 					'autoload' => array(
 						'lookup_operators' => array( 'IN' ),
 						'lookup_validator' => static fn( array $values ): bool => ! array_diff( $values, array( 'yes', 'on', 'auto-on', 'auto' ) ),
@@ -550,6 +554,11 @@ final class WP_Markdown_Native_Runtime_Factory {
 			return null;
 		}
 		return strtolower( $value );
+	}
+
+	public static function normalize_ascii_ci_padded( mixed $value ): ?string {
+		$value = self::normalize_ascii_ci( $value );
+		return null === $value ? null : rtrim( $value, ' ' );
 	}
 
 	private static function all_normalized_unsigned( array $values ): bool {

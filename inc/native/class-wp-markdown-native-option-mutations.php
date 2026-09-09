@@ -11,7 +11,8 @@ final class WP_Markdown_Native_Option_Mutation {
 		private readonly string $operation,
 		private readonly string $option_name,
 		private readonly array $values,
-		private readonly ?string $expected_option_value = null
+		private readonly ?string $expected_option_value = null,
+		private readonly bool $expected_option_value_is_binary = false
 	) {
 		if ( ! in_array( $operation, array( 'insert', 'upsert', 'update', 'delete' ), true ) ) {
 			throw new InvalidArgumentException( 'Unsupported option mutation operation.' );
@@ -41,6 +42,10 @@ final class WP_Markdown_Native_Option_Mutation {
 
 	public function expected_option_value(): ?string {
 		return $this->expected_option_value;
+	}
+
+	public function expected_option_value_is_binary(): bool {
+		return $this->expected_option_value_is_binary;
 	}
 }
 
@@ -174,8 +179,13 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 		$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
 		$option_name = (string) $this->type( WP_Markdown_Native_SQL_Token::STRING )->value();
 		$expected_option_value = null;
+		$expected_option_value_is_binary = false;
 		if ( 0 === strcasecmp( 'AND', (string) $this->current()->value() ) ) {
 			++$this->position;
+			if ( 0 === strcasecmp( 'BINARY', (string) $this->current()->value() ) ) {
+				++$this->position;
+				$expected_option_value_is_binary = true;
+			}
 			if ( 'option_value' !== $this->identifier() ) {
 				return $this->failure( 'unsupported_option_update', 'mdi-native option updates may condition only on the current option value.' );
 			}
@@ -183,7 +193,7 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 			$expected_option_value = (string) $this->type( WP_Markdown_Native_SQL_Token::STRING )->value();
 		}
 		$this->type( WP_Markdown_Native_SQL_Token::END );
-		return new WP_Markdown_Native_Option_Mutation( 'update', $option_name, $changes, $expected_option_value );
+		return new WP_Markdown_Native_Option_Mutation( 'update', $option_name, $changes, $expected_option_value, $expected_option_value_is_binary );
 	}
 
 	private function parse_delete( WP_Markdown_Query_Request $request ): WP_Markdown_Native_Option_Mutation|WP_Markdown_Query_Result {
@@ -402,8 +412,16 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			if ( $mutation->is_insert() && null !== $existing ) {
 				return $this->failure( 'duplicate_key', 'The canonical option identity already exists.' );
 			}
-			if ( null !== $mutation->expected_option_value() && $mutation->expected_option_value() !== $existing['row']['option_value'] ) {
-				return WP_Markdown_Query_Result::mutated( 0 );
+			if ( null !== $mutation->expected_option_value() ) {
+				if ( $mutation->expected_option_value_is_binary() ) {
+					if ( $mutation->expected_option_value() !== $existing['row']['option_value'] ) {
+						return WP_Markdown_Query_Result::mutated( 0 );
+					}
+				} elseif ( null === $this->schema->value_key( 'option_value', $mutation->expected_option_value() ) || null === $this->schema->value_key( 'option_value', $existing['row']['option_value'] ) ) {
+					return $this->failure( 'unsupported_option_collation', 'The option mutation requires an unsupported option-value collation.' );
+				} elseif ( ! $this->schema->values_match( 'option_value', $mutation->expected_option_value(), $existing['row']['option_value'] ) ) {
+					return WP_Markdown_Query_Result::mutated( 0 );
+				}
 			}
 			if ( $mutation->is_delete() ) {
 				$journaled = $this->journal( $existing['path'] );

@@ -5,6 +5,7 @@ import { promisify } from "node:util"
 
 import { buildWordPressPhpunitRecipe } from "/home/chubes/labs/mdi-parity-wave2-consumer/codebox/packages/runtime-core/dist/recipe-builders.js"
 
+async function main(): Promise<void> {
 const execFileAsync = promisify(execFile)
 const root = process.env.DME_CONSUMER_ROOT ?? "/home/chubes/labs/mdi-parity-wave2-consumer"
 const codebox = join(root, "codebox")
@@ -58,3 +59,9 @@ try {
 	else throw error
 	process.exitCode = 1
 }
+}
+
+main().catch((error: unknown) => {
+	console.error(error)
+	process.exitCode = 1
+})

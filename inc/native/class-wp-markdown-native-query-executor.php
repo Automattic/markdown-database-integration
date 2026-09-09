@@ -683,7 +683,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( array_merge( $query->scalar_predicates(), $query->scalar_having() ) as $predicate ) {
 			if ( $has_outer( $predicate->left() ) || $has_outer( $predicate->right() ) ) { return true; }
 		}
-		if ( null !== $query->group_expression() && $has_outer( $query->group_expression() ) ) { return true; }
+		foreach ( $query->group_expressions() as $expression ) { if ( $has_outer( $expression ) ) { return true; } }
 		foreach ( $query->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) && $has_outer( $order['expression'] ) ) { return true; } }
 		if ( null !== $query->boolean_predicate() ) {
 			foreach ( $query->boolean_predicate()->groups() as $group ) {
@@ -873,9 +873,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $plan->scalar_having() as $predicate ) { $bound = $bind_scalar_predicate( $predicate ); if ( null === $bound ) { return null; } $scalar_having[] = $bound; }
 		$group_expression = null === $plan->group_expression() ? null : $bind_scalar( $plan->group_expression() );
 		if ( null !== $plan->group_expression() && null === $group_expression ) { return null; }
+		$group_expressions = array();
+		foreach ( $plan->group_expressions() as $expression ) { $bound = $bind_scalar( $expression ); if ( null === $bound ) { return null; } $group_expressions[] = $bound; }
 		$orders = array();
 		foreach ( $plan->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) ) { $bound = $bind_scalar( $order['expression'] ); if ( null === $bound ) { return null; } $order['expression'] = $bound; } $orders[] = $order; }
-		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $orders, $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $scalar_projection, $plan->having(), $plan->subqueries(), $plan->union(), $scalar_predicates, $scalar_having, $group_expression, $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset() );
+		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $orders, $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $scalar_projection, $plan->having(), $plan->subqueries(), $plan->union(), $scalar_predicates, $scalar_having, $group_expression, $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset(), $group_expressions );
 	}
 
 	private function execute_union( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {

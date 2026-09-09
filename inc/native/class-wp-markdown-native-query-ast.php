@@ -385,6 +385,22 @@ final class WP_Markdown_Native_SQL_Select {
 	public function union_limit(): ?int { return $this->union_limit; }
 	public function union_limit_offset(): int { return $this->union_limit_offset; }
 
+	/** Attach a query-expression branch without confusing its local clauses with UNION clauses. */
+	public function with_union( self $union, bool $all ): self {
+		return new self( $this->select_all, $this->count_all, $this->projection, $this->table, $this->predicates, $this->orders, $this->limit, $this->alias, $this->joins, $this->calculates_found_rows, $this->limit_offset, $this->distinct, $this->contradiction, $this->group_by, $this->aggregates, $this->scalar_projection, $this->having, $this->subqueries, $union, $this->scalar_predicates, $this->scalar_having, $this->group_expression, $this->boolean_predicate, $this->derived, $all, $this->union_orders, $this->union_limit, $this->union_limit_offset );
+	}
+
+	/** @param array<int,array{column:WP_Markdown_Native_SQL_Identifier,descending:bool}> $orders */
+	public function with_union_tail( array $orders, ?int $limit, int $offset ): self {
+		return new self( $this->select_all, $this->count_all, $this->projection, $this->table, $this->predicates, $this->orders, $this->limit, $this->alias, $this->joins, $this->calculates_found_rows, $this->limit_offset, $this->distinct, $this->contradiction, $this->group_by, $this->aggregates, $this->scalar_projection, $this->having, $this->subqueries, $this->union, $this->scalar_predicates, $this->scalar_having, $this->group_expression, $this->boolean_predicate, $this->derived, $this->union_all, $orders, $limit, $offset );
+	}
+
+	public function append_union( self $branch, bool $all ): self {
+		return null === $this->union
+			? $this->with_union( $branch, $all )
+			: $this->with_union( $this->union->append_union( $branch, $all ), $this->union_all );
+	}
+
 	/** Remove clauses that syntactically follow an unparenthesized UNION branch. */
 	public function without_order_limit(): self {
 		return new self( $this->select_all, $this->count_all, $this->projection, $this->table, $this->predicates, array(), null, $this->alias, $this->joins, $this->calculates_found_rows, 0, $this->distinct, $this->contradiction, $this->group_by, $this->aggregates, $this->scalar_projection, $this->having, $this->subqueries, $this->union, $this->scalar_predicates, $this->scalar_having, $this->group_expression, $this->boolean_predicate, $this->derived, $this->union_all, $this->union_orders, $this->union_limit, $this->union_limit_offset );

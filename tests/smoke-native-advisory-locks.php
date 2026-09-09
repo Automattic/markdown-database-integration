@@ -39,7 +39,9 @@ $escaped_name = advisory_lock_value( $first, "SELECT GET_LOCK('escaped\\nlock', 
 $escaped_column = $first->execute( new WP_Markdown_Query_Request( "SELECT GET_LOCK('escaped\\nlock', 0)" ) )->wpdb_state()['col_info'][0]->name ?? null;
 $escaped_release = advisory_lock_value( $first, "SELECT RELEASE_LOCK('escaped\\nlock')" );
 $unsupported_release_arity = $first->execute( new WP_Markdown_Query_Request( "SELECT RELEASE_LOCK('native-lock', 0)" ) );
-$unsupported_timeout = $first->execute( new WP_Markdown_Query_Request( "SELECT GET_LOCK('native-lock', 5.1)" ) );
+$maximum_timeout = advisory_lock_value( $first, "SELECT GET_LOCK('maximum-timeout-lock', 10)" );
+$maximum_timeout_release = advisory_lock_value( $first, "SELECT RELEASE_LOCK('maximum-timeout-lock')" );
+$unsupported_timeout = $first->execute( new WP_Markdown_Query_Request( "SELECT GET_LOCK('native-lock', 10.1)" ) );
 
 // The worker has an open descriptor before this owner releases the stable inode.
 $race_owner = advisory_lock_value( $first, "SELECT GET_LOCK('inode-race-lock', 0)" );
@@ -81,6 +83,7 @@ $assertions = array(
 	'unknown release has MySQL null shape' => null === $unknown_release,
 	'a stale lock file is not treated as a live owner' => '1' === $persistent_owner && '0' === $failed_acquire && '1' === $persistent_owner_release && null === $unowned_persistent_release,
 	'lock literals and result metadata retain SQL semantics' => '1' === $escaped_name && "GET_LOCK('escaped\\nlock', 0)" === $escaped_column && '1' === $escaped_release,
+	'the documented ten-second consumer wait retains normal result semantics' => '1' === $maximum_timeout && '1' === $maximum_timeout_release,
 	'release arity and timeout bounds fail explicitly' => false === $unsupported_release_arity->return_value() && false === $unsupported_timeout->return_value(),
 	'a pre-opened waiter cannot split ownership onto an unlinked inode' => '1' === $race_owner && $worker_descriptor_open && '1' === $race_owner_release && $worker_acquired && '0' === $third_contended && 0 === $worker_status,
 	'multisite prefixes share one logical connection lock owner' => '1' === $multisite_base && '1' === $multisite_site && '1' === $multisite_release_once && '0' === $external_contended && '1' === $multisite_release_final && '1' === $external_acquire,

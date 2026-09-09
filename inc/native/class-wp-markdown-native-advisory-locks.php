@@ -8,7 +8,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_Advisory_Locks {
 
 	private const DIRECTORY = '_locks';
-	public const MAX_WAIT_SECONDS = 5.0;
+	/** The largest ordinary consumer lock wait accepted by the native runtime. */
+	public const MAX_WAIT_SECONDS = 10.0;
 
 	/** @var array<string,array{handle:resource,count:int,path:string}> */
 	private array $locks = array();

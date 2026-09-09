@@ -10,6 +10,9 @@ final class MDI_Subquery_Array_Provider implements WP_Markdown_Native_Table_Prov
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
 		$predicate = $access->predicate();
 		$rows = null === $predicate ? $this->rows : array_filter( $this->rows, static fn( array $row ): bool => in_array( $row[ $predicate->column() ] ?? null, $predicate->values(), true ) );
+		if ( $access->order_descending() ) {
+			$rows = array_reverse( $rows );
+		}
 		return array_map( static function ( array $source ) use ( $access ): array {
 			$row = array();
 			foreach ( $access->projection() as $column ) { $row[ $column ] = $source[ $column ]; }
@@ -37,10 +40,16 @@ $joined_exists = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID 
 $joined_alias_exists = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p INNER JOIN wp_postmeta j ON j.post_id = p.ID WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.meta_id = j.meta_id AND m.meta_key = 'coverage_probe' )" ) );
 $joined_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE ID IN ( SELECT m.post_id FROM wp_postmeta m INNER JOIN wp_posts p ON p.ID = m.post_id WHERE p.post_status = 'publish' )" ) );
 $aggregate_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE ID IN ( SELECT MAX(post_id) AS post_id FROM wp_postmeta WHERE meta_key = 'other' )" ) );
+$two_outer_keys = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p INNER JOIN wp_postmeta j ON j.post_id = p.ID WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.post_id = p.ID AND ( m.meta_id = j.meta_id OR m.meta_key = 'other' ) )" ) );
+$correlated_join = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p INNER JOIN wp_postmeta j ON j.post_id = p.ID WHERE EXISTS ( SELECT 1 FROM wp_postmeta m INNER JOIN wp_posts q ON q.ID = m.post_id WHERE m.meta_id = j.meta_id AND q.post_status = p.post_status )" ) );
+$correlated_aggregate_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE p.ID IN ( SELECT MAX(m.post_id) AS post_id FROM wp_postmeta m WHERE m.post_id = p.ID )" ) );
 $union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft'" ) );
 $ordered_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1" ) );
 $ordinal_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE(created_at) AS day FROM wp_posts WHERE ID = 1 UNION ALL SELECT DATE(created_at) AS day FROM wp_posts WHERE ID = 3 ORDER BY 1 DESC LIMIT 1" ) );
 $chained_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE ID = 1 UNION ALL SELECT ID FROM wp_posts WHERE ID = 3 UNION SELECT ID FROM wp_posts WHERE ID = 2 ORDER BY ID DESC LIMIT 1, 1" ) );
+$parenthesized_union = $runtime->execute( new WP_Markdown_Query_Request( '(SELECT ID FROM wp_posts ORDER BY ID DESC LIMIT 2) UNION ALL (SELECT ID FROM wp_posts ORDER BY ID LIMIT 1) ORDER BY ID LIMIT 2 OFFSET 1' ) );
+$nested_parenthesized_union = $runtime->execute( new WP_Markdown_Query_Request( '((SELECT ID FROM wp_posts WHERE ID = 1) UNION ALL (SELECT ID FROM wp_posts WHERE ID = 2)) UNION ALL (SELECT ID FROM wp_posts WHERE ID = 3) ORDER BY ID' ) );
+$mixed_parenthesized_union = $runtime->execute( new WP_Markdown_Query_Request( '(SELECT ID FROM wp_posts WHERE ID = 1) UNION ALL SELECT ID FROM wp_posts WHERE ID = 2 ORDER BY ID DESC LIMIT 1' ) );
 $found_rows_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT SQL_CALC_FOUND_ROWS ID FROM wp_posts WHERE ID = 1 UNION ALL SELECT ID FROM wp_posts WHERE ID = 2 UNION ALL SELECT ID FROM wp_posts WHERE ID = 3 ORDER BY ID DESC LIMIT 1" ) );
 $found_rows = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT FOUND_ROWS()' ) );
 $invalid = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID IN ( SELECT post_id, meta_id FROM wp_postmeta )' ) );
@@ -56,10 +65,16 @@ $checks = array(
 	'correlated EXISTS can retain any joined outer alias through a JOIN' => array( array( 'ID' => '1' ) ) === $rows( $joined_alias_exists ),
 	'IN executes joined subquery plans through the shared executor' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $joined_in ),
 	'IN executes aggregate subquery plans through the shared executor' => array( array( 'ID' => '3' ) ) === $rows( $aggregate_in ),
+	'correlated EXISTS binds multiple outer aliases through boolean branches' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $two_outer_keys ),
+	'correlated EXISTS executes an inner JOIN through the shared plan executor' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $correlated_join ),
+	'correlated IN executes aggregate and scalar-projected child plans' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $correlated_aggregate_in ),
 	'UNION deduplicates compatible projections with first-branch metadata' => array( array( 'ID' => '1' ), array( 'ID' => '3' ), array( 'ID' => '2' ) ) === $rows( $union ) && 'wp_posts' === ( $union->wpdb_state()['col_info'][0]->table ?? null ),
 	'UNION ORDER BY and LIMIT apply after all branches accumulate' => array( array( 'ID' => '3' ) ) === $rows( $ordered_union ),
 	'UNION global ORDER BY accepts output ordinals and scalar aliases' => array( array( 'day' => '2024-01-03' ) ) === $rows( $ordinal_union ),
 	'chained UNION operators apply one global ORDER BY, LIMIT, and offset' => array( array( 'ID' => '2' ) ) === $rows( $chained_union ),
+	'parenthesized UNION branches retain local bounds before global ordering and offset' => array( array( 'ID' => '2' ), array( 'ID' => '3' ) ) === $rows( $parenthesized_union ),
+	'nested parenthesized UNION expressions retain every branch' => array( array( 'ID' => '1' ), array( 'ID' => '2' ), array( 'ID' => '3' ) ) === $rows( $nested_parenthesized_union ),
+	'mixed parenthesized and unparenthesized UNION operands retain global clauses' => array( array( 'ID' => '2' ) ) === $rows( $mixed_parenthesized_union ),
 	'UNION SQL_CALC_FOUND_ROWS reports the combined result before its limit' => array( array( 'ID' => '3' ) ) === $rows( $found_rows_union ) && array( array( 'FOUND_ROWS()' => '3' ) ) === $rows( $found_rows ),
 	'multi-column IN subqueries fail closed' => false === $invalid->return_value() && 'unsupported_subquery_shape' === ( $invalid->diagnostic()['reason'] ?? null ),
 	'unsupported boolean subqueries fail closed without a parser exception' => false === $invalid_boolean->return_value() && 'unsupported_subquery_shape' === ( $invalid_boolean->diagnostic()['reason'] ?? null ),

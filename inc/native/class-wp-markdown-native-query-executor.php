@@ -31,8 +31,11 @@ final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Nat
 
 final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
 	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
+	private const MAX_CORRELATED_SUBQUERY_EVALUATIONS = 10000;
 	private ?int $last_found_rows = null;
 	private ?string $statement_now = null;
+	/** @var array<string,array{values:array<string,true>,has_null:bool}> */
+	private array $correlated_subquery_cache = array();
 	/** @var array<string,array{seed1:int,seed2:int}> */
 	private array $rand_states = array();
 	private WP_Markdown_Native_Schema_Introspection $schema_introspection;
@@ -75,12 +78,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $dml_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $dml_table ) ) {
 			return $this->execute_table_dml( $request, $dml_table );
 		}
-		if ( 1 !== preg_match( '/^\s*SELECT\b/i', $request->sql() ) ) {
+		if ( 1 !== preg_match( '/^\s*(?:SELECT\b|(?:\(\s*)+SELECT\b)/i', $request->sql() ) ) {
 			return null === $this->option_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native supports bounded SELECT queries only.' )
 				: $this->option_mutations->execute( $request );
 		}
 		$this->rand_states = array();
+		$this->correlated_subquery_cache = array();
 		$this->statement_now = gmdate( 'Y-m-d H:i:s' );
 		$plan = $this->parser->parse( $request->sql() );
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
@@ -301,7 +305,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			} );
 		}
 		$subqueries = array_merge( $plan->subqueries(), $this->boolean_subqueries( $boolean_predicate ) );
-		$subquery_matchers = $this->prepare_subqueries( $subqueries, array( $plan->table_alias() ?? $plan->table() => $schema ) );
+		$outer_alias = $plan->table_alias() ?? $plan->table();
+		$outer_schemas = array( $outer_alias => $schema );
+		$subquery_matchers = $this->prepare_subqueries( $subqueries, $outer_schemas );
 		if ( $subquery_matchers instanceof WP_Markdown_Query_Result ) {
 			return $subquery_matchers;
 		}
@@ -323,7 +329,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( ! $validated && ( ! is_array( $row ) || true !== $schema->validate_projection( $row, $provider_projection ) ) ) {
 				return $this->failure( 'invalid_provider_row', 'The native table provider returned a row outside its declared schema.' );
 			}
-			if ( $this->matches( $row, $residual, $schema ) && $this->matches_scalar_predicates( $row, $scalar_predicates, $schema ) && $this->matches_boolean_predicate( $row, $boolean_predicate, $schema, $subquery_matchers ) && ( array() !== $aggregates || $this->matches_scalar_predicates( $row, $plan->scalar_having(), $schema ) ) && $this->matches_subqueries( $row, $this->plain_subquery_matchers( $plan->subqueries(), $subquery_matchers ), $schema ) ) {
+			if ( $this->matches( $row, $residual, $schema ) && $this->matches_scalar_predicates( $row, $scalar_predicates, $schema ) && $this->matches_boolean_predicate( $row, $boolean_predicate, $schema, $subquery_matchers, array( $outer_alias => $row ), $outer_schemas ) && ( array() !== $aggregates || $this->matches_scalar_predicates( $row, $plan->scalar_having(), $schema ) ) && $this->matches_subqueries( $row, $this->plain_subquery_matchers( $plan->subqueries(), $subquery_matchers ), $schema, array( $outer_alias => $row ), $outer_schemas ) ) {
 				$selected = null;
 				if ( $distinct && ! $plan->counts_all() ) {
 					// DISTINCT resolves before the bound and before the count,
@@ -497,7 +503,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return true;
 	}
 
-	private function matches_boolean_predicate( array $row, ?WP_Markdown_Native_Query_Boolean_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema, array $subquery_matchers = array() ): bool {
+	private function matches_boolean_predicate( array $row, ?WP_Markdown_Native_Query_Boolean_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema, array $subquery_matchers = array(), array $outer_rows = array(), array $outer_schemas = array() ): bool {
 		if ( null === $predicate ) { return true; }
 		foreach ( $predicate->groups() as $group ) {
 			$matches = true;
@@ -505,7 +511,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$matches = $matches && ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate
 					? $this->matches_scalar_predicates( $row, array( $term ), $schema )
 					: ( $term instanceof WP_Markdown_Native_Query_Subquery
-						? isset( $subquery_matchers[ spl_object_id( $term ) ] ) && $this->matches_subqueries( $row, array( $subquery_matchers[ spl_object_id( $term ) ] ), $schema )
+						? isset( $subquery_matchers[ spl_object_id( $term ) ] ) && $this->matches_subqueries( $row, array( $subquery_matchers[ spl_object_id( $term ) ] ), $schema, $outer_rows, $outer_schemas )
 						: $this->matches( $row, array( $term ), $schema ) ) );
 			}
 			if ( $matches ) { return true; }
@@ -537,7 +543,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $this->last_found_rows;
 	}
 
-	/** Materialize bounded subqueries once, indexing correlated EXISTS by its outer key. */
+	/** Materialize uncorrelated subqueries once; correlated plans retain typed outer bindings. */
 	/** @param array<string,WP_Markdown_Native_Table_Schema> $outer_schemas */
 	private function prepare_subqueries( array $subqueries, array $outer_schemas ): array|WP_Markdown_Query_Result {
 		$matchers = array();
@@ -556,65 +562,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$matchers[ spl_object_id( $subquery ) ] = $matcher;
 				continue;
 			}
-			if ( array() !== $query->joins() || null !== $query->union() || array() !== $query->subqueries() || array() !== $this->boolean_subqueries( $query->boolean_predicate() ) || array() !== $query->aggregates() || null !== $query->group_by() || array() !== $query->scalar_projection() && 'EXISTS' !== $subquery->operator() ) {
-				return $this->failure( 'unsupported_subquery_shape', 'mdi-native supports bounded single-table subqueries only.' );
-			}
-			$table = $this->registry->table( $query->table() );
-			if ( null === $table ) { return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested subquery table.' ); }
-			$schema = $table['schema'];
-			$projection = $query->projection();
-			if ( 'IN' === $subquery->operator() && 1 !== count( $projection ) ) {
-				return $this->failure( 'unsupported_subquery_shape', 'mdi-native IN subqueries must project exactly one column.' );
-			}
-			$correlation = null;
-			$needed = $projection;
-			$boolean = $query->boolean_predicate();
-			if ( null !== $boolean ) {
-				$needed = array_merge( $needed, $boolean->columns() );
-				foreach ( $boolean->groups() as $group ) {
-					foreach ( $group as $term ) {
-						if ( $term instanceof WP_Markdown_Native_Query_Predicate && ( null !== $term->comparison_column() || ! $schema->has_column( $term->column() ) || ! $schema->supports_predicate( $term ) ) ) {
-							return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot compose the requested subquery boolean predicate.' );
-						}
-					}
-				}
-			}
-			foreach ( $query->predicates() as $predicate ) {
-				if ( null !== $predicate->comparison_column() ) {
-					if ( null !== $correlation || null === $predicate->comparison_source() || ! isset( $outer_schemas[ $predicate->comparison_source() ] ) || ! $schema->has_column( $predicate->column() ) ) {
-						return $this->failure( 'unsupported_subquery_shape', 'mdi-native supports one qualified equality correlation.' );
-					}
-					$correlation = $predicate;
-					$needed[] = $predicate->column();
-					continue;
-				}
-				if ( ! $schema->has_column( $predicate->column() ) || ! $schema->supports_predicate( $predicate ) ) {
-					return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested subquery predicate.' );
-				}
-				$needed = array_merge( $needed, $predicate->columns() );
-			}
-			if ( array() === $needed ) { $needed[] = $schema->natural_order(); }
-			$provided = $this->read_provider( $table['provider'], $schema, new WP_Markdown_Native_Table_Access( array_values( array_unique( $needed ) ), null, $schema->natural_order(), PHP_INT_MAX ) );
-			if ( $provided instanceof WP_Markdown_Query_Result ) { return $provided; }
-			$values = array();
-			$has_null = false;
-			foreach ( $provided as $row ) {
-				if ( ! is_array( $row ) || ! $schema->validate_projection( $row, array_values( array_unique( $needed ) ) ) ) { return $this->failure( 'invalid_provider_row', 'The native subquery provider returned a row outside its declared schema.' ); }
-				$filters = array_values( array_filter( $query->predicates(), static fn( WP_Markdown_Native_Query_Predicate $p ): bool => null === $p->comparison_column() ) );
-				if ( ! $this->matches( $row, $filters, $schema ) || ! $this->matches_scalar_predicates( $row, $query->scalar_predicates(), $schema ) || ! $this->matches_boolean_predicate( $row, $boolean, $schema ) ) { continue; }
-				if ( null !== $correlation ) {
-					$key = $schema->value_key( $correlation->column(), $row[ $correlation->column() ] ?? null );
-					if ( null !== $key ) { $values[ $key ] = true; }
-					continue;
-				}
-				if ( 'EXISTS' === $subquery->operator() ) { $values['exists'] = true; break; }
-				$value = $row[ $projection[0] ] ?? null;
-				if ( null === $value ) { $has_null = true; continue; }
-				$key = $outer_schema->value_key( (string) $subquery->column(), $value );
-				if ( null === $key ) { return $this->failure( 'unsupported_subquery_type', 'mdi-native cannot compare incompatible subquery values.' ); }
-				$values[ $key ] = true;
-			}
-			$matchers[ spl_object_id( $subquery ) ] = array( 'operator' => $subquery->operator(), 'column' => $subquery->column(), 'values' => $values, 'has_null' => $has_null, 'correlation' => $correlation, 'term' => $subquery );
+			$matchers[ spl_object_id( $subquery ) ] = array( 'operator' => $subquery->operator(), 'column' => $subquery->column(), 'query' => $query, 'outer_schemas' => $outer_schemas, 'cache' => array(), 'evaluations' => 0, 'term' => $subquery );
 		}
 		return $matchers;
 	}
@@ -653,7 +601,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return array( 'operator' => $subquery->operator(), 'column' => $subquery->column(), 'values' => $values, 'has_null' => $has_null, 'correlation' => null, 'term' => $subquery );
 	}
 
-	/** The legacy keyed matcher remains only for predicates bound to an outer alias. */
+	/** A comparison source outside this plan's aliases is lexically enclosing. */
 	private function has_outer_correlation( WP_Markdown_Native_Query_Plan $query ): bool {
 		$sources = array_fill_keys( array_filter( array_merge( array( $query->table_alias() ?? $query->table() ), array_map( static fn( WP_Markdown_Native_Query_Join $join ): string => $join->alias(), $query->joins() ) ) ), true );
 		foreach ( $query->predicates() as $predicate ) {
@@ -664,8 +612,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return false;
 	}
 
-	private function matches_subqueries( array $row, array $matchers, WP_Markdown_Native_Table_Schema $schema ): bool {
+	private function matches_subqueries( array $row, array $matchers, WP_Markdown_Native_Table_Schema $schema, array $outer_rows = array(), array $outer_schemas = array() ): bool {
 		foreach ( $matchers as $matcher ) {
+			if ( isset( $matcher['query'] ) ) {
+				if ( ! $this->matches_correlated_subquery( $row, $matcher, $schema, $outer_rows, $outer_schemas ) ) { return false; }
+				continue;
+			}
 			if ( 'EXISTS' === $matcher['operator'] ) {
 				if ( null === $matcher['correlation'] ) { if ( ! isset( $matcher['values']['exists'] ) ) { return false; } continue; }
 				$column = $matcher['correlation']->comparison_column();
@@ -693,6 +645,85 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return true;
 	}
 
+	/** Execute a lexically-bound child plan and cache its typed materialization by outer row. */
+	private function matches_correlated_subquery( array $row, array $matcher, WP_Markdown_Native_Table_Schema $schema, array $outer_rows, array $outer_schemas ): bool {
+		$term = $matcher['term'];
+		$source = $term->source() ?? array_key_first( $outer_rows );
+		if ( null === $source || ! isset( $outer_rows[ $source ], $outer_schemas[ $source ] ) ) {
+			return false;
+		}
+		$outer_rows[ $source ] = $row;
+		$outer_schemas[ $source ] = $schema;
+		$key = spl_object_id( $term ) . ':' . serialize( $outer_rows );
+		if ( ! isset( $this->correlated_subquery_cache[ $key ] ) ) {
+			if ( count( $this->correlated_subquery_cache ) >= self::MAX_CORRELATED_SUBQUERY_EVALUATIONS ) {
+				return false;
+			}
+			$bound = $this->bind_outer_plan( $matcher['query'], $outer_rows, $outer_schemas );
+			if ( null === $bound ) {
+				return false;
+			}
+			$result = $this->execute_plan( $bound );
+			if ( false === $result->return_value() ) {
+				return false;
+			}
+			$columns = $result->wpdb_state()['col_info'] ?? array();
+			if ( 'EXISTS' !== $matcher['operator'] && 1 !== count( $columns ) ) {
+				return false;
+			}
+			$values = array();
+			$has_null = false;
+			foreach ( $result->wpdb_state()['last_result'] ?? array() as $result_row ) {
+				if ( 'EXISTS' === $matcher['operator'] ) { $values['exists'] = true; break; }
+				$value = get_object_vars( $result_row )[ $columns[0]->name ] ?? null;
+				if ( null === $value ) { $has_null = true; continue; }
+				$typed = is_numeric( $value ) && in_array( $schema->column( (string) $matcher['column'] )->type(), array( 1, 2, 3, 4, 5, 8, 9, 246 ), true ) ? $value + 0 : $value;
+				$value_key = $schema->value_key( (string) $matcher['column'], $typed );
+				if ( null === $value_key ) { return false; }
+				$values[ $value_key ] = true;
+			}
+			$this->correlated_subquery_cache[ $key ] = array( 'values' => $values, 'has_null' => $has_null );
+		}
+		$materialized = $this->correlated_subquery_cache[ $key ];
+		if ( 'EXISTS' === $matcher['operator'] ) { return isset( $materialized['values']['exists'] ); }
+		$row_key = $schema->value_key( (string) $matcher['column'], $row[ $matcher['column'] ] ?? null );
+		$matched = null !== $row_key && isset( $materialized['values'][ $row_key ] );
+		return 'NOT IN' === $matcher['operator']
+			? null !== $row_key && ! $matched && ! $materialized['has_null']
+			: $matched;
+	}
+
+	/** Bind outer aliases into predicate values without reserializing SQL. */
+	private function bind_outer_plan( WP_Markdown_Native_Query_Plan $plan, array $outer_rows, array $outer_schemas ): ?WP_Markdown_Native_Query_Plan {
+		$bind = function ( WP_Markdown_Native_Query_Predicate $predicate ) use ( $outer_rows, $outer_schemas, &$bind ): ?WP_Markdown_Native_Query_Predicate {
+			$any = array();
+			foreach ( $predicate->any() as $nested ) { $bound = $bind( $nested ); if ( null === $bound ) { return null; } $any[] = $bound; }
+			$source = $predicate->comparison_source();
+			if ( null === $predicate->comparison_column() || null === $source || ! isset( $outer_rows[ $source ], $outer_schemas[ $source ] ) ) {
+				return new WP_Markdown_Native_Query_Predicate( $predicate->column(), $predicate->operator(), $predicate->values(), $predicate->source(), $any, $predicate->cast(), $predicate->comparison_column(), $predicate->comparison_source() );
+			}
+			$value = $outer_rows[ $source ][ $predicate->comparison_column() ] ?? null;
+			if ( null === $value ) { return null; }
+			return new WP_Markdown_Native_Query_Predicate( $predicate->column(), $predicate->operator(), array( $value ), $predicate->source(), $any, $predicate->cast() );
+		};
+		$predicates = array();
+		foreach ( $plan->predicates() as $predicate ) { $bound = $bind( $predicate ); if ( null === $bound ) { return null; } $predicates[] = $bound; }
+		$boolean = null;
+		if ( null !== $plan->boolean_predicate() ) {
+			$groups = array();
+			foreach ( $plan->boolean_predicate()->groups() as $group ) {
+				$bound_group = array();
+				foreach ( $group as $term ) {
+					if ( ! $term instanceof WP_Markdown_Native_Query_Predicate ) { $bound_group[] = $term; continue; }
+					$bound = $bind( $term ); if ( null === $bound ) { return null; } $bound_group[] = $bound;
+				}
+				$groups[] = $bound_group;
+			}
+			$boolean = new WP_Markdown_Native_Query_Boolean_Predicate( $groups );
+		}
+		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $plan->order_by(), $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $plan->scalar_projection(), $plan->having(), $plan->subqueries(), $plan->union(), $plan->scalar_predicates(), $plan->scalar_having(), $plan->group_expression(), $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset() );
+	}
+
 	private function execute_union( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {
 		$branches = array( $plan );
 		while ( null !== $branches[ count( $branches ) - 1 ]->union() ) { $branches[] = $branches[ count( $branches ) - 1 ]->union(); }
@@ -709,7 +740,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}, array() ) );
 				$seen = array_fill_keys( array_map( static fn( array $row ): string => serialize( array_values( $row ) ), $rows ), true );
 			}
-			if ( array() === $branch->joins() && array() === $branch->subqueries() && array() === $branch->aggregates() && null === $branch->group_by() && array() === $branch->scalar_projection() && array() === $branch->scalar_predicates() && null === $branch->boolean_predicate() && array() === $branch->scalar_having() && ! $branch->counts_all() && null === $branch->derived() ) {
+			if ( array() === $branch->joins() && array() === $branch->subqueries() && array() === $branch->aggregates() && null === $branch->group_by() && array() === $branch->scalar_projection() && array() === $branch->scalar_predicates() && null === $branch->boolean_predicate() && array() === $branch->scalar_having() && ! $branch->counts_all() && null === $branch->derived() && array() === $branch->order_by() && PHP_INT_MAX === $branch->limit() && 0 === $branch->limit_offset() ) {
 				// Keep simple UNION branches on the direct path: unlike a top-level
 				// query, they have always supported bounded in-memory filtering.
 				$table = $this->registry->table( $branch->table() );
@@ -870,10 +901,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 							return $this->failure( 'unsupported_column', 'mdi-native cannot evaluate the requested JOIN subquery predicate.' );
 						}
 						if ( null !== $term->column() ) { $needed[ $source ][] = $term->column(); }
-						foreach ( $term->query()->predicates() as $subquery_predicate ) {
-							$correlation_source = $subquery_predicate->comparison_source();
-							$correlation_column = $subquery_predicate->comparison_column();
-							if ( null !== $correlation_source && null !== $correlation_column ) {
+						foreach ( $this->outer_correlation_columns( $term->query() ) as $correlation_source => $correlation_columns ) {
+							foreach ( $correlation_columns as $correlation_column ) {
 								if ( ! isset( $sources[ $correlation_source ] ) || ! $sources[ $correlation_source ]['schema']->has_column( $correlation_column ) ) {
 									return $this->failure( 'unsupported_column', 'mdi-native cannot load the requested correlated JOIN column.' );
 								}
@@ -887,10 +916,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		foreach ( $plan->subqueries() as $subquery ) {
-			foreach ( $subquery->query()->predicates() as $subquery_predicate ) {
-				$correlation_source = $subquery_predicate->comparison_source();
-				$correlation_column = $subquery_predicate->comparison_column();
-				if ( null !== $correlation_source && null !== $correlation_column ) {
+			foreach ( $this->outer_correlation_columns( $subquery->query() ) as $correlation_source => $correlation_columns ) {
+				foreach ( $correlation_columns as $correlation_column ) {
 					if ( ! isset( $sources[ $correlation_source ] ) || ! $sources[ $correlation_source ]['schema']->has_column( $correlation_column ) ) {
 						return $this->failure( 'unsupported_column', 'mdi-native cannot load the requested correlated JOIN column.' );
 					}
@@ -1296,9 +1323,35 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return false;
 	}
 
+	/** @return array<string,array<int,string>> */
+	private function outer_correlation_columns( WP_Markdown_Native_Query_Plan $plan ): array {
+		$columns = array();
+		$collect = function ( WP_Markdown_Native_Query_Predicate $predicate ) use ( &$columns, &$collect ): void {
+			if ( null !== $predicate->comparison_source() && null !== $predicate->comparison_column() ) {
+				$columns[ $predicate->comparison_source() ][] = $predicate->comparison_column();
+			}
+			foreach ( $predicate->any() as $nested ) { $collect( $nested ); }
+		};
+		foreach ( $plan->predicates() as $predicate ) { $collect( $predicate ); }
+		if ( null !== $plan->boolean_predicate() ) {
+			foreach ( $plan->boolean_predicate()->groups() as $group ) {
+				foreach ( $group as $term ) { if ( $term instanceof WP_Markdown_Native_Query_Predicate ) { $collect( $term ); } }
+			}
+		}
+		foreach ( $columns as &$source_columns ) { $source_columns = array_values( array_unique( $source_columns ) ); }
+		unset( $source_columns );
+		return $columns;
+	}
+
 	/** Apply each JOIN subquery matcher to the alias that owns its outer column. */
 	private function matches_join_subqueries( array $row, array $matchers, array $sources ): bool {
 		foreach ( $matchers as $matcher ) {
+			if ( isset( $matcher['query'] ) ) {
+				$source = $matcher['term']->source() ?? array_key_first( $row );
+				$schemas = array_map( static fn( array $item ): WP_Markdown_Native_Table_Schema => $item['schema'], $sources );
+				if ( null === $source || ! isset( $row[ $source ], $sources[ $source ] ) || ! $this->matches_subqueries( $row[ $source ], array( $matcher ), $sources[ $source ]['schema'], $row, $schemas ) ) { return false; }
+				continue;
+			}
 			$source = $matcher['term']->source() ?? $matcher['correlation']?->comparison_source() ?? array_key_first( $row );
 			if ( ! isset( $row[ $source ], $sources[ $source ] ) || ! $this->matches_subqueries( $row[ $source ], array( $matcher ), $sources[ $source ]['schema'] ) ) {
 				return false;

@@ -354,9 +354,58 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	public function __construct( private readonly array $tokens ) {}
 
 	public function parse(): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
-		$result = $this->select( false );
+		$result = WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
+			? $this->parenthesized_query_expression()
+			: $this->select( false );
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 		return $result;
+	}
+
+	/** Parse grouped UNION operands while retaining branch-local ORDER BY and LIMIT. */
+	private function parenthesized_query_expression(): WP_Markdown_Native_SQL_Select {
+		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$expression = WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
+			? $this->parenthesized_query_expression()
+			: $this->select( true );
+		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		$has_union = false;
+		while ( $this->match_keyword( 'UNION' ) ) {
+			$has_union = true;
+			$all = $this->match_keyword( 'ALL' );
+			$unparenthesized = WP_Markdown_Native_SQL_Token::LEFT_PAREN !== $this->current()->type();
+			$branch = ! $unparenthesized
+				? $this->parenthesized_query_expression()
+				: $this->select( true );
+			if ( ! $branch instanceof WP_Markdown_Native_SQL_Select ) {
+				$this->unsupported( $this->current() );
+			}
+			$expression = $expression->append_union( $branch, $all );
+			if ( $unparenthesized ) {
+				$orders = array() !== $branch->union_orders() ? $branch->union_orders() : $branch->orders();
+				$limit = null !== $branch->union_limit() ? $branch->union_limit() : $branch->limit();
+				$offset = null !== $branch->union_limit() ? $branch->union_limit_offset() : $branch->limit_offset();
+				return $expression->with_union_tail( $orders, $limit, $offset );
+			}
+		}
+		if ( ! $has_union ) { return $expression; }
+		$orders = array();
+		if ( $this->match_keyword( 'ORDER' ) ) {
+			$this->expect_keyword( 'BY' );
+			do {
+				$column = WP_Markdown_Native_SQL_Token::INTEGER === $this->current()->type()
+					? new WP_Markdown_Native_SQL_Identifier( '__union_ordinal_' . $this->integer( 'overflow_order', 'mdi-native cannot decode an overflowing UNION ORDER BY ordinal.' ), $this->current()->sql_offset() )
+					: $this->identifier();
+				$descending = ! $this->match_keyword( 'ASC' ) && $this->match_keyword( 'DESC' );
+				$orders[] = array( 'column' => $column, 'descending' => $descending );
+			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
+		}
+		$limit = null;
+		$offset = 0;
+		if ( $this->match_keyword( 'LIMIT' ) ) {
+			$limit = $this->integer( 'overflow_limit', 'mdi-native cannot apply the requested LIMIT.' );
+			if ( $this->match_keyword( 'OFFSET' ) ) { $offset = $this->integer( 'overflow_limit', 'mdi-native cannot apply the requested LIMIT.' ); }
+		}
+		return $expression->with_union_tail( $orders, $limit, $offset );
 	}
 
 	private function select( bool $nested ): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
@@ -618,7 +667,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$union_limit_offset = 0;
 		if ( $this->match_keyword( 'UNION' ) ) {
 			$union_all = $this->match_keyword( 'ALL' );
-			$union = $this->select( $nested );
+			$union = WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
+				? $this->parenthesized_query_expression()
+				: $this->select( $nested );
 			if ( ! $union instanceof WP_Markdown_Native_SQL_Select ) {
 				$this->unsupported( $this->current() );
 			}

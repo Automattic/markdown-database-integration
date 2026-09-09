@@ -702,6 +702,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return true;
 		}
 		$operator = $predicate->operator();
+		if ( '<>' === $operator ) {
+			// Like MySQL, comparisons against NULL are unknown rather than true.
+			return null !== $value && ! $schema->values_match( $predicate->column(), $value, $predicate->values()[0] ?? null );
+		}
 		if ( in_array( $operator, array( '<', '<=', '>', '>=' ), true ) ) {
 			// A comparison with NULL is unknown, which never restricts.
 			if ( null === $value ) {

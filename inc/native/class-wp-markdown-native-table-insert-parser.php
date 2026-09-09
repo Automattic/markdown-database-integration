@@ -268,12 +268,13 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		return new WP_Markdown_Native_Table_Predicate( $column, array( $value ), false );
 	}
 
-	/** @return '<'|'<='|'>'|'>='|null */
+	/** @return '<>'|'<'|'<='|'>'|'>='|null */
 	private function comparison_operator(): ?string {
 		$type = $this->current()->type();
-		if ( in_array( $type, array( WP_Markdown_Native_SQL_Token::LESS_THAN, WP_Markdown_Native_SQL_Token::LESS_EQUALS, WP_Markdown_Native_SQL_Token::GREATER_THAN, WP_Markdown_Native_SQL_Token::GREATER_EQUALS ), true ) ) {
+		if ( in_array( $type, array( WP_Markdown_Native_SQL_Token::NOT_EQUALS, WP_Markdown_Native_SQL_Token::LESS_THAN, WP_Markdown_Native_SQL_Token::LESS_EQUALS, WP_Markdown_Native_SQL_Token::GREATER_THAN, WP_Markdown_Native_SQL_Token::GREATER_EQUALS ), true ) ) {
 			++$this->position;
 			return match ( $type ) {
+				WP_Markdown_Native_SQL_Token::NOT_EQUALS => '<>',
 				WP_Markdown_Native_SQL_Token::LESS_THAN => '<',
 				WP_Markdown_Native_SQL_Token::LESS_EQUALS => '<=',
 				WP_Markdown_Native_SQL_Token::GREATER_THAN => '>',

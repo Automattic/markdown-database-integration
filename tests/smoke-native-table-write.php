@@ -66,6 +66,12 @@ $runtime->execute(
 );
 $runtime->execute(
 	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_cleanup_agents (id BIGINT NOT NULL AUTO_INCREMENT, label VARCHAR(60) NULL, PRIMARY KEY (id))',
+		'wp_'
+	)
+);
+$runtime->execute(
+	new WP_Markdown_Query_Request(
 		'CREATE TABLE wp_unique_jobs (id BIGINT NOT NULL AUTO_INCREMENT, scope VARCHAR(20) NULL, token VARCHAR(20) NULL, PRIMARY KEY (id), UNIQUE KEY scoped_token (scope, token(3)))',
 		'wp_'
 	)
@@ -102,6 +108,13 @@ foreach ( array(
 	"INSERT INTO wp_agents (instance_key, label) VALUES (NULL, 'first')",
 	"INSERT INTO wp_agents (instance_key, label) VALUES ('', 'second')",
 	"INSERT INTO wp_agents (instance_key, label) VALUES ('keep', 'third')",
+) as $insert ) {
+	$runtime->execute( new WP_Markdown_Query_Request( $insert, 'wp_' ) );
+}
+foreach ( array(
+	"INSERT INTO wp_cleanup_agents (label) VALUES ('first')",
+	"INSERT INTO wp_cleanup_agents (label) VALUES ('admin')",
+	"INSERT INTO wp_cleanup_agents (label) VALUES ('third')",
 ) as $insert ) {
 	$runtime->execute( new WP_Markdown_Query_Request( $insert, 'wp_' ) );
 }
@@ -147,6 +160,12 @@ $deleted = $runtime->execute(
 	new WP_Markdown_Query_Request( "DELETE FROM wp_agents WHERE instance_key = 'keep'", 'wp_' )
 );
 $after_delete = column_values( $root, 'label' );
+
+// WordPress fixture cleanup retains its administrative row with this shape.
+$inequality_delete = $runtime->execute(
+	new WP_Markdown_Query_Request( 'DELETE FROM wp_cleanup_agents WHERE id != 2', 'wp_' )
+);
+$after_inequality_delete = column_values( $root, 'label', 'cleanup_agents' );
 
 // Serialized values carry semicolons, which must not read as a statement separator.
 $serialized = $runtime->execute(
@@ -256,6 +275,8 @@ $checks = array(
 		&& 1 === $matches_new_null->return_value(),
 	'DELETE removes only the restricted rows' => 1 === $deleted->return_value()
 		&& array( 'null-target', 'second' ) === $after_delete,
+	'a not-equal DELETE retains only its selected row' => 2 === $inequality_delete->return_value()
+		&& array( 'admin' ) === $after_inequality_delete,
 	'a serialized value is not read as a statement separator' => 1 === $serialized->return_value()
 		&& 'a:1:{s:3:"key";i:42;}' === ( $serialized_rows[ count( $serialized_rows ) - 1 ]['label'] ?? null ),
 	'a semicolon inside a literal survives an update' => 1 === $semicolon_text->return_value(),

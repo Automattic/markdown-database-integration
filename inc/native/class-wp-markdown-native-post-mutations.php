@@ -10,8 +10,18 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	public function __construct(
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Table_Insert_Parser $parser,
-		private WP_Markdown_Storage $storage
-	) {}
+		private WP_Markdown_Storage $storage,
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
+	) {
+		if ( null !== $this->transactions ) {
+			$this->storage->add_file_mutation_observer( function ( string $path ): void {
+				$recorded = $this->transactions->record( $path );
+				if ( true !== $recorded ) {
+					throw new RuntimeException( $recorded );
+				}
+			} );
+		}
+	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		if ( 1 === preg_match( '/^\s*INSERT\b/i', $request->sql() ) ) {

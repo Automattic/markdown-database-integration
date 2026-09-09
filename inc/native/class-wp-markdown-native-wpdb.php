@@ -20,6 +20,7 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 
 	private WP_Markdown_Query_Runtime $native_runtime;
 	private string $native_table_prefix;
+	private string $native_database_name;
 
 	public function __construct( WP_Markdown_Query_Runtime $runtime, string $table_prefix = 'wp_' ) {
 		if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $table_prefix ) ) {
@@ -27,6 +28,7 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		}
 		$this->native_runtime = $runtime;
 		$this->native_table_prefix = $table_prefix;
+		$this->native_database_name = defined( 'DB_NAME' ) ? (string) DB_NAME : '';
 		$this->set_prefix( $table_prefix );
 		// db.php replaces wpdb after its normal constructor would establish the
 		// primary site. Multisite switch_to_blog() requires that initial scope.
@@ -39,6 +41,51 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		$this->last_result = array();
 		$this->ready       = true;
 		$this->check_current_query = false;
+	}
+
+	/**
+	 * Select the configured canonical store without requiring wpdb's mysqli handle.
+	 *
+	 * The native backend has one store selected during drop-in bootstrap. Database
+	 * names are a WordPress lifecycle concept here; they must not redirect queries
+	 * to another filesystem root.
+	 */
+	public function select( $db, $dbh = null ) {
+		if ( ! is_string( $db ) || '' === $db ) {
+			$this->ready      = false;
+			$this->last_errno = 1049;
+			$this->last_error = 'Unknown database';
+			return false;
+		}
+
+		$this->native_database_name = $db;
+		$this->ready                = true;
+		$this->last_errno           = 0;
+		$this->last_error           = '';
+		return;
+	}
+
+	/** The native runtime is available without a MySQL connection. */
+	public function db_connect( $allow_bail = true ) {
+		$this->ready      = true;
+		$this->last_errno = 0;
+		$this->last_error = '';
+		return true;
+	}
+
+	/** Do not invoke wpdb's mysqli reconnect loop for the in-process runtime. */
+	public function check_connection( $allow_bail = true ) {
+		return $this->ready || $this->db_connect( $allow_bail );
+	}
+
+	/** Close the logical native connection while leaving its configured root intact. */
+	public function close() {
+		if ( ! $this->ready ) {
+			return false;
+		}
+
+		$this->ready = false;
+		return true;
 	}
 
 	/** Execute one bounded native query and expose the normal wpdb result state. */

@@ -30,6 +30,8 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	/** @var array<string,int> */
 	private array $savepoints = array();
+	/** @var array<string,callable> */
+	private array $restore_observers = array();
 
 	public function __construct( string $state_root ) {
 		$root = realpath( $state_root );
@@ -134,13 +136,17 @@ final class WP_Markdown_Native_Transaction_Journal {
 		$this->active     = true;
 		$this->entries    = array();
 		$this->savepoints = array();
+		$this->restore_observers = array();
 		return $this->persist();
 	}
 
 	/** Capture the current state of a canonical path before it is mutated. */
-	public function record( string $path ): true|string {
+	public function record( string $path, ?callable $restore_observer = null ): true|string {
 		if ( ! $this->active ) {
 			return true;
+		}
+		if ( null !== $restore_observer ) {
+			$this->restore_observers[ $path ] = $restore_observer;
 		}
 		$existed  = is_file( $path );
 		$contents = null;
@@ -166,6 +172,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		$this->active     = false;
 		$this->entries    = array();
 		$this->savepoints = array();
+		$this->restore_observers = array();
 		$path = $this->journal_path();
 		$this->release();
 		if ( is_file( $path ) && ! @unlink( $path ) ) {
@@ -248,6 +255,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 				if ( is_file( $entry['path'] ) && ! @unlink( $entry['path'] ) ) {
 					return 'A canonical row created in the transaction could not be discarded.';
 				}
+				$this->notify_restored( $entry['path'] );
 				continue;
 			}
 			$contents = base64_decode( (string) $entry['contents'], true );
@@ -257,8 +265,15 @@ final class WP_Markdown_Native_Transaction_Journal {
 			if ( true !== $this->publish( $entry['path'], $contents ) ) {
 				return 'A journaled canonical pre-image could not be restored.';
 			}
+			$this->notify_restored( $entry['path'] );
 		}
 		return true;
+	}
+
+	private function notify_restored( string $path ): void {
+		if ( isset( $this->restore_observers[ $path ] ) ) {
+			( $this->restore_observers[ $path ] )( $path );
+		}
 	}
 
 	/** Reopen an implicit transaction while autocommit remains disabled. */
@@ -269,6 +284,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		$this->active     = true;
 		$this->entries    = array();
 		$this->savepoints = array();
+		$this->restore_observers = array();
 		return $this->persist();
 	}
 

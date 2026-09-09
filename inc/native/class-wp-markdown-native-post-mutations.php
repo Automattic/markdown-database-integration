@@ -10,7 +10,8 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	public function __construct(
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Table_Insert_Parser $parser,
-		private WP_Markdown_Storage $storage
+		private WP_Markdown_Storage $storage,
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
 	) {}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -39,7 +40,7 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		if ( true !== $valid ) {
 			return $this->failure( 'invalid_insert_row', is_string( $valid ) ? $valid : 'The INSERT row is outside the wp_posts schema.' );
 		}
-		if ( false === $this->storage->write_post( (object) $row, true ) ) {
+		if ( false === $this->mutate( fn(): string|false => $this->storage->write_post( (object) $row, true ) ) ) {
 			return $this->failure( 'post_write_failed', 'The canonical Markdown post could not be written.' );
 		}
 		return WP_Markdown_Query_Result::mutated( 1, (int) $row['ID'] );
@@ -79,16 +80,32 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_update_row', 'The UPDATE row is outside the wp_posts schema.' );
 				}
-				if ( false === $this->storage->write_post( (object) $updated, true ) ) {
+				if ( false === $this->mutate( fn(): string|false => $this->storage->write_post( (object) $updated, true ) ) ) {
 					return $this->failure( 'post_write_failed', 'The canonical Markdown post could not be written.' );
 				}
 				continue;
 			}
-			if ( ! $this->storage->delete_post( (int) $row['ID'] ) ) {
+			if ( ! $this->mutate( fn(): bool => $this->storage->delete_post( (int) $row['ID'] ) ) ) {
 				return $this->failure( 'post_delete_failed', 'The canonical Markdown post could not be deleted.' );
 			}
 		}
 		return WP_Markdown_Query_Result::mutated( $affected );
+	}
+
+	/** Run one post write under this runtime's authoritative transaction owner. */
+	private function mutate( callable $operation ): mixed {
+		if ( null === $this->transactions ) {
+			return $operation();
+		}
+		return $this->storage->with_file_mutation_observer(
+			function ( string $path ): void {
+				$recorded = $this->transactions->record( $path, array( $this->storage, 'invalidate_file_mutation' ) );
+				if ( true !== $recorded ) {
+					throw new RuntimeException( $recorded );
+				}
+			},
+			$operation
+		);
 	}
 
 	/** @return array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Post_Provider}|WP_Markdown_Query_Result */

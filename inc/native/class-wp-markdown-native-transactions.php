@@ -24,6 +24,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private $claim = null;
 	private bool $active = false;
 	private bool $autocommit = true;
+	private bool $in_transaction = false;
 
 	/** @var list<array{path:string,existed:bool,contents:?string}> */
 	private array $entries = array();
@@ -44,6 +45,11 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	public function is_active(): bool {
 		return $this->active;
+	}
+
+	/** Whether MySQL considers a logical transaction to be in progress. */
+	public function is_in_transaction(): bool {
+		return $this->in_transaction;
 	}
 
 	/** Whether statements commit individually when no explicit transaction is open. */
@@ -139,6 +145,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 			}
 		}
 		$this->active     = true;
+		$this->in_transaction = true;
 		$this->entries    = array();
 		$this->savepoints = array();
 		$this->restore_observers = array();
@@ -147,6 +154,14 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	/** Capture the current state of a canonical path before it is mutated. */
 	public function record( string $path, ?callable $restore_observer = null ): true|string {
+		// With autocommit disabled, the first transactional write starts the
+		// implicit transaction. Reads must not allocate a journal or change state.
+		if ( ! $this->active && ! $this->autocommit ) {
+			$begun = $this->begin();
+			if ( true !== $begun ) {
+				return $begun;
+			}
+		}
 		if ( ! $this->active ) {
 			return true;
 		}
@@ -175,6 +190,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 			return true;
 		}
 		$this->active     = false;
+		$this->in_transaction = false;
 		$this->entries    = array();
 		$this->savepoints = array();
 		$this->restore_observers = array();
@@ -183,7 +199,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( is_file( $path ) && ! @unlink( $path ) ) {
 			return 'The canonical transaction journal could not be cleared.';
 		}
-		return $this->reopen_for_autocommit();
+		return true;
 	}
 
 	public function rollback(): true|string {
@@ -239,13 +255,13 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return true;
 	}
 
-	/** Disabling autocommit opens an implicit transaction, as MySQL does. */
+	/** Disabling autocommit defers the implicit transaction until a write. */
 	public function set_autocommit( bool $enabled ): true|string {
 		$this->autocommit = $enabled;
 		if ( $enabled ) {
 			return $this->commit();
 		}
-		return $this->active ? true : $this->begin();
+		return true;
 	}
 
 	/**
@@ -279,18 +295,6 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( isset( $this->restore_observers[ $path ] ) ) {
 			( $this->restore_observers[ $path ] )( $path );
 		}
-	}
-
-	/** Reopen an implicit transaction while autocommit remains disabled. */
-	private function reopen_for_autocommit(): true|string {
-		if ( $this->autocommit ) {
-			return true;
-		}
-		$this->active     = true;
-		$this->entries    = array();
-		$this->savepoints = array();
-		$this->restore_observers = array();
-		return $this->persist();
 	}
 
 	private function persist(): true|string {

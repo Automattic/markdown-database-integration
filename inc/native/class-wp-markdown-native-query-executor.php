@@ -70,14 +70,15 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
 			);
 		}
-		if ( 1 === preg_match( '/^\s*SELECT\s+@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT)\s*;?\s*$/i', $request->sql(), $match ) ) {
-			$variable = strtolower( $match[1] );
+		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT))\s*;?\s*$/i', $request->sql(), $match ) ) {
+			$column = $match[1];
+			$variable = strtolower( $match[2] );
 			$value = 'in_transaction' === $variable
-				? (int) $this->transactions?->is_active()
-				: (int) $this->transactions?->is_autocommit();
+				? (string) (int) ( $this->transactions?->is_in_transaction() ?? false )
+				: (string) (int) ( $this->transactions?->is_autocommit() ?? true );
 			return WP_Markdown_Query_Result::selected(
-				array( array( '@@session.' . $variable => $value ) ),
-				array( array( 'name' => '@@session.' . $variable, 'table' => '', 'type' => 8 ) )
+				array( array( $column => $value ) ),
+				array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
 			);
 		}
 		if ( 1 === preg_match( '/^\s*(?:CREATE|ALTER)\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
@@ -1912,7 +1913,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'SUBSTRING' => in_array( null, $values, true ) ? null : substr( (string) $values[0], max( 0, (int) $values[1] - 1 ), (int) $values[2] ),
 			'SUBSTRING_INDEX' => in_array( null, $values, true ) ? null : $this->substring_index( (string) $values[0], (string) $values[1], (int) $values[2] ),
 			'CAST_UNSIGNED' => null === $values[0] ? null : max( 0, (int) $values[0] ),
-			'CAST_DECIMAL' => null === $values[0] ? null : $this->scalar_number( $values[0] ),
+			'CAST_DECIMAL' => null === $values[0] ? null : $this->cast_decimal( $values[0], $values[1] ?? 10, $values[2] ?? 0 ),
 			'YEAR' => null === $values[0] ? null : substr( (string) $values[0], 0, 4 ),
 			'MONTH' => null === $values[0] ? null : substr( (string) $values[0], 5, 2 ),
 			'DATE' => null === $values[0] ? null : substr( (string) $values[0], 0, 10 ),
@@ -1980,6 +1981,42 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $value ) { return null; }
 		$number = (float) $value;
 		return floor( $number ) === $number ? (int) $number : (string) $number;
+	}
+
+	/** Cast through decimal digits instead of PHP floats, which lose declared scale. */
+	private function cast_decimal( int|string $value, int|string $precision, int|string $scale ): string {
+		$precision = (int) $precision;
+		$scale = (int) $scale;
+		$input = trim( (string) $value );
+		if ( 1 !== preg_match( '/^([+-]?)(\d*)(?:\.(\d*))?/', $input, $match ) || ( '' === $match[2] && '' === ( $match[3] ?? '' ) ) ) {
+			$match = array( '', '', '0', '' );
+		}
+		$negative = '-' === $match[1];
+		$whole = ltrim( $match[2], '0' );
+		$whole = '' === $whole ? '0' : $whole;
+		$fraction = $match[3] ?? '';
+		$digits = $whole . str_pad( substr( $fraction, 0, $scale ), $scale, '0' );
+		if ( isset( $fraction[ $scale ] ) && $fraction[ $scale ] >= '5' ) {
+			$digits = $this->increment_decimal_digits( $digits );
+		}
+		$digits = str_pad( $digits, $scale + 1, '0', STR_PAD_LEFT );
+		$whole = 0 === $scale ? $digits : substr( $digits, 0, -$scale );
+		$fraction = 0 === $scale ? '' : substr( $digits, -$scale );
+		if ( strlen( ltrim( $whole, '0' ) ?: '0' ) > $precision - $scale ) {
+			throw new LogicException( 'DECIMAL value exceeds its declared precision.' );
+		}
+		return ( $negative && '0' !== $whole . $fraction ? '-' : '' ) . $whole . ( 0 === $scale ? '' : '.' . $fraction );
+	}
+
+	private function increment_decimal_digits( string $digits ): string {
+		for ( $index = strlen( $digits ) - 1; $index >= 0; --$index ) {
+			if ( '9' !== $digits[ $index ] ) {
+				$digits[ $index ] = (string) ( (int) $digits[ $index ] + 1 );
+				return $digits;
+			}
+			$digits[ $index ] = '0';
+		}
+		return '1' . $digits;
 	}
 
 	private function substring_index( string $value, string $delimiter, int $count ): string {

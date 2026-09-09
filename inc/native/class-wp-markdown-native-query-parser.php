@@ -790,14 +790,22 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$argument = $this->scalar_value();
 			$this->expect_keyword( 'AS' );
 			$type = strtoupper( $this->unqualified_identifier()->name() );
+			$decimal = array();
 			if ( 'DECIMAL' === $type && $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN ) ) {
-				$this->literal();
+				$precision = $this->literal();
 				$this->expect_type( WP_Markdown_Native_SQL_Token::COMMA );
-				$this->literal();
+				$scale = $this->literal();
 				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+				if ( ! is_int( $precision->value() ) || ! is_int( $scale->value() ) || $precision->value() < 1 || $precision->value() > 65 || $scale->value() < 0 || $scale->value() > min( 30, $precision->value() ) ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_decimal_domain', $precision->sql_offset(), 'mdi-native supports DECIMAL precision 1..65 and scale 0..min(30, precision).' );
+				}
+				$decimal = array(
+					new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $precision->value() ),
+					new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $scale->value() ),
+				);
 			}
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-			return new WP_Markdown_Native_SQL_Scalar_Expression( 'UNSIGNED' === $type ? 'CAST_UNSIGNED' : 'CAST_DECIMAL', null, null, array( $argument ) );
+			return new WP_Markdown_Native_SQL_Scalar_Expression( 'UNSIGNED' === $type ? 'CAST_UNSIGNED' : 'CAST_DECIMAL', null, null, array_merge( array( $argument ), $decimal ) );
 		}
 		if ( in_array( $function, array( 'DATE_ADD', 'DATE_SUB' ), true ) ) {
 			$arguments = array( $this->scalar_value() );

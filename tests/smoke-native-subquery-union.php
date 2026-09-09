@@ -23,10 +23,10 @@ final class MDI_Subquery_Array_Provider implements WP_Markdown_Native_Table_Prov
 
 $integer = static fn( bool $nullable = false ): WP_Markdown_Native_Column => new WP_Markdown_Native_Column( 8, $nullable, static fn( mixed $value ): bool => is_int( $value ), static fn( mixed $value ): ?string => is_int( $value ) ? (string) $value : null, array( '=', 'IN' ) );
 $text = static fn( array $lookups = array() ): WP_Markdown_Native_Column => new WP_Markdown_Native_Column( 253, false, 'is_string', null, $lookups );
-$posts_schema = new WP_Markdown_Native_Table_Schema( array( 'ID' => $integer(), 'post_status' => $text(), 'created_at' => $text() ), 'ID' );
+$posts_schema = new WP_Markdown_Native_Table_Schema( array( 'ID' => $integer(), 'outer_key' => $integer( true ), 'post_status' => $text(), 'created_at' => $text() ), 'ID' );
 $meta_schema = new WP_Markdown_Native_Table_Schema( array( 'meta_id' => $integer(), 'post_id' => $integer( true ), 'meta_key' => $text( array( '=' ) ), 'observed_at' => $text() ), 'meta_id' );
 $registry = new WP_Markdown_Native_Table_Registry();
-$registry->register( 'wp_posts', $posts_schema, new MDI_Subquery_Array_Provider( array( array( 'ID' => 1, 'post_status' => 'publish', 'created_at' => '2024-01-02 03:04:05' ), array( 'ID' => 2, 'post_status' => 'draft', 'created_at' => '2024-01-02 06:07:08' ), array( 'ID' => 3, 'post_status' => 'publish', 'created_at' => '2024-01-03 09:10:11' ) ) ) );
+$registry->register( 'wp_posts', $posts_schema, new MDI_Subquery_Array_Provider( array( array( 'ID' => 1, 'outer_key' => 1, 'post_status' => 'publish', 'created_at' => '2024-01-02 03:04:05' ), array( 'ID' => 2, 'outer_key' => null, 'post_status' => 'draft', 'created_at' => '2024-01-02 06:07:08' ), array( 'ID' => 3, 'outer_key' => 3, 'post_status' => 'publish', 'created_at' => '2024-01-03 09:10:11' ) ) ) );
 $registry->register( 'wp_postmeta', $meta_schema, new MDI_Subquery_Array_Provider( array( array( 'meta_id' => 1, 'post_id' => 1, 'meta_key' => 'coverage_probe', 'observed_at' => '2024-01-02 03:04:05' ), array( 'meta_id' => 2, 'post_id' => null, 'meta_key' => 'coverage_probe', 'observed_at' => '2024-01-03 03:04:05' ), array( 'meta_id' => 3, 'post_id' => 3, 'meta_key' => 'other', 'observed_at' => '2024-01-02 03:04:05' ) ) ) );
 $runtime = new WP_Markdown_Native_Query_Runtime( $registry );
 $rows = static fn( WP_Markdown_Query_Result $result ): array => array_map( 'get_object_vars', $result->wpdb_state()['last_result'] ?? array() );
@@ -44,6 +44,14 @@ $two_outer_keys = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID
 $correlated_join = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p INNER JOIN wp_postmeta j ON j.post_id = p.ID WHERE EXISTS ( SELECT 1 FROM wp_postmeta m INNER JOIN wp_posts q ON q.ID = m.post_id WHERE m.meta_id = j.meta_id AND q.post_status = p.post_status )" ) );
 $correlated_aggregate_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE p.ID IN ( SELECT MAX(m.post_id) AS post_id FROM wp_postmeta m WHERE m.post_id = p.ID )" ) );
 $boolean_only_correlation = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.meta_key = 'missing' OR m.post_id = p.ID )" ) );
+$null_outer_exists = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.post_id = p.outer_key OR m.meta_key = 'other' )" ) );
+$null_outer_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE p.ID IN ( SELECT m.post_id FROM wp_postmeta m WHERE m.meta_id = p.outer_key OR m.meta_key = 'other' )" ) );
+$null_outer_not_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE p.ID NOT IN ( SELECT m.post_id FROM wp_postmeta m WHERE m.meta_id = p.outer_key OR m.meta_key = 'other' )" ) );
+$shadowed_alias = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_postmeta p INNER JOIN wp_posts q ON q.ID = p.post_id WHERE p.meta_id = p.meta_id AND p.meta_key = 'other' )" ) );
+$child_failure = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT p.ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_missing m WHERE m.ID = p.ID )' ) );
+$nested_correlation = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT p.ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE EXISTS ( SELECT 1 FROM wp_posts q WHERE q.ID = p.ID ) )' ) );
+$limited_runtime = new WP_Markdown_Native_Query_Runtime( $registry, new WP_Markdown_Native_Query_Parser(), null, null, null, null, null, 1 );
+$limited_correlation = $limited_runtime->execute( new WP_Markdown_Query_Request( 'SELECT p.ID FROM wp_posts p WHERE p.ID IN (1,3) AND EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.post_id = p.ID )' ) );
 $union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft'" ) );
 $ordered_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1" ) );
 $ordinal_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE(created_at) AS day FROM wp_posts WHERE ID = 1 UNION ALL SELECT DATE(created_at) AS day FROM wp_posts WHERE ID = 3 ORDER BY 1 DESC LIMIT 1" ) );
@@ -70,6 +78,13 @@ $checks = array(
 	'correlated EXISTS executes an inner JOIN through the shared plan executor' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $correlated_join ),
 	'correlated IN executes aggregate and scalar-projected child plans' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $correlated_aggregate_in ),
 	'correlated predicates in a child boolean branch retain their lexical outer binding' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $boolean_only_correlation ),
+	'NULL outer EXISTS comparison remains a false branch when its OR alternative is true' => array( array( 'ID' => '1' ), array( 'ID' => '2' ), array( 'ID' => '3' ) ) === $rows( $null_outer_exists ),
+	'NULL outer IN comparison preserves an independent true child branch' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $null_outer_in ),
+	'NULL outer NOT IN comparison preserves an independent true child branch' => array( array( 'ID' => '2' ) ) === $rows( $null_outer_not_in ),
+	'child aliases shadow matching outer aliases before correlation binding' => array( array( 'ID' => '1' ), array( 'ID' => '2' ), array( 'ID' => '3' ) ) === $rows( $shadowed_alias ),
+	'correlated child execution failures propagate to the outer statement' => false === $child_failure->return_value() && 'unsupported_table' === ( $child_failure->diagnostic()['reason'] ?? null ),
+	'unbound nested correlations fail closed before child execution' => false === $nested_correlation->return_value() && 'unsupported_subquery_correlation' === ( $nested_correlation->diagnostic()['reason'] ?? null ),
+	'correlated work budget fails at the first evaluation beyond its exact bound' => false === $limited_correlation->return_value() && 'correlated_subquery_cost' === ( $limited_correlation->diagnostic()['reason'] ?? null ),
 	'UNION deduplicates compatible projections with first-branch metadata' => array( array( 'ID' => '1' ), array( 'ID' => '3' ), array( 'ID' => '2' ) ) === $rows( $union ) && 'wp_posts' === ( $union->wpdb_state()['col_info'][0]->table ?? null ),
 	'UNION ORDER BY and LIMIT apply after all branches accumulate' => array( array( 'ID' => '3' ) ) === $rows( $ordered_union ),
 	'UNION global ORDER BY accepts output ordinals and scalar aliases' => array( array( 'day' => '2024-01-03' ) ) === $rows( $ordinal_union ),

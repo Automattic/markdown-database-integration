@@ -10,7 +10,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private const MAX_ROWS_PER_TABLE = 10000;
 	private const MAX_BYTES_PER_TABLE = 8388608;
 
-	/** @param array<int,array{table:string,rows:int,sha256:string,schema_sha256:string}> $provenance */
+	/** @param array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}> $provenance */
 	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
@@ -32,6 +32,11 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		foreach ( $tables as $table ) {
 			$quoted = '`' . str_replace( '`', '``', $table ) . '`';
 			$ddl = self::one_row( $connection, 'SHOW CREATE TABLE ' . $quoted );
+			if ( null === $ddl && 1146 === self::error_code( $connection ) ) {
+				// An absent source is a fact usable for an independent native error run.
+				$provenance[] = array( 'table' => $table, 'exists' => false );
+				continue;
+			}
 			$definition = is_array( $ddl ) ? (string) ( array_values( $ddl )[1] ?? '' ) : '';
 			$compiled = '' === $definition ? array() : WP_Markdown_Native_Schema_Catalog::compile( $definition, $prefixes, array( $table ) );
 			$schema_definition = 1 === count( $compiled ) ? reset( $compiled ) : null;
@@ -41,7 +46,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			}
 			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
 			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
-			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
+			$provenance[] = array( 'table' => $table, 'exists' => true, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
 	}
@@ -64,10 +69,32 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		return $this->runtime->execute( $request );
+		$result = $this->runtime->execute( $request );
+		$diagnostic = $result->diagnostic() ?? array();
+		if ( 'unsupported_table' !== ( $diagnostic['reason'] ?? null ) || ! $this->has_explicitly_absent_source( $request->sql() ) ) {
+			return $result;
+		}
+		return WP_Markdown_Query_Result::failure(
+			array(
+				'code'    => 1146,
+				'reason'  => 'missing_table',
+				'message' => 'The requested table does not exist.',
+			)
+		);
 	}
 
-	/** @return array{read_connection:string,tables:array<int,array{table:string,rows:int,sha256:string,schema_sha256:string}>} */
+	/** Only snapshot discovery, never an unregistered native table, proves absence. */
+	private function has_explicitly_absent_source( string $sql ): bool {
+		$absent = array();
+		foreach ( $this->provenance as $table ) {
+			if ( is_array( $table ) && false === ( $table['exists'] ?? null ) && is_string( $table['table'] ?? null ) ) {
+				$absent[] = $table['table'];
+			}
+		}
+		return array() !== array_intersect( self::tables_in( $sql ), $absent );
+	}
+
+	/** @return array{read_connection:string,tables:array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}>} */
 	public function provenance(): array {
 		return array( 'read_connection' => 'authoritative_mysql_connection_pre_query', 'tables' => $this->provenance );
 	}
@@ -198,6 +225,13 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			return $connection->query( $sql, MYSQLI_USE_RESULT );
 		}
 		return $connection->query( $sql );
+	}
+
+	private static function error_code( object $connection ): int {
+		if ( isset( $connection->errno ) ) {
+			return (int) $connection->errno;
+		}
+		return method_exists( $connection, 'errno' ) ? (int) $connection->errno() : 0;
 	}
 
 	private static function free( object $result ): void {

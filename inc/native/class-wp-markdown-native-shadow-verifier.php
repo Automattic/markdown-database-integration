@@ -49,6 +49,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private int $sequence = 0;
 	private array $counts = array(
 		'compatible'       => 0,
+		'compatible_reads' => 0,
+		'compatible_missing_table_errors' => 0,
 		'unsupported'      => 0,
 		'mismatched'       => 0,
 		'ignored'          => 0,
@@ -165,6 +167,12 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				new WP_Markdown_Query_Request( $query, $prefix )
 			);
 			if ( ! $native->succeeded() ) {
+				$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database );
+				if ( $this->has_matching_missing_table_error_state( $expected, $native->corpus_result( $pre_query_insert_id ) ) ) {
+					++$this->counts['compatible'];
+					++$this->counts['compatible_missing_table_errors'];
+					return;
+				}
 				$diagnostic = $native->diagnostic() ?? array();
 				$status = 'markdown_db_native_unsupported_query' === ( $diagnostic['code'] ?? '' )
 					? 'unsupported'
@@ -194,6 +202,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			}
 			if ( $comparison['compatible'] ) {
 				++$this->counts['compatible'];
+				++$this->counts['compatible_reads'];
 				return;
 			}
 
@@ -323,6 +332,31 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private function safe_reason( string $reason ): string {
 		$reason = (string) preg_replace( '/[^A-Za-z0-9_.-]/', '_', $reason );
 		return '' === $reason ? 'unknown' : substr( $reason, 0, 128 );
+	}
+
+	/** Compare all caller-visible error state except server-specific error text. */
+	private function has_matching_missing_table_error_state( array $expected, array $actual ): bool {
+		if ( false !== ( $expected['return']['value'] ?? null ) || 1146 !== (int) ( $expected['error_code'] ?? 0 ) ) {
+			return false;
+		}
+		if ( false !== ( $actual['return']['value'] ?? null ) || 1146 !== (int) ( $actual['error_code'] ?? 0 ) ) {
+			return false;
+		}
+		return $this->normalized_error_state( $expected ) === $this->normalized_error_state( $actual );
+	}
+
+	/** @return array<string,mixed> */
+	private function normalized_error_state( array $result ): array {
+		return array(
+			'return'        => $result['return'] ?? null,
+			'rows'          => $result['rows'] ?? null,
+			'columns'       => $result['columns'] ?? null,
+			'error_code'    => $result['error_code'] ?? null,
+			'insert_id'     => $result['insert_id'] ?? null,
+			'rows_affected' => $result['rows_affected'] ?? null,
+			'num_rows'      => $result['num_rows'] ?? null,
+			'exception'     => $result['exception'] ?? null,
+		);
 	}
 
 	private function query_template( string $query ): string {

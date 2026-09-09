@@ -66,6 +66,7 @@ final class MDI_Snapshot_Database {
 
 $database = new MDI_Snapshot_Database();
 $database->result();
+$database->insert_id = 73;
 $verifier = new WP_Markdown_Native_Shadow_Verifier(
 	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
 	10,
@@ -130,6 +131,9 @@ $checks = array(
 	'input provenance records bounded source rows without their values' => 'authoritative_mysql_connection_pre_query' === ( $first['context']['last_input_state']['read_connection'] ?? null )
 		&& 1 === ( $first['context']['last_input_state']['tables'][0]['rows'] ?? 0 )
 		&& 64 === strlen( (string) ( $first['context']['last_input_state']['tables'][0]['schema_sha256'] ?? '' ) )
+		&& 'pre_query_wpdb_insert_id' === ( $first['context']['last_input_state']['facade_state']['native_insert_id'] ?? null )
+		&& 64 === strlen( (string) ( $first['context']['last_input_state']['facade_state']['insert_id_sha256'] ?? '' ) )
+		&& ! isset( $first['context']['last_input_state']['facade_state']['insert_id'] )
 		&& ! str_contains( json_encode( $second, JSON_THROW_ON_ERROR ), 'Second' ),
 	'mutation changes the next authoritative input view' => ( $first['context']['last_input_state']['tables'][0]['sha256'] ?? '' ) !== ( $second['context']['last_input_state']['tables'][0]['sha256'] ?? '' ),
 	'raw mysqli-shaped values retain NULL while provider applies predicate, order, limit, and projection' => array( array( 'ID' => '10' ) ) === $provided,

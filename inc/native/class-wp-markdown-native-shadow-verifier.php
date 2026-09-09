@@ -71,6 +71,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private string $input_mode;
 	/** @var array<string,WP_Markdown_Native_Authoritative_Snapshot_Runtime> */
 	private array $pending_inputs = array();
+	/** @var array<string,int> */
+	private array $pending_insert_ids = array();
 	/** @var array<string,array{code:string,reason:string}> */
 	private array $pending_input_failures = array();
 
@@ -92,6 +94,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		}
 		$prefix = $this->query_prefix( $database );
 		$key = hash( 'sha256', $query );
+		$this->pending_insert_ids[ $key ] = (int) ( $database->insert_id ?? 0 );
 		try {
 			$this->pending_inputs[ $key ] = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
 			unset( $this->pending_input_failures[ $key ] );
@@ -109,7 +112,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		$key = hash( 'sha256', $query );
 		$input = $this->pending_inputs[ $key ] ?? null;
 		$input_failure = $this->pending_input_failures[ $key ] ?? null;
-		unset( $this->pending_inputs[ $key ], $this->pending_input_failures[ $key ] );
+		$pre_query_insert_id = $this->pending_insert_ids[ $key ] ?? 0;
+		unset( $this->pending_inputs[ $key ], $this->pending_input_failures[ $key ], $this->pending_insert_ids[ $key ] );
 		if ( $this->sequence >= $this->max_observations ) {
 			++$this->counts['dropped'];
 			return;
@@ -136,7 +140,15 @@ final class WP_Markdown_Native_Shadow_Verifier {
 					return;
 				}
 				$runtime = $input ?? WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
-				$this->last_input_state = $runtime->provenance();
+				$this->last_input_state = array_merge(
+					$runtime->provenance(),
+					array(
+						'facade_state' => array(
+							'native_insert_id' => 'pre_query_wpdb_insert_id',
+							'insert_id_sha256' => hash( 'sha256', (string) $pre_query_insert_id ),
+						),
+					)
+				);
 			}
 			$native = $runtime->execute(
 				new WP_Markdown_Query_Request( $query, $prefix )
@@ -162,7 +174,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 
 			$comparison = WP_Markdown_Query_Compatibility_Comparator::compare(
 				WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true ),
-				$native->corpus_result()
+				$native->corpus_result( WP_Markdown_Native_WPDB_State_Projection::insert_id( $native, $query, $pre_query_insert_id ) )
 			);
 			if ( $comparison['compatible'] ) {
 				++$this->counts['compatible'];

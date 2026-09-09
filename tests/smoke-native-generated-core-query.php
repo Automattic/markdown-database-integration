@@ -60,6 +60,9 @@ foreach ( $eligible as $table => $identity ) {
 }
 
 $multisite = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_2_', 'wp_', true );
+$new_site_root = $root . '/sites/2';
+mkdir( $new_site_root, 0755, true );
+$new_site_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $new_site_root, 'wp_2_', 'wp_', true, $new_site_root, $root, $root );
 $network_tables = array(
 	'blogs'            => 'blog_id',
 	'blogmeta'         => 'meta_id',
@@ -75,6 +78,7 @@ foreach ( $network_tables as $table => $identity ) {
 }
 $site_termmeta = $multisite->execute( new WP_Markdown_Query_Request( 'SELECT meta_id FROM wp_2_termmeta LIMIT 0', 'wp_2_' ) );
 $wrong_network_prefix = $multisite->execute( new WP_Markdown_Query_Request( 'SELECT blog_id FROM wp_2_blogs LIMIT 0', 'wp_2_' ) );
+$new_site_network_option = $new_site_runtime->execute( new WP_Markdown_Query_Request( "SELECT meta_value FROM wp_sitemeta WHERE meta_key = 'ms_files_rewriting' AND site_id = 1", 'wp_2_' ) );
 
 $checks = array(
 	'generated commentmeta schema executes the retained conjunctive blocker' => 'retained' === ( $commentmeta->wpdb_state()['last_result'][0]->meta_value ?? null ),
@@ -90,6 +94,7 @@ $checks = array(
 	'eligible multisite globals use base_prefix while site tables use active prefix' => $network_registered
 		&& 0 === $site_termmeta->return_value()
 		&& false === $wrong_network_prefix->return_value(),
+	'an empty new-site root retains established network-global core tables' => 0 === $new_site_network_option->return_value(),
 );
 
 $failed = false;
@@ -102,6 +107,8 @@ foreach ( $checks as $label => $passed ) {
 @unlink( $root . '/_tables/terms.json' );
 @unlink( $root . '/_tables/term_relationships.json' );
 @rmdir( $root . '/_tables' );
+@rmdir( $new_site_root );
+@rmdir( $root . '/sites' );
 @rmdir( $root . '/_options' );
 @rmdir( $root );
 exit( $failed ? 1 : 0 );

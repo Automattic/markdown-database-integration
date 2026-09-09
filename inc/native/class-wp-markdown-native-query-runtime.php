@@ -163,6 +163,12 @@ final class WP_Markdown_Native_Runtime_Factory {
 			foreach ( array_keys( WP_Markdown_Native_Schema_Catalog::definitions( $multisite ) ) as $suffix ) {
 				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, $multisite, (string) $suffix, $global_state_root, $global_content_root );
 			}
+		} elseif ( $multisite && self::holds_canonical_site( $global_state_root, $global_content_root ) ) {
+			// A new site's local root is empty while wp_initialize_site() still
+			// needs established network tables such as sitemeta.
+			foreach ( array( 'blogs', 'blogmeta', 'registration_log', 'site', 'sitemeta', 'signups' ) as $suffix ) {
+				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, true, $suffix, $global_state_root, $global_content_root );
+			}
 		}
 		self::register_persisted_plugin_tables( $registry, $state_root, $prefix, $multisite );
 		return $registry;

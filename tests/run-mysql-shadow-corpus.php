@@ -24,7 +24,7 @@ $root = sys_get_temp_dir() . '/mdi-mysql-shadow-corpus-' . bin2hex( random_bytes
 $bootstrap = $root . '/bootstrap-wp-content';
 $state = $root . '/state';
 $artifacts = $root . '/artifacts';
-$report_path = '/wordpress/wp-content/mdi-shadow-report.json';
+$report_path = '/tmp/mdi-shadow-report.json';
 mkdir( $bootstrap, 0755, true );
 mkdir( $state, 0755, true );
 copy( $repo . '/db.php', $bootstrap . '/db.php' );

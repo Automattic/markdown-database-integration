@@ -106,6 +106,14 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'post_author' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_parent' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_type' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					// Duplicate-event discovery uses a title equality candidate set.
+					// Keep its file-backed scan bounded to ASCII comparisons instead
+					// of assuming MySQL's full Unicode collation.
+					'post_title' => array(
+						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
+					),
 					// WordPress resolves a permalink by slug, so post_name is the
 					// lookup every front-end request depends on. Slugs are
 					// sanitized to ASCII, and a non-ASCII slug fails closed

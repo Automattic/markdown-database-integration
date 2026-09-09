@@ -40,10 +40,17 @@ $other = new WP_Markdown_Native_Transaction_Journal( $root );
 $recovered_live = $other->recover();
 $during = (string) file_get_contents( $table . '/plugin_records.json' );
 
-// The owner finishes and its work stands.
-$live->commit();
-$after_commit = (string) file_get_contents( $table . '/plugin_records.json' );
-$journals_after = glob( $root . '/_journal/native-transaction-*.json' ) ?: array();
+// B was constructed while A held the journal. Once A crashes, B must recover
+// before publishing its own write, so a later cold recovery cannot erase B.
+unset( $live );
+gc_collect_cycles();
+$recovered_before_write = $other->begin_write();
+$after_recovery = (string) file_get_contents( $table . '/plugin_records.json' );
+file_put_contents( $table . '/plugin_records.json', '[{"survived":true}]' );
+$other->finish_write();
+$cold = new WP_Markdown_Native_Transaction_Journal( $root );
+$cold_recovery = $cold->recover();
+$after_cold_recovery = (string) file_get_contents( $table . '/plugin_records.json' );
 
 // A journal whose owner is gone holds no lock, so it is recovered.
 file_put_contents( $table . '/plugin_records.json', '[{"abandoned":true}]' );
@@ -53,16 +60,16 @@ file_put_contents(
 );
 $survivor = new WP_Markdown_Native_Transaction_Journal( $root );
 $recovered_dead = $survivor->recover();
-$after_recovery = (string) file_get_contents( $table . '/plugin_records.json' );
+$after_explicit_recovery = (string) file_get_contents( $table . '/plugin_records.json' );
 
 $checks = array(
 	'a running transaction writes an owned journal' => 1 === count( $journals ),
 	'another writer does not recover a held journal' => false === $recovered_live,
 	'a held transaction is left in place' => '[{"changed":true}]' === $during,
-	'the owner keeps its work on commit' => '[{"changed":true}]' === $after_commit,
-	'a committed journal is cleaned up' => array() === $journals_after,
+	'writer B recovers A after A crashes despite its earlier startup miss' => true === $recovered_before_write && "[\n]\n" === $after_recovery,
+	'a cold recovery cannot erase B after abandoned-owner recovery' => false === $cold_recovery && '[{"survived":true}]' === $after_cold_recovery,
 	'an abandoned journal is recovered' => true === $recovered_dead,
-	'an abandoned transaction is rolled back' => '[{"restored":true}]' === $after_recovery,
+	'an abandoned transaction is rolled back' => '[{"restored":true}]' === $after_explicit_recovery,
 );
 
 mdi_native_journal_remove_tree( $root );

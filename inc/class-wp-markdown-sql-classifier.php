@@ -9,6 +9,7 @@ class WP_Markdown_SQL_Classifier {
 
 	/** @return array{type:string,op:string,table?:string,tables?:string[]}|null */
 	public static function mutation( string $query ): ?array {
+		$query = preg_replace( '/\A(?:\s|--[^\r\n]*|#[^\r\n]*|\/\*.*?\*\/)+/s', '', $query ) ?? $query;
 		$drop_query = preg_replace( '/(?:\s*(?:--[^\r\n]*|#[^\r\n]*|\/\*.*?\*\/)\s*)+$/s', '', $query );
 		if ( preg_match( '/^\s*(INSERT(?:\s+IGNORE)?|REPLACE)\s+INTO\s+`?(\w+)`?/i', $query, $match ) ) {
 			return array( 'type' => 'DML', 'op' => str_contains( strtoupper( $match[1] ), 'REPLACE' ) ? 'REPLACE' : 'INSERT', 'table' => $match[2] );

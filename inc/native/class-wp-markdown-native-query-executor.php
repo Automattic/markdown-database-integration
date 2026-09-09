@@ -89,7 +89,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
 		}
-		$write_admitted = null !== $this->transactions && 1 === preg_match( '/^\s*(?:INSERT|UPDATE|DELETE|REPLACE|CREATE|ALTER|DROP)\b/i', $request->sql() );
+		$write_admitted = null !== $this->transactions && null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
 		if ( $write_admitted ) {
 			$locked = $this->transactions->begin_write();
 			if ( true !== $locked ) {

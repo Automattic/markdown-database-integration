@@ -285,7 +285,8 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly bool $union_all = false,
 		private readonly array $union_order_by = array(),
 		private readonly ?int $union_limit = null,
-		private readonly int $union_limit_offset = 0
+		private readonly int $union_limit_offset = 0,
+		private readonly array $group_expressions = array()
 	) {}
 
 	public function table(): string {
@@ -382,7 +383,7 @@ final class WP_Markdown_Native_Query_Plan {
 		return $this->group_by;
 	}
 
-	/** @return array<int,array{function:string,column:?string,source:?string,alias:string}> */
+	/** @return array<int,array{function:string,column:?string,source:?string,alias:string,distinct:bool}> */
 	public function aggregates(): array {
 		return $this->aggregates;
 	}
@@ -401,6 +402,8 @@ final class WP_Markdown_Native_Query_Plan {
 	/** @return array<int,WP_Markdown_Native_Query_Scalar_Predicate> */
 	public function scalar_having(): array { return $this->scalar_having; }
 	public function group_expression(): ?WP_Markdown_Native_Query_Scalar_Expression { return $this->group_expression; }
+	/** @return array<int,WP_Markdown_Native_Query_Scalar_Expression> */
+	public function group_expressions(): array { return array() === $this->group_expressions && null !== $this->group_expression ? array( $this->group_expression ) : $this->group_expressions; }
 	public function boolean_predicate(): ?WP_Markdown_Native_Query_Boolean_Predicate { return $this->boolean_predicate; }
 
 	public function derived(): ?self { return $this->derived; }

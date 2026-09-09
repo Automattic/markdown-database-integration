@@ -305,7 +305,7 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 		// A statement carrying many rows reports the rows it affected and the
 		// identifier of the first row it created, and leaves nothing behind
 		// when one of them fails.
-		$owns_transaction = null !== $this->transactions && ! $this->transactions->is_active();
+		$owns_transaction = null !== $this->transactions && $this->transactions->is_autocommit() && ! $this->transactions->is_active();
 		if ( $owns_transaction && true !== $this->transactions->begin() ) {
 			return $this->failure( 'mutation_transaction_failed', 'The canonical multi-row option INSERT could not be isolated.' );
 		}

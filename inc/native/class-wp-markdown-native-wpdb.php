@@ -29,6 +29,9 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		$this->native_runtime = $runtime;
 		$this->native_table_prefix = $table_prefix;
 		$this->native_database_name = defined( 'DB_NAME' ) ? (string) DB_NAME : '';
+		// Native executes the MySQL-compatible dialect in-process; this is not a
+		// claim that wpdb has established a mysqli connection.
+		$this->is_mysql = true;
 		$this->set_prefix( $table_prefix );
 		// db.php replaces wpdb after its normal constructor would establish the
 		// primary site. Multisite switch_to_blog() requires that initial scope.

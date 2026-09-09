@@ -70,6 +70,17 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
 			);
 		}
+		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT))\s*;?\s*$/i', $request->sql(), $match ) ) {
+			$column = $match[1];
+			$variable = strtolower( $match[2] );
+			$value = 'in_transaction' === $variable
+				? (string) (int) ( $this->transactions?->is_in_transaction() ?? false )
+				: (string) (int) ( $this->transactions?->is_autocommit() ?? true );
+			return WP_Markdown_Query_Result::selected(
+				array( array( $column => $value ) ),
+				array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
+			);
+		}
 		if ( 1 === preg_match( '/^\s*(?:CREATE|ALTER)\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
 			|| 1 === preg_match( '/^\s*DROP\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
 			|| 1 === preg_match( '/^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b/i', $request->sql() ) ) {
@@ -155,7 +166,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $scalar_predicates as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
 		if ( null !== $boolean_predicate ) { $columns = array_merge( $columns, $boolean_predicate->columns() ); }
 		if ( array() === $plan->aggregates() ) { foreach ( $plan->scalar_having() as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); } }
-		if ( null !== $plan->group_expression() ) { $columns = array_merge( $columns, $plan->group_expression()->columns() ); }
+		foreach ( $plan->group_expressions() as $expression ) { $columns = array_merge( $columns, $expression->columns() ); }
 		foreach ( $plan->subqueries() as $subquery ) {
 			if ( null !== $subquery->column() ) {
 				$columns[] = $subquery->column();
@@ -247,7 +258,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$provider_projection = array_merge( $provider_projection, $this->outer_correlation_columns( $subquery->query() )[ $plan->table_alias() ?? $plan->table() ] ?? array() );
 		}
 		if ( array() === $plan->aggregates() ) { foreach ( $plan->scalar_having() as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); } }
-		if ( null !== $plan->group_expression() ) { $provider_projection = array_merge( $provider_projection, $plan->group_expression()->columns() ); }
+		foreach ( $plan->group_expressions() as $expression ) { $provider_projection = array_merge( $provider_projection, $expression->columns() ); }
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
 				$provider_projection[] = $column;
@@ -362,9 +373,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( array() !== $aggregates ) {
 					if ( null !== $plan->group_by() ) {
 						$group_by = $plan->group_by();
-						$value = null === $plan->group_expression() ? ( $row[ $group_by ] ?? null ) : $this->evaluate_scalar( $plan->group_expression(), $row, $schema );
-						$key = null === $value ? "\0" : serialize( $value );
-						$groups[ $key ] ??= array( 'value' => $value, 'state' => array() );
+						$expressions = $plan->group_expressions();
+						$values = array() === $expressions ? array( $row[ $group_by ] ?? null ) : array_map( fn( WP_Markdown_Native_Query_Scalar_Expression $expression ): int|string|null => $this->evaluate_scalar( $expression, $row, $schema ), $expressions );
+						$key = serialize( $values );
+						$groups[ $key ] ??= array( 'value' => $values[0] ?? null, 'row' => $row, 'state' => array() );
 						$this->accumulate_aggregates( $groups[ $key ]['state'], $row, $aggregates, $schema );
 					} else {
 						$this->accumulate_aggregates( $aggregate_state, $row, $aggregates, $schema );
@@ -473,6 +485,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$rows = array();
 		foreach ( $groups as $group ) {
 			$row = array( $column => null === $group['value'] ? null : (string) $group['value'] );
+			foreach ( $scalar_projection as $scalar ) {
+				$row[ $scalar['alias'] ] = $this->string_scalar( $this->evaluate_scalar( $scalar['expression'], $group['row'] ?? array(), $schema ) );
+			}
 			foreach ( $aggregates as $index => $aggregate ) {
 				$row[ $aggregate['alias'] ] = $this->aggregate_value( $group['state'][ $index ] ?? array(), $aggregate['function'] );
 			}
@@ -493,7 +508,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( $calculates_found_rows ) { $this->last_found_rows = count( $rows ); }
 		$rows = array_values( array_slice( $rows, $offset, PHP_INT_MAX === $limit ? null : $limit ) );
-		$columns = array( array( 'name' => $group_name, 'table' => $group_name === $column ? $table : '', 'type' => $group_name === $column ? $schema->column( $column )->type() : 253 ) );
+		$columns = array();
+		if ( array() === $scalar_projection ) {
+			$columns[] = array( 'name' => $group_name, 'table' => $table, 'type' => $schema->column( $column )->type() );
+		} else {
+			foreach ( $scalar_projection as $scalar ) { $columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 ); }
+			ksort( $columns );
+			$columns = array_values( $columns );
+		}
 		foreach ( $aggregates as $aggregate ) { $columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 'GROUP_CONCAT' === $aggregate['function'] ? 253 : 8 ); }
 		return WP_Markdown_Query_Result::selected( $rows, $columns );
 	}
@@ -672,7 +694,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( array_merge( $query->scalar_predicates(), $query->scalar_having() ) as $predicate ) {
 			if ( $has_outer( $predicate->left() ) || $has_outer( $predicate->right() ) ) { return true; }
 		}
-		if ( null !== $query->group_expression() && $has_outer( $query->group_expression() ) ) { return true; }
+		foreach ( $query->group_expressions() as $expression ) { if ( $has_outer( $expression ) ) { return true; } }
 		foreach ( $query->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) && $has_outer( $order['expression'] ) ) { return true; } }
 		if ( null !== $query->boolean_predicate() ) {
 			foreach ( $query->boolean_predicate()->groups() as $group ) {
@@ -862,9 +884,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $plan->scalar_having() as $predicate ) { $bound = $bind_scalar_predicate( $predicate ); if ( null === $bound ) { return null; } $scalar_having[] = $bound; }
 		$group_expression = null === $plan->group_expression() ? null : $bind_scalar( $plan->group_expression() );
 		if ( null !== $plan->group_expression() && null === $group_expression ) { return null; }
+		$group_expressions = array();
+		foreach ( $plan->group_expressions() as $expression ) { $bound = $bind_scalar( $expression ); if ( null === $bound ) { return null; } $group_expressions[] = $bound; }
 		$orders = array();
 		foreach ( $plan->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) ) { $bound = $bind_scalar( $order['expression'] ); if ( null === $bound ) { return null; } $order['expression'] = $bound; } $orders[] = $order; }
-		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $orders, $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $scalar_projection, $plan->having(), $plan->subqueries(), $plan->union(), $scalar_predicates, $scalar_having, $group_expression, $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset() );
+		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $orders, $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $scalar_projection, $plan->having(), $plan->subqueries(), $plan->union(), $scalar_predicates, $scalar_having, $group_expression, $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset(), $group_expressions );
 	}
 
 	private function execute_union( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {
@@ -1329,11 +1353,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() !== $aggregates ) {
 			$grouped_rows = array();
 			$totals = array();
+			$distinct_values = array();
 			foreach ( $rows as $index => $row ) {
 				$key = serialize( $selected_rows[ $index ] ?? array() );
 				if ( ! isset( $grouped_rows[ $key ] ) ) {
 					$grouped_rows[ $key ] = $selected_rows[ $index ] ?? array();
 					$totals[ $key ] = array_fill_keys( array_column( $aggregates, 'alias' ), null );
+					$distinct_values[ $key ] = array_fill_keys( array_column( $aggregates, 'alias' ), array() );
 				}
 				foreach ( $aggregates as $aggregate ) {
 					$alias = $aggregate['alias'];
@@ -1341,6 +1367,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					if ( 'COUNT' === $aggregate['function'] ) {
 						// COUNT(*) counts rows; COUNT(col) skips NULL, which is
 						// how an unmatched outer row contributes nothing.
+						if ( null !== $aggregate['column'] && true === ( $aggregate['distinct'] ?? false ) ) {
+							if ( null === $value || isset( $distinct_values[ $key ][ $alias ][ serialize( $value ) ] ) ) {
+								continue;
+							}
+							$distinct_values[ $key ][ $alias ][ serialize( $value ) ] = true;
+						}
 						if ( null === $aggregate['column'] || null !== $value ) {
 							$totals[ $key ][ $alias ] = (int) ( $totals[ $key ][ $alias ] ?? 0 ) + 1;
 						} elseif ( null === $totals[ $key ][ $alias ] ) {
@@ -1765,6 +1797,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		WP_Markdown_Native_Table_Schema $schema,
 		WP_Markdown_Native_Table_Access $access
 	): iterable|WP_Markdown_Query_Result {
+		if ( null !== $this->transactions && true !== ( $accessed = $this->transactions->access() ) ) {
+			return $this->failure( 'transaction_access_failed', $accessed );
+		}
 		if ( ! $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider ) {
 			return $provider->read( $access );
 		}
@@ -1879,7 +1914,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'CONCAT' => in_array( null, $values, true ) ? null : implode( '', $values ),
 			'COALESCE' => $this->first_non_null( $values ),
 			'SUBSTRING' => in_array( null, $values, true ) ? null : substr( (string) $values[0], max( 0, (int) $values[1] - 1 ), (int) $values[2] ),
+			'SUBSTRING_INDEX' => in_array( null, $values, true ) ? null : $this->substring_index( (string) $values[0], (string) $values[1], (int) $values[2] ),
 			'CAST_UNSIGNED' => null === $values[0] ? null : max( 0, (int) $values[0] ),
+			'CAST_DECIMAL' => null === $values[0] ? null : $this->cast_decimal( $values[0], $values[1] ?? 10, $values[2] ?? 0 ),
 			'YEAR' => null === $values[0] ? null : substr( (string) $values[0], 0, 4 ),
 			'MONTH' => null === $values[0] ? null : substr( (string) $values[0], 5, 2 ),
 			'DATE' => null === $values[0] ? null : substr( (string) $values[0], 0, 10 ),
@@ -1947,6 +1984,80 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $value ) { return null; }
 		$number = (float) $value;
 		return floor( $number ) === $number ? (int) $number : (string) $number;
+	}
+
+	/** Cast through decimal digits instead of PHP floats, which lose declared scale. */
+	private function cast_decimal( int|string $value, int|string $precision, int|string $scale ): string {
+		$precision = (int) $precision;
+		$scale = (int) $scale;
+		$input = trim( (string) $value );
+		if ( 1 !== preg_match( '/^([+-]?)(\d*)(?:\.(\d*))?(?:[eE]([+-]?\d+))?/', $input, $match ) || ( '' === $match[2] && '' === ( $match[3] ?? '' ) ) ) {
+			$match = array( '', '', '0', '', '0' );
+		}
+		$negative = '-' === $match[1];
+		$digits = $match[2] . ( $match[3] ?? '' );
+		$leading = strlen( $digits ) - strlen( ltrim( $digits, '0' ) );
+		$digits = substr( $digits, $leading );
+		if ( '' === $digits ) {
+			return '0' . ( 0 === $scale ? '' : '.' . str_repeat( '0', $scale ) );
+		}
+		$decimal = strlen( $match[2] ) - $leading + $this->bounded_decimal_exponent( $match[4] ?? '0' );
+		$cutoff = $decimal + $scale;
+		if ( $cutoff > $precision + 1 ) {
+			return $this->decimal_limit( $negative, $precision, $scale );
+		}
+		$rounded = $cutoff <= 0 ? '0' : substr( $digits, 0, $cutoff );
+		$rounded = str_pad( $rounded, max( 1, $cutoff ), '0' );
+		if ( $cutoff >= 0 && isset( $digits[ $cutoff ] ) && $digits[ $cutoff ] >= '5' ) {
+			$rounded = $this->increment_decimal_digits( $rounded );
+		}
+		$rounded = ltrim( $rounded, '0' );
+		if ( '' === $rounded ) {
+			$rounded = '0';
+		}
+		if ( strlen( $rounded ) > $precision ) {
+			return $this->decimal_limit( $negative, $precision, $scale );
+		}
+		$rounded = str_pad( $rounded, $scale + 1, '0', STR_PAD_LEFT );
+		$whole = 0 === $scale ? $rounded : substr( $rounded, 0, -$scale );
+		$fraction = 0 === $scale ? '' : substr( $rounded, -$scale );
+		return ( $negative && '' !== ltrim( $rounded, '0' ) ? '-' : '' ) . $whole . ( 0 === $scale ? '' : '.' . $fraction );
+	}
+
+	/** Bound exponents before they can allocate beyond the declared DECIMAL domain. */
+	private function bounded_decimal_exponent( string $value ): int {
+		$negative = str_starts_with( $value, '-' );
+		$digits = ltrim( $value, '+-' );
+		if ( strlen( ltrim( $digits, '0' ) ) > 3 ) {
+			return $negative ? -1000 : 1000;
+		}
+		return (int) $value;
+	}
+
+	private function decimal_limit( bool $negative, int $precision, int $scale ): string {
+		$digits = str_repeat( '9', $precision );
+		$whole = 0 === $scale ? $digits : substr( $digits, 0, -$scale );
+		$fraction = 0 === $scale ? '' : substr( $digits, -$scale );
+		return ( $negative ? '-' : '' ) . $whole . ( 0 === $scale ? '' : '.' . $fraction );
+	}
+
+	private function increment_decimal_digits( string $digits ): string {
+		for ( $index = strlen( $digits ) - 1; $index >= 0; --$index ) {
+			if ( '9' !== $digits[ $index ] ) {
+				$digits[ $index ] = (string) ( (int) $digits[ $index ] + 1 );
+				return $digits;
+			}
+			$digits[ $index ] = '0';
+		}
+		return '1' . $digits;
+	}
+
+	private function substring_index( string $value, string $delimiter, int $count ): string {
+		if ( '' === $delimiter || 0 === $count ) {
+			return '';
+		}
+		$parts = explode( $delimiter, $value );
+		return $count > 0 ? implode( $delimiter, array_slice( $parts, 0, $count ) ) : implode( $delimiter, array_slice( $parts, $count ) );
 	}
 
 	private function character_length( string $value ): int {

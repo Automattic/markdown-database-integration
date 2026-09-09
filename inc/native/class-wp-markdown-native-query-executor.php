@@ -1900,7 +1900,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'CONCAT' => in_array( null, $values, true ) ? null : implode( '', $values ),
 			'COALESCE' => $this->first_non_null( $values ),
 			'SUBSTRING' => in_array( null, $values, true ) ? null : substr( (string) $values[0], max( 0, (int) $values[1] - 1 ), (int) $values[2] ),
+			'SUBSTRING_INDEX' => in_array( null, $values, true ) ? null : $this->substring_index( (string) $values[0], (string) $values[1], (int) $values[2] ),
 			'CAST_UNSIGNED' => null === $values[0] ? null : max( 0, (int) $values[0] ),
+			'CAST_DECIMAL' => null === $values[0] ? null : $this->scalar_number( $values[0] ),
 			'YEAR' => null === $values[0] ? null : substr( (string) $values[0], 0, 4 ),
 			'MONTH' => null === $values[0] ? null : substr( (string) $values[0], 5, 2 ),
 			'DATE' => null === $values[0] ? null : substr( (string) $values[0], 0, 10 ),
@@ -1968,6 +1970,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $value ) { return null; }
 		$number = (float) $value;
 		return floor( $number ) === $number ? (int) $number : (string) $number;
+	}
+
+	private function substring_index( string $value, string $delimiter, int $count ): string {
+		if ( '' === $delimiter || 0 === $count ) {
+			return '';
+		}
+		$parts = explode( $delimiter, $value );
+		return $count > 0 ? implode( $delimiter, array_slice( $parts, 0, $count ) ) : implode( $delimiter, array_slice( $parts, $count ) );
 	}
 
 	private function character_length( string $value ): int {

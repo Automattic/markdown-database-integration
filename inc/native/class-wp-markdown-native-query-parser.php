@@ -738,7 +738,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 	private function matches_scalar_expression(): bool {
 		return WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
-			|| in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
+			|| in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'SUBSTRING_INDEX', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type()
 			|| ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
 	}
@@ -770,9 +770,15 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		if ( 'CAST' === $function ) {
 			$argument = $this->scalar_value();
 			$this->expect_keyword( 'AS' );
-			$this->expect_keyword( 'UNSIGNED' );
+			$type = strtoupper( $this->unqualified_identifier()->name() );
+			if ( 'DECIMAL' === $type && $this->match_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN ) ) {
+				$this->literal();
+				$this->expect_type( WP_Markdown_Native_SQL_Token::COMMA );
+				$this->literal();
+				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			}
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-			return new WP_Markdown_Native_SQL_Scalar_Expression( 'CAST_UNSIGNED', null, null, array( $argument ) );
+			return new WP_Markdown_Native_SQL_Scalar_Expression( 'UNSIGNED' === $type ? 'CAST_UNSIGNED' : 'CAST_DECIMAL', null, null, array( $argument ) );
 		}
 		if ( in_array( $function, array( 'DATE_ADD', 'DATE_SUB' ), true ) ) {
 			$arguments = array( $this->scalar_value() );
@@ -802,7 +808,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		}
 		$valid = match ( $function ) {
 			'CONCAT', 'COALESCE' => 2 <= count( $arguments ),
-			'SUBSTRING' => 3 === count( $arguments ),
+			'SUBSTRING', 'SUBSTRING_INDEX' => 3 === count( $arguments ),
 			'YEAR', 'MONTH', 'DATE', 'TIME', 'FROM_UNIXTIME', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
 			'UNIX_TIMESTAMP', 'RAND' => 0 === count( $arguments ) || 1 === count( $arguments ),
 			'WEEK' => 2 === count( $arguments ) && 1 === (int) $arguments[1]->literal(),

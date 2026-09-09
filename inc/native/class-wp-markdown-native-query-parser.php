@@ -205,6 +205,7 @@ final class WP_Markdown_Native_Query_Parser {
 					'column'   => $aggregate['column']?->name(),
 					'source'   => $aggregate['column']?->qualifier() ?? $base_source,
 					'alias'    => $aggregate['alias'],
+					'distinct' => $aggregate['distinct'] ?? false,
 				),
 				$ast->aggregates()
 			),
@@ -470,7 +471,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$this->expect_keyword( 'FROM' );
 		list( $table, $alias, $derived ) = $this->source( true );
 		$joins = array();
-		while ( null !== ( $join_kind = $this->match_join_kind() ) ) {
+		while ( true ) {
+			if ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				list( $join_table, $join_alias, $join_derived ) = $this->source( false );
+				$joins[] = new WP_Markdown_Native_SQL_Join( $join_table, $join_alias, null, null, false, array(), $join_derived );
+				continue;
+			}
+			$join_kind = $this->match_join_kind();
+			if ( null === $join_kind ) {
+				break;
+			}
 			list( $join_table, $join_alias, $join_derived ) = $this->source( false );
 			$this->expect_keyword( 'ON' );
 			$on_predicates = $this->disjunction( true );
@@ -539,8 +549,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			if ( null === $group ) {
 				$group = new WP_Markdown_Native_SQL_Identifier( '__scalar_group', $this->current()->sql_offset() );
 			}
-			if ( WP_Markdown_Native_SQL_Token::COMMA === $this->current()->type() ) {
-				$this->unsupported( $this->current() );
+			// Aggregate rows are keyed from their complete scalar projection at
+			// execution time. Retain the first expression for legacy plan fields
+			// while accepting each additional projected grouping expression.
+			while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
+				$this->scalar_value();
 			}
 			if ( ! $this->contradiction ) {
 				// Every projected column must be functionally dependent on the
@@ -805,6 +818,17 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$value = $this->scalar_term();
 		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::PLUS, WP_Markdown_Native_SQL_Token::MINUS ), true ) ) {
 			$operator = $this->current()->type(); ++$this->current;
+			if ( $this->match_keyword( 'INTERVAL' ) ) {
+				$interval = $this->scalar_value();
+				$unit = strtoupper( $this->unqualified_identifier()->name() );
+				$value = new WP_Markdown_Native_SQL_Scalar_Expression(
+					WP_Markdown_Native_SQL_Token::PLUS === $operator ? 'DATE_ADD' : 'DATE_SUB',
+					null,
+					null,
+					array( $value, $interval, new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $unit ) )
+				);
+				continue;
+			}
 			$value = new WP_Markdown_Native_SQL_Scalar_Expression( WP_Markdown_Native_SQL_Token::PLUS === $operator ? 'ADD' : 'SUBTRACT', null, null, array( $value, $this->scalar_term() ) );
 		}
 		return $value;
@@ -861,6 +885,9 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	}
 
 	private function match_join_kind(): ?string {
+		if ( $this->match_keyword( 'STRAIGHT_JOIN' ) ) {
+			return 'inner';
+		}
 		if ( $this->match_keyword( 'JOIN' ) ) {
 			return 'inner';
 		}
@@ -972,6 +999,24 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 	/** Keep large nested WordPress boolean trees intact instead of lossy OR coalescing. */
 	private function requires_boolean_plan( array $groups ): bool {
+		$has_composite_group = false;
+		$has_non_coalescible = false;
+		foreach ( $groups as $group ) {
+			$has_composite_group = $has_composite_group || 1 < count( $group );
+			foreach ( $group as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate
+					|| $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate
+				) {
+					return true;
+				}
+				$has_non_coalescible = $has_non_coalescible
+					|| null !== $predicate->cast()
+					|| ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =', 'LIKE' ), true );
+			}
+		}
+		if ( 1 < count( $groups ) && $has_composite_group && $has_non_coalescible ) {
+			return true;
+		}
 		if ( 2 >= count( $groups ) ) {
 			return false;
 		}
@@ -1141,11 +1186,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 			$argument = $this->current();
-			if ( WP_Markdown_Native_SQL_Token::KEYWORD === $argument->type() && 0 === strcasecmp( 'DISTINCT', (string) $argument->value() ) ) {
-				// A distinct aggregate argument is its own feature.
+			$distinct = $this->match_keyword( 'DISTINCT' );
+			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
+			if ( $distinct && ( 'COUNT' !== $function || null === $column ) ) {
 				$this->unsupported( $argument );
 			}
-			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			if ( 'COUNT' !== $function && null === $column ) {
 				// Only COUNT reports over rows rather than over a column.
@@ -1163,6 +1208,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				'function' => $function,
 				'column'   => $column,
 				'alias'    => $alias,
+				'distinct' => $distinct,
 			);
 		}
 		return null;

@@ -15,6 +15,7 @@ foreach ( array( array( '2024-01-15 12:00:00', '10.0', 'one' ), array( '2024-01-
 }
 $where = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE DATE_ADD(published_at, INTERVAL 1 DAY) >= '2024-01-26 00:00:00' ORDER BY id", 'wp_' ) );
 $subtracted = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE DATE_SUB(published_at, INTERVAL 1 DAY) < '2024-01-15 00:00:00' ORDER BY id", 'wp_' ) );
+$infix_subtracted = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE DATE(published_at - INTERVAL 12 HOUR) = '2024-01-15' ORDER BY id", 'wp_' ) );
 $difference = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_dates WHERE TIMESTAMPDIFF(DAY, published_at, published_at) = 0 ORDER BY id', 'wp_' ) );
 $date_or = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE (DATE_ADD(published_at, INTERVAL 1 DAY) < '2024-01-17 00:00:00' OR DATE_ADD(published_at, INTERVAL 1 DAY) >= '2024-02-02 00:00:00') AND label <> 'two' ORDER BY id", 'wp_' ) );
 $late_limit = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE DATE_ADD(published_at, INTERVAL 1 DAY) >= '2024-02-02 00:00:00' ORDER BY id LIMIT 1", 'wp_' ) );
@@ -29,6 +30,7 @@ $checks = array(
 	'WP date WHERE evaluates DATE_ADD INTERVAL after the bounded read' => array( '2', '3' ) === array_map( static fn( object $row ): string => $row->id, $where->wpdb_state()['last_result'] ),
 	'DATE_SUB INTERVAL and TIMESTAMPDIFF use the shared WHERE scalar path' => array( '1' ) === array_map( static fn( object $row ): string => $row->id, $subtracted->wpdb_state()['last_result'] )
 		&& array( '1', '2', '3' ) === array_map( static fn( object $row ): string => $row->id, $difference->wpdb_state()['last_result'] ),
+	'infix datetime minus INTERVAL reuses DATE_SUB scalar semantics' => array( '1' ) === array_map( static fn( object $row ): string => $row->id, $infix_subtracted->wpdb_state()['last_result'] ),
 	'WP_Date_Query scalar OR composes with ordinary AND predicates without dropping disjuncts' => array( '1', '3' ) === array_map( static fn( object $row ): string => $row->id, $date_or->wpdb_state()['last_result'] ),
 	'scalar residual filtering precedes LIMIT even when the matching row is outside the provider bound' => array( '3' ) === array_map( static fn( object $row ): string => $row->id, $late_limit->wpdb_state()['last_result'] ),
 	'date bucketing applies scalar HAVING after aggregate inputs are filtered and grouped' => array( '2024-01' => '2' ) === array_reduce( $group->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->bucket ] = $row->total; return $values; }, array() ),

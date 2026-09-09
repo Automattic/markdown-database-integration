@@ -1329,11 +1329,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() !== $aggregates ) {
 			$grouped_rows = array();
 			$totals = array();
+			$distinct_values = array();
 			foreach ( $rows as $index => $row ) {
 				$key = serialize( $selected_rows[ $index ] ?? array() );
 				if ( ! isset( $grouped_rows[ $key ] ) ) {
 					$grouped_rows[ $key ] = $selected_rows[ $index ] ?? array();
 					$totals[ $key ] = array_fill_keys( array_column( $aggregates, 'alias' ), null );
+					$distinct_values[ $key ] = array_fill_keys( array_column( $aggregates, 'alias' ), array() );
 				}
 				foreach ( $aggregates as $aggregate ) {
 					$alias = $aggregate['alias'];
@@ -1341,6 +1343,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 					if ( 'COUNT' === $aggregate['function'] ) {
 						// COUNT(*) counts rows; COUNT(col) skips NULL, which is
 						// how an unmatched outer row contributes nothing.
+						if ( null !== $aggregate['column'] && true === ( $aggregate['distinct'] ?? false ) ) {
+							if ( null === $value || isset( $distinct_values[ $key ][ $alias ][ serialize( $value ) ] ) ) {
+								continue;
+							}
+							$distinct_values[ $key ][ $alias ][ serialize( $value ) ] = true;
+						}
 						if ( null === $aggregate['column'] || null !== $value ) {
 							$totals[ $key ][ $alias ] = (int) ( $totals[ $key ][ $alias ] ?? 0 ) + 1;
 						} elseif ( null === $totals[ $key ][ $alias ] ) {

@@ -75,7 +75,7 @@ $aliased_count_sql = 'SELECT COUNT(*) AS total FROM wp_rows';
 $aliased_count     = $parser->parse( $aliased_count_sql );
 $grouped_count_sql = 'SELECT COUNT(*) FROM wp_rows GROUP BY row_id';
 $grouped_count     = $parser->parse( $grouped_count_sql );
-$distinct_count_sql = 'SELECT COUNT(DISTINCT row_id) FROM wp_rows';
+$distinct_count_sql = 'SELECT COUNT(DISTINCT row_id) AS total FROM wp_rows';
 $distinct_count     = $parser->parse( $distinct_count_sql );
 $unsupported_function_sql = 'SELECT SUM(*) FROM wp_rows';
 $unsupported_function     = $parser->parse( $unsupported_function_sql );
@@ -212,6 +212,10 @@ $checks = array(
 		&& 1 === count( $counted_column->aggregates() )
 		&& 'COUNT' === $counted_column->aggregates()[0]['function']
 		&& 'row_id' === $counted_column->aggregates()[0]['column'],
+	'COUNT DISTINCT retains the aggregate column and deduplication intent' => $distinct_count instanceof WP_Markdown_Native_Query_Plan
+		&& 'COUNT' === $distinct_count->aggregates()[0]['function']
+		&& 'row_id' === $distinct_count->aggregates()[0]['column']
+		&& true === $distinct_count->aggregates()[0]['distinct'],
 	'unsupported aggregate shapes fail closed at exact source positions' => $count_column instanceof WP_Markdown_Query_Result
 		&& strpos( $count_column_sql, 'FROM' ) === ( $count_column->diagnostic()['sql_offset'] ?? null )
 		&& $mixed_count instanceof WP_Markdown_Query_Result
@@ -220,12 +224,10 @@ $checks = array(
 		&& strpos( $aliased_count_sql, 'AS' ) === ( $aliased_count->diagnostic()['sql_offset'] ?? null )
 		&& $grouped_count instanceof WP_Markdown_Query_Result
 		&& strpos( $grouped_count_sql, 'GROUP' ) === ( $grouped_count->diagnostic()['sql_offset'] ?? null )
-		&& $distinct_count instanceof WP_Markdown_Query_Result
-		&& strpos( $distinct_count_sql, 'DISTINCT' ) === ( $distinct_count->diagnostic()['sql_offset'] ?? null )
 		&& $unsupported_function instanceof WP_Markdown_Query_Result
 		&& strpos( $unsupported_function_sql, '*' ) === ( $unsupported_function->diagnostic()['sql_offset'] ?? null )
 		&& array_reduce(
-			array( $count_column, $mixed_count, $aliased_count, $grouped_count, $distinct_count, $unsupported_function ),
+			array( $count_column, $mixed_count, $aliased_count, $grouped_count, $unsupported_function ),
 			static fn( bool $valid, WP_Markdown_Query_Result $result ): bool => $valid && 'unsupported_grammar' === ( $result->diagnostic()['reason'] ?? null ),
 			true
 		),

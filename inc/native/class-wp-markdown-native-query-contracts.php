@@ -382,7 +382,7 @@ final class WP_Markdown_Native_Query_Plan {
 		return $this->group_by;
 	}
 
-	/** @return array<int,array{function:string,column:?string,source:?string,alias:string}> */
+	/** @return array<int,array{function:string,column:?string,source:?string,alias:string,distinct:bool}> */
 	public function aggregates(): array {
 		return $this->aggregates;
 	}

@@ -112,10 +112,27 @@ $calendar_registry->register( 'wp_events', $calendar_schema, new MDI_Native_Join
 	array( 'event_id' => 2, 'post_status' => 'publish', 'start_datetime' => '2026-01-02 09:00:00', 'end_datetime' => null ),
 	array( 'event_id' => 3, 'post_status' => 'draft', 'start_datetime' => '2026-01-01 08:00:00', 'end_datetime' => '2026-01-01 08:30:00' ),
 ), $calendar_schema ) );
+$window_schema = new WP_Markdown_Native_Table_Schema(
+	array(
+		'window_id' => new WP_Markdown_Native_Column( 8, false, 'is_int' ),
+		'event_id' => new WP_Markdown_Native_Column( 8, false, 'is_int', null, array( '=', 'IN' ) ),
+		'start_datetime' => new WP_Markdown_Native_Column( 12, false, 'is_string' ),
+		'end_datetime' => new WP_Markdown_Native_Column( 12, false, 'is_string' ),
+	),
+	'window_id'
+);
+$calendar_registry->register( 'wp_windows', $window_schema, new MDI_Native_Join_Array_Provider( array(
+	array( 'window_id' => 1, 'event_id' => 1, 'start_datetime' => '2026-01-01 10:00:00', 'end_datetime' => '2026-01-01 12:00:00' ),
+	array( 'window_id' => 2, 'event_id' => 2, 'start_datetime' => '2026-01-02 10:00:00', 'end_datetime' => '2026-01-02 12:00:00' ),
+	array( 'window_id' => 3, 'event_id' => 3, 'start_datetime' => '2026-01-01 10:00:00', 'end_datetime' => '2026-01-01 12:00:00' ),
+), $window_schema ) );
 $calendar_runtime = new WP_Markdown_Native_Query_Runtime( $calendar_registry );
 $calendar_query = "SELECT MIN(transition_datetime) FROM ( SELECT MIN(end_datetime) AS transition_datetime FROM wp_events WHERE post_status='publish' AND end_datetime >= '2026-01-01 00:00:00' UNION ALL SELECT MIN(start_datetime) AS transition_datetime FROM wp_events WHERE post_status='publish' AND end_datetime IS NULL AND start_datetime >= '2026-01-01 00:00:00' ) upcoming_transitions";
 $calendar = $calendar_runtime->execute( new WP_Markdown_Query_Request( $calendar_query ) );
 $calendar_none = $calendar_runtime->execute( new WP_Markdown_Query_Request( str_replace( '2026-01-01 00:00:00', '2027-01-01 00:00:00', $calendar_query ) ) );
+$calendar_overlap = $calendar_runtime->execute( new WP_Markdown_Query_Request( "SELECT e.event_id, w.window_id FROM wp_events e STRAIGHT_JOIN wp_windows w ON e.event_id=w.event_id WHERE e.post_status='publish' AND ((e.start_datetime < w.end_datetime AND e.end_datetime > w.start_datetime) OR (e.end_datetime IS NULL AND e.start_datetime < w.end_datetime)) ORDER BY e.event_id" ) );
+$calendar_buckets = $calendar_runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE(e.start_datetime - INTERVAL 12 HOUR) AS start_date, DATE(e.end_datetime) AS end_date, COUNT(DISTINCT e.event_id) AS bucket_count FROM wp_events e STRAIGHT_JOIN wp_windows w ON e.event_id=w.event_id WHERE e.post_status='publish' GROUP BY DATE(e.start_datetime - INTERVAL 12 HOUR), DATE(e.end_datetime)" ) );
+$comma_join = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT tr.object_id, tt.taxonomy FROM wp_term_relationships tr, wp_term_taxonomy tt WHERE tr.term_taxonomy_id=tt.term_taxonomy_id AND tr.object_id=41' ) );
 
 $unsigned = static fn( mixed $value ): ?string => WP_Markdown_Native_Runtime_Factory::normalize_unsigned( $value );
 $integer = static fn( array $lookups = array() ): WP_Markdown_Native_Column => new WP_Markdown_Native_Column(
@@ -249,6 +266,18 @@ $checks = array(
 	'calendar transition query returns NULL when neither branch has a transition' => array(
 		array( 'MIN(transition_datetime)' => null ),
 	) === array_map( 'get_object_vars', $calendar_none->wpdb_state()['last_result'] ),
+	'calendar overlap OR trees retain both bounded predicate branches after STRAIGHT_JOIN' => array(
+		array( 'event_id' => '1', 'window_id' => '1' ),
+		array( 'event_id' => '2', 'window_id' => '2' ),
+	) === array_map( 'get_object_vars', $calendar_overlap->wpdb_state()['last_result'] ),
+	'calendar buckets support multiple scalar groups and COUNT DISTINCT after datetime arithmetic' => array(
+		array( 'start_date' => '2025-12-31', 'end_date' => '2026-01-01', 'bucket_count' => '1' ),
+		array( 'start_date' => '2026-01-01', 'end_date' => null, 'bucket_count' => '1' ),
+	) === array_map( 'get_object_vars', $calendar_buckets->wpdb_state()['last_result'] ),
+	'comma FROM sources execute as a bounded Cartesian join before WHERE filtering' => array(
+		array( 'object_id' => '41', 'taxonomy' => 'category' ),
+		array( 'object_id' => '41', 'taxonomy' => 'post_tag' ),
+	) === array_map( 'get_object_vars', $comma_join->wpdb_state()['last_result'] ),
 	'bounded JOIN misses return an empty successful result' => 0 === $missing->return_value(),
 	'large equality JOINs scale by normalized identities rather than row pairs' => 1000 === count( $scale_rows )
 		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )

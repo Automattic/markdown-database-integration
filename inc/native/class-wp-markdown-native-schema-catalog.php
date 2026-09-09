@@ -8,9 +8,14 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_Schema_Catalog {
 	private const SCHEMA = 'mdi-native-core-schema/v1';
 
-	/** @param array<int,string> $prefixes @return array<string,array<string,mixed>> */
-	public static function compile( string $ddl, array $prefixes ): array {
+	/**
+	 * @param array<int,string> $prefixes
+	 * @param array<int,string> $exact_tables Table identities already validated by the caller.
+	 * @return array<string,array<string,mixed>>
+	 */
+	public static function compile( string $ddl, array $prefixes, array $exact_tables = array() ): array {
 		$prefixes = array_values( array_unique( array_filter( $prefixes, 'is_string' ) ) );
+		$exact_tables = array_values( array_unique( array_filter( $exact_tables, 'is_string' ) ) );
 		usort( $prefixes, static fn( string $left, string $right ): int => strlen( $right ) <=> strlen( $left ) );
 		$tables = array();
 		foreach ( explode( ';', $ddl ) as $statement ) {
@@ -32,6 +37,9 @@ final class WP_Markdown_Native_Schema_Catalog {
 					$qualified = true;
 					break;
 				}
+			}
+			if ( ! $qualified && in_array( $name, $exact_tables, true ) ) {
+				$qualified = true;
 			}
 			if ( ! $qualified || '' === $name || isset( $catalog[ $name ] ) ) {
 				throw new InvalidArgumentException( 'Schema DDL contains a duplicate or unqualified table.' );

@@ -572,10 +572,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot resolve the requested outer subquery source.' );
 			}
 			$query = $subquery->query();
-			if ( $this->has_unbound_correlated_expression( $query ) || $this->has_nested_outer_correlation( $query ) ) {
-				return $this->failure( 'unsupported_subquery_correlation', 'mdi-native cannot bind the requested correlated scalar or nested subquery expression.' );
+			if ( $this->has_nested_outer_correlation( $query ) ) {
+				return $this->failure( 'unsupported_subquery_correlation', 'mdi-native cannot bind the requested nested correlated subquery expression.' );
 			}
-			if ( ! $this->has_outer_correlation( $query ) ) {
+			if ( ! $this->has_outer_correlation( $query ) && ! $this->has_outer_scalar_reference( $query ) ) {
 				$matcher = $this->materialize_subquery_plan( $subquery, $outer_schema );
 				if ( $matcher instanceof WP_Markdown_Query_Result ) {
 					return $matcher;
@@ -653,8 +653,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return false;
 	}
 
-	/** Scalar outer references and nested correlation need a row context this executor does not expose. */
-	private function has_unbound_correlated_expression( WP_Markdown_Native_Query_Plan $query ): bool {
+	/** Whether a plan's scalar expressions refer beyond its active lexical aliases. */
+	private function has_outer_scalar_reference( WP_Markdown_Native_Query_Plan $query ): bool {
 		$sources = array_fill_keys( array_merge( array( $query->table_alias() ?? $query->table() ), array_map( static fn( WP_Markdown_Native_Query_Join $join ): string => $join->alias(), $query->joins() ) ), true );
 		$has_outer = function ( WP_Markdown_Native_Query_Scalar_Expression $expression ) use ( $sources, &$has_outer ): bool {
 			if ( null !== $expression->source() && ! isset( $sources[ $expression->source() ] ) ) {
@@ -672,7 +672,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( array_merge( $query->scalar_predicates(), $query->scalar_having() ) as $predicate ) {
 			if ( $has_outer( $predicate->left() ) || $has_outer( $predicate->right() ) ) { return true; }
 		}
-		return null !== $query->group_expression() && $has_outer( $query->group_expression() );
+		if ( null !== $query->group_expression() && $has_outer( $query->group_expression() ) ) { return true; }
+		foreach ( $query->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) && $has_outer( $order['expression'] ) ) { return true; } }
+		if ( null !== $query->boolean_predicate() ) {
+			foreach ( $query->boolean_predicate()->groups() as $group ) {
+				foreach ( $group as $term ) {
+					if ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate && ( $has_outer( $term->left() ) || $has_outer( $term->right() ) ) ) { return true; }
+				}
+			}
+		}
+		return false;
 	}
 
 	/** Nested child plans have an additional lexical scope and are rejected before execution. */
@@ -684,7 +693,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		foreach ( $nested as $term ) {
-			if ( $this->has_outer_correlation( $term->query() ) || $this->has_unbound_correlated_expression( $term->query() ) || $this->has_nested_outer_correlation( $term->query() ) ) {
+			if ( $this->has_outer_correlation( $term->query() ) || $this->has_outer_scalar_reference( $term->query() ) || $this->has_nested_outer_correlation( $term->query() ) ) {
 				return true;
 			}
 		}
@@ -786,6 +795,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	/** Bind outer aliases into predicate values without reserializing SQL. */
 	private function bind_outer_plan( WP_Markdown_Native_Query_Plan $plan, array $outer_rows, array $outer_schemas ): ?WP_Markdown_Native_Query_Plan {
 		$local_sources = array_fill_keys( array_merge( array( $plan->table_alias() ?? $plan->table() ), array_map( static fn( WP_Markdown_Native_Query_Join $join ): string => $join->alias(), $plan->joins() ) ), true );
+		$single_source = array() === $plan->joins() ? ( $plan->table_alias() ?? $plan->table() ) : null;
+		$bind = null;
+		$bind_scalar = null;
+		$bind_scalar_predicate = null;
 		$bind = function ( WP_Markdown_Native_Query_Predicate $predicate ) use ( $outer_rows, $outer_schemas, $local_sources, &$bind ): ?WP_Markdown_Native_Query_Predicate {
 			$any = array();
 			foreach ( $predicate->any() as $nested ) { $bound = $bind( $nested ); if ( null === $bound ) { return null; } $any[] = $bound; }
@@ -800,6 +813,31 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			return new WP_Markdown_Native_Query_Predicate( $predicate->column(), $predicate->operator(), array( $value ), $predicate->source(), $any, $predicate->cast() );
 		};
+		$bind_scalar = function ( WP_Markdown_Native_Query_Scalar_Expression $expression ) use ( $outer_rows, $outer_schemas, $local_sources, $single_source, &$bind, &$bind_scalar ): ?WP_Markdown_Native_Query_Scalar_Expression {
+			$arguments = array();
+			foreach ( $expression->arguments() as $argument ) { $bound = $bind_scalar( $argument ); if ( null === $bound ) { return null; } $arguments[] = $bound; }
+			$branches = array();
+			foreach ( $expression->branches() as $branch ) {
+				$predicates = array();
+				foreach ( $branch['predicates'] as $predicate ) { $bound = $bind( $predicate ); if ( null === $bound ) { return null; } $predicates[] = $bound; }
+				$value = $bind_scalar( $branch['value'] );
+				if ( null === $value ) { return null; }
+				$branches[] = array( 'predicates' => $predicates, 'value' => $value );
+			}
+			$else = null === $expression->else() ? null : $bind_scalar( $expression->else() );
+			if ( null !== $expression->else() && null === $else ) { return null; }
+			$source = $expression->source();
+			if ( 'column' === $expression->kind() && null !== $source && ! isset( $local_sources[ $source ] ) ) {
+				if ( ! isset( $outer_rows[ $source ], $outer_schemas[ $source ] ) || ! $outer_schemas[ $source ]->has_column( (string) $expression->column() ) ) { return null; }
+				return new WP_Markdown_Native_Query_Scalar_Expression( 'literal', null, $outer_rows[ $source ][ (string) $expression->column() ] ?? null, $arguments, $branches, $else );
+			}
+			return new WP_Markdown_Native_Query_Scalar_Expression( $expression->kind(), $expression->column(), $expression->literal(), $arguments, $branches, $else, $source === $single_source ? null : $source );
+		};
+		$bind_scalar_predicate = function ( WP_Markdown_Native_Query_Scalar_Predicate $predicate ) use ( &$bind_scalar ): ?WP_Markdown_Native_Query_Scalar_Predicate {
+			$left = $bind_scalar( $predicate->left() );
+			$right = $bind_scalar( $predicate->right() );
+			return null === $left || null === $right ? null : new WP_Markdown_Native_Query_Scalar_Predicate( $left, $predicate->operator(), $right );
+		};
 		$predicates = array();
 		foreach ( $plan->predicates() as $predicate ) { $bound = $bind( $predicate ); if ( null === $bound ) { return null; } $predicates[] = $bound; }
 		$boolean = null;
@@ -808,14 +846,25 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			foreach ( $plan->boolean_predicate()->groups() as $group ) {
 				$bound_group = array();
 				foreach ( $group as $term ) {
-					if ( ! $term instanceof WP_Markdown_Native_Query_Predicate ) { $bound_group[] = $term; continue; }
-					$bound = $bind( $term ); if ( null === $bound ) { return null; } $bound_group[] = $bound;
+					if ( $term instanceof WP_Markdown_Native_Query_Subquery ) { $bound_group[] = $term; continue; }
+					$bound = $term instanceof WP_Markdown_Native_Query_Predicate ? $bind( $term ) : $bind_scalar_predicate( $term );
+					if ( null === $bound ) { return null; } $bound_group[] = $bound;
 				}
 				$groups[] = $bound_group;
 			}
 			$boolean = new WP_Markdown_Native_Query_Boolean_Predicate( $groups );
 		}
-		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $plan->order_by(), $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $plan->scalar_projection(), $plan->having(), $plan->subqueries(), $plan->union(), $plan->scalar_predicates(), $plan->scalar_having(), $plan->group_expression(), $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset() );
+		$scalar_projection = array();
+		foreach ( $plan->scalar_projection() as $scalar ) { $expression = $bind_scalar( $scalar['expression'] ); if ( null === $expression ) { return null; } $scalar_projection[] = array( 'expression' => $expression, 'alias' => $scalar['alias'], 'position' => $scalar['position'] ); }
+		$scalar_predicates = array();
+		foreach ( $plan->scalar_predicates() as $predicate ) { $bound = $bind_scalar_predicate( $predicate ); if ( null === $bound ) { return null; } $scalar_predicates[] = $bound; }
+		$scalar_having = array();
+		foreach ( $plan->scalar_having() as $predicate ) { $bound = $bind_scalar_predicate( $predicate ); if ( null === $bound ) { return null; } $scalar_having[] = $bound; }
+		$group_expression = null === $plan->group_expression() ? null : $bind_scalar( $plan->group_expression() );
+		if ( null !== $plan->group_expression() && null === $group_expression ) { return null; }
+		$orders = array();
+		foreach ( $plan->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) ) { $bound = $bind_scalar( $order['expression'] ); if ( null === $bound ) { return null; } $order['expression'] = $bound; } $orders[] = $order; }
+		return new WP_Markdown_Native_Query_Plan( $plan->table(), $plan->projection(), $predicates, $plan->order(), $plan->limit(), $plan->counts_all(), $plan->table_alias(), $plan->projection_sources(), $plan->joins(), $plan->calculates_found_rows(), $plan->order_descending(), $plan->limit_offset(), $plan->is_distinct(), $plan->order_source(), $orders, $plan->is_unsatisfiable(), $plan->group_by(), $plan->aggregates(), $scalar_projection, $plan->having(), $plan->subqueries(), $plan->union(), $scalar_predicates, $scalar_having, $group_expression, $boolean, $plan->derived(), $plan->union_all(), $plan->union_order_by(), $plan->union_limit(), $plan->union_limit_offset() );
 	}
 
 	private function execute_union( WP_Markdown_Native_Query_Plan $plan ): WP_Markdown_Query_Result {
@@ -1434,10 +1483,32 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 			foreach ( $predicate->any() as $nested ) { $collect( $nested ); }
 		};
+		$collect_scalar = function ( WP_Markdown_Native_Query_Scalar_Expression $expression ) use ( &$columns, $local_sources, &$collect, &$collect_scalar ): void {
+			if ( 'column' === $expression->kind() && null !== $expression->source() && ! isset( $local_sources[ $expression->source() ] ) ) {
+				$columns[ $expression->source() ][] = (string) $expression->column();
+			}
+			foreach ( $expression->arguments() as $argument ) { $collect_scalar( $argument ); }
+			foreach ( $expression->branches() as $branch ) {
+				foreach ( $branch['predicates'] as $predicate ) { $collect( $predicate ); }
+				$collect_scalar( $branch['value'] );
+			}
+			if ( null !== $expression->else() ) { $collect_scalar( $expression->else() ); }
+		};
+		$collect_scalar_predicate = function ( WP_Markdown_Native_Query_Scalar_Predicate $predicate ) use ( &$collect_scalar ): void {
+			$collect_scalar( $predicate->left() );
+			$collect_scalar( $predicate->right() );
+		};
 		foreach ( $plan->predicates() as $predicate ) { $collect( $predicate ); }
+		foreach ( $plan->scalar_projection() as $scalar ) { $collect_scalar( $scalar['expression'] ); }
+		foreach ( array_merge( $plan->scalar_predicates(), $plan->scalar_having() ) as $predicate ) { $collect_scalar_predicate( $predicate ); }
+		if ( null !== $plan->group_expression() ) { $collect_scalar( $plan->group_expression() ); }
+		foreach ( $plan->order_by() as $order ) { if ( null !== ( $order['expression'] ?? null ) ) { $collect_scalar( $order['expression'] ); } }
 		if ( null !== $plan->boolean_predicate() ) {
 			foreach ( $plan->boolean_predicate()->groups() as $group ) {
-				foreach ( $group as $term ) { if ( $term instanceof WP_Markdown_Native_Query_Predicate ) { $collect( $term ); } }
+				foreach ( $group as $term ) {
+					if ( $term instanceof WP_Markdown_Native_Query_Predicate ) { $collect( $term ); }
+					if ( $term instanceof WP_Markdown_Native_Query_Scalar_Predicate ) { $collect_scalar_predicate( $term ); }
+				}
 			}
 		}
 		foreach ( $columns as &$source_columns ) { $source_columns = array_values( array_unique( $source_columns ) ); }

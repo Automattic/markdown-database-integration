@@ -50,7 +50,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private ?WP_Markdown_Native_Table_Mutation_Runtime $table_mutations = null,
 		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
 		private ?WP_Markdown_Native_Post_Mutation_Runtime $post_mutations = null,
-		private int $correlated_subquery_limit = self::MAX_CORRELATED_SUBQUERY_EVALUATIONS
+		private int $correlated_subquery_limit = self::MAX_CORRELATED_SUBQUERY_EVALUATIONS,
+		private ?WP_Markdown_Native_Advisory_Locks $advisory_locks = null
 	) {
 		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
 	}
@@ -62,6 +63,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
+		}
+		$advisory_lock = $this->advisory_lock_query( $request->sql() );
+		if ( null !== $advisory_lock ) {
+			return $advisory_lock;
 		}
 		// The canonical store is a directory, not a named server database.
 		if ( 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $request->sql() ) ) {
@@ -114,6 +119,38 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				);
 		}
 		return $this->execute_plan( $plan );
+	}
+
+	/** Release this logical connection's root-scoped advisory locks. */
+	public function close(): void {
+		$this->advisory_locks?->close();
+	}
+
+	private function advisory_lock_query( string $sql ): ?WP_Markdown_Query_Result {
+		if ( 1 !== preg_match( "/^\\s*SELECT\\s+((GET_LOCK|RELEASE_LOCK)\\s*\\(\\s*('(?:\\\\.|[^'])*')\\s*(?:,\\s*([0-9]+(?:\\.[0-9]+)?))?\\s*\\))\\s*;?\\s*$/i", $sql, $match ) ) {
+			return null;
+		}
+		$function = strtoupper( $match[2] );
+		if ( ( 'GET_LOCK' === $function && ! isset( $match[4] ) ) || ( 'RELEASE_LOCK' === $function && isset( $match[4] ) ) || null === $this->advisory_locks ) {
+			return $this->failure( 'unsupported_grammar', 'mdi-native advisory locks require a literal name and bounded timeout.' );
+		}
+		try {
+			$literal = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $match[3] )[0];
+			$name = $literal->value();
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return $this->failure( 'unsupported_literal', 'mdi-native cannot decode the requested advisory lock name.' );
+		}
+		if ( ! is_string( $name ) || ( isset( $match[4] ) && (float) $match[4] > WP_Markdown_Native_Advisory_Locks::MAX_WAIT_SECONDS ) ) {
+			return $this->failure( 'unsupported_grammar', 'mdi-native advisory lock timeouts must be between 0 and 10 seconds.' );
+		}
+		$value = 'GET_LOCK' === $function
+			? (int) $this->advisory_locks->acquire( $name, (float) $match[4] )
+			: $this->advisory_locks->release( $name );
+		$column = $match[1];
+		return WP_Markdown_Query_Result::selected(
+			array( array( $column => null === $value ? null : (string) $value ) ),
+			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
+		);
 	}
 
 	private function execute_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {

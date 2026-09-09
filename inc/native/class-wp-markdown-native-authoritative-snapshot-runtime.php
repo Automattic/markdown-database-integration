@@ -11,7 +11,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private const MAX_BYTES_PER_TABLE = 8388608;
 
 	/** @param array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}> $provenance */
-	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance ) {}
+	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance, private ?string $database_name = null ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
 		self::trace_runtime_phase( 'capture', $sql );
@@ -49,7 +49,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
 			$provenance[] = array( 'table' => $table, 'exists' => true, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
-		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance );
+		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance, $database_name );
 	}
 
 	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
@@ -111,9 +111,9 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		return array() !== array_intersect( self::tables_in( $sql ), $absent );
 	}
 
-	/** @return array{read_connection:string,tables:array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}>} */
+	/** @return array{read_connection:string,database_sha256:?string,tables:array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}>} */
 	public function provenance(): array {
-		return array( 'read_connection' => 'authoritative_mysql_connection_pre_query', 'tables' => $this->provenance );
+		return array( 'read_connection' => 'authoritative_mysql_connection_pre_query', 'database_sha256' => null === $this->database_name ? null : hash( 'sha256', $this->database_name ), 'tables' => $this->provenance );
 	}
 
 	/** @return array<int,string> */

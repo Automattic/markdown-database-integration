@@ -223,6 +223,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 					'mismatch_paths'     => $paths,
 					'mismatches_truncated' => count( $comparison['mismatches'] ) > count( $paths ),
 					'comparison_receipt' => $this->comparison_receipt( $expected, $actual ),
+					'input_provenance' => $provenance ?? array(),
 				)
 			);
 		} catch ( Throwable $error ) {

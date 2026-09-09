@@ -276,6 +276,14 @@ final class WP_Markdown_Native_Runtime_Factory {
 		return new WP_Markdown_Native_Multisite_Query_Runtime( $state_root, $base_prefix, $content_root ?? $state_root );
 	}
 
+	/** Route a single site's changing wpdb prefix to its one canonical root. */
+	public static function prefix_runtime(
+		string $state_root,
+		?string $content_root = null
+	): WP_Markdown_Query_Runtime {
+		return new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root ?? $state_root );
+	}
+
 	/**
 	 * Report whether canonical storage holds a site yet.
 	 *
@@ -537,6 +545,32 @@ final class WP_Markdown_Native_Option_Query_Runtime implements WP_Markdown_Query
 			);
 		}
 		return $this->runtime->execute( $request );
+	}
+}
+
+/** Lazily construct a single-root runtime for the prefix selected by wpdb. */
+final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query_Runtime {
+
+	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
+	private array $runtimes = array();
+
+	public function __construct(
+		private string $state_root,
+		private string $content_root
+	) {}
+
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$prefix = $request->table_prefix();
+		if ( ! isset( $this->runtimes[ $prefix ] ) ) {
+			$this->runtimes[ $prefix ] = WP_Markdown_Native_Runtime_Factory::runtime(
+				$this->state_root,
+				$prefix,
+				$prefix,
+				false,
+				$this->content_root
+			);
+		}
+		return $this->runtimes[ $prefix ]->execute( $request );
 	}
 }
 

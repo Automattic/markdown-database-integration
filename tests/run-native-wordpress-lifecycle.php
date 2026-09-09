@@ -148,6 +148,14 @@ $recipe = array(
 $recipe_path = $root . '/recipe.json';
 file_put_contents( $recipe_path, json_encode( $recipe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 
+$mounted_mdi = $recipe['inputs']['mounts'][1]['source'] ?? null;
+$mounted_sha = is_string( $mounted_mdi ) ? trim( (string) shell_exec( 'git -C ' . escapeshellarg( $mounted_mdi ) . ' rev-parse HEAD 2>/dev/null' ) ) : '';
+$candidate_sha = trim( (string) getenv( 'MDI_CANDIDATE_SHA' ) );
+if ( '' === $mounted_sha || ( '' !== $candidate_sha && $candidate_sha !== $mounted_sha ) ) {
+	fwrite( STDERR, "The generated recipe does not mount the requested MDI candidate source.\n" );
+	exit( 2 );
+}
+
 $first = mdi_native_lifecycle_run( $wp_codebox, $recipe_path );
 $second = null;
 if ( 0 === $first['status'] ) {
@@ -159,6 +167,7 @@ $status = 0 !== $first['status'] || null === $second || 0 !== $second['status'] 
 $summary = array(
 	'schema' => 'mdi-native-wordpress-lifecycle-run/v1',
 	'passed' => 0 === $status,
+	'mounted_mdi' => array( 'source' => $mounted_mdi, 'sha' => $mounted_sha ),
 	'boots'  => array(
 		array(
 			'phase'     => 'activation',

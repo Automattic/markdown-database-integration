@@ -53,6 +53,9 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 				'code'  => 'markdown_db_native_shadow_bootstrap_failed',
 				'class' => get_class( $error ),
 			);
+			if ( defined( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' ) && '' !== MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH ) {
+				file_put_contents( MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH, json_encode( array( 'schema' => 'mdi-native-shadow-report/v1', 'observed' => 0, 'counts' => array(), 'bootstrap_diagnostic' => $GLOBALS['markdown_db_native_shadow_diagnostic'] ), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n", LOCK_EX );
+			}
 		}
 	}
 }

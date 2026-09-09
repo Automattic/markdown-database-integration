@@ -42,11 +42,20 @@ define( 'MULTISITE', true );
 $database->prefix = 'wptests_2_';
 $database->result( array( array( 'blog_id' => '2' ) ), array( array( 'name' => 'blog_id', 'type' => '8' ) ) );
 $verifier->observe( "SELECT wptests_blogs.blog_id FROM wptests_blogs WHERE domain = 'site-2.example.test' AND path = '/' ORDER BY wptests_blogs.blog_id ASC LIMIT 1", 1, $database );
+$database->prefix = '';
+$verifier->observe( "SELECT wptests_blogs.blog_id FROM wptests_blogs WHERE domain = 'site-2.example.test' AND path = '/' ORDER BY wptests_blogs.blog_id ASC LIMIT 1", 1, $database );
 $report = $verifier->report();
 
 $checks = array(
-	'factory resolves the active multisite prefix after db.php bootstrap' => 1 === $report['counts']['compatible'],
+	'factory resolves the active multisite prefix after db.php bootstrap' => 2 === $report['counts']['compatible'],
+	'empty early wpdb prefixes use the validated network base prefix' => 0 === $report['counts']['verifier_failures'],
 	'factory does not retain a verifier failure for the network-global blogs lookup' => 0 === $report['counts']['verifier_failures'],
+	'report retains bounded topology and state provenance without the root path' => 'wordpress-deferred-topology' === ( $report['context']['runtime'] ?? null )
+		&& 'wptests_2_' === ( $report['context']['first_query']['prefix'] ?? null )
+		&& 'wptests_' === ( $report['context']['first_query']['base_prefix'] ?? null )
+		&& true === ( $report['context']['first_query']['multisite'] ?? null )
+		&& true === ( $report['context']['state_has_siteurl'] ?? null )
+		&& ! str_contains( json_encode( $report, JSON_THROW_ON_ERROR ), $root ),
 );
 $failed = 0;
 foreach ( $checks as $label => $passed ) {

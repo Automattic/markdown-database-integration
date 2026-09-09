@@ -112,10 +112,15 @@ foreach ( $phpunit as $execution ) {
 if ( is_array( $report_artifact ) ) {
 	$matches = glob( $artifacts . '/*/' . ltrim( $report_artifact['path'], '/' ) );
 	if ( 1 === count( $matches ) && is_file( $matches[0] ) ) {
-		$decoded = json_decode( (string) file_get_contents( $matches[0] ), true );
-		if ( is_array( $decoded ) ) {
-			$shadow = $decoded;
-		}
+		$shadow = json_decode( (string) file_get_contents( $matches[0] ), true );
+	}
+}
+// A failed PHPUnit command has no execution envelope, but f898+ still writes
+// its same-command result artifact beneath the configured artifact directory.
+if ( ! is_array( $shadow ) ) {
+	$matches = glob( $artifacts . '/*/files/command-results/' . $report_name . '.json' );
+	if ( 1 === count( $matches ) && is_file( $matches[0] ) ) {
+		$shadow = json_decode( (string) file_get_contents( $matches[0] ), true );
 	}
 }
 if ( ! is_array( $shadow ) || 'mdi-native-shadow-report/v1' !== ( $shadow['schema'] ?? null ) || 0 === (int) ( $shadow['observed'] ?? 0 ) ) {

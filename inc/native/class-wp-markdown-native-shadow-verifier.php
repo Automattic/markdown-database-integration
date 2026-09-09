@@ -20,7 +20,18 @@ final class WP_Markdown_Native_Shadow_Factory {
 		// The wrapper reads the active wpdb topology when each query is observed.
 		$runtime = WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $state_root, $base_prefix, $content_root );
 		$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
-		return new WP_Markdown_Native_Shadow_Verifier( $runtime, $maximum );
+		return new WP_Markdown_Native_Shadow_Verifier(
+			$runtime,
+			$maximum,
+			array(
+				'runtime' => 'wordpress-deferred-topology',
+				'initial_prefix' => (string) ( $database->prefix ?? '' ),
+				'initial_base_prefix' => $base_prefix,
+				'state_root_sha256' => hash( 'sha256', $state_root ),
+				'content_root_sha256' => hash( 'sha256', $content_root ),
+				'state_has_siteurl' => is_file( rtrim( $state_root, '/\\' ) . '/_options/siteurl.json' ),
+			)
+		);
 	}
 }
 
@@ -35,10 +46,12 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		'dropped'          => 0,
 	);
 	private ?array $first_blocker = null;
+	private ?array $first_query_context = null;
 
 	public function __construct(
 		private WP_Markdown_Query_Runtime $runtime,
-		private int $max_observations = 1000
+		private int $max_observations = 1000,
+		private array $context = array()
 	) {
 		if ( $this->max_observations < 1 ) {
 			throw new InvalidArgumentException( 'The native shadow observation bound must be positive.' );
@@ -51,6 +64,12 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			return;
 		}
 		++$this->sequence;
+		$prefix = $this->query_prefix( $database );
+		$this->first_query_context ??= array(
+			'prefix' => $prefix,
+			'base_prefix' => (string) ( $database->base_prefix ?? '' ),
+			'multisite' => ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() ),
+		);
 
 		if ( 1 !== preg_match( '/^\s*SELECT\b/i', $query ) ) {
 			++$this->counts['ignored'];
@@ -59,7 +78,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 
 		try {
 			$native = $this->runtime->execute(
-				new WP_Markdown_Query_Request( $query, (string) ( $database->prefix ?? 'wp_' ) )
+				new WP_Markdown_Query_Request( $query, $prefix )
 			);
 			if ( ! $native->succeeded() ) {
 				$diagnostic = $native->diagnostic() ?? array();
@@ -107,7 +126,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			$this->retain_blocker(
 				'verifier_failure',
 				$query,
-				array( 'failure_class' => get_class( $error ) )
+				array( 'failure_class' => get_class( $error ), 'failure_reason' => $this->failure_reason( $error ) )
 			);
 		}
 	}
@@ -120,7 +139,28 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'observed'         => $this->sequence,
 			'counts'           => $this->counts,
 			'first_blocker'    => $this->first_blocker,
+			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ) ),
 		);
+	}
+
+	private function failure_reason( Throwable $error ): string {
+		$message = $error->getMessage();
+		if ( str_contains( $message, 'canonical state root' ) ) {
+			return 'invalid_canonical_state_root';
+		}
+		if ( str_contains( $message, 'table prefix' ) ) {
+			return 'invalid_table_prefix';
+		}
+		return 'native_verifier_exception';
+	}
+
+	private function query_prefix( object $database ): string {
+		foreach ( array( $database->prefix ?? null, $database->base_prefix ?? null, $GLOBALS['table_prefix'] ?? null, 'wp_' ) as $prefix ) {
+			if ( is_string( $prefix ) && 1 === preg_match( '/^[A-Za-z0-9_]+$/D', $prefix ) ) {
+				return $prefix;
+			}
+		}
+		return 'wp_';
 	}
 
 	/** @param array<string,mixed> $details */

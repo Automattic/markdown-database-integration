@@ -199,7 +199,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'max_observations' => $this->max_observations,
 			'observed'         => $this->sequence,
 			'counts'           => $this->counts,
-		'classifications'   => $this->classification_counts,
+			'classifications'   => $this->classification_counts,
 			'first_blocker'    => $this->first_blocker,
 			'representatives'  => array_values( $this->representatives ),
 			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),

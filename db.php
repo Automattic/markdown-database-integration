@@ -166,10 +166,7 @@ if ( 'mdi-native' === MARKDOWN_DB_BACKEND ) {
 	$markdown_db_native_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir();
 	$markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : $markdown_db_native_content_dir;
 	$markdown_db_native_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
-	$markdown_db_native_multisite = ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
-	$markdown_db_native_runtime = $markdown_db_native_multisite
-		? WP_Markdown_Native_Runtime_Factory::multisite_runtime( $markdown_db_native_state_dir, $markdown_db_native_prefix, $markdown_db_native_content_dir )
-		: WP_Markdown_Native_Runtime_Factory::prefix_runtime( $markdown_db_native_state_dir, $markdown_db_native_content_dir );
+	$markdown_db_native_runtime = WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $markdown_db_native_state_dir, $markdown_db_native_prefix, $markdown_db_native_content_dir );
 	$GLOBALS['wpdb'] = new WP_Markdown_Native_WPDB( $markdown_db_native_runtime, $markdown_db_native_prefix );
 	define( 'MARKDOWN_DB_DROPIN', true );
 	return;

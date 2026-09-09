@@ -231,6 +231,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 		?string $global_state_root = null,
 		?string $global_content_root = null
 	): WP_Markdown_Native_Query_Runtime {
+		$state_root = self::materialize_state_root( $state_root );
+		if ( null !== $global_state_root ) {
+			$global_state_root = self::materialize_state_root( $global_state_root );
+		}
 		$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root );
 		// A journal surviving process termination is rolled back before the
 		// runtime serves its first query, so canonical state never boots torn.
@@ -268,6 +272,21 @@ final class WP_Markdown_Native_Runtime_Factory {
 		);
 	}
 
+	/** Materialize a declared native state root before its journal can use it. */
+	private static function materialize_state_root( string $state_root ): string {
+		if ( '' === $state_root || is_link( $state_root ) || ( file_exists( $state_root ) && ! is_dir( $state_root ) ) ) {
+			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
+		}
+		if ( ! is_dir( $state_root ) && ! @mkdir( $state_root, 0755, true ) && ! is_dir( $state_root ) ) {
+			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
+		}
+		$root = realpath( $state_root );
+		if ( false === $root || ! is_dir( $root ) || is_link( $state_root ) ) {
+			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
+		}
+		return rtrim( $root, DIRECTORY_SEPARATOR );
+	}
+
 	/** Route a multisite request to its base or site-local canonical roots. */
 	public static function multisite_runtime(
 		string $state_root,
@@ -283,6 +302,15 @@ final class WP_Markdown_Native_Runtime_Factory {
 		?string $content_root = null
 	): WP_Markdown_Query_Runtime {
 		return new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root ?? $state_root );
+	}
+
+	/** Select the multisite dispatcher only once WordPress has published its topology. */
+	public static function wordpress_runtime(
+		string $state_root,
+		string $base_prefix = 'wp_',
+		?string $content_root = null
+	): WP_Markdown_Query_Runtime {
+		return new WP_Markdown_Native_WordPress_Query_Runtime( $state_root, $base_prefix, $content_root ?? $state_root );
 	}
 
 	/**
@@ -572,6 +600,37 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 			);
 		}
 		return $this->runtimes[ $prefix ]->execute( $request );
+	}
+}
+
+/** Defer WordPress topology detection because db.php precedes multisite bootstrap. */
+final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Query_Runtime {
+
+	private WP_Markdown_Native_Prefix_Query_Runtime $prefix_runtime;
+	/** @var array<string,WP_Markdown_Native_Multisite_Query_Runtime> */
+	private array $multisite_runtimes = array();
+
+	public function __construct( string $state_root, private string $base_prefix, string $content_root ) {
+		$this->prefix_runtime = new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root );
+		$this->state_root = $state_root;
+		$this->content_root = $content_root;
+	}
+
+	private string $state_root;
+	private string $content_root;
+
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$multisite = ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
+		if ( ! $multisite ) {
+			return $this->prefix_runtime->execute( $request );
+		}
+		$base_prefix = isset( $GLOBALS['wpdb']->base_prefix ) && is_string( $GLOBALS['wpdb']->base_prefix )
+			? $GLOBALS['wpdb']->base_prefix
+			: $this->base_prefix;
+		if ( ! isset( $this->multisite_runtimes[ $base_prefix ] ) ) {
+			$this->multisite_runtimes[ $base_prefix ] = new WP_Markdown_Native_Multisite_Query_Runtime( $this->state_root, $base_prefix, $this->content_root );
+		}
+		return $this->multisite_runtimes[ $base_prefix ]->execute( $request );
 	}
 }
 

@@ -71,6 +71,7 @@ $recipe = array(
 			'MARKDOWN_DB_BACKEND' => 'mysql-full',
 			'MARKDOWN_DB_NATIVE_SHADOW' => 'true',
 			'MARKDOWN_DB_NATIVE_SHADOW_MAX' => '10000',
+			'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' => 'sql_snapshot',
 			'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' => $report_path,
 		),
 		'services' => array( array(

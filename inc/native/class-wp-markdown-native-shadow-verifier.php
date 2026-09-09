@@ -6,6 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-native-query-runtime.php';
+require_once __DIR__ . '/class-wp-markdown-native-authoritative-snapshot-runtime.php';
 require_once __DIR__ . '/../compatibility/class-wp-markdown-query-compatibility-comparator.php';
 require_once __DIR__ . '/../class-wp-markdown-wpdb-result-snapshot.php';
 
@@ -20,10 +21,16 @@ final class WP_Markdown_Native_Shadow_Factory {
 		// The wrapper reads the active wpdb topology when each query is observed.
 		$runtime = WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $state_root, $base_prefix, $content_root );
 		$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
+		$input_mode = defined( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' ) ? (string) MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE : 'canonical';
+		if ( ! in_array( $input_mode, array( 'canonical', 'sql_snapshot' ), true ) ) {
+			throw new InvalidArgumentException( 'The native shadow input mode must be canonical or sql_snapshot.' );
+		}
 		return new WP_Markdown_Native_Shadow_Verifier(
 			$runtime,
 			$maximum,
 			array(
+				'comparison' => 'sql_snapshot' === $input_mode ? 'independent_native_sql_over_authoritative_snapshots' : 'native_sql_over_canonical_state',
+				'input_mode' => $input_mode,
 				'runtime' => 'wordpress-deferred-topology',
 				'initial_prefix' => (string) ( $database->prefix ?? '' ),
 				'initial_base_prefix' => $base_prefix,
@@ -47,6 +54,10 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	);
 	private ?array $first_blocker = null;
 	private ?array $first_query_context = null;
+	private ?array $last_input_state = null;
+	private string $input_mode;
+	/** @var array<string,WP_Markdown_Native_Authoritative_Snapshot_Runtime> */
+	private array $pending_inputs = array();
 
 	public function __construct(
 		private WP_Markdown_Query_Runtime $runtime,
@@ -56,6 +67,16 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		if ( $this->max_observations < 1 ) {
 			throw new InvalidArgumentException( 'The native shadow observation bound must be positive.' );
 		}
+		$this->input_mode = (string) ( $this->context['input_mode'] ?? 'canonical' );
+	}
+
+	/** Capture source rows before wpdb sends the observed SELECT to MySQL. */
+	public function capture_input( string $query, object $database ): void {
+		if ( 'sql_snapshot' !== $this->input_mode || 1 !== preg_match( '/^\s*SELECT\b/i', $query ) ) {
+			return;
+		}
+		$prefix = $this->query_prefix( $database );
+		$this->pending_inputs[ hash( 'sha256', $query ) ] = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
 	}
 
 	public function observe( string $query, mixed $return_value, object $database ): void {
@@ -77,7 +98,14 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		}
 
 		try {
-			$native = $this->runtime->execute(
+			$runtime = $this->runtime;
+			if ( 'sql_snapshot' === $this->input_mode ) {
+				$key = hash( 'sha256', $query );
+				$runtime = $this->pending_inputs[ $key ] ?? WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
+				unset( $this->pending_inputs[ $key ] );
+				$this->last_input_state = $runtime->provenance();
+			}
+			$native = $runtime->execute(
 				new WP_Markdown_Query_Request( $query, $prefix )
 			);
 			if ( ! $native->succeeded() ) {
@@ -139,7 +167,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'observed'         => $this->sequence,
 			'counts'           => $this->counts,
 			'first_blocker'    => $this->first_blocker,
-			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ) ),
+			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
 		);
 	}
 

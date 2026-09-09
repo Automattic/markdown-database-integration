@@ -14,6 +14,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
+		self::trace_runtime_phase( 'capture' );
 		$connection = method_exists( $database, 'markdown_db_mysql_connection' )
 			? $database->markdown_db_mysql_connection()
 			: ( $database->dbh ?? null );
@@ -43,6 +44,14 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
+	}
+
+	private static function trace_runtime_phase( string $phase ): void {
+		$path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
+		if ( ! is_string( $path ) || '' === $path ) {
+			return;
+		}
+		file_put_contents( $path, json_encode( array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) ), JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
 	}
 
 	/** @return array<int,string> */

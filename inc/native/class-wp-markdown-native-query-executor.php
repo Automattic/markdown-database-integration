@@ -56,6 +56,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		self::trace_runtime_phase( 'executor' );
 		$transaction_control = WP_Markdown_SQL_Classifier::transaction_control( $request->sql() );
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
@@ -122,6 +123,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				);
 		}
 		return $this->execute_plan( $plan );
+	}
+
+	private static function trace_runtime_phase( string $phase ): void {
+		$path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
+		if ( ! is_string( $path ) || '' === $path ) {
+			return;
+		}
+		file_put_contents( $path, json_encode( array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) ), JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
 	}
 
 	/** Execute source-free typed scalar expressions as the one-row SQL result. */

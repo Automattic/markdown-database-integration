@@ -11,6 +11,7 @@ final class WP_Markdown_Native_Query_Parser {
 	) {}
 
 	public function parse( string $sql ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
+		self::trace_runtime_phase( 'parser' );
 		$ast = $this->parse_ast( $sql );
 		if ( $ast instanceof WP_Markdown_Query_Result ) {
 			return $ast;
@@ -20,6 +21,14 @@ final class WP_Markdown_Native_Query_Parser {
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return $this->failure( $error->reason(), $error->getMessage(), $error->sql_offset() );
 		}
+	}
+
+	private static function trace_runtime_phase( string $phase ): void {
+		$path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
+		if ( ! is_string( $path ) || '' === $path ) {
+			return;
+		}
+		file_put_contents( $path, json_encode( array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) ), JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
 	}
 
 	/**

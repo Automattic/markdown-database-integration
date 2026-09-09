@@ -113,6 +113,15 @@ if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW' ) && 'true' === getenv( 'MARKDOWN_DB
 if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) && ctype_digit( (string) getenv( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ) ) {
 	define( 'MARKDOWN_DB_NATIVE_SHADOW_MAX', (int) getenv( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) );
 }
+if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' ) ) {
+	$markdown_db_shadow_input_mode = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' );
+	if ( false !== $markdown_db_shadow_input_mode && ! in_array( $markdown_db_shadow_input_mode, array( 'canonical', 'sql_snapshot' ), true ) ) {
+		throw new InvalidArgumentException( 'The native shadow input mode must be canonical or sql_snapshot.' );
+	}
+	if ( is_string( $markdown_db_shadow_input_mode ) && '' !== $markdown_db_shadow_input_mode ) {
+		define( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE', $markdown_db_shadow_input_mode );
+	}
+}
 if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' ) ) {
 	$markdown_db_shadow_report_path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' );
 	if ( is_string( $markdown_db_shadow_report_path ) && '' !== $markdown_db_shadow_report_path ) {

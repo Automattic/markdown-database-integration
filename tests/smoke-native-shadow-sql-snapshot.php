@@ -102,15 +102,41 @@ $multi_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
 	'SELECT p.ID FROM wp_posts p JOIN wp_postmeta m ON p.ID = m.post_id',
 	'wp_'
 )->provenance();
+$derived_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	'SELECT derived.ID FROM (SELECT ID FROM wp_posts) AS derived',
+	'wp_'
+)->provenance();
+$bounded = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	1,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$bounded->capture_input( 'SELECT ID, post_title FROM wp_posts', $database );
+$bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
+$tableless = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	1,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$tableless->capture_input( 'SELECT 1', $database );
+$tableless->observe( 'SELECT 1', 1, $database );
+$capture_count_at_bound = count( $database->source()->results );
+$bounded->capture_input( 'SELECT ID, post_title FROM wp_posts', $database );
+$bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
 
 $checks = array(
 	'authoritative snapshots compare with independently evaluated native SQL' => 2 === $second['counts']['compatible'] && 0 === $second['counts']['verifier_failures'],
 	'input provenance records bounded source rows without their values' => 'authoritative_mysql_connection_pre_query' === ( $first['context']['last_input_state']['read_connection'] ?? null )
 		&& 1 === ( $first['context']['last_input_state']['tables'][0]['rows'] ?? 0 )
+		&& 64 === strlen( (string) ( $first['context']['last_input_state']['tables'][0]['schema_sha256'] ?? '' ) )
 		&& ! str_contains( json_encode( $second, JSON_THROW_ON_ERROR ), 'Second' ),
 	'mutation changes the next authoritative input view' => ( $first['context']['last_input_state']['tables'][0]['sha256'] ?? '' ) !== ( $second['context']['last_input_state']['tables'][0]['sha256'] ?? '' ),
 	'raw mysqli-shaped values retain NULL while provider applies predicate, order, limit, and projection' => array( array( 'ID' => '10' ) ) === $provided,
 	'typed plan traversal captures every JOIN source' => array( 'wp_posts', 'wp_postmeta' ) === array_column( $multi_table['tables'], 'table' ),
+	'typed plan traversal skips a derived alias and captures its source table' => array( 'wp_posts' ) === array_column( $derived_table['tables'], 'table' ),
+	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
+	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),
 );
 $failed = 0;

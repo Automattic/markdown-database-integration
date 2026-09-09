@@ -74,7 +74,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 
 	/** Capture source rows before wpdb sends the observed SELECT to MySQL. */
 	public function capture_input( string $query, object $database ): void {
-		if ( 'sql_snapshot' !== $this->input_mode || 1 !== preg_match( '/^\s*SELECT\b/i', $query ) ) {
+		if ( $this->sequence >= $this->max_observations || 'sql_snapshot' !== $this->input_mode || 1 !== preg_match( '/^\s*SELECT\b/i', $query ) ) {
 			return;
 		}
 		$prefix = $this->query_prefix( $database );
@@ -82,16 +82,21 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		try {
 			$this->pending_inputs[ $key ] = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
 			unset( $this->pending_input_failures[ $key ] );
-		} catch ( Throwable $error ) {
+		} catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
 			// Input capture is observational and must never interrupt wpdb's query.
-			$this->pending_input_failures[ $key ] = array(
-				'code'   => 'markdown_db_native_unsupported_query',
-				'reason' => 'unsupported_snapshot_input',
-			);
+			unset( $this->pending_inputs[ $key ] );
+			$this->pending_input_failures[ $key ] = $error->diagnostic();
+		} catch ( Throwable $error ) {
+			unset( $this->pending_inputs[ $key ] );
+			$this->pending_input_failures[ $key ] = array( 'code' => 'markdown_db_native_snapshot_input_unavailable', 'reason' => 'snapshot_capture_failed' );
 		}
 	}
 
 	public function observe( string $query, mixed $return_value, object $database ): void {
+		$key = hash( 'sha256', $query );
+		$input = $this->pending_inputs[ $key ] ?? null;
+		$input_failure = $this->pending_input_failures[ $key ] ?? null;
+		unset( $this->pending_inputs[ $key ], $this->pending_input_failures[ $key ] );
 		if ( $this->sequence >= $this->max_observations ) {
 			++$this->counts['dropped'];
 			return;
@@ -112,15 +117,12 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		try {
 			$runtime = $this->runtime;
 			if ( 'sql_snapshot' === $this->input_mode ) {
-				$key = hash( 'sha256', $query );
-				if ( isset( $this->pending_input_failures[ $key ] ) ) {
+				if ( is_array( $input_failure ) ) {
 					++$this->counts['unsupported'];
-					$this->retain_blocker( 'unsupported', $query, array( 'native_diagnostic' => $this->pending_input_failures[ $key ] ) );
-					unset( $this->pending_input_failures[ $key ] );
+					$this->retain_blocker( 'unsupported', $query, array( 'native_diagnostic' => $input_failure ) );
 					return;
 				}
-				$runtime = $this->pending_inputs[ $key ] ?? WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
-				unset( $this->pending_inputs[ $key ] );
+				$runtime = $input ?? WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
 				$this->last_input_state = $runtime->provenance();
 			}
 			$native = $runtime->execute(

@@ -128,6 +128,16 @@ if ( ! is_array( $shadow ) || 'mdi-native-shadow-report/v1' !== ( $shadow['schem
 	fwrite( STDERR, "Shadow report was absent or empty. Artifacts: {$root}\n" );
 	exit( 1 );
 }
+$input_tables = $shadow['context']['last_input_state']['tables'] ?? array();
+if ( 'sql_snapshot' !== ( $shadow['context']['input_mode'] ?? null )
+	|| (int) ( $shadow['counts']['compatible'] ?? 0 ) < 1
+	|| ! is_array( $input_tables )
+	|| array() === $input_tables
+	|| array_filter( $input_tables, static fn( mixed $table ): bool => ! is_array( $table ) || ! isset( $table['rows'], $table['sha256'], $table['schema_sha256'] ) )
+) {
+	fwrite( STDERR, "Shadow report did not prove a compatible sql_snapshot comparison. Artifacts: {$root}\n" );
+	exit( 1 );
+}
 
 $result = array(
 	'schema' => 'mdi-mysql-shadow-corpus/v1',

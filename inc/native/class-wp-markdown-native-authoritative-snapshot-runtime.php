@@ -10,7 +10,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private const MAX_ROWS_PER_TABLE = 10000;
 	private const MAX_BYTES_PER_TABLE = 8388608;
 
-	/** @param array<int,array{table:string,rows:int,sha256:string}> $provenance */
+	/** @param array<int,array{table:string,rows:int,sha256:string,schema_sha256:string}> $provenance */
 	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
@@ -22,7 +22,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		}
 		$tables = self::tables_in( $sql );
 		if ( array() === $tables || count( $tables ) > self::MAX_TABLES ) {
-			throw new RuntimeException( 'The SQL snapshot input mode could not bound the source tables.' );
+			throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'unbounded_or_tableless_source' );
 		}
 
 		$registry = new WP_Markdown_Native_Table_Registry();
@@ -35,11 +35,11 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$schema_definition = $compiled[ substr( $table, strlen( $prefix ) ) ] ?? null;
 			$schema = is_array( $schema_definition ) ? WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $schema_definition ) : null;
 			if ( ! $schema instanceof WP_Markdown_Native_Table_Schema ) {
-				throw new RuntimeException( 'The SQL snapshot input mode could not compile a source table schema.' );
+				throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'source_schema_unavailable' );
 			}
 			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
 			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
-			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', json_encode( $rows, JSON_THROW_ON_ERROR ) ) );
+			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', json_encode( $rows, JSON_THROW_ON_ERROR ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
 	}
@@ -48,7 +48,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		return $this->runtime->execute( $request );
 	}
 
-	/** @return array{read_connection:string,tables:array<int,array{table:string,rows:int,sha256:string}>} */
+	/** @return array{read_connection:string,tables:array<int,array{table:string,rows:int,sha256:string,schema_sha256:string}>} */
 	public function provenance(): array {
 		return array( 'read_connection' => 'authoritative_mysql_connection_pre_query', 'tables' => $this->provenance );
 	}
@@ -56,6 +56,13 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	/** @return array<int,string> */
 	private static function tables_in( string $sql ): array {
 		$plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $sql );
+		if ( $plan instanceof WP_Markdown_Query_Result ) {
+			$diagnostic = $plan->diagnostic() ?? array();
+			throw new WP_Markdown_Native_Snapshot_Input_Exception(
+				(string) ( $diagnostic['code'] ?? 'markdown_db_native_unsupported_query' ),
+				(string) ( $diagnostic['reason'] ?? 'unsupported_sql_grammar' )
+			);
+		}
 		if ( ! $plan instanceof WP_Markdown_Native_Query_Plan ) {
 			return array();
 		}
@@ -66,7 +73,9 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 
 	/** @param array<int,string> $tables */
 	private static function collect_tables( WP_Markdown_Native_Query_Plan $plan, array &$tables ): void {
-		$tables[] = $plan->table();
+		if ( null === $plan->derived() ) {
+			$tables[] = $plan->table();
+		}
 		foreach ( $plan->joins() as $join ) {
 			if ( null !== $join->derived() ) {
 				self::collect_tables( $join->derived(), $tables );
@@ -146,6 +155,17 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		} elseif ( method_exists( $result, 'free_result' ) ) {
 			$result->free_result();
 		}
+	}
+}
+
+final class WP_Markdown_Native_Snapshot_Input_Exception extends RuntimeException {
+	public function __construct( private string $diagnostic_code, private string $diagnostic_reason ) {
+		parent::__construct( $diagnostic_reason );
+	}
+
+	/** @return array{code:string,reason:string} */
+	public function diagnostic(): array {
+		return array( 'code' => $this->diagnostic_code, 'reason' => $this->diagnostic_reason );
 	}
 }
 

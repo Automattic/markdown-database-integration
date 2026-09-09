@@ -14,6 +14,6 @@ UNION plans now retain a separate combined-result ORDER BY/LIMIT stage. Unparent
 
 ## Remaining Limits
 
-- Correlated subqueries are bounded to 10,000 distinct outer bindings per statement and support qualified predicate and scalar-expression references against enclosing aliases. Correlated aggregate/HAVING expressions and nested correlated subqueries fail closed with `unsupported_subquery_correlation`; uncorrelated subqueries may use any shape supported by the shared plan executor.
+- Correlated subqueries are bounded to 10,000 distinct outer bindings per statement and support qualified predicate plus scalar WHERE, projection, HAVING, GROUP, and ORDER expression references against enclosing aliases. Correlated aggregate inputs and nested correlated subqueries fail closed with `unsupported_subquery_correlation`; uncorrelated subqueries may use any shape supported by the shared plan executor.
 - UNION branches require equal projection counts and compatible native column types. Global ORDER BY accepts first-branch output names or positive ordinals, not arbitrary expressions.
 - Parenthesized bounded SELECT and UNION query expressions are supported both as derived sources and as top-level statements; each operand must still use the supported bounded SELECT grammar.

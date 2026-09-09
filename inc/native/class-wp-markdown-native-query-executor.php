@@ -128,7 +128,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $table;
 			}
 			if ( null === $table ) {
-				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
+				return $this->missing_table();
 			}
 			$schema = $table['schema'];
 			$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
@@ -148,7 +148,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $table;
 		}
 		if ( null === $table ) {
-			return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
+			return $this->missing_table();
 		}
 
 		$schema     = $table['schema'];
@@ -911,7 +911,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				// Keep simple UNION branches on the direct path: unlike a top-level
 				// query, they have always supported bounded in-memory filtering.
 				$table = $this->registry->table( $branch->table() );
-				if ( null === $table ) { return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested UNION table.' ); }
+				if ( null === $table ) { return $this->missing_table(); }
 				$schema = $table['schema'];
 				$projection = array( '*' ) === $branch->projection() ? $schema->column_names() : $branch->projection();
 				foreach ( $projection as $column ) { if ( ! $schema->has_column( $column ) ) { return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested UNION column.' ); } }
@@ -1010,7 +1010,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $table;
 			}
 			if ( null === $table || isset( $sources[ $join->alias() ] ) ) {
-				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested JOIN table.' );
+				return $this->missing_table();
 			}
 			$sources[ $join->alias() ] = array( 'table' => $join->table(), 'schema' => $table['schema'], 'provider' => $table['provider'] );
 		}
@@ -2261,6 +2261,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return null === $this->table_mutations
 			? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )
 			: $this->table_mutations->execute( $request );
+	}
+
+	private function missing_table(): WP_Markdown_Query_Result {
+		return WP_Markdown_Query_Result::failure(
+			array(
+				'code'    => 1146,
+				'reason'  => 'missing_table',
+				'message' => 'The requested table does not exist.',
+			)
+		);
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

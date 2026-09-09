@@ -9,6 +9,7 @@ require_once __DIR__ . '/../inc/native/class-wp-markdown-native-shadow-verifier.
 class MDI_Shadow_Database {
 	public string $prefix = 'wp_';
 	public string $last_error = '';
+	public int $last_errno = 0;
 	public int $insert_id = 0;
 	public int $rows_affected = 0;
 	public int $num_rows = 0;
@@ -124,6 +125,15 @@ final class MDI_Reordered_Runtime implements WP_Markdown_Query_Runtime {
 		);
 	}
 }
+
+final class MDI_Wrong_Missing_Table_Runtime implements WP_Markdown_Query_Runtime {
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		unset( $request );
+		return WP_Markdown_Query_Result::failure(
+			array( 'code' => 1054, 'reason' => 'unknown_column', 'message' => 'private wrong native error' )
+		);
+	}
+}
 $database->result(
 	array( array( 'status' => 'publish' ), array( 'status' => 'draft' ) ),
 	array( array( 'name' => 'status', 'type' => 253 ) )
@@ -139,6 +149,15 @@ $failed_verifier->observe( "SELECT option_name FROM wp_options WHERE option_name
 $failed_verifier->observe( "SELECT option_name FROM wp_options WHERE option_name = 'sql-secret--hash#quote''double-second'", 0, $database );
 $failed_verifier->observe( 'SELECT option_name FROM wp_options WHERE option_id = 0xD34DB33F OR option_id = 12.345e+6', 0, $database );
 $failure_report = $failed_verifier->report();
+$database->result( array(), array() );
+$database->last_error = 'private authoritative missing table error';
+$database->last_errno = 1146;
+$missing_table = new WP_Markdown_Native_Shadow_Verifier( WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ) );
+$missing_table->observe( 'SELECT ID FROM wp_missing_table', false, $database );
+$wrong_missing_table = new WP_Markdown_Native_Shadow_Verifier( new MDI_Wrong_Missing_Table_Runtime() );
+$wrong_missing_table->observe( 'SELECT ID FROM wp_missing_table', false, $database );
+$missing_table_report = $missing_table->report();
+$wrong_missing_table_report = $wrong_missing_table->report();
 
 class WP_SQLite_DB {
 	public string $prefix = 'wp_';
@@ -215,6 +234,9 @@ $checks = array(
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'sql-secret' )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'D34DB33F' )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), '12.345e+6' ),
+	'missing-table failures compare independently by false return and normalized code' => 1 === ( $missing_table_report['counts']['compatible_missing_table_errors'] ?? null )
+		&& ! str_contains( json_encode( $missing_table_report, JSON_THROW_ON_ERROR ), 'private authoritative missing table error' ),
+	'a different native error does not match a missing-table oracle outcome' => 1 === ( $wrong_missing_table_report['counts']['mismatched'] ?? null ),
 	'SQLite authoritative returns and public state survive hostile observers' => 1 === $sqlite_return
 		&& 1 === $hostile->calls
 		&& 'wp_' === $sqlite->prefix

@@ -49,6 +49,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private int $sequence = 0;
 	private array $counts = array(
 		'compatible'       => 0,
+		'compatible_reads' => 0,
+		'compatible_missing_table_errors' => 0,
 		'unsupported'      => 0,
 		'mismatched'       => 0,
 		'ignored'          => 0,
@@ -165,6 +167,12 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				new WP_Markdown_Query_Request( $query, $prefix )
 			);
 			if ( ! $native->succeeded() ) {
+				$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true );
+				if ( $this->is_missing_table_error( $expected ) && $this->is_missing_table_error( $native->corpus_result() ) ) {
+					++$this->counts['compatible'];
+					++$this->counts['compatible_missing_table_errors'];
+					return;
+				}
 				$diagnostic = $native->diagnostic() ?? array();
 				$status = 'markdown_db_native_unsupported_query' === ( $diagnostic['code'] ?? '' )
 					? 'unsupported'
@@ -194,6 +202,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			}
 			if ( $comparison['compatible'] ) {
 				++$this->counts['compatible'];
+				++$this->counts['compatible_reads'];
 				return;
 			}
 
@@ -323,6 +332,11 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private function safe_reason( string $reason ): string {
 		$reason = (string) preg_replace( '/[^A-Za-z0-9_.-]/', '_', $reason );
 		return '' === $reason ? 'unknown' : substr( $reason, 0, 128 );
+	}
+
+	/** Compare normalized errors without retaining server-specific error messages. */
+	private function is_missing_table_error( array $result ): bool {
+		return false === ( $result['return']['value'] ?? null ) && 1146 === (int) ( $result['error_code'] ?? 0 );
 	}
 
 	private function query_template( string $query ): string {

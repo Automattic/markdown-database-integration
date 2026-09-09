@@ -220,7 +220,8 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	public function savepoint( string $name ): true|string {
 		if ( ! $this->active ) {
-			return sprintf( 'SAVEPOINT %s does not exist.', $name );
+			// With autocommit on, MySQL accepts SAVEPOINT without opening a transaction.
+			return $this->autocommit ? true : sprintf( 'SAVEPOINT %s does not exist.', $name );
 		}
 		$this->savepoints[ $name ] = count( $this->entries );
 		return true;

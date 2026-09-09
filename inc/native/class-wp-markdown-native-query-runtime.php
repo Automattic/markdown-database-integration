@@ -675,6 +675,7 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 	private array $runtimes = array();
 	private string $state_root;
 	private string $content_root;
+	private WP_Markdown_Native_Advisory_Locks $advisory_locks;
 
 	public function __construct(
 		string $state_root,
@@ -686,6 +687,7 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 		}
 		$this->state_root = rtrim( $state_root, '/\\' );
 		$this->content_root = rtrim( $content_root, '/\\' );
+		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $this->state_root );
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -718,7 +720,8 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 					true,
 					$roots['content'],
 					$this->state_root,
-					$this->content_root
+					$this->content_root,
+					$this->advisory_locks
 				);
 			} catch ( Throwable ) {
 				return WP_Markdown_Query_Result::failure(
@@ -734,9 +737,7 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 	}
 
 	public function close(): void {
-		foreach ( $this->runtimes as $runtime ) {
-			$runtime->close();
-		}
+		$this->advisory_locks->close();
 	}
 
 	private function is_scope_prefix( string $prefix ): bool {

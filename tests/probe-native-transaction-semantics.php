@@ -101,6 +101,13 @@ function probe_session_variable( WP_Markdown_Native_Query_Runtime $runtime, stri
 
 $inactive_savepoint = probe_statement( $runtime, 'SAVEPOINT outside_transaction' );
 $inactive_state = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+$inactive_release = probe_statement( $runtime, 'RELEASE SAVEPOINT outside_transaction' );
+
+probe_statement( $runtime, 'SET autocommit = 0' );
+$autocommit_off_savepoint = probe_statement( $runtime, 'SAVEPOINT autocommit_off' );
+$autocommit_off_savepoint_state = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, 'ROLLBACK' );
+probe_statement( $runtime, 'SET autocommit = 1' );
 
 $session_before = array(
 	'in_transaction' => probe_session_variable( $runtime, 'SELECT @@session.in_transaction' ),
@@ -239,7 +246,11 @@ $report = array(
 		),
 	),
 	'assertions'               => array(
-		'savepoint outside a transaction fails without starting one' => false === $inactive_savepoint['return_value'] && '0' === $inactive_state['value'],
+		'savepoint outside an autocommit session is a no-op' => 0 === $inactive_savepoint['return_value']
+			&& '0' === $inactive_state['value']
+			&& false === $inactive_release['return_value'],
+		'autocommit-off savepoint does not create an untracked transaction' => false === $autocommit_off_savepoint['return_value']
+			&& '0' === $autocommit_off_savepoint_state['value'],
 		'transaction control statements execute'        => $control_executes,
 	'session state reports MySQL-shaped strings and headers' => '0' === $session_before['in_transaction']['value']
 		&& '@@session.in_transaction' === $session_before['in_transaction']['column']

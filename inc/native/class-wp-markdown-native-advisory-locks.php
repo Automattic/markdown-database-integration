@@ -8,7 +8,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 final class WP_Markdown_Native_Advisory_Locks {
 
 	private const DIRECTORY = '_locks';
-	private const MAX_WAIT_MICROSECONDS = 5000000;
+	public const MAX_WAIT_SECONDS = 5.0;
 
 	/** @var array<string,array{handle:resource,count:int,path:string}> */
 	private array $locks = array();
@@ -30,7 +30,7 @@ final class WP_Markdown_Native_Advisory_Locks {
 		if ( false === $handle ) {
 			return false;
 		}
-		$wait = min( max( 0, $timeout * 1000000 ), self::MAX_WAIT_MICROSECONDS );
+		$wait = $timeout * 1000000;
 		$deadline = hrtime( true ) + (int) ( $wait * 1000 );
 		do {
 			if ( flock( $handle, LOCK_EX | LOCK_NB ) ) {
@@ -49,7 +49,16 @@ final class WP_Markdown_Native_Advisory_Locks {
 	/** @return int|null One when released, zero when held by another connection, null when absent. */
 	public function release( string $name ): ?int {
 		if ( ! isset( $this->locks[ $name ] ) ) {
-			return is_file( $this->path( $name ) ) ? 0 : null;
+			$handle = @fopen( $this->path( $name ), 'c+b' );
+			if ( false === $handle ) {
+				return null;
+			}
+			$available = flock( $handle, LOCK_EX | LOCK_NB );
+			if ( $available ) {
+				flock( $handle, LOCK_UN );
+			}
+			fclose( $handle );
+			return $available ? null : 0;
 		}
 		--$this->locks[ $name ]['count'];
 		if ( 0 < $this->locks[ $name ]['count'] ) {
@@ -59,7 +68,6 @@ final class WP_Markdown_Native_Advisory_Locks {
 		unset( $this->locks[ $name ] );
 		flock( $lock['handle'], LOCK_UN );
 		fclose( $lock['handle'] );
-		@unlink( $lock['path'] );
 		return 1;
 	}
 

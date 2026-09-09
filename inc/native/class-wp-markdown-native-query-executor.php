@@ -127,18 +127,26 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function advisory_lock_query( string $sql ): ?WP_Markdown_Query_Result {
-		if ( 1 !== preg_match( "/^\\s*SELECT\\s+(GET_LOCK|RELEASE_LOCK)\\s*\\(\\s*'((?:\\\\.|[^'])*)'\\s*(?:,\\s*([0-9]+(?:\\.[0-9]+)?))?\\s*\\)\\s*;?\\s*$/i", $sql, $match ) ) {
+		if ( 1 !== preg_match( "/^\\s*SELECT\\s+((GET_LOCK|RELEASE_LOCK)\\s*\\(\\s*('(?:\\\\.|[^'])*')\\s*(?:,\\s*([0-9]+(?:\\.[0-9]+)?))?\\s*\\))\\s*;?\\s*$/i", $sql, $match ) ) {
 			return null;
 		}
-		$function = strtoupper( $match[1] );
-		if ( ( 'GET_LOCK' === $function && ! isset( $match[3] ) ) || null === $this->advisory_locks ) {
+		$function = strtoupper( $match[2] );
+		if ( ( 'GET_LOCK' === $function && ! isset( $match[4] ) ) || ( 'RELEASE_LOCK' === $function && isset( $match[4] ) ) || null === $this->advisory_locks ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native advisory locks require a literal name and bounded timeout.' );
 		}
-		$name = stripcslashes( $match[2] );
+		try {
+			$literal = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $match[3] )[0];
+			$name = $literal->value();
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return $this->failure( 'unsupported_literal', 'mdi-native cannot decode the requested advisory lock name.' );
+		}
+		if ( ! is_string( $name ) || ( isset( $match[4] ) && (float) $match[4] > WP_Markdown_Native_Advisory_Locks::MAX_WAIT_SECONDS ) ) {
+			return $this->failure( 'unsupported_grammar', 'mdi-native advisory lock timeouts must be between 0 and 5 seconds.' );
+		}
 		$value = 'GET_LOCK' === $function
-			? (int) $this->advisory_locks->acquire( $name, (float) $match[3] )
+			? (int) $this->advisory_locks->acquire( $name, (float) $match[4] )
 			: $this->advisory_locks->release( $name );
-		$column = $function . '(' . $match[2] . ( 'GET_LOCK' === $function ? ', ' . $match[3] : '' ) . ')';
+		$column = $match[1];
 		return WP_Markdown_Query_Result::selected(
 			array( array( $column => null === $value ? null : (string) $value ) ),
 			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )

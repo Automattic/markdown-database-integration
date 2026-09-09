@@ -86,8 +86,19 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			}
 		}
 		$encoded = json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n";
-		if ( strlen( $encoded ) <= 4096 && ( is_file( $path ) ? (int) filesize( $path ) : 0 ) + strlen( $encoded ) <= 65536 ) {
-			file_put_contents( $path, $encoded, FILE_APPEND | LOCK_EX );
+		if ( strlen( $encoded ) <= 4096 && false !== ( $trace = @fopen( $path, 'c' ) ) ) {
+			try {
+				if ( flock( $trace, LOCK_EX ) ) {
+					$size = fstat( $trace )['size'] ?? 0;
+					if ( $size + strlen( $encoded ) <= 65536 ) {
+						fseek( $trace, 0, SEEK_END );
+						fwrite( $trace, $encoded );
+					}
+					flock( $trace, LOCK_UN );
+				}
+			} finally {
+				fclose( $trace );
+			}
 		}
 	}
 

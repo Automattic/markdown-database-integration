@@ -357,7 +357,24 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'actual_columns'   => $columns( $actual ),
 			'expected_rows'    => array( 'count' => count( $expected_rows ), 'sha256' => hash( 'sha256', serialize( $expected_rows ) ) ),
 			'actual_rows'      => array( 'count' => count( $actual_rows ), 'sha256' => hash( 'sha256', serialize( $actual_rows ) ) ),
+			'catalog_schema_rows' => $this->catalog_schema_rows( $expected_rows, $actual_rows ),
 		);
+	}
+
+	/** Retain only public schema facts when a catalog response differs. */
+	private function catalog_schema_rows( array $expected, array $actual ): ?array {
+		$keys = array( 'COLUMN_NAME', 'DATA_TYPE', 'CHARACTER_MAXIMUM_LENGTH', 'IS_NULLABLE' );
+		$sanitize = static function ( array $rows ) use ( $keys ): ?array {
+			foreach ( $rows as $row ) {
+				if ( ! is_array( $row ) || array_diff( array_keys( $row ), $keys ) !== array() ) {
+					return null;
+				}
+			}
+			return array_map( static fn( array $row ): array => array_intersect_key( $row, array_flip( $keys ) ), $rows );
+		};
+		$expected = $sanitize( $expected );
+		$actual = $sanitize( $actual );
+		return null === $expected || null === $actual ? null : array( 'expected' => $expected, 'actual' => $actual );
 	}
 
 	/** Compare all caller-visible error state except server-specific error text. */

@@ -883,7 +883,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$literal = $this->literal();
 			return new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $literal->value() );
 		}
-		if ( $this->matches_scalar_expression() && ! $this->matches_function( 'CAST' ) ) {
+		if ( $this->matches_scalar_expression() ) {
 			return $this->scalar_expression();
 		}
 		return new WP_Markdown_Native_SQL_Scalar_Expression( 'column', $this->identifier() );

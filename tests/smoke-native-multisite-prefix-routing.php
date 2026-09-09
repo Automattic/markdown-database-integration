@@ -21,6 +21,14 @@ $network = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT blog_id FRO
 $create = $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_2_probe (id bigint unsigned NOT NULL AUTO_INCREMENT, PRIMARY KEY (id))', 'wp_2_' ) );
 $tables = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp\\_2\\_%'", 'wp_2_' ) );
 $invalid = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT option_value FROM wp_1_options', 'wp_1_' ) );
+$columns = 'post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_password, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count';
+$values = "1, '2026-09-09 00:00:00', '2026-09-09 00:00:00', '', '%s', '', 'publish', 'open', 'open', '', '%s', '', '', '2026-09-09 00:00:00', '2026-09-09 00:00:00', '', 0, '', 0, 'post', '', 0";
+$site_begin = $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION', 'wp_2_' ) );
+$site_insert = $runtime->execute( new WP_Markdown_Query_Request( sprintf( "INSERT INTO wp_2_posts ({$columns}) VALUES ({$values})", 'Site transaction', 'site-transaction' ), 'wp_2_' ) );
+$network_insert = $runtime->execute( new WP_Markdown_Query_Request( sprintf( "INSERT INTO wp_posts ({$columns}) VALUES ({$values})", 'Network transaction', 'network-transaction' ), 'wp_' ) );
+$cross_scope_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK', 'wp_' ) );
+$site_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_2_posts WHERE post_name = 'site-transaction'", 'wp_2_' ) );
+$network_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_name = 'network-transaction'", 'wp_' ) );
 
 $listed = array_map( static fn( object $row ): string => (string) array_values( get_object_vars( $row ) )[0], $tables->wpdb_state()['last_result'] );
 $checks = array(
@@ -28,6 +36,16 @@ $checks = array(
 	'switched blog retains network-global table access at the base root' => '2' === ( $network->wpdb_state()['last_result'][0]->blog_id ?? null ),
 	'site-local CREATE TABLE registers and SHOW TABLES enumerates the scoped schema' => $create->succeeded() && in_array( 'wp_2_probe', $listed, true ),
 	'non-WordPress table prefixes fail closed' => ! $invalid->succeeded() && 'unsupported_table_prefix' === ( $invalid->diagnostic()['reason'] ?? null ),
+	'a multisite transaction rolls back site and network Markdown posts together' => $site_begin->succeeded()
+		&& 1 === $site_insert->return_value()
+		&& 1 === $network_insert->return_value()
+		&& $cross_scope_rollback->succeeded()
+		&& $site_after_rollback->succeeded()
+		&& $network_after_rollback->succeeded()
+		&& 0 === $site_after_rollback->wpdb_state()['num_rows']
+		&& 0 === $network_after_rollback->wpdb_state()['num_rows']
+		&& empty( glob( $root . '/sites/2/post/*.md' ) )
+		&& empty( glob( $root . '/post/*.md' ) ),
 );
 
 $failed = 0;

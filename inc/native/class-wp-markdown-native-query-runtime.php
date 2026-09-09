@@ -251,13 +251,23 @@ final class WP_Markdown_Native_Runtime_Factory {
 		?string $content_root = null,
 		?string $global_state_root = null,
 		?string $global_content_root = null,
-		?WP_Markdown_Native_Advisory_Locks $advisory_locks = null
+		?WP_Markdown_Native_Advisory_Locks $advisory_locks = null,
+		?string $transaction_state_root = null
 	): WP_Markdown_Native_Query_Runtime {
 		$state_root = self::materialize_state_root( $state_root );
+		if ( null !== $content_root ) {
+			$content_root = self::materialize_state_root( $content_root );
+		}
 		if ( null !== $global_state_root ) {
 			$global_state_root = self::materialize_state_root( $global_state_root );
 		}
-		$transactions = self::shared_transactions( $state_root );
+		if ( null !== $global_content_root ) {
+			$global_content_root = self::materialize_state_root( $global_content_root );
+		}
+		$transactions = self::shared_transactions(
+			$transaction_state_root ?? $state_root,
+			array_filter( array( $state_root, $content_root, $global_state_root, $global_content_root ) )
+		);
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
@@ -317,11 +327,15 @@ final class WP_Markdown_Native_Runtime_Factory {
 	 * journal. Prefix changes reuse that owner, so they cannot recover or replace
 	 * a live transaction.
 	 */
-	private static function shared_transactions( string $state_root ): WP_Markdown_Native_Transaction_Journal {
+	/** @param list<string> $admitted_roots */
+	private static function shared_transactions( string $state_root, array $admitted_roots ): WP_Markdown_Native_Transaction_Journal {
 		if ( ! isset( self::$transactions[ $state_root ] ) ) {
-			$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root );
+			$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root, $admitted_roots );
 			$transactions->recover();
 			self::$transactions[ $state_root ] = $transactions;
+		} else {
+			// Later prefix and multisite runtimes may add factory-configured roots.
+			self::$transactions[ $state_root ]->admit_roots( $admitted_roots );
 		}
 		return self::$transactions[ $state_root ];
 	}
@@ -747,7 +761,8 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 					$roots['content'],
 					$this->state_root,
 					$this->content_root,
-					$this->advisory_locks
+					$this->advisory_locks,
+					$this->state_root
 				);
 			} catch ( Throwable ) {
 				return WP_Markdown_Query_Result::failure(

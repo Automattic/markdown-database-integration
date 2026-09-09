@@ -262,7 +262,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 			new WP_Markdown_Native_Post_Mutation_Runtime(
 				$registry,
 				$parser,
-				self::shared_storage( $content_root ?? $state_root )
+				self::shared_storage( $content_root ?? $state_root ),
+				$transactions
 			)
 		);
 	}

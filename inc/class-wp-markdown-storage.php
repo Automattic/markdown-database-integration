@@ -211,6 +211,17 @@ class WP_Markdown_Storage {
 		$this->file_mutation_observer = $observer;
 	}
 
+	/** Add a canonical mutation observer without replacing cache invalidation. */
+	public function add_file_mutation_observer( callable $observer ): void {
+		$previous = $this->file_mutation_observer;
+		$this->file_mutation_observer = null === $previous
+			? $observer
+			: static function ( string $path ) use ( $previous, $observer ): void {
+				$previous( $path );
+				$observer( $path );
+			};
+	}
+
 	private function observe_file_mutation( string $path ): void {
 		if ( null !== $this->file_mutation_observer ) {
 			call_user_func( $this->file_mutation_observer, $path );
@@ -412,6 +423,7 @@ class WP_Markdown_Storage {
 			return 'failed';
 		}
 
+		$this->observe_file_mutation( $file_path );
 		$result = $this->safe_unlink( $file_path );
 
 		if ( $result ) {

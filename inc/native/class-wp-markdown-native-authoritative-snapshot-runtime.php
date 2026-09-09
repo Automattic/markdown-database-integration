@@ -11,7 +11,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private const MAX_BYTES_PER_TABLE = 8388608;
 
 	/** @param array<int,array{table:string,exists:bool,temporary?:bool,rows?:int,sha256?:string,schema_sha256?:string}> $provenance */
-	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance, private ?string $database_name = null, private ?array $catalog_observation = null ) {}
+	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance, private ?string $database_name = null ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
 		self::trace_runtime_phase( 'capture', $sql );
@@ -28,7 +28,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 
 		$prefixes = self::schema_prefixes( $database, $prefix );
 		$database_name = self::database_name( $connection );
-		$catalog_observation = self::catalog_observation( $connection, $sql );
+		$catalog_tables = WP_Markdown_Native_Schema_Introspection::requested_information_schema_tables( $sql );
 		$registry = new WP_Markdown_Native_Table_Registry();
 		$provenance = array();
 		foreach ( $tables as $table ) {
@@ -46,19 +46,25 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			if ( ! $schema instanceof WP_Markdown_Native_Table_Schema ) {
 				throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'source_schema_unavailable' );
 			}
-			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
 			$temporary = 1 === preg_match( '/^CREATE\s+TEMPORARY\s+TABLE\b/i', $definition );
-			// MySQL omits temporary tables from information_schema, despite SHOW CREATE exposing them.
-			if ( ! $temporary || null === $catalog_observation ) {
-				$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
+			if ( $temporary && is_array( $catalog_tables ) && in_array( $table, $catalog_tables, true ) ) {
+				// SHOW CREATE resolves the session temporary table; metadata must come from the permanent catalog.
+				$definition = self::permanent_catalog_definition( $connection, $table );
+				$compiled = '' === $definition ? array() : WP_Markdown_Native_Schema_Catalog::compile( $definition, $prefixes, array( $table ) );
+				$schema_definition = 1 === count( $compiled ) ? reset( $compiled ) : null;
+				$schema = is_array( $schema_definition ) ? WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $schema_definition ) : null;
+				if ( ! $schema instanceof WP_Markdown_Native_Table_Schema ) {
+					throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'permanent_catalog_schema_unavailable' );
+				}
+				$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( array(), $schema ) );
+				$provenance[] = array( 'table' => $table, 'exists' => true, 'temporary' => true, 'schema_sha256' => hash( 'sha256', $definition ) );
+				continue;
 			}
+			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
+			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
 			$provenance[] = array( 'table' => $table, 'exists' => true, 'temporary' => $temporary, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
-		$catalog_observation = null === $catalog_observation ? null : array(
-			'before' => $catalog_observation,
-			'after'  => self::catalog_observation( $connection, $sql ),
-		);
-		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance, $database_name, $catalog_observation );
+		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance, $database_name );
 	}
 
 	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
@@ -66,17 +72,23 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		if ( ! is_string( $path ) || '' === $path ) {
 			return;
 		}
+		if ( ( is_file( $path ) ? (int) filesize( $path ) : 0 ) >= 65536 ) {
+			return;
+		}
 		$event = array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) );
-		if ( null !== $sql ) {
+		if ( null !== $sql && strlen( $sql ) <= 65536 ) {
 			try {
 				$event['sql_sha256'] = hash( 'sha256', $sql );
-				$event['token_types'] = array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) );
+				$event['token_types'] = array_slice( array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) ), 0, 128 );
 				$event['table_count'] = count( self::tables_in( $sql ) );
 			} catch ( WP_Markdown_Native_Snapshot_Input_Exception|WP_Markdown_Native_SQL_Parse_Error ) {
 				$event['token_types'] = array( 'parse_error' );
 			}
 		}
-		file_put_contents( $path, json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
+		$encoded = json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n";
+		if ( strlen( $encoded ) <= 4096 && ( is_file( $path ) ? (int) filesize( $path ) : 0 ) + strlen( $encoded ) <= 65536 ) {
+			file_put_contents( $path, $encoded, FILE_APPEND | LOCK_EX );
+		}
 	}
 
 	/** @return array<int,string> */
@@ -127,19 +139,41 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 				'read_connection'     => 'authoritative_mysql_connection_pre_query',
 				'database_sha256'     => null === $this->database_name ? null : hash( 'sha256', $this->database_name ),
 				'tables'              => $this->provenance,
-				'catalog_observation' => $this->catalog_observation,
 			),
 			static fn( mixed $value ): bool => null !== $value
 		);
 	}
 
-	/** @return array{rows:int,sha256:string}|null */
-	private static function catalog_observation( object $connection, string $sql ): ?array {
-		if ( null === WP_Markdown_Native_Schema_Introspection::requested_information_schema_tables( $sql ) ) {
-			return null;
+	private static function permanent_catalog_definition( object $connection, string $table ): string {
+		$escaped = str_replace( "'", "''", $table );
+		$rows = self::rows( $connection, "SELECT COLUMN_NAME, COLUMN_TYPE, IS_NULLABLE, COLUMN_KEY, EXTRA, COLUMN_DEFAULT FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = '{$escaped}' ORDER BY ORDINAL_POSITION" );
+		if ( array() === $rows ) {
+			return '';
 		}
-		$rows = self::rows( $connection, $sql );
-		return array( 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ) );
+		$columns = array();
+		$primary = array();
+		foreach ( $rows as $row ) {
+			$name = (string) ( $row['COLUMN_NAME'] ?? '' );
+			$type = (string) ( $row['COLUMN_TYPE'] ?? '' );
+			if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/', $name ) || 1 !== preg_match( '/^[A-Za-z]+(?:\([0-9,]+\))?(?:\s+unsigned)?$/i', $type ) ) {
+				return '';
+			}
+			$line = '`' . $name . '` ' . $type . ( 'NO' === ( $row['IS_NULLABLE'] ?? null ) ? ' NOT NULL' : '' );
+			if ( null !== ( $row['COLUMN_DEFAULT'] ?? null ) ) {
+				$line .= " DEFAULT '" . str_replace( "'", "''", (string) $row['COLUMN_DEFAULT'] ) . "'";
+			}
+			if ( str_contains( strtolower( (string) ( $row['EXTRA'] ?? '' ) ), 'auto_increment' ) ) {
+				$line .= ' AUTO_INCREMENT';
+			}
+			$columns[] = $line;
+			if ( 'PRI' === ( $row['COLUMN_KEY'] ?? null ) ) {
+				$primary[] = '`' . $name . '`';
+			}
+		}
+		if ( array() !== $primary ) {
+			$columns[] = 'PRIMARY KEY (' . implode( ',', $primary ) . ')';
+		}
+		return 'CREATE TABLE `' . $table . '` (' . implode( ',', $columns ) . ')';
 	}
 
 	/** @return array<int,string> */

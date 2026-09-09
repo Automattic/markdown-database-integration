@@ -146,16 +146,22 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( ! is_string( $path ) || '' === $path ) {
 			return;
 		}
+		if ( ( is_file( $path ) ? (int) filesize( $path ) : 0 ) >= 65536 ) {
+			return;
+		}
 		$event = array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) );
-		if ( null !== $sql ) {
+		if ( null !== $sql && strlen( $sql ) <= 65536 ) {
 			try {
 				$event['sql_sha256'] = hash( 'sha256', $sql );
-				$event['token_types'] = array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) );
+				$event['token_types'] = array_slice( array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) ), 0, 128 );
 			} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
 				$event['token_types'] = array( 'parse_error' );
 			}
 		}
-		file_put_contents( $path, json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
+		$encoded = json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n";
+		if ( strlen( $encoded ) <= 4096 && ( is_file( $path ) ? (int) filesize( $path ) : 0 ) + strlen( $encoded ) <= 65536 ) {
+			file_put_contents( $path, $encoded, FILE_APPEND | LOCK_EX );
+		}
 	}
 
 	/** Execute source-free typed scalar expressions as the one-row SQL result. */

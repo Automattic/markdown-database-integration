@@ -29,6 +29,8 @@ $contains = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp
 $prefix = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title LIKE 'Good%'", 'wp_' ) );
 $ci = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title LIKE '%hello%'", 'wp_' ) );
 $exact = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title = 'hello world'", 'wp_' ) );
+$ordered_exact = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title = 'hello world' ORDER BY post_date_gmt DESC LIMIT 1", 'wp_' ) );
+$padded = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title = 'Hello World   '", 'wp_' ) );
 $candidates = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title IN ('goodbye moon', 'unrelated') ORDER BY ID", 'wp_' ) );
 $exact_unicode = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_title = 'Café'", 'wp_' ) );
 $content_like = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_content LIKE '%hello%'", 'wp_' ) );
@@ -46,6 +48,8 @@ $checks = array(
 	'a prefix-pattern matches ASCII titles' => array( '12' ) === $ids( $prefix ),
 	'LIKE matching is ASCII case-insensitive' => array( '11' ) === $ids( $ci ),
 	'an exact title lookup is ASCII case-insensitive' => array( '11' ) === $ids( $exact ),
+	'an ordered title lookup retains its LIMIT result' => array( '11' ) === $ids( $ordered_exact ),
+	'an exact title lookup ignores trailing spaces' => array( '11' ) === $ids( $padded ),
 	'a bounded title candidate set is indexable' => array( '12', '13' ) === $ids( $candidates ),
 	'a non-ASCII exact title lookup fails closed' => false === $exact_unicode->return_value()
 		&& 'unsupported_lookup' === ( $exact_unicode->diagnostic()['reason'] ?? null ),

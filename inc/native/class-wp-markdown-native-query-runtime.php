@@ -107,10 +107,11 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'post_parent' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_type' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					// Duplicate-event discovery uses a title equality candidate set.
+					// MySQL's nonbinary VARCHAR comparisons ignore trailing spaces.
 					// Keep its file-backed scan bounded to ASCII comparisons instead
 					// of assuming MySQL's full Unicode collation.
 					'post_title' => array(
-						'normalizer'       => array( self::class, 'normalize_ascii_ci' ),
+						'normalizer'       => array( self::class, 'normalize_ascii_ci_padded' ),
 						'lookup_operators' => array( '=', 'IN' ),
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),

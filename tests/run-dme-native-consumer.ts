@@ -14,6 +14,7 @@ const corpus = process.env.DME_CORPUS_ROOT ?? "/home/chubes/labs/mdi-parity-wave
 const artifacts = join(root, "artifacts", process.env.DME_RUN_NAME ?? "native-focused")
 const selectedTestFile = process.env.DME_TEST_FILE ?? "tests/Integration/EventSourceUpdateMySqlAtomicityTest.php"
 const databaseType = process.env.DME_DATABASE_TYPE === "mysql" ? "mysql" : "mdi-native"
+const diagnosticPreload = "/wordpress/wp-content/plugins/markdown-database-integration/tests/fixtures/native-query-diagnostic-observer.php"
 
 const recipe = buildWordPressPhpunitRecipe({
 	wordpressVersion: "7.1",
@@ -26,6 +27,7 @@ const recipe = buildWordPressPhpunitRecipe({
 	selectedTestFile,
 	projectAutoloadFile: "/wordpress/wp-content/plugins/data-machine-events/vendor/autoload.php",
 	phpunitXml: "/wordpress/wp-content/plugins/data-machine-events/phpunit.xml",
+	preloadFiles: process.env.DME_NATIVE_DIAGNOSTICS === "1" ? [diagnosticPreload] : [],
 	dependencyMounts: ["/wordpress/wp-content/plugins/data-machine"],
 	extra_plugins: [{
 		source: join(corpus, "data-machine"),

@@ -342,8 +342,21 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		if ( false !== ( $actual['return']['value'] ?? null ) || 1146 !== (int) ( $actual['error_code'] ?? 0 ) ) {
 			return false;
 		}
-		unset( $expected['last_error'], $actual['last_error'] );
-		return WP_Markdown_Query_Compatibility_Comparator::compare( $expected, $actual )['compatible'];
+		return $this->normalized_error_state( $expected ) === $this->normalized_error_state( $actual );
+	}
+
+	/** @return array<string,mixed> */
+	private function normalized_error_state( array $result ): array {
+		return array(
+			'return'        => $result['return'] ?? null,
+			'rows'          => $result['rows'] ?? null,
+			'columns'       => $result['columns'] ?? null,
+			'error_code'    => $result['error_code'] ?? null,
+			'insert_id'     => $result['insert_id'] ?? null,
+			'rows_affected' => $result['rows_affected'] ?? null,
+			'num_rows'      => $result['num_rows'] ?? null,
+			'exception'     => $result['exception'] ?? null,
+		);
 	}
 
 	private function query_template( string $query ): string {

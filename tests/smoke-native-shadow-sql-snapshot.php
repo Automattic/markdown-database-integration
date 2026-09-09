@@ -35,6 +35,8 @@ final class MDI_Snapshot_Connection {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => $table, 'Create Table' => 'CREATE TABLE `' . $table . '` (`meta_id` bigint(20) unsigned NOT NULL, `site_id` bigint(20) unsigned NOT NULL, `meta_key` varchar(255) NOT NULL, `meta_value` longtext NOT NULL, PRIMARY KEY (`meta_id`))' ) ) );
 		} elseif ( 'SHOW CREATE TABLE `agents`' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'agents', 'Create Table' => 'CREATE TABLE `agents` (`id` bigint(20) unsigned NOT NULL, `name` varchar(255) NOT NULL, PRIMARY KEY (`id`))' ) ) );
+		} elseif ( 'SHOW CREATE TABLE `wp_2_options`' === $sql ) {
+			return false;
 		} elseif ( str_starts_with( $sql, 'SHOW CREATE TABLE' ) ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_posts', 'Create Table' => 'CREATE TABLE `wp_posts` (`ID` bigint(20) unsigned NOT NULL, `post_title` varchar(255) NOT NULL, PRIMARY KEY (`ID`))' ) ) );
 		}
@@ -147,6 +149,12 @@ $plugin_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
 	$database->prefix
 )->provenance();
 $database->prefix = 'wp_';
+$missing_schema_reason = null;
+try {
+	WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, 'SELECT option_value FROM wp_2_options WHERE option_name = \'siteurl\'', 'wp_2_' );
+} catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
+	$missing_schema_reason = $error->diagnostic()['reason'];
+}
 $reordered = new WP_Markdown_Native_Shadow_Verifier(
 	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
 	1,
@@ -213,6 +221,7 @@ $checks = array(
 	'global tables use the base prefix when the active blog prefix differs' => array( 'wp_sitemeta' ) === array_column( $global_table['tables'], 'table' )
 		&& array( 'wp_usermeta' ) === array_column( $user_meta_table['tables'], 'table' ),
 	'validated non-WordPress-prefixed plugin tables compile by exact captured identity' => array( 'agents' ) === array_column( $plugin_table['tables'], 'table' ),
+	'absent blog-2 schemas remain explicit snapshot input limitations' => 'source_schema_unavailable' === $missing_schema_reason,
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
 	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

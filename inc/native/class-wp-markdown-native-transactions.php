@@ -221,15 +221,22 @@ final class WP_Markdown_Native_Transaction_Journal {
 	public function savepoint( string $name ): true|string {
 		if ( ! $this->active ) {
 			// With autocommit on, MySQL accepts SAVEPOINT without opening a transaction.
-			return $this->autocommit ? true : sprintf( 'SAVEPOINT %s does not exist.', $name );
+			if ( $this->autocommit ) {
+				return true;
+			}
+			$this->savepoints[ $name ] = 0;
+			return true;
 		}
 		$this->savepoints[ $name ] = count( $this->entries );
 		return true;
 	}
 
 	public function rollback_to( string $name ): true|string {
-		if ( ! $this->active || ! isset( $this->savepoints[ $name ] ) ) {
+		if ( ! isset( $this->savepoints[ $name ] ) || ( ! $this->active && $this->autocommit ) ) {
 			return sprintf( 'SAVEPOINT %s does not exist.', $name );
+		}
+		if ( ! $this->active ) {
+			return true;
 		}
 		$marker   = $this->savepoints[ $name ];
 		$restored = $this->restore( $this->entries, $marker );
@@ -246,8 +253,12 @@ final class WP_Markdown_Native_Transaction_Journal {
 	}
 
 	public function release_savepoint( string $name ): true|string {
-		if ( ! $this->active || ! isset( $this->savepoints[ $name ] ) ) {
+		if ( ! isset( $this->savepoints[ $name ] ) || ( ! $this->active && $this->autocommit ) ) {
 			return sprintf( 'SAVEPOINT %s does not exist.', $name );
+		}
+		if ( ! $this->active ) {
+			unset( $this->savepoints[ $name ] );
+			return true;
 		}
 		$marker = $this->savepoints[ $name ];
 		foreach ( $this->savepoints as $savepoint => $offset ) {

@@ -106,6 +106,7 @@ $inactive_release = probe_statement( $runtime, 'RELEASE SAVEPOINT outside_transa
 probe_statement( $runtime, 'SET autocommit = 0' );
 $autocommit_off_savepoint = probe_statement( $runtime, 'SAVEPOINT autocommit_off' );
 $autocommit_off_savepoint_state = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+$autocommit_off_release = probe_statement( $runtime, 'RELEASE SAVEPOINT autocommit_off' );
 probe_statement( $runtime, 'ROLLBACK' );
 probe_statement( $runtime, 'SET autocommit = 1' );
 
@@ -249,8 +250,9 @@ $report = array(
 		'savepoint outside an autocommit session is a no-op' => 0 === $inactive_savepoint['return_value']
 			&& '0' === $inactive_state['value']
 			&& false === $inactive_release['return_value'],
-		'autocommit-off savepoint does not create an untracked transaction' => false === $autocommit_off_savepoint['return_value']
-			&& '0' === $autocommit_off_savepoint_state['value'],
+		'autocommit-off savepoint remains outside a transaction' => 0 === $autocommit_off_savepoint['return_value']
+			&& '0' === $autocommit_off_savepoint_state['value']
+			&& 0 === $autocommit_off_release['return_value'],
 		'transaction control statements execute'        => $control_executes,
 	'session state reports MySQL-shaped strings and headers' => '0' === $session_before['in_transaction']['value']
 		&& '@@session.in_transaction' === $session_before['in_transaction']['column']

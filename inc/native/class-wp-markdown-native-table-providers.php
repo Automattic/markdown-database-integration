@@ -668,7 +668,29 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		$data = $this->read_json( $path, $root, 'table_file' );
 		return $this->snapshot = $data instanceof WP_Markdown_Query_Result
 			? $data
-			: $this->validate_rows( $data );
+			: $this->validate_rows( $this->materialize_multisite_user_defaults( $data ) );
+	}
+
+	/**
+	 * Older canonical user snapshots predate the two network-only columns.
+	 * MySQL supplies their declared zero defaults when a single-site snapshot is
+	 * opened by a multisite runtime, so preserve that durable representation.
+	 */
+	private function materialize_multisite_user_defaults( mixed $rows ): mixed {
+		if ( 'users.json' !== $this->filename
+			|| ! $this->schema->has_column( 'spam' )
+			|| ! $this->schema->has_column( 'deleted' )
+			|| ! is_array( $rows )
+			|| ! array_is_list( $rows )
+		) {
+			return $rows;
+		}
+		foreach ( $rows as $offset => $row ) {
+			if ( is_array( $row ) ) {
+				$rows[ $offset ] = array_merge( array( 'spam' => '0', 'deleted' => '0' ), $row );
+			}
+		}
+		return $rows;
 	}
 
 	/**

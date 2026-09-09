@@ -183,6 +183,13 @@ $multisite_user = $users[1];
 $multisite_user['spam'] = '0';
 $multisite_user['deleted'] = '0';
 $multisite_schema = WP_Markdown_Native_Runtime_Factory::users_schema( true );
+$legacy_multisite_root = sys_get_temp_dir() . '/mdi-native-legacy-multisite-users-' . bin2hex( random_bytes( 6 ) );
+mkdir( $legacy_multisite_root . '/_tables', 0777, true );
+mkdir( $legacy_multisite_root . '/_options', 0777, true );
+file_put_contents( $legacy_multisite_root . '/_tables/users.json', json_encode( array( $users[1] ), JSON_THROW_ON_ERROR ) );
+$legacy_multisite_user = WP_Markdown_Native_Runtime_Factory::runtime( $legacy_multisite_root, 'wp_', 'wp_', true )->execute(
+	new WP_Markdown_Query_Request( "SELECT spam, deleted FROM wp_users WHERE user_login = 'admin'" )
+);
 
 $checks = array(
 	'native wpdb reports the semantics it implements without mysqli' => '8.0.0-mdi-native' === $database->db_server_info()
@@ -231,6 +238,8 @@ $checks = array(
 		&& false === $invalid_width->return_value()
 		&& array() === $invalid_width->wpdb_state()['last_result'],
 	'multisite user schemas accept required spam and deleted columns' => true === $multisite_schema->validate_row( $multisite_user ),
+	'legacy single-site user snapshots receive multisite defaults' => '0' === ( $legacy_multisite_user->wpdb_state()['last_result'][0]->spam ?? null )
+		&& '0' === ( $legacy_multisite_user->wpdb_state()['last_result'][0]->deleted ?? null ),
 );
 
 $failed = 0;
@@ -246,4 +255,8 @@ foreach ( $checks as $label => $passed ) {
 @rmdir( $root . '/_tables' );
 @rmdir( $root . '/_options' );
 @rmdir( $root );
+@unlink( $legacy_multisite_root . '/_tables/users.json' );
+@rmdir( $legacy_multisite_root . '/_tables' );
+@rmdir( $legacy_multisite_root . '/_options' );
+@rmdir( $legacy_multisite_root );
 exit( $failed ? 1 : 0 );

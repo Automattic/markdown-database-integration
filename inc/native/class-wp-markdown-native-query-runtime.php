@@ -235,10 +235,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 		if ( null !== $global_state_root ) {
 			$global_state_root = self::materialize_state_root( $global_state_root );
 		}
-		$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root );
-		// A journal surviving process termination is rolled back before the
-		// runtime serves its first query, so canonical state never boots torn.
-		$transactions->recover();
+		$transactions = self::shared_transactions( $state_root );
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
@@ -285,6 +282,25 @@ final class WP_Markdown_Native_Runtime_Factory {
 			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
 		}
 		return rtrim( $root, DIRECTORY_SEPARATOR );
+	}
+
+	/** @var array<string,WP_Markdown_Native_Transaction_Journal> */
+	private static array $transactions = array();
+
+	/**
+	 * One state root has one transaction owner per process.
+	 *
+	 * The first construction is a cold-root boundary and may recover an orphaned
+	 * journal. Prefix changes reuse that owner, so they cannot recover or replace
+	 * a live transaction.
+	 */
+	private static function shared_transactions( string $state_root ): WP_Markdown_Native_Transaction_Journal {
+		if ( ! isset( self::$transactions[ $state_root ] ) ) {
+			$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root );
+			$transactions->recover();
+			self::$transactions[ $state_root ] = $transactions;
+		}
+		return self::$transactions[ $state_root ];
 	}
 
 	/** Route a multisite request to its base or site-local canonical roots. */

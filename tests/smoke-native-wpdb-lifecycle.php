@@ -41,6 +41,26 @@ class wpdb {
 
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-wpdb.php';
 
+final class MDI_Insert_ID_Lifecycle_Runtime implements WP_Markdown_Query_Runtime {
+	/** @var array<int,WP_Markdown_Query_Result> */
+	private array $results;
+	public function __construct() {
+		$this->results = array(
+			WP_Markdown_Query_Result::mutated( 1, 41 ),
+			WP_Markdown_Query_Result::selected( array(), array() ),
+			WP_Markdown_Query_Result::mutated( 1 ),
+			WP_Markdown_Query_Result::mutated( 1 ),
+			WP_Markdown_Query_Result::schema_changed(),
+			WP_Markdown_Query_Result::failure( array( 'code' => 'syntax', 'message' => 'failure', 'reason' => 'failure' ) ),
+			WP_Markdown_Query_Result::mutated( 1, 42 ),
+		);
+	}
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		unset( $request );
+		return array_shift( $this->results ) ?? WP_Markdown_Query_Result::failure( array( 'code' => 'missing', 'message' => 'missing', 'reason' => 'missing' ) );
+	}
+}
+
 $root = sys_get_temp_dir() . '/mdi-native-wpdb-lifecycle-' . bin2hex( random_bytes( 6 ) );
 mkdir( $root . '/_options', 0777, true );
 mkdir( $root . '/_tables', 0777, true );
@@ -54,12 +74,35 @@ $invalid_errno = $database->last_errno;
 $invalid_error = $database->last_error;
 $reconnected_after_error = $database->check_connection( false );
 
+$insert_lifecycle = new WP_Markdown_Native_WPDB( new MDI_Insert_ID_Lifecycle_Runtime() );
+$insert_lifecycle->query( 'INSERT INTO wp_posts (ID) VALUES (41)' );
+$after_insert = $insert_lifecycle->insert_id;
+$insert_lifecycle->query( 'SELECT ID FROM wp_posts' );
+$after_select = $insert_lifecycle->insert_id;
+$insert_lifecycle->query( 'UPDATE wp_posts SET post_title = "changed"' );
+$after_update = $insert_lifecycle->insert_id;
+$insert_lifecycle->query( 'DELETE FROM wp_posts WHERE ID = 41' );
+$after_delete = $insert_lifecycle->insert_id;
+$insert_lifecycle->query( 'COMMIT' );
+$after_commit = $insert_lifecycle->insert_id;
+$insert_lifecycle->query( 'INSERT INTO wp_posts (ID) VALUES (41)' );
+$after_failed_insert = $insert_lifecycle->insert_id;
+$insert_lifecycle->query( 'REPLACE INTO wp_posts (ID) VALUES (42)' );
+$after_replace = $insert_lifecycle->insert_id;
+
 $checks = array(
 	'database selection succeeds without mysqli, keeps wpdb return semantics, and preserves the canonical prefix' => null === $selection && 'wp_' === $database->prefix,
 	'native wpdb advertises the MySQL dialect without creating a mysqli connection' => true === $database->is_mysql,
 	'logical close and reconnect report wpdb lifecycle state' => true === $closed && true === $reconnected && true === $database->ready,
 	'invalid selection exposes a normal database error state' => false === $invalid_selection && 1049 === $invalid_errno && 'Unknown database' === $invalid_error,
 	'connection checks restore the ready state without a reconnect loop' => true === $reconnected_after_error && true === $database->ready && 0 === $database->last_errno,
+	'native wpdb preserves insert_id across reads, writes, and transaction control while matching INSERT and REPLACE outcomes' => 41 === $after_insert
+		&& 41 === $after_select
+		&& 41 === $after_update
+		&& 41 === $after_delete
+		&& 41 === $after_commit
+		&& 0 === $after_failed_insert
+		&& 42 === $after_replace,
 );
 
 $failed = false;

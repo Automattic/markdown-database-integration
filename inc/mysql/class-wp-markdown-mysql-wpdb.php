@@ -63,6 +63,14 @@ class WP_Markdown_MySQL_WPDB extends wpdb {
 				return $filtered_query;
 			}
 			$effective_query = (string) $filtered_query;
+			if ( ! $this->observing_mutation && is_object( $this->native_shadow_verifier ) && method_exists( $this->native_shadow_verifier, 'capture_input' ) ) {
+				try {
+					$this->native_shadow_verifier->capture_input( $effective_query, $this );
+				} catch ( Throwable $error ) {
+					// Shadow capture is observational and must never reject the MySQL query.
+					$GLOBALS['markdown_db_native_shadow_diagnostic'] = array( 'code' => 'markdown_db_native_shadow_input_capture_failed', 'class' => get_class( $error ) );
+				}
+			}
 			$pre_control     = WP_Markdown_SQL_Classifier::transaction_control( $effective_query );
 			$pre_mutation    = null === $pre_control ? WP_Markdown_SQL_Classifier::mutation( $effective_query ) : null;
 			if ( null !== $pre_mutation && 'DML' === $pre_mutation['type'] && ! $this->transaction['autocommit'] ) {

@@ -244,6 +244,9 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	}
 
 	private function failure_reason( Throwable $error ): string {
+		if ( $error instanceof TypeError ) {
+			return 'native_verifier_type_error_line_' . $error->getLine();
+		}
 		$message = $error->getMessage();
 		if ( str_contains( $message, 'canonical state root' ) ) {
 			return 'invalid_canonical_state_root';

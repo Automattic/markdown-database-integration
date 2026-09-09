@@ -385,6 +385,9 @@ final class WP_Markdown_Native_Schema_Introspection {
 					$rows[] = $row;
 				}
 			}
+			if ( 'COLUMNS' === $catalog && 1 === count( $predicates['TABLE_NAME'] ) && in_array( 'COLUMN_NAME', array_column( $projection, 'name' ), true ) ) {
+				usort( $rows, static fn( array $left, array $right ): int => strcmp( (string) ( $left['COLUMN_NAME'] ?? '' ), (string) ( $right['COLUMN_NAME'] ?? '' ) ) );
+			}
 			return WP_Markdown_Query_Result::selected( $rows, $this->information_schema_metadata( $projection, $catalog ) );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
 			return null;

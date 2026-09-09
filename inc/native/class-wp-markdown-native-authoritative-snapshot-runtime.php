@@ -14,7 +14,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
-		self::trace_runtime_phase( 'capture' );
+		self::trace_runtime_phase( 'capture', $sql );
 		$connection = method_exists( $database, 'markdown_db_mysql_connection' )
 			? $database->markdown_db_mysql_connection()
 			: ( $database->dbh ?? null );
@@ -51,12 +51,22 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
 	}
 
-	private static function trace_runtime_phase( string $phase ): void {
+	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
 		$path = defined( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' ) ? MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH : getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
 		if ( ! is_string( $path ) || '' === $path ) {
 			return;
 		}
-		file_put_contents( $path, json_encode( array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) ), JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
+		$event = array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) );
+		if ( null !== $sql ) {
+			try {
+				$event['sql_sha256'] = hash( 'sha256', $sql );
+				$event['token_types'] = array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) );
+				$event['table_count'] = count( self::tables_in( $sql ) );
+			} catch ( WP_Markdown_Native_Snapshot_Input_Exception|WP_Markdown_Native_SQL_Parse_Error ) {
+				$event['token_types'] = array( 'parse_error' );
+			}
+		}
+		file_put_contents( $path, json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
 	}
 
 	/** @return array<int,string> */

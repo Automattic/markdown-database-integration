@@ -27,6 +27,7 @@ $artifacts = $root . '/artifacts';
 $report_path = '/tmp/mdi-shadow-report.json';
 $report_name = 'mdi-shadow-report';
 $trace_path = '/tmp/mdi-shadow-runtime-trace.jsonl';
+$trace_name = 'mdi-shadow-runtime-trace';
 $revision = trim( (string) shell_exec( 'git -C ' . escapeshellarg( $repo ) . ' rev-parse HEAD' ) );
 mkdir( $bootstrap, 0755, true );
 mkdir( $state, 0755, true );
@@ -89,6 +90,7 @@ $recipe = array(
 			'args' => array_merge( array( 'plugin-slug=' . $plugin_slug, 'database-type=mysql', 'multisite=1' ), false === $harness_dir ? array() : array( 'autoload-file=/wordpress/wp-content/mdi-shadow-phpunit/autoload.php', 'tests-dir=/wordpress/wp-content/mdi-shadow-phpunit/wp-phpunit/wp-phpunit' ), array() === $dependency_mounts ? array() : array( 'dependency-mounts=' . implode( ',', $dependency_mounts ) ), $phpunit_args ),
 			'resultPaths' => array(
 				array( 'name' => $report_name, 'type' => 'mdi-native-shadow-report/v1', 'path' => $report_path, 'required' => true, 'maxBytes' => 1048576 ),
+				array( 'name' => $trace_name, 'type' => 'mdi-native-shadow-trace/v1', 'path' => $trace_path, 'required' => true, 'maxBytes' => 1048576 ),
 			),
 		),
 	) ),

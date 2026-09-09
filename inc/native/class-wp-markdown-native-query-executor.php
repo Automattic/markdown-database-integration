@@ -59,7 +59,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		self::trace_runtime_phase( 'executor' );
+		self::trace_runtime_phase( 'executor', $request->sql() );
 		if ( strlen( $request->sql() ) > self::MAX_SQL_BYTES ) {
 			return $this->failure( 'request_too_large', 'mdi-native cannot execute a request larger than max_allowed_packet.' );
 		}
@@ -138,12 +138,21 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $this->execute_plan( $plan );
 	}
 
-	private static function trace_runtime_phase( string $phase ): void {
+	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
 		$path = defined( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' ) ? MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH : getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
 		if ( ! is_string( $path ) || '' === $path ) {
 			return;
 		}
-		file_put_contents( $path, json_encode( array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) ), JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
+		$event = array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) );
+		if ( null !== $sql ) {
+			try {
+				$event['sql_sha256'] = hash( 'sha256', $sql );
+				$event['token_types'] = array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) );
+			} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+				$event['token_types'] = array( 'parse_error' );
+			}
+		}
+		file_put_contents( $path, json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n", FILE_APPEND | LOCK_EX );
 	}
 
 	/** Execute source-free typed scalar expressions as the one-row SQL result. */

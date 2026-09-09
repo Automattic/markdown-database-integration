@@ -114,6 +114,24 @@ final class MDI_Throwing_Runtime implements WP_Markdown_Query_Runtime {
 		throw new RuntimeException( 'private runtime failure' );
 	}
 }
+
+final class MDI_Reordered_Runtime implements WP_Markdown_Query_Runtime {
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		unset( $request );
+		return WP_Markdown_Query_Result::selected(
+			array( array( 'status' => 'draft' ), array( 'status' => 'publish' ) ),
+			array( array( 'name' => 'status', 'table' => '', 'type' => 253 ) )
+		);
+	}
+}
+$database->result(
+	array( array( 'status' => 'publish' ), array( 'status' => 'draft' ) ),
+	array( array( 'name' => 'status', 'type' => 253 ) )
+);
+$unordered = new WP_Markdown_Native_Shadow_Verifier( new MDI_Reordered_Runtime() );
+$unordered->observe( 'SELECT status FROM wp_posts', 2, $database );
+$ordered = new WP_Markdown_Native_Shadow_Verifier( new MDI_Reordered_Runtime() );
+$ordered->observe( 'SELECT status FROM wp_posts ORDER BY status', 2, $database );
 $failed_verifier = new WP_Markdown_Native_Shadow_Verifier( new MDI_Throwing_Runtime() );
 $failed_verifier->observe( 'SELECT option_name FROM wp_options', 0, $database );
 $canary = "sql-secret--hash#quote'double";
@@ -185,6 +203,8 @@ $checks = array(
 		&& 1 === ( $mismatch_report['classifications']['row_value_or_count'] ?? null )
 		&& 1 === ( $metadata_mismatch_report['classifications']['column_metadata_or_types'] ?? null )
 		&& 1 === ( $snapshot_limit_report['classifications']['snapshot_input_limitation'] ?? null ),
+	'unbounded SELECTs without an outer ORDER BY compare complete duplicate-preserving row bags' => 1 === $unordered->report()['counts']['compatible']
+		&& 1 === $ordered->report()['counts']['mismatched'],
 	'verifier failures retain only bounded structural diagnostics' => 4 === $failure_report['counts']['verifier_failures']
 		&& RuntimeException::class === ( $failure_report['first_blocker']['failure_class'] ?? null )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'private runtime failure' ),

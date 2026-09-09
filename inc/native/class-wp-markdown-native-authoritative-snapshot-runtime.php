@@ -39,7 +39,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			}
 			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
 			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
-			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', json_encode( $rows, JSON_THROW_ON_ERROR ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
+			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
 	}
@@ -130,7 +130,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 				if ( ! is_array( $row ) || count( $rows ) >= self::MAX_ROWS_PER_TABLE ) {
 					throw new RuntimeException( 'The SQL snapshot input mode exceeded its source row bound.' );
 				}
-				$bytes += strlen( json_encode( $row, JSON_THROW_ON_ERROR ) );
+				$bytes += strlen( self::encode_row( $row ) );
 				if ( $bytes > self::MAX_BYTES_PER_TABLE ) {
 					throw new RuntimeException( 'The SQL snapshot input mode exceeded its source byte bound.' );
 				}
@@ -140,6 +140,38 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			self::free( $result );
 		}
 		return $rows;
+	}
+
+	/**
+	 * Length-prefixed type tags preserve raw mysqli bytes without requiring UTF-8.
+	 * Column order comes from mysqli's associative row shape and is part of the receipt.
+	 */
+	private static function encode_rows( array $rows ): string {
+		$encoded = 'rows:' . count( $rows ) . ';';
+		foreach ( $rows as $row ) {
+			$encoded .= self::encode_row( $row );
+		}
+		return $encoded;
+	}
+
+	/** @param array<string,mixed> $row */
+	private static function encode_row( array $row ): string {
+		$encoded = 'row:' . count( $row ) . ';';
+		foreach ( $row as $name => $value ) {
+			$name = (string) $name;
+			$encoded .= 'k' . strlen( $name ) . ':' . $name . ';';
+			if ( null === $value ) {
+				$encoded .= 'n;';
+				continue;
+			}
+			if ( is_string( $value ) ) {
+				$encoded .= 's' . strlen( $value ) . ':' . $value . ';';
+				continue;
+			}
+			$value = (string) $value;
+			$encoded .= 'x' . strlen( $value ) . ':' . $value . ';';
+		}
+		return $encoded;
 	}
 
 	private static function query( object $connection, string $sql ): mixed {
@@ -188,7 +220,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Provider implements WP_Mar
 			if ( count( $selected ) >= $access->limit() ) {
 				break;
 			}
-			$selected[] = array_intersect_key( $row, array_flip( $access->projection() ) );
+			$selected[] = array_replace( array_flip( $access->projection() ), array_intersect_key( $row, array_flip( $access->projection() ) ) );
 		}
 		return $selected;
 	}

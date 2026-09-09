@@ -58,6 +58,12 @@ final class MDI_Snapshot_Database {
 		$this->last_result = array_map( static fn( array $row ): object => (object) $row, $this->connection->rows );
 		$this->num_rows = count( $this->last_result );
 	}
+	/** @param array<int,array<string,mixed>> $rows @param array<int,array{name:string,type:int}> $columns */
+	public function result_rows( array $rows, array $columns ): void {
+		$this->last_result = array_map( static fn( array $row ): object => (object) $row, $rows );
+		$this->num_rows = count( $this->last_result );
+		$this->col_info = array_map( static fn( array $column ): object => (object) $column, $columns );
+	}
 	public function get_col_info( string $field ): array {
 		$this->col_info ??= array( (object) array( 'name' => 'ID', 'type' => 8 ), (object) array( 'name' => 'post_title', 'type' => 253 ) );
 		return array_map( static fn( object $column ): mixed => $column->{$field}, $this->col_info );
@@ -108,6 +114,31 @@ $derived_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
 	'SELECT derived.ID FROM (SELECT ID FROM wp_posts) AS derived',
 	'wp_'
 )->provenance();
+$reordered = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	1,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$database->result_rows(
+	array( array( 'post_title' => 'Second', 'ID' => '2' ) ),
+	array( array( 'name' => 'post_title', 'type' => 253 ), array( 'name' => 'ID', 'type' => 8 ) )
+);
+$reordered->capture_input( 'SELECT post_title, ID FROM wp_posts', $database );
+$reordered->observe( 'SELECT post_title, ID FROM wp_posts', 1, $database );
+$binary_rows = array( array( 'ID' => '3', 'post_title' => "\xFF\x00binary" ) );
+$database->source()->rows = $binary_rows;
+$binary = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, 'SELECT ID, post_title FROM wp_posts', 'wp_' )->provenance();
+$database->result_rows(
+	array( array( 'DATABASE()' => '' ) ),
+	array( array( 'name' => 'DATABASE()', 'type' => 253 ) )
+);
+$database_fast_path = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	1,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$database_fast_path->capture_input( 'SELECT DATABASE()', $database );
+$database_fast_path->observe( 'SELECT DATABASE()', 1, $database );
 $bounded = new WP_Markdown_Native_Shadow_Verifier(
 	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
 	1,
@@ -137,6 +168,13 @@ $checks = array(
 		&& ! str_contains( json_encode( $second, JSON_THROW_ON_ERROR ), 'Second' ),
 	'mutation changes the next authoritative input view' => ( $first['context']['last_input_state']['tables'][0]['sha256'] ?? '' ) !== ( $second['context']['last_input_state']['tables'][0]['sha256'] ?? '' ),
 	'raw mysqli-shaped values retain NULL while provider applies predicate, order, limit, and projection' => array( array( 'ID' => '10' ) ) === $provided,
+	'provider emits multi-column projections in requested order through the native executor' => 1 === $reordered->report()['counts']['compatible'],
+	'binary source rows are bounded and hashed without JSON encoding or report disclosure' => 1 === ( $binary['tables'][0]['rows'] ?? 0 )
+		&& 64 === strlen( (string) ( $binary['tables'][0]['sha256'] ?? '' ) )
+		&& ! str_contains( json_encode( $binary, JSON_THROW_ON_ERROR ), 'binary' ),
+	'DATABASE() uses the stateless native runtime path without a snapshot oracle' => 1 === $database_fast_path->report()['counts']['compatible']
+		&& 'native_runtime_fast_path' === ( $database_fast_path->report()['context']['last_input_state']['read_connection'] ?? null )
+		&& array() === ( $database_fast_path->report()['context']['last_input_state']['tables'] ?? null ),
 	'typed plan traversal captures every JOIN source' => array( 'wp_posts', 'wp_postmeta' ) === array_column( $multi_table['tables'], 'table' ),
 	'typed plan traversal skips a derived alias and captures its source table' => array( 'wp_posts' ) === array_column( $derived_table['tables'], 'table' ),
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],

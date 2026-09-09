@@ -69,8 +69,10 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private array $representatives = array();
 	private int $representative_bytes = 0;
 	private string $input_mode;
-	/** @var array<string,WP_Markdown_Native_Authoritative_Snapshot_Runtime> */
+	/** @var array<string,WP_Markdown_Query_Runtime> */
 	private array $pending_inputs = array();
+	/** @var array<string,array<string,mixed>> */
+	private array $pending_input_provenance = array();
 	/** @var array<string,int> */
 	private array $pending_insert_ids = array();
 	/** @var array<string,array{code:string,reason:string}> */
@@ -95,6 +97,11 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		$prefix = $this->query_prefix( $database );
 		$key = hash( 'sha256', $query );
 		$this->pending_insert_ids[ $key ] = (int) ( $database->insert_id ?? 0 );
+		if ( $this->is_stateless_runtime_fast_path( $query ) ) {
+			$this->pending_inputs[ $key ] = $this->runtime;
+			$this->pending_input_provenance[ $key ] = array( 'read_connection' => 'native_runtime_fast_path', 'tables' => array() );
+			return;
+		}
 		try {
 			$this->pending_inputs[ $key ] = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
 			unset( $this->pending_input_failures[ $key ] );
@@ -113,7 +120,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		$input = $this->pending_inputs[ $key ] ?? null;
 		$input_failure = $this->pending_input_failures[ $key ] ?? null;
 		$pre_query_insert_id = $this->pending_insert_ids[ $key ] ?? 0;
-		unset( $this->pending_inputs[ $key ], $this->pending_input_failures[ $key ], $this->pending_insert_ids[ $key ] );
+		$input_provenance = $this->pending_input_provenance[ $key ] ?? null;
+		unset( $this->pending_inputs[ $key ], $this->pending_input_provenance[ $key ], $this->pending_input_failures[ $key ], $this->pending_insert_ids[ $key ] );
 		if ( $this->sequence >= $this->max_observations ) {
 			++$this->counts['dropped'];
 			return;
@@ -140,8 +148,11 @@ final class WP_Markdown_Native_Shadow_Verifier {
 					return;
 				}
 				$runtime = $input ?? WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
+				$provenance = is_array( $input_provenance )
+					? $input_provenance
+					: ( $runtime instanceof WP_Markdown_Native_Authoritative_Snapshot_Runtime ? $runtime->provenance() : array( 'read_connection' => 'unknown', 'tables' => array() ) );
 				$this->last_input_state = array_merge(
-					$runtime->provenance(),
+					$provenance,
 					array(
 						'facade_state' => array(
 							'native_insert_id' => 'pre_query_wpdb_insert_id',
@@ -172,10 +183,15 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				return;
 			}
 
+			$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true );
+			$actual = $native->corpus_result( WP_Markdown_Native_WPDB_State_Projection::insert_id( $native, $query, $pre_query_insert_id ) );
 			$comparison = WP_Markdown_Query_Compatibility_Comparator::compare(
-				WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true ),
-				$native->corpus_result( WP_Markdown_Native_WPDB_State_Projection::insert_id( $native, $query, $pre_query_insert_id ) )
+				$expected,
+				$actual
 			);
+			if ( ! $comparison['compatible'] && $this->has_unordered_unbounded_result( $query ) ) {
+				$comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $this->rows_as_bag( $expected ), $this->rows_as_bag( $actual ) );
+			}
 			if ( $comparison['compatible'] ) {
 				++$this->counts['compatible'];
 				return;
@@ -247,7 +263,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			array(
 				'sequence'              => $this->sequence,
 				'status'                => $status,
-				'query_template_sha256' => hash( 'sha256', $template ),
+				'query_template_sha256' => hash( 'sha256', $this->normalized_query_template( $query ) ),
 				'query_template'        => $template,
 				'classification'         => $classification,
 			),
@@ -310,6 +326,11 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	}
 
 	private function query_template( string $query ): string {
+		$template = $this->normalized_query_template( $query );
+		return strlen( $template ) > 500 ? substr( $template, 0, 500 ) . '...' : $template;
+	}
+
+	private function normalized_query_template( string $query ): string {
 		$template = '';
 		$length = strlen( $query );
 		for ( $index = 0; $index < $length; ++$index ) {
@@ -366,6 +387,30 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		}
 		$template = trim( (string) preg_replace( '/\s+/', ' ', (string) $template ) );
 		$template = (string) preg_replace( '/[^\x20-\x7E]/', '?', $template );
-		return strlen( $template ) > 500 ? substr( $template, 0, 500 ) . '...' : $template;
+		return $template;
+	}
+
+	private function is_stateless_runtime_fast_path( string $query ): bool {
+		return 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $query );
+	}
+
+	private function has_unordered_unbounded_result( string $query ): bool {
+		$plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $query );
+		return $plan instanceof WP_Markdown_Native_Query_Plan
+			&& array() === $plan->order_by()
+			&& array() === $plan->union_order_by()
+			&& PHP_INT_MAX === $plan->limit()
+			&& null === $plan->union_limit();
+	}
+
+	/** @param array<string,mixed> $result @return array<string,mixed> */
+	private function rows_as_bag( array $result ): array {
+		if ( ! isset( $result['rows'] ) || ! is_array( $result['rows'] ) ) {
+			return $result;
+		}
+		$rows = $result['rows'];
+		usort( $rows, static fn( array $left, array $right ): int => strcmp( serialize( $left ), serialize( $right ) ) );
+		$result['rows'] = $rows;
+		return $result;
 	}
 }

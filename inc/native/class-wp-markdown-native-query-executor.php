@@ -70,6 +70,16 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
 			);
 		}
+		if ( 1 === preg_match( '/^\s*SELECT\s+@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT)\s*;?\s*$/i', $request->sql(), $match ) ) {
+			$variable = strtolower( $match[1] );
+			$value = 'in_transaction' === $variable
+				? (int) $this->transactions?->is_active()
+				: (int) $this->transactions?->is_autocommit();
+			return WP_Markdown_Query_Result::selected(
+				array( array( '@@session.' . $variable => $value ) ),
+				array( array( 'name' => '@@session.' . $variable, 'table' => '', 'type' => 8 ) )
+			);
+		}
 		if ( 1 === preg_match( '/^\s*(?:CREATE|ALTER)\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
 			|| 1 === preg_match( '/^\s*DROP\s+(?:TEMPORARY\s+)?TABLE\b/i', $request->sql() )
 			|| 1 === preg_match( '/^\s*CREATE\s+(?:UNIQUE\s+)?INDEX\b/i', $request->sql() ) ) {

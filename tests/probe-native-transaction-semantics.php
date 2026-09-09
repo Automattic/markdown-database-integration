@@ -86,6 +86,24 @@ function probe_statement( WP_Markdown_Native_Query_Runtime $runtime, string $sql
 	}
 }
 
+/** Read a native session variable through the same query boundary consumers use. */
+function probe_session_variable( WP_Markdown_Native_Query_Runtime $runtime, string $name ): ?int {
+	$result = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT @@session.' . $name ) );
+	$rows = $result->wpdb_state()['last_result'] ?? array();
+	return isset( $rows[0] ) ? (int) current( get_object_vars( $rows[0] ) ) : null;
+}
+
+$session_before = array(
+	'in_transaction' => probe_session_variable( $runtime, 'in_transaction' ),
+	'autocommit'     => probe_session_variable( $runtime, 'autocommit' ),
+);
+probe_statement( $runtime, 'START TRANSACTION' );
+$session_inside = array(
+	'in_transaction' => probe_session_variable( $runtime, 'in_transaction' ),
+	'autocommit'     => probe_session_variable( $runtime, 'autocommit' ),
+);
+probe_statement( $runtime, 'ROLLBACK' );
+
 $statements = array(
 	'START TRANSACTION',
 	'BEGIN',
@@ -174,8 +192,16 @@ $report = array(
 	'rollback_sequence'        => $mutation,
 	'select_after_rollback'    => $after_rollback,
 	'canonical_after_rollback' => $canonical_after_rollback['option_value'] ?? null,
+	'session_state'            => array(
+		'before' => $session_before,
+		'inside' => $session_inside,
+	),
 	'assertions'               => array(
 		'transaction control statements execute'        => $control_executes,
+		'session state reports the owning transaction'  => 0 === $session_before['in_transaction']
+			&& 1 === $session_before['autocommit']
+			&& 1 === $session_inside['in_transaction']
+			&& 1 === $session_inside['autocommit'],
 		'rollback restores the canonical pre-image'     => 'committed' === ( $canonical_after_rollback['option_value'] ?? null ),
 		'commit publishes the mutation durably'         => 'committed-value' === $commit_durability,
 		'savepoint rewind discards only later work'     => 'before-savepoint' === $savepoint_rewind,

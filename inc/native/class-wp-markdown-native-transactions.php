@@ -46,6 +46,11 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return $this->active;
 	}
 
+	/** Whether statements commit individually when no explicit transaction is open. */
+	public function is_autocommit(): bool {
+		return $this->autocommit;
+	}
+
 	/**
 	 * Restore journals left behind by a process that terminated mid-transaction.
 	 *

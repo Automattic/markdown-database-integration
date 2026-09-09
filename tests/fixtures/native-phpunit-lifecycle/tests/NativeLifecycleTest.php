@@ -18,7 +18,15 @@ class NativeLifecycleTest extends WP_UnitTestCase {
 	}
 
 	public function test_02_reset_removes_the_previous_test_post(): void {
-		$this->assertNull( get_page_by_title( 'Native lifecycle updated', OBJECT, 'post' ) );
+		$query = new WP_Query(
+			array(
+				'post_type'      => 'post',
+				'title'          => 'Native lifecycle updated',
+				'posts_per_page' => 1,
+				'fields'         => 'ids',
+			)
+		);
+		$this->assertSame( array(), $query->posts );
 	}
 
 	public function test_multisite_switch_keeps_site_posts_isolated(): void {
@@ -31,6 +39,6 @@ class NativeLifecycleTest extends WP_UnitTestCase {
 		$post_id = self::factory()->post->create( array( 'post_title' => 'Native switched site post' ) );
 		$this->assertSame( 'Native switched site post', get_post( $post_id )->post_title );
 		restore_current_blog();
-		$this->assertNull( get_page_by_title( 'Native switched site post', OBJECT, 'post' ) );
+		$this->assertSame( array(), get_posts( array( 'post_type' => 'post', 'title' => 'Native switched site post', 'fields' => 'ids' ) ) );
 	}
 }

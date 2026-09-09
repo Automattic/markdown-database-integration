@@ -131,14 +131,22 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
 			return null;
 		}
-		if ( 6 !== count( $tokens )
+		$end = count( $tokens ) - 1;
+		if ( $end < 5
 			|| 0 !== strcasecmp( 'SELECT', (string) $tokens[0]->value() )
 			|| 0 !== strcasecmp( 'JSON_VALID', (string) $tokens[1]->value() )
 			|| WP_Markdown_Native_SQL_Token::LEFT_PAREN !== $tokens[2]->type()
 			|| WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== $tokens[4]->type()
-			|| WP_Markdown_Native_SQL_Token::END !== $tokens[5]->type()
+			|| WP_Markdown_Native_SQL_Token::END !== $tokens[ $end ]->type()
 		) {
 			return null;
+		}
+		$column = 'JSON_VALID(' . $tokens[3]->lexeme() . ')';
+		if ( 5 < $end ) {
+			if ( 7 !== $end || 0 !== strcasecmp( 'AS', (string) $tokens[5]->value() ) || ! in_array( $tokens[6]->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
+				return null;
+			}
+			$column = (string) $tokens[6]->value();
 		}
 		$value = 0 === strcasecmp( 'NULL', (string) $tokens[3]->value() ) ? null : $tokens[3]->value();
 		if ( null !== $value && WP_Markdown_Native_SQL_Token::STRING !== $tokens[3]->type() ) {
@@ -154,8 +162,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		return WP_Markdown_Query_Result::selected(
-			array( array( 'JSON_VALID(' . $tokens[3]->lexeme() . ')' => $valid ) ),
-			array( array( 'name' => 'JSON_VALID(' . $tokens[3]->lexeme() . ')', 'table' => '', 'type' => 8 ) )
+			array( array( $column => $valid ) ),
+			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
 		);
 	}
 

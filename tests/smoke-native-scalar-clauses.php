@@ -35,6 +35,7 @@ $decimal = $runtime->execute( new WP_Markdown_Query_Request( "SELECT CAST('1.235
 $json_valid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('{\"event\":true}')", 'wp_' ) );
 $json_invalid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('{broken}')", 'wp_' ) );
 $json_null = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT JSON_VALID(NULL)', 'wp_' ) );
+$json_alias = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('[]') AS valid_json", 'wp_' ) );
 $checks = array(
 	'WP date WHERE evaluates DATE_ADD INTERVAL after the bounded read' => array( '2', '3' ) === array_map( static fn( object $row ): string => $row->id, $where->wpdb_state()['last_result'] ),
 	'DATE_SUB INTERVAL and TIMESTAMPDIFF use the shared WHERE scalar path' => array( '1' ) === array_map( static fn( object $row ): string => $row->id, $subtracted->wpdb_state()['last_result'] )
@@ -67,7 +68,8 @@ $checks = array(
 		&& '0' === ( $json_invalid->wpdb_state()['last_result'][0]->{'JSON_VALID(\'{broken}\')'} ?? null )
 		&& null === ( $json_null->wpdb_state()['last_result'][0]->{'JSON_VALID(NULL)'} ?? null )
 		&& 'JSON_VALID(\'{"event":true}\')' === ( $json_valid->wpdb_state()['col_info'][0]->name ?? null )
-		&& 8 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null ),
+		&& 8 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null )
+		&& '1' === ( $json_alias->wpdb_state()['last_result'][0]->valid_json ?? null ),
 );
 $failed = false;
 foreach ( $checks as $label => $passed ) { echo ( $passed ? 'PASS: ' : 'FAIL: ' ) . $label . "\n"; $failed = $failed || ! $passed; }

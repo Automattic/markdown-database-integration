@@ -306,6 +306,7 @@ final class WP_Markdown_Native_Schema_Introspection {
 				return $this->failure( 'unsupported_lookup', 'mdi-native requires a bounded information_schema table lookup.' );
 			}
 			$names = array();
+			$column_names = array();
 			$schema_match = false;
 			do {
 				$column = strtoupper( (string) $identifier() );
@@ -313,6 +314,10 @@ final class WP_Markdown_Native_Schema_Introspection {
 					++$position;
 					$schema_match = $word( 'DATABASE' ) && WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $tokens[ $position ] ?? null )?->type() && WP_Markdown_Native_SQL_Token::RIGHT_PAREN === ( $tokens[ $position + 1 ] ?? null )?->type();
 					$position += $schema_match ? 2 : 0;
+					if ( ! $schema_match && WP_Markdown_Native_SQL_Token::STRING === ( $tokens[ $position ] ?? null )?->type() ) {
+						$schema_match = true;
+						++$position;
+					}
 				} elseif ( 'TABLE_NAME' === $column && ( $word( 'IN' ) || WP_Markdown_Native_SQL_Token::EQUALS === ( $tokens[ $position ] ?? null )?->type() ) ) {
 					if ( WP_Markdown_Native_SQL_Token::EQUALS === ( $tokens[ $position ] ?? null )?->type() ) {
 						++$position;
@@ -330,6 +335,16 @@ final class WP_Markdown_Native_Schema_Introspection {
 						if ( WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
 						++$position;
 					}
+				} elseif ( 'COLUMN_NAME' === $column && $word( 'IN' ) ) {
+					if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
+					++$position;
+					do {
+						$token = $tokens[ $position++ ] ?? null;
+						if ( ! $token instanceof WP_Markdown_Native_SQL_Token || WP_Markdown_Native_SQL_Token::STRING !== $token->type() ) { return null; }
+						$column_names[] = (string) $token->value();
+					} while ( WP_Markdown_Native_SQL_Token::COMMA === ( $tokens[ $position ] ?? null )?->type() && ++$position );
+					if ( WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
+					++$position;
 				} else {
 					return null;
 				}
@@ -345,6 +360,9 @@ final class WP_Markdown_Native_Schema_Introspection {
 				}
 				$catalog_rows = 'COLUMNS' === $catalog ? $this->information_schema_columns( $table, $definition ) : array( $this->information_schema_table( $table ) );
 				foreach ( $catalog_rows as $catalog_row ) {
+					if ( array() !== $column_names && ! in_array( $catalog_row['COLUMN_NAME'] ?? null, $column_names, true ) ) {
+						continue;
+					}
 					$row = array();
 					foreach ( $projection as $column ) {
 						if ( ! array_key_exists( $column['name'], $catalog_row ) ) {

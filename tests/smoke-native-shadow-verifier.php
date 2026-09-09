@@ -95,6 +95,19 @@ $mismatch = new WP_Markdown_Native_Shadow_Verifier( $runtime );
 $mismatch->observe( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1", 1, $database );
 $mismatch_report = $mismatch->report();
 
+$database->result(
+	array( array( 'option_value' => 'https://example.test' ) ),
+	array( array( 'name' => 'option_value', 'type' => 999 ) )
+);
+$metadata_mismatch = new WP_Markdown_Native_Shadow_Verifier( $runtime );
+$metadata_mismatch->observe( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1", 1, $database );
+$metadata_mismatch_report = $metadata_mismatch->report();
+
+$snapshot_limit = new WP_Markdown_Native_Shadow_Verifier( $runtime, 2, array( 'input_mode' => 'sql_snapshot' ) );
+$snapshot_limit->capture_input( 'SELECT option_value FROM wp_options', $database );
+$snapshot_limit->observe( 'SELECT option_value FROM wp_options', 1, $database );
+$snapshot_limit_report = $snapshot_limit->report();
+
 final class MDI_Throwing_Runtime implements WP_Markdown_Query_Runtime {
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		unset( $request );
@@ -103,6 +116,10 @@ final class MDI_Throwing_Runtime implements WP_Markdown_Query_Runtime {
 }
 $failed_verifier = new WP_Markdown_Native_Shadow_Verifier( new MDI_Throwing_Runtime() );
 $failed_verifier->observe( 'SELECT option_name FROM wp_options', 0, $database );
+$canary = "sql-secret--hash#quote'double";
+$failed_verifier->observe( "SELECT option_name FROM wp_options WHERE option_name = 'sql-secret--hash#quote''double'", 0, $database );
+$failed_verifier->observe( "SELECT option_name FROM wp_options WHERE option_name = 'sql-secret--hash#quote''double-second'", 0, $database );
+$failed_verifier->observe( 'SELECT option_name FROM wp_options WHERE option_id = 0xD34DB33F OR option_id = 12.345e+6', 0, $database );
 $failure_report = $failed_verifier->report();
 
 class WP_SQLite_DB {
@@ -162,9 +179,19 @@ $checks = array(
 		&& in_array( '$.rows[0].option_value', $mismatch_report['first_blocker']['mismatch_paths'] ?? array(), true )
 		&& ! str_contains( json_encode( $mismatch_report, JSON_THROW_ON_ERROR ), 'authoritative-secret' )
 		&& ! str_contains( json_encode( $mismatch_report, JSON_THROW_ON_ERROR ), 'https://example.test' ),
-	'verifier failures retain only bounded structural diagnostics' => 1 === $failure_report['counts']['verifier_failures']
+	'representatives classify row and column differences without result values' => 'row_value_or_count' === ( $mismatch_report['representatives'][0]['classification'] ?? null )
+		&& 'column_metadata_or_types' === ( $metadata_mismatch_report['representatives'][0]['classification'] ?? null )
+		&& 'snapshot_input_limitation' === ( $snapshot_limit_report['representatives'][0]['classification'] ?? null ),
+	'verifier failures retain only bounded structural diagnostics' => 4 === $failure_report['counts']['verifier_failures']
 		&& RuntimeException::class === ( $failure_report['first_blocker']['failure_class'] ?? null )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'private runtime failure' ),
+	'quote-aware templates redact literal, hex, and numeric canaries' => 4 === $failure_report['counts']['verifier_failures']
+		&& 3 === count( $failure_report['representatives'] )
+		&& 2 === ( $failure_report['representatives'][1]['count'] ?? null )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), $canary )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'sql-secret' )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'D34DB33F' )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), '12.345e+6' ),
 	'SQLite authoritative returns and public state survive hostile observers' => 1 === $sqlite_return
 		&& 1 === $hostile->calls
 		&& 'wp_' === $sqlite->prefix

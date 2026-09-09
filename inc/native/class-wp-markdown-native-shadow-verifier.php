@@ -43,6 +43,9 @@ final class WP_Markdown_Native_Shadow_Factory {
 }
 
 final class WP_Markdown_Native_Shadow_Verifier {
+	private const MAX_REPRESENTATIVES = 24;
+	private const MAX_REPRESENTATIVE_BYTES = 32768;
+
 	private int $sequence = 0;
 	private array $counts = array(
 		'compatible'       => 0,
@@ -55,6 +58,9 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private ?array $first_blocker = null;
 	private ?array $first_query_context = null;
 	private ?array $last_input_state = null;
+	/** @var array<string,array<string,mixed>> */
+	private array $representatives = array();
+	private int $representative_bytes = 0;
 	private string $input_mode;
 	/** @var array<string,WP_Markdown_Native_Authoritative_Snapshot_Runtime> */
 	private array $pending_inputs = array();
@@ -119,7 +125,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			if ( 'sql_snapshot' === $this->input_mode ) {
 				if ( is_array( $input_failure ) ) {
 					++$this->counts['unsupported'];
-					$this->retain_blocker( 'unsupported', $query, array( 'native_diagnostic' => $input_failure ) );
+					$this->retain_blocker( 'unsupported', $query, array( 'native_diagnostic' => array( 'code' => $this->safe_reason( (string) ( $input_failure['code'] ?? 'markdown_db_native_snapshot_input_unavailable' ) ), 'reason' => $this->safe_reason( (string) ( $input_failure['reason'] ?? 'unknown' ) ) ) ) );
 					return;
 				}
 				$runtime = $input ?? WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
@@ -140,7 +146,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 					array(
 						'native_diagnostic' => array(
 							'code'   => (string) ( $diagnostic['code'] ?? 'markdown_db_native_unknown_failure' ),
-							'reason' => (string) ( $diagnostic['reason'] ?? 'unknown' ),
+							'reason' => $this->safe_reason( (string) ( $diagnostic['reason'] ?? 'unknown' ) ),
 						),
 					)
 				);
@@ -187,6 +193,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'observed'         => $this->sequence,
 			'counts'           => $this->counts,
 			'first_blocker'    => $this->first_blocker,
+			'representatives'  => array_values( $this->representatives ),
 			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
 		);
 	}
@@ -213,26 +220,128 @@ final class WP_Markdown_Native_Shadow_Verifier {
 
 	/** @param array<string,mixed> $details */
 	private function retain_blocker( string $status, string $query, array $details ): void {
-		if ( null !== $this->first_blocker ) {
-			return;
-		}
 		$template = $this->query_template( $query );
-		$this->first_blocker = array_merge(
+		$blocker = array_merge(
 			array(
 				'sequence'              => $this->sequence,
 				'status'                => $status,
 				'query_template_sha256' => hash( 'sha256', $template ),
 				'query_template'        => $template,
+				'classification'         => $this->classification( $status, $details ),
 			),
 			$details
 		);
+		$this->first_blocker ??= $blocker;
+		$this->retain_representative( $blocker );
+	}
+
+	/** @param array<string,mixed> $blocker */
+	private function retain_representative( array $blocker ): void {
+		$key = $blocker['status'] . ':' . $blocker['classification'] . ':' . $blocker['query_template_sha256'];
+		if ( isset( $this->representatives[ $key ] ) ) {
+			$before = strlen( json_encode( $this->representatives[ $key ], JSON_THROW_ON_ERROR ) );
+			++$this->representatives[ $key ]['count'];
+			$after = strlen( json_encode( $this->representatives[ $key ], JSON_THROW_ON_ERROR ) );
+			if ( $this->representative_bytes + $after - $before > self::MAX_REPRESENTATIVE_BYTES ) {
+				--$this->representatives[ $key ]['count'];
+				return;
+			}
+			$this->representative_bytes += $after - $before;
+			return;
+		}
+		if ( count( $this->representatives ) >= self::MAX_REPRESENTATIVES ) {
+			return;
+		}
+		$representative = array_merge( array( 'count' => 1 ), $blocker );
+		$bytes = strlen( json_encode( $representative, JSON_THROW_ON_ERROR ) );
+		if ( $bytes > self::MAX_REPRESENTATIVE_BYTES || $this->representative_bytes + $bytes > self::MAX_REPRESENTATIVE_BYTES ) {
+			return;
+		}
+		$this->representatives[ $key ] = $representative;
+		$this->representative_bytes += $bytes;
+	}
+
+	/** @param array<string,mixed> $details */
+	private function classification( string $status, array $details ): string {
+		if ( 'unsupported' === $status && 'markdown_db_native_snapshot_input_unavailable' === ( $details['native_diagnostic']['code'] ?? null ) ) {
+			return 'snapshot_input_limitation';
+		}
+		if ( isset( $details['mismatch_paths'] ) ) {
+			foreach ( $details['mismatch_paths'] as $path ) {
+				if ( str_starts_with( (string) $path, '$.rows' ) || '$.num_rows' === $path ) {
+					return 'row_value_or_count';
+				}
+			}
+			foreach ( $details['mismatch_paths'] as $path ) {
+				if ( str_starts_with( (string) $path, '$.columns' ) ) {
+					return 'column_metadata_or_types';
+				}
+			}
+			return 'result_metadata';
+		}
+		return 'native_execution';
+	}
+
+	private function safe_reason( string $reason ): string {
+		$reason = (string) preg_replace( '/[^A-Za-z0-9_.-]/', '_', $reason );
+		return '' === $reason ? 'unknown' : substr( $reason, 0, 128 );
 	}
 
 	private function query_template( string $query ): string {
-		$template = preg_replace( '/\/\*.*?\*\/|--[^\r\n]*|#[^\r\n]*/s', ' ', $query );
-		$template = preg_replace( '/\b0x[0-9A-Fa-f]+\b/i', '?', (string) $template );
-		$template = preg_replace( '/\'(?:[^\'\\\\]|\\\\.)*\'|"(?:[^"\\\\]|\\\\.)*"/s', '?', (string) $template );
-		$template = preg_replace( '/(?<![A-Za-z0-9_])[0-9]+(?![A-Za-z0-9_])/', '?', (string) $template );
+		$template = '';
+		$length = strlen( $query );
+		for ( $index = 0; $index < $length; ++$index ) {
+			$character = $query[ $index ];
+			if ( "'" === $character || '"' === $character ) {
+				$quote = $character;
+				$template .= '?';
+				for ( ++$index; $index < $length; ++$index ) {
+					if ( '\\' === $query[ $index ] ) {
+						++$index;
+						continue;
+					}
+					if ( $quote === $query[ $index ] ) {
+						if ( $index + 1 < $length && $quote === $query[ $index + 1 ] ) {
+							++$index;
+							continue;
+						}
+						break;
+					}
+				}
+				continue;
+			}
+			if ( '/' === $character && $index + 1 < $length && '*' === $query[ $index + 1 ] ) {
+				$template .= ' ';
+				$end = strpos( $query, '*/', $index + 2 );
+				if ( false === $end ) {
+					break;
+				}
+				$index = $end + 1;
+				continue;
+			}
+			if ( '#' === $character || ( '-' === $character && $index + 1 < $length && '-' === $query[ $index + 1 ] ) ) {
+				$template .= ' ';
+				$end = strcspn( $query, "\r\n", $index );
+				$index += $end;
+				continue;
+			}
+			if ( '0' === $character && $index + 2 < $length && ( 'x' === strtolower( $query[ $index + 1 ] ) ) && ctype_xdigit( $query[ $index + 2 ] ) ) {
+				$template .= '?';
+				++$index;
+				while ( $index + 1 < $length && ctype_xdigit( $query[ $index + 1 ] ) ) {
+					++$index;
+				}
+				continue;
+			}
+			if ( ( ctype_digit( $character ) || ( '.' === $character && $index + 1 < $length && ctype_digit( $query[ $index + 1 ] ) ) ) && ( 0 === $index || ! ctype_alnum( $query[ $index - 1 ] ) && '_' !== $query[ $index - 1 ] ) ) {
+				if ( 1 === preg_match( '/^(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?/', substr( $query, $index ), $number ) ) {
+					$template .= '?';
+					$index += strlen( $number[0] ) - 1;
+					continue;
+				}
+			}
+			$template .= $character;
+		}
 		$template = trim( (string) preg_replace( '/\s+/', ' ', (string) $template ) );
 		$template = (string) preg_replace( '/[^\x20-\x7E]/', '?', $template );
 		return strlen( $template ) > 500 ? substr( $template, 0, 500 ) . '...' : $template;

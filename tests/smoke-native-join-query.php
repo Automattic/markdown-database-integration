@@ -83,6 +83,8 @@ $unknown_alias = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 
 $limited = $runtime->execute( new WP_Markdown_Query_Request( $query . ' LIMIT 1' ) );
 $catalog_query = "SELECT wp_term_relationships.object_id FROM wp_term_relationships LEFT JOIN wp_term_taxonomy ON (wp_term_relationships.term_taxonomy_id = wp_term_taxonomy.term_taxonomy_id) WHERE wp_term_taxonomy.taxonomy IN ('category') GROUP BY wp_term_relationships.object_id ORDER BY wp_term_relationships.object_id DESC LIMIT 0, 5";
 $catalog = $runtime->execute( new WP_Markdown_Query_Request( $catalog_query ) );
+$distinct_identity_group_query = "SELECT DISTINCT tr.object_id FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id WHERE tt.taxonomy='category' GROUP BY tr.object_id";
+$distinct_identity_group = $runtime->execute( new WP_Markdown_Query_Request( $distinct_identity_group_query ) );
 $counted = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_term_relationships LEFT JOIN wp_term_taxonomy ON term_taxonomy_id = wp_term_taxonomy.term_taxonomy_id WHERE object_id = 41' )
 );
@@ -288,6 +290,10 @@ $checks = array(
 	'LEFT JOIN with identity GROUP BY and LIMIT returns distinct left keys' => array( '99', '41' ) === array_map(
 		static fn( object $row ): string => (string) $row->object_id,
 		$catalog->wpdb_state()['last_result']
+	),
+	'DISTINCT identity GROUP BY remains available for canonical joined post queries' => array( '41', '99' ) === array_map(
+		static fn( object $row ): string => (string) $row->object_id,
+		$distinct_identity_group->wpdb_state()['last_result']
 	),
 	'JOIN LIMIT returns the bounded prefix' => 1 === $limited->return_value()
 		&& array( 'object_id' => '41', 'taxonomy' => 'category', 'slug' => 'news' ) === get_object_vars( $limited->wpdb_state()['last_result'][0] ?? (object) array() ),

@@ -541,7 +541,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->unsupported( $this->current() );
 		}
 		if ( $grouped ) {
-			if ( $count_all || $select_all || $distinct ) {
+			if ( $count_all ) {
 				$this->unsupported( $this->current() );
 			}
 			$this->expect_keyword( 'GROUP' );

@@ -33,7 +33,9 @@ final class WP_Markdown_Native_Post_Catalogue {
 
 	public function __construct(
 		private readonly string $content_root,
-		private readonly string $state_root
+		private readonly string $state_root,
+		/** @var string[] */
+		private readonly array $excluded_roots = array()
 	) {}
 
 	/**
@@ -44,7 +46,7 @@ final class WP_Markdown_Native_Post_Catalogue {
 	public function remember( WP_Markdown_File_Witness $witness, array $file, object $post, array $row, bool $path_is_canonical = false ): void {
 		$this->load();
 		$path = (string) ( $file['absolute'] ?? '' );
-		if ( ! $path_is_canonical && null === $this->relative_path( $path ) ) {
+		if ( ( ! $path_is_canonical || array() !== $this->excluded_roots ) && null === $this->relative_path( $path ) ) {
 			return;
 		}
 		$this->entries[ $path ] = array( 'witness' => $witness, 'file' => $file, 'post' => $post, 'row' => $row );
@@ -222,7 +224,7 @@ final class WP_Markdown_Native_Post_Catalogue {
 			return null;
 		}
 		$relative = str_replace( '\\', '/', $saved['path'] );
-		if ( '' === $relative || str_starts_with( $relative, '/' ) || in_array( '..', explode( '/', $relative ), true ) ) {
+		if ( '' === $relative || str_starts_with( $relative, '/' ) || in_array( '..', explode( '/', $relative ), true ) || in_array( strtok( $relative, '/' ), $this->excluded_roots, true ) ) {
 			return null;
 		}
 		$path = rtrim( $this->content_root, '/\\' ) . DIRECTORY_SEPARATOR . str_replace( '/', DIRECTORY_SEPARATOR, $relative );

@@ -15,9 +15,6 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 	) {}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		if ( null !== $this->transactions && $this->transactions->is_active() ) {
-			return $this->failure( 'unsupported_transaction_boundary', 'Native post mutations require a transaction journal that records canonical Markdown posts.' );
-		}
 		try {
 			return $this->storage->synchronize_native_post_write(
 				fn(): WP_Markdown_Query_Result => 1 === preg_match( '/^\s*INSERT\b/i', $request->sql() )

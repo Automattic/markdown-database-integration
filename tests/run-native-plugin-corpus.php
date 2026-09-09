@@ -13,11 +13,12 @@ $corpus = array_values(
 		static fn( string $slug ): bool => '' !== $slug
 	)
 );
+$multisite = '1' === getenv( 'MDI_PLUGIN_CORPUS_MULTISITE' );
 
 if ( false === $repo || false === $plugins_root || array() === $corpus ) {
 	fwrite(
 		STDERR,
-		"Usage: MDI_PLUGINS_DIR=/path/to/wp-content/plugins MDI_PLUGIN_CORPUS=slug-a,slug-b php tests/run-native-plugin-corpus.php\n"
+		"Usage: MDI_PLUGINS_DIR=/path/to/wp-content/plugins MDI_PLUGIN_CORPUS=slug-a,slug-b [MDI_PLUGIN_CORPUS_MULTISITE=1] php tests/run-native-plugin-corpus.php\n"
 	);
 	exit( 2 );
 }
@@ -31,6 +32,11 @@ mkdir( $state . '/_tables', 0755, true );
 mkdir( $bootstrap_content . '/plugins', 0755, true );
 copy( $repo . '/db.php', $bootstrap_content . '/db.php' );
 mdi_native_lifecycle_seed_options( $state );
+if ( $multisite ) {
+	mdi_native_lifecycle_seed_administrator( $state );
+	file_put_contents( $state . '/_tables/site.json', json_encode( array( array( 'id' => '1', 'domain' => 'example.com', 'path' => '/' ) ), JSON_THROW_ON_ERROR ) );
+	file_put_contents( $state . '/_tables/blogs.json', json_encode( array( array( 'blog_id' => '1', 'site_id' => '1', 'domain' => 'example.com', 'path' => '/', 'registered' => '2026-01-01 00:00:00', 'last_updated' => '2026-01-01 00:00:00', 'public' => '1', 'archived' => '0', 'mature' => '0', 'spam' => '0', 'deleted' => '0', 'lang_id' => '0' ) ), JSON_THROW_ON_ERROR ) );
+}
 
 $mounts = array(
 	array( 'type' => 'directory', 'source' => $bootstrap_content, 'target' => '/wordpress/wp-content', 'mode' => 'readonly', 'phase' => 'pre-install' ),
@@ -76,6 +82,14 @@ $recipe = array(
 						'WP_DEBUG' => true,
 						'WP_DEBUG_LOG' => true,
 						'WP_DEBUG_DISPLAY' => false,
+						...( $multisite ? array(
+							'MULTISITE'            => true,
+							'SUBDOMAIN_INSTALL'    => false,
+							'DOMAIN_CURRENT_SITE'  => 'example.com',
+							'PATH_CURRENT_SITE'    => '/',
+							'SITE_ID_CURRENT_SITE' => 1,
+							'BLOG_ID_CURRENT_SITE' => 1,
+						) : array() ),
 					),
 				),
 			),
@@ -88,7 +102,7 @@ $recipe = array(
 				'command' => 'wordpress.run-php',
 				'args' => array(
 					'code-file=' . $repo . '/tests/probe-native-plugin-corpus.php',
-					'env-json={"MDI_PLUGIN_CORPUS":"' . implode( ',', $mounted ) . '"}',
+					'env-json={"MDI_PLUGIN_CORPUS":"' . implode( ',', $mounted ) . '","MDI_PLUGIN_CORPUS_MULTISITE":"' . ( $multisite ? '1' : '0' ) . '"}',
 				),
 			),
 		),

@@ -193,7 +193,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		return WP_Markdown_Query_Result::selected(
 			array( array( $column => null === $value ? null : $this->json_valid( (string) $value ) ) ),
-			array( array( 'name' => $column, 'table' => '', 'type' => 3 ) )
+			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
 		);
 	}
 
@@ -229,7 +229,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	private function tableless_scalar_type( WP_Markdown_Native_Query_Scalar_Expression $expression, int|string|null $value ): int {
 		if ( null === $value ) { return 6; }
 		if ( 'literal' === $expression->kind() ) { return is_int( $value ) ? 3 : ( is_numeric( $value ) ? 246 : 253 ); }
-		return 'JSON_VALID' === $expression->kind() ? 3 : 253;
+		return 'JSON_VALID' === $expression->kind() ? 8 : 253;
 	}
 
 	/** Release this logical connection's root-scoped advisory locks. */

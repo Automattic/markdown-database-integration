@@ -242,10 +242,10 @@ $json_tableless = new WP_Markdown_Native_Shadow_Verifier(
 	2,
 	array( 'input_mode' => 'sql_snapshot' )
 );
-$database->result_rows( array( array( 'JSON_VALID(\'{"valid":true}\')' => '1' ) ), array( array( 'name' => 'JSON_VALID(\'{"valid":true}\')', 'type' => 3 ) ) );
+$database->result_rows( array( array( 'JSON_VALID(\'{"valid":true}\')' => '1' ) ), array( array( 'name' => 'JSON_VALID(\'{"valid":true}\')', 'type' => 8 ) ) );
 $json_tableless->capture_input( "SELECT JSON_VALID('{\"valid\":true}')", $database );
 $json_tableless->observe( "SELECT JSON_VALID('{\"valid\":true}')", 1, $database );
-$database->result_rows( array( array( "JSON_VALID('{invalid}')" => '0' ) ), array( array( 'name' => "JSON_VALID('{invalid}')", 'type' => 3 ) ) );
+$database->result_rows( array( array( "JSON_VALID('{invalid}')" => '0' ) ), array( array( 'name' => "JSON_VALID('{invalid}')", 'type' => 8 ) ) );
 $json_tableless->capture_input( "SELECT JSON_VALID('{invalid}')", $database );
 $json_tableless->observe( "SELECT JSON_VALID('{invalid}')", 1, $database );
 $catalog_columns = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
@@ -298,6 +298,7 @@ $checks = array(
 		&& 0 === $json_tableless->report()['counts']['unsupported']
 		&& 'native_runtime_fast_path' === ( $json_tableless->report()['context']['last_input_state']['read_connection'] ?? null ),
 	'catalog capture snapshots requested physical DDL and independently executes COLUMNS metadata' => array( 'wp_plugin_jobs' ) === array_column( $catalog_columns->provenance()['tables'], 'table' )
+		&& 251 === ( $catalog_result->wpdb_state()['col_info'][1]->type ?? null )
 		&& array( 'status' => '64', 'payload' => '4294967295' ) === array_reduce( $catalog_result->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() ),
 	'catalog ENGINE remains an explicit unsupported projection after source discovery' => false === $catalog_engine->return_value()
 		&& 'unsupported_column' === ( $catalog_engine->diagnostic()['reason'] ?? null ),

@@ -517,7 +517,11 @@ final class WP_Markdown_Native_Schema_Introspection {
 			static fn( array $column ): array => array(
 				'name' => $column['alias'],
 				'table' => $catalog,
-				'type' => in_array( $column['name'], array( 'ORDINAL_POSITION', 'CHARACTER_MAXIMUM_LENGTH' ), true ) ? 8 : 253,
+				'type' => match ( $column['name'] ) {
+					'ORDINAL_POSITION', 'CHARACTER_MAXIMUM_LENGTH' => 8,
+					'DATA_TYPE' => 251,
+					default => 253,
+				},
 			),
 			$projection
 		);

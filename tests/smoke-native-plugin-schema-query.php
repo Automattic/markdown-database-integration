@@ -175,7 +175,7 @@ $checks = array(
 		&& 'PRI' === ( $information_columns->wpdb_state()['last_result'][0]->COLUMN_KEY ?? null )
 		&& '32' === ( $information_columns->wpdb_state()['last_result'][2]->CHARACTER_MAXIMUM_LENGTH ?? null )
 		&& null === ( $information_columns->wpdb_state()['last_result'][0]->CHARACTER_MAXIMUM_LENGTH ?? null )
-		&& array( 253, 253, 8, 8, 253, 253, 253, 253, 253, 253 ) === array_map( static fn( object $column ): int => $column->type, $information_columns->wpdb_state()['col_info'] ),
+		&& array( 253, 253, 8, 8, 253, 253, 251, 253, 253, 253 ) === array_map( static fn( object $column ): int => $column->type, $information_columns->wpdb_state()['col_info'] ),
 	'information_schema predicates preserve schema equality and AND intersections' => 0 === $absent_information_schema->return_value()
 		&& 0 === $contradictory_information_tables->return_value()
 		&& 0 === $contradictory_information_columns->return_value(),

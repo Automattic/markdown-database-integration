@@ -74,7 +74,7 @@ $checks = array(
 		&& '0' === ( $json_invalid->wpdb_state()['last_result'][0]->{'JSON_VALID(\'{broken}\')'} ?? null )
 		&& null === ( $json_null->wpdb_state()['last_result'][0]->{'JSON_VALID(NULL)'} ?? null )
 		&& 'JSON_VALID(\'{"event":true}\')' === ( $json_valid->wpdb_state()['col_info'][0]->name ?? null )
-		&& 3 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null )
+		&& 8 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null )
 		&& '1' === ( $json_alias->wpdb_state()['last_result'][0]->valid_json ?? null )
 		&& '1' === ( $json_array_depth_100->wpdb_state()['last_result'][0]->valid_json ?? null )
 		&& 3157 === ( $json_array_depth_101->wpdb_state()['last_errno'] ?? null )

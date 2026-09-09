@@ -55,6 +55,13 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		'verifier_failures' => 0,
 		'dropped'          => 0,
 	);
+	private array $classification_counts = array(
+		'native_execution'         => 0,
+		'snapshot_input_limitation' => 0,
+		'row_value_or_count'       => 0,
+		'column_metadata_or_types' => 0,
+		'result_metadata'          => 0,
+	);
 	private ?array $first_blocker = null;
 	private ?array $first_query_context = null;
 	private ?array $last_input_state = null;
@@ -192,6 +199,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'max_observations' => $this->max_observations,
 			'observed'         => $this->sequence,
 			'counts'           => $this->counts,
+		'classifications'   => $this->classification_counts,
 			'first_blocker'    => $this->first_blocker,
 			'representatives'  => array_values( $this->representatives ),
 			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
@@ -221,13 +229,15 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	/** @param array<string,mixed> $details */
 	private function retain_blocker( string $status, string $query, array $details ): void {
 		$template = $this->query_template( $query );
+		$classification = $this->classification( $status, $details );
+		++$this->classification_counts[ $classification ];
 		$blocker = array_merge(
 			array(
 				'sequence'              => $this->sequence,
 				'status'                => $status,
 				'query_template_sha256' => hash( 'sha256', $template ),
 				'query_template'        => $template,
-				'classification'         => $this->classification( $status, $details ),
+				'classification'         => $classification,
 			),
 			$details
 		);

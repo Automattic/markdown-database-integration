@@ -181,7 +181,10 @@ $checks = array(
 		&& ! str_contains( json_encode( $mismatch_report, JSON_THROW_ON_ERROR ), 'https://example.test' ),
 	'representatives classify row and column differences without result values' => 'row_value_or_count' === ( $mismatch_report['representatives'][0]['classification'] ?? null )
 		&& 'column_metadata_or_types' === ( $metadata_mismatch_report['representatives'][0]['classification'] ?? null )
-		&& 'snapshot_input_limitation' === ( $snapshot_limit_report['representatives'][0]['classification'] ?? null ),
+		&& 'snapshot_input_limitation' === ( $snapshot_limit_report['representatives'][0]['classification'] ?? null )
+		&& 1 === ( $mismatch_report['classifications']['row_value_or_count'] ?? null )
+		&& 1 === ( $metadata_mismatch_report['classifications']['column_metadata_or_types'] ?? null )
+		&& 1 === ( $snapshot_limit_report['classifications']['snapshot_input_limitation'] ?? null ),
 	'verifier failures retain only bounded structural diagnostics' => 4 === $failure_report['counts']['verifier_failures']
 		&& RuntimeException::class === ( $failure_report['first_blocker']['failure_class'] ?? null )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'private runtime failure' ),

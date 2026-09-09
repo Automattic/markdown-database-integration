@@ -47,7 +47,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	}
 
 	private static function trace_runtime_phase( string $phase ): void {
-		$path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
+		$path = defined( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' ) ? MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH : getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
 		if ( ! is_string( $path ) || '' === $path ) {
 			return;
 		}

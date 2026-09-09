@@ -74,8 +74,8 @@ $recipe = array(
 			'MARKDOWN_DB_NATIVE_SHADOW' => 'true',
 			'MARKDOWN_DB_NATIVE_SHADOW_MAX' => '10000',
 			'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' => 'sql_snapshot',
-		'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' => $report_path,
-		'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' => $trace_path,
+			'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' => $report_path,
+			'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' => $trace_path,
 		),
 		'services' => array( array(
 			'id' => 'mysql',

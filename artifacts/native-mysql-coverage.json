@@ -124,8 +124,20 @@
             "failure": null
         },
         {
+            "feature": "select.subquery.scalar.in",
+            "sql": "SELECT ID FROM wp_posts WHERE DATE(post_date) >= '2000-01-01' AND ID IN ( SELECT post_id FROM wp_postmeta WHERE meta_key = 'coverage_probe' )",
+            "supported": true,
+            "failure": null
+        },
+        {
             "feature": "select.union",
             "sql": "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft'",
+            "supported": true,
+            "failure": null
+        },
+        {
+            "feature": "select.union.global.order.limit",
+            "sql": "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION ALL SELECT ID FROM wp_posts WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1",
             "supported": true,
             "failure": null
         },
@@ -421,8 +433,8 @@
         }
     ],
     "summary": {
-        "statements_total": 43,
-        "statements_supported": 43,
+        "statements_total": 45,
+        "statements_supported": 45,
         "statements_failed": 0,
         "operations_total": 26,
         "operations_supported": 26,

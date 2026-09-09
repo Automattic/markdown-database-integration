@@ -107,7 +107,9 @@ mdi_coverage_statement( 'select.join.meta.aliases', "SELECT p.ID FROM {$posts} p
 mdi_coverage_statement( 'select.from.derived.union.all', "SELECT d.ID FROM (SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION ALL SELECT ID FROM {$posts} WHERE post_status = 'draft') AS d LIMIT 5" );
 mdi_coverage_statement( 'select.subquery.in', "SELECT ID FROM {$posts} WHERE ID IN ( SELECT post_id FROM {$postmeta} WHERE meta_key = 'coverage_probe' )" );
 mdi_coverage_statement( 'select.subquery.exists', "SELECT ID FROM {$posts} p WHERE EXISTS ( SELECT 1 FROM {$postmeta} m WHERE m.post_id = p.ID )" );
+mdi_coverage_statement( 'select.subquery.scalar.in', "SELECT ID FROM {$posts} WHERE DATE(post_date) >= '2000-01-01' AND ID IN ( SELECT post_id FROM {$postmeta} WHERE meta_key = 'coverage_probe' )" );
 mdi_coverage_statement( 'select.union', "SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION SELECT ID FROM {$posts} WHERE post_status = 'draft'" );
+mdi_coverage_statement( 'select.union.global.order.limit', "SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION ALL SELECT ID FROM {$posts} WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1" );
 mdi_coverage_statement( 'select.case', "SELECT ID, CASE WHEN post_status = 'publish' THEN 1 ELSE 0 END AS is_live FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.concat', "SELECT CONCAT(post_title, '-', ID) AS label FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.coalesce', "SELECT COALESCE(post_excerpt, post_title) AS shown FROM {$posts} LIMIT 5" );

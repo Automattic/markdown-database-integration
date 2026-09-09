@@ -82,11 +82,13 @@ final class WP_Markdown_Native_Query_Subquery {
 	public function __construct(
 		private readonly string $operator,
 		private readonly ?string $column,
-		private readonly WP_Markdown_Native_Query_Plan $query
+		private readonly WP_Markdown_Native_Query_Plan $query,
+		private readonly ?string $source = null
 	) {}
 	public function operator(): string { return $this->operator; }
 	public function column(): ?string { return $this->column; }
 	public function query(): WP_Markdown_Native_Query_Plan { return $this->query; }
+	public function source(): ?string { return $this->source; }
 }
 
 /** Backend-neutral row-local expression used by query plans. */
@@ -177,14 +179,20 @@ final class WP_Markdown_Native_Query_Scalar_Predicate {
 }
 
 final class WP_Markdown_Native_Query_Boolean_Predicate {
-	/** @param array<int,array<int,WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate>> $groups */
+	/** @param array<int,array<int,WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate|WP_Markdown_Native_Query_Subquery>> $groups */
 	public function __construct( private readonly array $groups ) {}
 	public function groups(): array { return $this->groups; }
 	/** @return array<int,string> */
 	public function columns(): array {
 		$columns = array();
 		foreach ( $this->groups as $group ) {
-			foreach ( $group as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+			foreach ( $group as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_Query_Subquery ) {
+					if ( null !== $predicate->column() ) { $columns[] = $predicate->column(); }
+					continue;
+				}
+				$columns = array_merge( $columns, $predicate->columns() );
+			}
 		}
 		return array_values( array_unique( $columns ) );
 	}
@@ -274,7 +282,10 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly ?WP_Markdown_Native_Query_Scalar_Expression $group_expression = null,
 		private readonly ?WP_Markdown_Native_Query_Boolean_Predicate $boolean_predicate = null,
 		private readonly ?self $derived = null,
-		private readonly bool $union_all = false
+		private readonly bool $union_all = false,
+		private readonly array $union_order_by = array(),
+		private readonly ?int $union_limit = null,
+		private readonly int $union_limit_offset = 0
 	) {}
 
 	public function table(): string {
@@ -395,6 +406,10 @@ final class WP_Markdown_Native_Query_Plan {
 	public function derived(): ?self { return $this->derived; }
 
 	public function union_all(): bool { return $this->union_all; }
+	/** @return array<int,array{column:string,descending:bool,numeric?:bool}> */
+	public function union_order_by(): array { return $this->union_order_by; }
+	public function union_limit(): ?int { return $this->union_limit; }
+	public function union_limit_offset(): int { return $this->union_limit_offset; }
 }
 
 final class WP_Markdown_Native_Table_Access {

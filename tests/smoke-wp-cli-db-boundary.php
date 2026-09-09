@@ -29,6 +29,43 @@ if ( 2 === $argc && 'early-bootstrap' === $argv[1] ) {
 
 if ( isset( $argv[1] ) ) {
 	define( 'ABSPATH', __DIR__ . '/' );
+	if ( 'command-registration' === $argv[1] ) {
+		define( 'WP_CONTENT_DIR', sys_get_temp_dir() );
+		define( 'WP_CLI', true );
+
+		function markdown_db_default_content_dir(): string {
+			return WP_CONTENT_DIR . '/db';
+		}
+
+		function add_action(): void {}
+
+		class WP_CLI {
+			public static array $commands = array();
+			public static array $warnings = array();
+
+			public static function add_hook( string $name, callable $callback ): void {}
+
+			public static function add_command( string $name, callable $callback ): void {
+				$method = new ReflectionMethod( $callback[0], $callback[1] );
+				preg_match_all( '/\[--([a-z0-9-]+)/', (string) $method->getDocComment(), $matches );
+				$options = $matches[1];
+				self::$commands[ $name ] = $options;
+				if ( array_intersect( array( 'path' ), $options ) ) {
+					self::$warnings[] = $name . ' declares a reserved global argument';
+				}
+			}
+		}
+
+		require_once __DIR__ . '/../markdown-database-integration.php';
+		echo json_encode(
+			array(
+				'commands' => WP_CLI::$commands,
+				'warnings' => WP_CLI::$warnings,
+			)
+		);
+		exit;
+	}
+
 	if ( 'sqlite' === $argv[1] ) {
 		define( 'MARKDOWN_DB_DROPIN', true );
 		define( 'DB_ENGINE', 'sqlite' );
@@ -104,6 +141,12 @@ mdi_wp_cli_db_assert( 'db check' === ( $unowned_sqlite['result'] ?? null ), 'MDI
 $early_bootstrap = $run( 'early-bootstrap' );
 mdi_wp_cli_db_assert( true === ( $early_bootstrap['version'] ?? false ), 'the plugin entrypoint loads before WordPress formatting helpers are available' );
 mdi_wp_cli_db_assert( dirname( __DIR__ ) . '/' === ( $early_bootstrap['plugin_dir'] ?? null ), 'early bootstrap resolves the plugin directory without plugin_dir_path()' );
+$registration = $run( 'command-registration' );
+mdi_wp_cli_db_assert( array() === ( $registration['warnings'] ?? null ), 'plugin CLI registration declares no reserved global arguments' );
+mdi_wp_cli_db_assert( in_array( 'content-dir', $registration['commands']['markdown-db import'] ?? array(), true ), 'import registers --content-dir' );
+mdi_wp_cli_db_assert( in_array( 'content-dir', $registration['commands']['markdown-db export'] ?? array(), true ), 'export registers --content-dir' );
+mdi_wp_cli_db_assert( ! in_array( 'path', $registration['commands']['markdown-db import'] ?? array(), true ), 'import does not redeclare WP-CLI --path' );
+mdi_wp_cli_db_assert( ! in_array( 'path', $registration['commands']['markdown-db export'] ?? array(), true ), 'export does not redeclare WP-CLI --path' );
 
 if ( $failures ) {
 	foreach ( $failures as $failure ) {

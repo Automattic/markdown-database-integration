@@ -36,6 +36,7 @@ $distinct = mdi_distinct_values( $runtime, 'SELECT DISTINCT kind FROM wp_items O
 $repeated = mdi_distinct_values( $runtime, 'SELECT kind FROM wp_items ORDER BY kind ASC' );
 $bounded = mdi_distinct_values( $runtime, 'SELECT DISTINCT kind FROM wp_items ORDER BY kind ASC LIMIT 2' );
 $offset = mdi_distinct_values( $runtime, 'SELECT DISTINCT kind FROM wp_items ORDER BY kind ASC LIMIT 1, 2' );
+$grouped = mdi_distinct_values( $runtime, 'SELECT kind FROM wp_items GROUP BY kind ORDER BY kind ASC' );
 
 $runtime->execute( new WP_Markdown_Query_Request( 'SELECT SQL_CALC_FOUND_ROWS DISTINCT kind FROM wp_items ORDER BY kind ASC LIMIT 1', 'wp_' ) );
 $found = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT FOUND_ROWS()', 'wp_' ) );
@@ -46,6 +47,7 @@ $checks = array(
 	'the same query without DISTINCT keeps every row' => array( 'a', 'a', 'a', 'b', 'b', 'c' ) === $repeated,
 	'a repeated row does not consume the bound' => array( 'a', 'b' ) === $bounded,
 	'the offset counts collapsed rows' => array( 'b', 'c' ) === $offset,
+	'GROUP BY without aggregates emits one row per group' => array( 'a', 'b', 'c' ) === $grouped,
 	'FOUND_ROWS reports the collapsed total' => '3' === $found_rows,
 );
 

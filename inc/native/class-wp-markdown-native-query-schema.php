@@ -174,6 +174,9 @@ final class WP_Markdown_Native_Table_Schema {
 	}
 
 	public function supports_predicate( WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'FALSE' === $predicate->operator() ) {
+			return $this->has_column( $predicate->column() );
+		}
 		if ( 'SIGNED' === $predicate->cast() ) {
 			return $this->has_column( $predicate->column() )
 				&& in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true )
@@ -519,6 +522,9 @@ final class WP_Markdown_Native_Table_Schema {
 
 	/** @param array<string,mixed> $row */
 	private function matches_predicate( array $row, WP_Markdown_Native_Query_Predicate $predicate ): bool {
+		if ( 'FALSE' === $predicate->operator() ) {
+			return false;
+		}
 		if ( 'SIGNED' === $predicate->cast() ) {
 			$left  = $this->signed_integer( $row[ $predicate->column() ] ?? null );
 			$right = $this->signed_integer( $predicate->values()[0] ?? null );

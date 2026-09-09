@@ -179,6 +179,8 @@ function mdi_fuzz_cases( string $seed, array $fixture ): array {
 		$cases[] = mdi_fuzz_case( 'scalar.substring', "SELECT SUBSTRING(title, 1, 3) AS head FROM wp_items WHERE item_id <= {$limit} ORDER BY item_id", true );
 		$cases[] = mdi_fuzz_case( 'scalar.cast', "SELECT CAST(numeric_text AS UNSIGNED) AS numeric_value FROM wp_items WHERE item_id <= {$limit} ORDER BY item_id", true, "SELECT CAST(numeric_text AS INTEGER) AS numeric_value FROM wp_items WHERE item_id <= {$limit} ORDER BY item_id" );
 		$cases[] = mdi_fuzz_case( 'scalar.date', "SELECT YEAR(event_date) AS y, MONTH(event_date) AS m, DATE_FORMAT(event_date, '%Y-%m') AS period FROM wp_items WHERE item_id <= {$limit} ORDER BY item_id", true );
+		$cases[] = mdi_fuzz_case( 'scalar.characters', "SELECT CHAR_LENGTH(title) AS characters FROM wp_items WHERE item_id <= {$limit} ORDER BY item_id", true );
+		$cases[] = mdi_fuzz_case( 'scalar.trigonometry', "SELECT ROUND(ACOS(COS(RADIANS(amount))), 4) AS angle FROM wp_items WHERE item_id <= {$limit} ORDER BY item_id", true );
 		$cases[] = mdi_fuzz_case( 'order.field', "SELECT item_id FROM wp_items ORDER BY FIELD(status, 'publish', 'draft', 'private', 'trash'), item_id LIMIT {$limit}", true );
 		$cases[] = mdi_fuzz_case( 'aliases', "SELECT i.item_id, i.title FROM wp_items AS i WHERE i.item_id = {$a['item_id']}", false );
 	}
@@ -215,6 +217,10 @@ function mdi_fuzz_create_sqlite( array $fixture ): PDO {
 	$create_function( 'YEAR', static fn( ?string $value ): ?string => null === $value ? null : substr( $value, 0, 4 ), 1 );
 	$create_function( 'MONTH', static fn( ?string $value ): ?string => null === $value ? null : substr( $value, 5, 2 ), 1 );
 	$create_function( 'DATE_FORMAT', static fn( ?string $value, string $format ): ?string => null === $value ? null : str_replace( array( '%Y', '%m', '%d' ), array( substr( $value, 0, 4 ), substr( $value, 5, 2 ), substr( $value, 8, 2 ) ), $format ), 2 );
+	$create_function( 'CHAR_LENGTH', static fn( ?string $value ): ?int => null === $value ? null : ( function_exists( 'mb_strlen' ) ? mb_strlen( $value, 'UTF-8' ) : preg_match_all( '/./us', $value ) ), 1 );
+	$create_function( 'RADIANS', static fn( ?float $value ): ?float => null === $value ? null : deg2rad( $value ), 1 );
+	$create_function( 'COS', static fn( ?float $value ): ?float => null === $value ? null : cos( $value ), 1 );
+	$create_function( 'ACOS', static fn( ?float $value ): ?float => null === $value || abs( $value ) > 1 ? null : acos( $value ), 1 );
 
 	$pdo->exec( 'CREATE TABLE wp_items (item_id INTEGER PRIMARY KEY, join_key INTEGER NOT NULL, status TEXT NOT NULL COLLATE NOCASE, title TEXT NOT NULL COLLATE NOCASE, nullable_text TEXT, numeric_text TEXT NOT NULL, amount INTEGER NOT NULL, event_date TEXT NOT NULL, group_key TEXT NOT NULL COLLATE NOCASE)' );
 	$pdo->exec( 'CREATE TABLE wp_meta (meta_id INTEGER PRIMARY KEY, item_ref INTEGER NOT NULL, join_key INTEGER NOT NULL, meta_key TEXT NOT NULL COLLATE NOCASE, meta_value TEXT)' );

@@ -91,6 +91,11 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 				return new WP_Markdown_Native_Schema_Query( 'tables', null, $pattern );
 			}
 
+			$full_columns = false;
+			if ( $this->is_word( 'FULL' ) ) {
+				$this->word( 'FULL' );
+				$full_columns = true;
+			}
 			if ( $this->is_word( 'COLUMNS' ) ) {
 				$this->word( 'COLUMNS' );
 				$this->word( 'FROM' );
@@ -101,7 +106,7 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 					$pattern = $this->string();
 				}
 				$this->end();
-				return new WP_Markdown_Native_Schema_Query( 'columns', $table, $pattern );
+				return new WP_Markdown_Native_Schema_Query( $full_columns ? 'full_columns' : 'columns', $table, $pattern );
 			}
 
 			if ( $this->is_word( 'INDEX' ) ) {
@@ -240,8 +245,8 @@ final class WP_Markdown_Native_Schema_Introspection {
 		if ( null === $definition || array() === $definition ) {
 			return $this->failure( 'unsupported_table', 'mdi-native cannot inspect the requested table.' );
 		}
-		return 'columns' === $query->operation()
-			? $this->columns( (string) $query->table(), $definition, $query->pattern() )
+		return in_array( $query->operation(), array( 'columns', 'full_columns' ), true )
+			? $this->columns( (string) $query->table(), $definition, $query->pattern(), 'full_columns' === $query->operation() )
 			: $this->indexes( (string) $query->table(), $definition, $query->predicates() );
 	}
 
@@ -296,13 +301,13 @@ final class WP_Markdown_Native_Schema_Introspection {
 	}
 
 	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition */
-	private function columns( string $table, array $definition, ?string $pattern ): WP_Markdown_Query_Result {
+	private function columns( string $table, array $definition, ?string $pattern, bool $full = false ): WP_Markdown_Query_Result {
 		$rows = array();
 		foreach ( $definition['columns'] as $name => $column ) {
 			if ( null !== $pattern && ! $this->matches( $name, $pattern ) ) {
 				continue;
 			}
-			$rows[] = array(
+			$row = array(
 				'Field'   => $name,
 				'Type'    => $this->column_type( $column ),
 				'Null'    => $column['nullable'] ? 'YES' : 'NO',
@@ -310,8 +315,17 @@ final class WP_Markdown_Native_Schema_Introspection {
 				'Default' => $column['default'],
 				'Extra'   => $column['auto_increment'] ? 'auto_increment' : '',
 			);
+			if ( $full ) {
+				$row = array_merge(
+					array_slice( $row, 0, 2, true ),
+					array( 'Collation' => $this->column_collation( $column ) ),
+					array_slice( $row, 2, null, true ),
+					array( 'Privileges' => 'select,insert,update,references', 'Comment' => '' )
+				);
+			}
+			$rows[] = $row;
 		}
-		return WP_Markdown_Query_Result::selected( $rows, $this->metadata( array( 'Field', 'Type', 'Null', 'Key', 'Default', 'Extra' ), $table ) );
+		return WP_Markdown_Query_Result::selected( $rows, $this->metadata( $full ? array( 'Field', 'Type', 'Collation', 'Null', 'Key', 'Default', 'Extra', 'Privileges', 'Comment' ) : array( 'Field', 'Type', 'Null', 'Key', 'Default', 'Extra' ), $table ) );
 	}
 
 	/**
@@ -350,6 +364,13 @@ final class WP_Markdown_Native_Schema_Introspection {
 			$type .= '(' . $column['length'] . ')';
 		}
 		return $type . ( $column['unsigned'] ? ' unsigned' : '' );
+	}
+
+	/** @param array<string,mixed> $column */
+	private function column_collation( array $column ): ?string {
+		return in_array( strtolower( (string) $column['type'] ), array( 'char', 'varchar', 'text', 'tinytext', 'mediumtext', 'longtext', 'enum', 'set' ), true )
+			? 'utf8mb4_general_ci'
+			: null;
 	}
 
 	/** @param array<int,array<string,mixed>> $indexes */

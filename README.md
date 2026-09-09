@@ -495,6 +495,11 @@ and transaction behavior, and removes the table in `finally`.
 Recording is tooling-only and has no effect unless a caller explicitly invokes
 the recorder.
 
+The committed `artifacts/native-mysql-coverage.json` report records the
+WordPress and raw MySQL surfaces currently answered by `mdi-native`. Regenerate
+it with `php tests/run-native-mysql-coverage.php` using WP Codebox 0.26.3 or
+newer.
+
 ### Native Shadow Verification
 
 An existing SQLite or `mysql-full` runtime can replay authoritative WordPress
@@ -625,6 +630,7 @@ Import markdown files into the current database:
 ```bash
 wp markdown-db import --dry-run
 wp markdown-db import
+wp markdown-db import --content-dir=/path/to/markdown
 ```
 
 Export current posts, pages, and custom post types to markdown:
@@ -632,11 +638,13 @@ Export current posts, pages, and custom post types to markdown:
 ```bash
 wp markdown-db export --dry-run
 wp markdown-db export
+wp markdown-db export --content-dir=/path/to/markdown
 ```
 
-Both commands default to `MARKDOWN_DB_CONTENT_DIR`. Pass `--path=/path/to/markdown`
-to read from or write to a different root. Export accepts `--post-type=post,page,wiki`
-to limit the post types.
+Both commands default to `MARKDOWN_DB_CONTENT_DIR`. Pass
+`--content-dir=/path/to/markdown` to read from or write to a different root.
+`--path` remains the WP-CLI global option for selecting the WordPress installation.
+Export accepts `--post-type=post,page,wiki` to limit the post types.
 
 The same operations are available to agents through abilities:
 

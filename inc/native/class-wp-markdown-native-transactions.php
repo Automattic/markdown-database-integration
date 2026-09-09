@@ -24,12 +24,15 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private $claim = null;
 	private bool $active = false;
 	private bool $autocommit = true;
+	private bool $in_transaction = false;
 
 	/** @var list<array{path:string,existed:bool,contents:?string}> */
 	private array $entries = array();
 
 	/** @var array<string,int> */
 	private array $savepoints = array();
+	/** @var array<string,callable> */
+	private array $restore_observers = array();
 
 	public function __construct( string $state_root ) {
 		$root = realpath( $state_root );
@@ -42,6 +45,16 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	public function is_active(): bool {
 		return $this->active;
+	}
+
+	/** Whether MySQL considers a logical transaction to be in progress. */
+	public function is_in_transaction(): bool {
+		return $this->in_transaction;
+	}
+
+	/** Whether statements commit individually when no explicit transaction is open. */
+	public function is_autocommit(): bool {
+		return $this->autocommit;
 	}
 
 	/**
@@ -132,15 +145,28 @@ final class WP_Markdown_Native_Transaction_Journal {
 			}
 		}
 		$this->active     = true;
+		$this->in_transaction = true;
 		$this->entries    = array();
 		$this->savepoints = array();
+		$this->restore_observers = array();
 		return $this->persist();
 	}
 
 	/** Capture the current state of a canonical path before it is mutated. */
-	public function record( string $path ): true|string {
+	public function record( string $path, ?callable $restore_observer = null ): true|string {
+		// With autocommit disabled, the first transactional access starts the
+		// implicit transaction. Non-table statements never call record().
+		if ( ! $this->active && ! $this->autocommit ) {
+			$begun = $this->begin();
+			if ( true !== $begun ) {
+				return $begun;
+			}
+		}
 		if ( ! $this->active ) {
 			return true;
+		}
+		if ( null !== $restore_observer ) {
+			$this->restore_observers[ $path ] = $restore_observer;
 		}
 		$segment_start = $this->savepoints ? max( $this->savepoints ) : 0;
 		for ( $index = count( $this->entries ) - 1; $index >= $segment_start; $index-- ) {
@@ -166,19 +192,26 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return $this->persist();
 	}
 
+	/** Start an autocommit-off transaction when a transactional table is read. */
+	public function access(): true|string {
+		return ! $this->active && ! $this->autocommit ? $this->begin() : true;
+	}
+
 	public function commit(): true|string {
 		if ( ! $this->active ) {
 			return true;
 		}
 		$this->active     = false;
+		$this->in_transaction = false;
 		$this->entries    = array();
 		$this->savepoints = array();
+		$this->restore_observers = array();
 		$path = $this->journal_path();
 		$this->release();
 		if ( is_file( $path ) && ! @unlink( $path ) ) {
 			return 'The canonical transaction journal could not be cleared.';
 		}
-		return $this->reopen_for_autocommit();
+		return true;
 	}
 
 	public function rollback(): true|string {
@@ -194,18 +227,23 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	public function savepoint( string $name ): true|string {
 		if ( ! $this->active ) {
-			$begun = $this->begin();
-			if ( true !== $begun ) {
-				return $begun;
+			// With autocommit on, MySQL accepts SAVEPOINT without opening a transaction.
+			if ( $this->autocommit ) {
+				return true;
 			}
+			$this->savepoints[ $name ] = 0;
+			return true;
 		}
 		$this->savepoints[ $name ] = count( $this->entries );
 		return true;
 	}
 
 	public function rollback_to( string $name ): true|string {
-		if ( ! $this->active || ! isset( $this->savepoints[ $name ] ) ) {
+		if ( ! isset( $this->savepoints[ $name ] ) || ( ! $this->active && $this->autocommit ) ) {
 			return sprintf( 'SAVEPOINT %s does not exist.', $name );
+		}
+		if ( ! $this->active ) {
+			return true;
 		}
 		$marker   = $this->savepoints[ $name ];
 		$restored = $this->restore( $this->entries, $marker );
@@ -222,8 +260,12 @@ final class WP_Markdown_Native_Transaction_Journal {
 	}
 
 	public function release_savepoint( string $name ): true|string {
-		if ( ! $this->active || ! isset( $this->savepoints[ $name ] ) ) {
+		if ( ! isset( $this->savepoints[ $name ] ) || ( ! $this->active && $this->autocommit ) ) {
 			return sprintf( 'SAVEPOINT %s does not exist.', $name );
+		}
+		if ( ! $this->active ) {
+			unset( $this->savepoints[ $name ] );
+			return true;
 		}
 		$marker = $this->savepoints[ $name ];
 		foreach ( $this->savepoints as $savepoint => $offset ) {
@@ -234,13 +276,13 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return true;
 	}
 
-	/** Disabling autocommit opens an implicit transaction, as MySQL does. */
+	/** Disabling autocommit defers the implicit transaction until a write. */
 	public function set_autocommit( bool $enabled ): true|string {
 		$this->autocommit = $enabled;
 		if ( $enabled ) {
 			return $this->commit();
 		}
-		return $this->active ? true : $this->begin();
+		return true;
 	}
 
 	/**
@@ -255,6 +297,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 				if ( is_file( $entry['path'] ) && ! @unlink( $entry['path'] ) ) {
 					return 'A canonical row created in the transaction could not be discarded.';
 				}
+				$this->notify_restored( $entry['path'] );
 				continue;
 			}
 			$contents = base64_decode( (string) $entry['contents'], true );
@@ -264,19 +307,15 @@ final class WP_Markdown_Native_Transaction_Journal {
 			if ( true !== $this->publish( $entry['path'], $contents ) ) {
 				return 'A journaled canonical pre-image could not be restored.';
 			}
+			$this->notify_restored( $entry['path'] );
 		}
 		return true;
 	}
 
-	/** Reopen an implicit transaction while autocommit remains disabled. */
-	private function reopen_for_autocommit(): true|string {
-		if ( $this->autocommit ) {
-			return true;
+	private function notify_restored( string $path ): void {
+		if ( isset( $this->restore_observers[ $path ] ) ) {
+			( $this->restore_observers[ $path ] )( $path );
 		}
-		$this->active     = true;
-		$this->entries    = array();
-		$this->savepoints = array();
-		return $this->persist();
 	}
 
 	private function persist(): true|string {

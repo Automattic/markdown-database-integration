@@ -9,6 +9,7 @@ require_once __DIR__ . '/../inc/native/class-wp-markdown-native-shadow-verifier.
 class MDI_Shadow_Database {
 	public string $prefix = 'wp_';
 	public string $last_error = '';
+	public int $last_errno = 0;
 	public int $insert_id = 0;
 	public int $rows_affected = 0;
 	public int $num_rows = 0;
@@ -95,15 +96,68 @@ $mismatch = new WP_Markdown_Native_Shadow_Verifier( $runtime );
 $mismatch->observe( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1", 1, $database );
 $mismatch_report = $mismatch->report();
 
+$database->result(
+	array( array( 'option_value' => 'https://example.test' ) ),
+	array( array( 'name' => 'option_value', 'type' => 999 ) )
+);
+$metadata_mismatch = new WP_Markdown_Native_Shadow_Verifier( $runtime );
+$metadata_mismatch->observe( "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1", 1, $database );
+$metadata_mismatch_report = $metadata_mismatch->report();
+
+$snapshot_limit = new WP_Markdown_Native_Shadow_Verifier( $runtime, 2, array( 'input_mode' => 'sql_snapshot' ) );
+$snapshot_limit->capture_input( 'SELECT option_value FROM wp_options', $database );
+$snapshot_limit->observe( 'SELECT option_value FROM wp_options', 1, $database );
+$snapshot_limit_report = $snapshot_limit->report();
+
 final class MDI_Throwing_Runtime implements WP_Markdown_Query_Runtime {
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		unset( $request );
 		throw new RuntimeException( 'private runtime failure' );
 	}
 }
+
+final class MDI_Reordered_Runtime implements WP_Markdown_Query_Runtime {
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		unset( $request );
+		return WP_Markdown_Query_Result::selected(
+			array( array( 'status' => 'draft' ), array( 'status' => 'publish' ) ),
+			array( array( 'name' => 'status', 'table' => '', 'type' => 253 ) )
+		);
+	}
+}
+
+final class MDI_Wrong_Missing_Table_Runtime implements WP_Markdown_Query_Runtime {
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		unset( $request );
+		return WP_Markdown_Query_Result::failure(
+			array( 'code' => 1054, 'reason' => 'unknown_column', 'message' => 'private wrong native error' )
+		);
+	}
+}
+$database->result(
+	array( array( 'status' => 'publish' ), array( 'status' => 'draft' ) ),
+	array( array( 'name' => 'status', 'type' => 253 ) )
+);
+$unordered = new WP_Markdown_Native_Shadow_Verifier( new MDI_Reordered_Runtime() );
+$unordered->observe( 'SELECT status FROM wp_posts', 2, $database );
+$ordered = new WP_Markdown_Native_Shadow_Verifier( new MDI_Reordered_Runtime() );
+$ordered->observe( 'SELECT status FROM wp_posts ORDER BY status', 2, $database );
 $failed_verifier = new WP_Markdown_Native_Shadow_Verifier( new MDI_Throwing_Runtime() );
 $failed_verifier->observe( 'SELECT option_name FROM wp_options', 0, $database );
+$canary = "sql-secret--hash#quote'double";
+$failed_verifier->observe( "SELECT option_name FROM wp_options WHERE option_name = 'sql-secret--hash#quote''double'", 0, $database );
+$failed_verifier->observe( "SELECT option_name FROM wp_options WHERE option_name = 'sql-secret--hash#quote''double-second'", 0, $database );
+$failed_verifier->observe( 'SELECT option_name FROM wp_options WHERE option_id = 0xD34DB33F OR option_id = 12.345e+6', 0, $database );
 $failure_report = $failed_verifier->report();
+$database->result( array(), array() );
+$database->last_error = 'private authoritative missing table error';
+$database->last_errno = 1146;
+$missing_table = new WP_Markdown_Native_Shadow_Verifier( WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ) );
+$missing_table->observe( 'SELECT ID FROM wp_missing_table', false, $database );
+$wrong_missing_table = new WP_Markdown_Native_Shadow_Verifier( new MDI_Wrong_Missing_Table_Runtime() );
+$wrong_missing_table->observe( 'SELECT ID FROM wp_missing_table', false, $database );
+$missing_table_report = $missing_table->report();
+$wrong_missing_table_report = $wrong_missing_table->report();
 
 class WP_SQLite_DB {
 	public string $prefix = 'wp_';
@@ -162,9 +216,27 @@ $checks = array(
 		&& in_array( '$.rows[0].option_value', $mismatch_report['first_blocker']['mismatch_paths'] ?? array(), true )
 		&& ! str_contains( json_encode( $mismatch_report, JSON_THROW_ON_ERROR ), 'authoritative-secret' )
 		&& ! str_contains( json_encode( $mismatch_report, JSON_THROW_ON_ERROR ), 'https://example.test' ),
-	'verifier failures retain only bounded structural diagnostics' => 1 === $failure_report['counts']['verifier_failures']
+	'representatives classify row and column differences without result values' => 'row_value_or_count' === ( $mismatch_report['representatives'][0]['classification'] ?? null )
+		&& 'column_metadata_or_types' === ( $metadata_mismatch_report['representatives'][0]['classification'] ?? null )
+		&& 'snapshot_input_limitation' === ( $snapshot_limit_report['representatives'][0]['classification'] ?? null )
+		&& 1 === ( $mismatch_report['classifications']['row_value_or_count'] ?? null )
+		&& 1 === ( $metadata_mismatch_report['classifications']['column_metadata_or_types'] ?? null )
+		&& 1 === ( $snapshot_limit_report['classifications']['snapshot_input_limitation'] ?? null ),
+	'unbounded SELECTs without an outer ORDER BY compare complete duplicate-preserving row bags' => 1 === $unordered->report()['counts']['compatible']
+		&& 1 === $ordered->report()['counts']['mismatched'],
+	'verifier failures retain only bounded structural diagnostics' => 4 === $failure_report['counts']['verifier_failures']
 		&& RuntimeException::class === ( $failure_report['first_blocker']['failure_class'] ?? null )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'private runtime failure' ),
+	'quote-aware templates redact literal, hex, and numeric canaries' => 4 === $failure_report['counts']['verifier_failures']
+		&& 3 === count( $failure_report['representatives'] )
+		&& 2 === ( $failure_report['representatives'][1]['count'] ?? null )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), $canary )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'sql-secret' )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'D34DB33F' )
+		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), '12.345e+6' ),
+	'unregistered native tables remain unsupported without a snapshot absence fact' => 1 === ( $missing_table_report['counts']['unsupported'] ?? null )
+		&& 0 === ( $missing_table_report['counts']['compatible_missing_table_errors'] ?? null ),
+	'a different native error does not match a missing-table oracle outcome' => 1 === ( $wrong_missing_table_report['counts']['mismatched'] ?? null ),
 	'SQLite authoritative returns and public state survive hostile observers' => 1 === $sqlite_return
 		&& 1 === $hostile->calls
 		&& 'wp_' === $sqlite->prefix

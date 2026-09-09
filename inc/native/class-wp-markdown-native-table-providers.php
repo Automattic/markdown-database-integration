@@ -257,7 +257,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		// files answered a read, which a new or removed file changes, so they
 		// are rebuilt — from the surviving parses, not from the corpus.
 		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
-		$this->storage->set_file_mutation_observer( function ( string $path ): void {
+		$this->storage->add_file_mutation_observer( function ( string $path ): void {
 			$this->catalogue->forget( $path );
 			$this->scoped_posts = array();
 			$this->scoped_ordered_posts = array();

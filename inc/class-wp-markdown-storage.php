@@ -220,10 +220,47 @@ class WP_Markdown_Storage {
 		$this->file_mutation_observer = $observer;
 	}
 
+	/** Add a canonical mutation observer without replacing cache invalidation. */
+	public function add_file_mutation_observer( callable $observer ): void {
+		$previous = $this->file_mutation_observer;
+		$this->file_mutation_observer = null === $previous
+			? $observer
+			: static function ( string $path ) use ( $previous, $observer ): void {
+				$previous( $path );
+				$observer( $path );
+			};
+	}
+
+	/**
+	 * Observe only the mutations performed by one owning operation.
+	 *
+	 * Transaction journals use this instead of permanently registering every
+	 * runtime against a shared storage instance.
+	 */
+	public function with_file_mutation_observer( callable $observer, callable $operation ): mixed {
+		$previous = $this->file_mutation_observer;
+		$this->file_mutation_observer = null === $previous
+			? $observer
+			: static function ( string $path ) use ( $previous, $observer ): void {
+				$previous( $path );
+				$observer( $path );
+			};
+		try {
+			return $operation();
+		} finally {
+			$this->file_mutation_observer = $previous;
+		}
+	}
+
 	private function observe_file_mutation( string $path ): void {
 		if ( null !== $this->file_mutation_observer ) {
 			call_user_func( $this->file_mutation_observer, $path );
 		}
+	}
+
+	/** Invalidate readers after a transaction restores a canonical pre-image. */
+	public function invalidate_file_mutation( string $path ): void {
+		$this->observe_file_mutation( $path );
 	}
 
 	/**

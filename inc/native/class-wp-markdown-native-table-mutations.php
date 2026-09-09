@@ -52,7 +52,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 * @param array<int,WP_Markdown_Native_Table_Insert> $inserts
 	 */
 	private function execute_rows( WP_Markdown_Query_Request $request, array $inserts ): WP_Markdown_Query_Result {
-		$owns_transaction = null !== $this->transactions && ! $this->transactions->is_active();
+		$owns_transaction = null !== $this->transactions && $this->transactions->is_autocommit() && ! $this->transactions->is_active();
 		if ( $owns_transaction && true !== $this->transactions->begin() ) {
 			return $this->failure( 'mutation_transaction_failed', 'The canonical multi-row INSERT could not be isolated.' );
 		}

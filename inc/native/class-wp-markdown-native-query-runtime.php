@@ -23,6 +23,7 @@ require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
 require_once __DIR__ . '/../class-wp-markdown-table-durability-policy.php';
 require_once __DIR__ . '/class-wp-markdown-native-transactions.php';
+require_once __DIR__ . '/class-wp-markdown-native-advisory-locks.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
 final class WP_Markdown_Native_Runtime_Factory {
@@ -38,6 +39,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'lookup_operators' => array( '=', 'IN' ),
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
+					// WordPress options use a nonbinary text column. Limit native CAS
+					// matching to the ASCII portion of that collation rather than guess
+					// at an unsupported Unicode collation.
+					'option_value' => array( 'normalizer' => array( self::class, 'normalize_ascii_ci_padded' ) ),
 					'autoload' => array(
 						'lookup_operators' => array( 'IN' ),
 						'lookup_validator' => static fn( array $values ): bool => ! array_diff( $values, array( 'yes', 'on', 'auto-on', 'auto' ) ),
@@ -143,16 +148,20 @@ final class WP_Markdown_Native_Runtime_Factory {
 		string $prefix = 'wp_',
 		?string $base_prefix = null,
 		bool $multisite = false,
-		?string $content_root = null
+		?string $content_root = null,
+		?string $global_state_root = null,
+		?string $global_content_root = null
 	): WP_Markdown_Native_Table_Registry {
 		$base_prefix = $base_prefix ?? $prefix;
 		$content_root = $content_root ?? $state_root;
+		$global_state_root = $global_state_root ?? $state_root;
+		$global_content_root = $global_content_root ?? $content_root;
 		$registry = new WP_Markdown_Native_Table_Registry();
 		// Untouched storage holds no site, so it reports no tables and leaves
 		// WordPress free to install one here.
 		if ( self::holds_canonical_site( $state_root, $content_root ) ) {
 			foreach ( array_keys( WP_Markdown_Native_Schema_Catalog::definitions( $multisite ) ) as $suffix ) {
-				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, $multisite, (string) $suffix );
+				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, $multisite, (string) $suffix, $global_state_root, $global_content_root );
 			}
 		}
 		self::register_persisted_plugin_tables( $registry, $state_root, $prefix, $multisite );
@@ -173,7 +182,9 @@ final class WP_Markdown_Native_Runtime_Factory {
 		string $prefix,
 		string $base_prefix,
 		bool $multisite,
-		string $suffix
+		string $suffix,
+		?string $global_state_root = null,
+		?string $global_content_root = null
 	): bool {
 		$definitions = WP_Markdown_Native_Schema_Catalog::definitions( $multisite );
 		if ( ! isset( $definitions[ $suffix ] ) ) {
@@ -184,17 +195,19 @@ final class WP_Markdown_Native_Runtime_Factory {
 		if ( in_array( $suffix, array( 'users', 'usermeta' ), true ) ) {
 			$table_prefix = $base_prefix;
 		}
+		$provider_state_root = $table_prefix === $base_prefix ? ( $global_state_root ?? $state_root ) : $state_root;
+		$provider_content_root = $table_prefix === $base_prefix ? ( $global_content_root ?? $content_root ) : $content_root;
 		if ( null !== $registry->definition( $table_prefix . $suffix ) ) {
 			return false;
 		}
 		if ( 'options' === $suffix ) {
 			$options = self::options_schema();
-			$registry->register( $prefix . 'options', $options, new WP_Markdown_Native_Option_Provider( $state_root, $options ) );
+			$registry->register( $prefix . 'options', $options, new WP_Markdown_Native_Option_Provider( $provider_state_root, $options ) );
 			return true;
 		}
 		if ( 'posts' === $suffix ) {
 			$posts = self::posts_schema();
-			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $content_root, $posts, self::shared_storage( $content_root ), $state_root ) );
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root ), $provider_state_root ) );
 			return true;
 		}
 		$bespoke = array(
@@ -203,14 +216,14 @@ final class WP_Markdown_Native_Runtime_Factory {
 			'comments' => static fn(): WP_Markdown_Native_Table_Schema => self::comments_schema(),
 		);
 		if ( isset( $bespoke[ $suffix ] ) ) {
-			self::register_json_snapshot( $registry, $state_root, $table_prefix . $suffix, ( $bespoke[ $suffix ] )(), $suffix . '.json' );
+			self::register_json_snapshot( $registry, $provider_state_root, $table_prefix . $suffix, ( $bespoke[ $suffix ] )(), $suffix . '.json' );
 			return true;
 		}
 		$schema = self::generated_core_schema( $suffix, $definitions[ $suffix ] );
 		if ( null === $schema ) {
 			return false;
 		}
-		self::register_json_snapshot( $registry, $state_root, $table_prefix . $suffix, $schema, $suffix . '.json' );
+		self::register_json_snapshot( $registry, $provider_state_root, $table_prefix . $suffix, $schema, $suffix . '.json' );
 		return true;
 	}
 
@@ -219,16 +232,22 @@ final class WP_Markdown_Native_Runtime_Factory {
 		string $prefix = 'wp_',
 		?string $base_prefix = null,
 		bool $multisite = false,
-		?string $content_root = null
+		?string $content_root = null,
+		?string $global_state_root = null,
+		?string $global_content_root = null,
+		?WP_Markdown_Native_Advisory_Locks $advisory_locks = null
 	): WP_Markdown_Native_Query_Runtime {
-		$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root );
-		// A journal surviving process termination is rolled back before the
-		// runtime serves its first query, so canonical state never boots torn.
-		$transactions->recover();
-		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root );
+		$state_root = self::materialize_state_root( $state_root );
+		if ( null !== $global_state_root ) {
+			$global_state_root = self::materialize_state_root( $global_state_root );
+		}
+		$transactions = self::shared_transactions( $state_root );
+		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
 		$resolved_content = $content_root ?? $state_root;
+		$resolved_global_state = $global_state_root ?? $state_root;
+		$resolved_global_content = $global_content_root ?? $resolved_content;
 		$core_registrar = static fn( string $suffix ): bool => self::register_core_table(
 			$registry,
 			$state_root,
@@ -236,7 +255,9 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$prefix,
 			$resolved_base,
 			$multisite,
-			$suffix
+			$suffix,
+			$resolved_global_state,
+			$resolved_global_content
 		);
 		return new WP_Markdown_Native_Query_Runtime(
 			$registry,
@@ -249,9 +270,70 @@ final class WP_Markdown_Native_Runtime_Factory {
 				$registry,
 				$parser,
 				self::shared_storage( $content_root ?? $state_root ),
-				$transactions
-			)
+				$transactions,
+			),
+			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root )
 		);
+	}
+
+	/** Materialize a declared native state root before its journal can use it. */
+	private static function materialize_state_root( string $state_root ): string {
+		if ( '' === $state_root || is_link( $state_root ) || ( file_exists( $state_root ) && ! is_dir( $state_root ) ) ) {
+			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
+		}
+		if ( ! is_dir( $state_root ) && ! @mkdir( $state_root, 0755, true ) && ! is_dir( $state_root ) ) {
+			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
+		}
+		$root = realpath( $state_root );
+		if ( false === $root || ! is_dir( $root ) || is_link( $state_root ) ) {
+			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
+		}
+		return rtrim( $root, DIRECTORY_SEPARATOR );
+	}
+
+	/** @var array<string,WP_Markdown_Native_Transaction_Journal> */
+	private static array $transactions = array();
+
+	/**
+	 * One state root has one transaction owner per process.
+	 *
+	 * The first construction is a cold-root boundary and may recover an orphaned
+	 * journal. Prefix changes reuse that owner, so they cannot recover or replace
+	 * a live transaction.
+	 */
+	private static function shared_transactions( string $state_root ): WP_Markdown_Native_Transaction_Journal {
+		if ( ! isset( self::$transactions[ $state_root ] ) ) {
+			$transactions = new WP_Markdown_Native_Transaction_Journal( $state_root );
+			$transactions->recover();
+			self::$transactions[ $state_root ] = $transactions;
+		}
+		return self::$transactions[ $state_root ];
+	}
+
+	/** Route a multisite request to its base or site-local canonical roots. */
+	public static function multisite_runtime(
+		string $state_root,
+		string $base_prefix = 'wp_',
+		?string $content_root = null
+	): WP_Markdown_Query_Runtime {
+		return new WP_Markdown_Native_Multisite_Query_Runtime( $state_root, $base_prefix, $content_root ?? $state_root );
+	}
+
+	/** Route a single site's changing wpdb prefix to its one canonical root. */
+	public static function prefix_runtime(
+		string $state_root,
+		?string $content_root = null
+	): WP_Markdown_Query_Runtime {
+		return new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root ?? $state_root );
+	}
+
+	/** Select the multisite dispatcher only once WordPress has published its topology. */
+	public static function wordpress_runtime(
+		string $state_root,
+		string $base_prefix = 'wp_',
+		?string $content_root = null
+	): WP_Markdown_Query_Runtime {
+		return new WP_Markdown_Native_WordPress_Query_Runtime( $state_root, $base_prefix, $content_root ?? $state_root );
 	}
 
 	/**
@@ -474,6 +556,11 @@ final class WP_Markdown_Native_Runtime_Factory {
 		return strtolower( $value );
 	}
 
+	public static function normalize_ascii_ci_padded( mixed $value ): ?string {
+		$value = self::normalize_ascii_ci( $value );
+		return null === $value ? null : rtrim( $value, ' ' );
+	}
+
 	private static function all_normalized_unsigned( array $values ): bool {
 		foreach ( $values as $value ) {
 			if ( null === self::normalize_unsigned( $value ) ) {
@@ -515,5 +602,181 @@ final class WP_Markdown_Native_Option_Query_Runtime implements WP_Markdown_Query
 			);
 		}
 		return $this->runtime->execute( $request );
+	}
+}
+
+/** Lazily construct a single-root runtime for the prefix selected by wpdb. */
+final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query_Runtime {
+
+	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
+	private array $runtimes = array();
+	private WP_Markdown_Native_Advisory_Locks $advisory_locks;
+
+	public function __construct(
+		private string $state_root,
+		private string $content_root
+	) {
+		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $state_root );
+	}
+
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$prefix = $request->table_prefix();
+		if ( ! isset( $this->runtimes[ $prefix ] ) ) {
+			$this->runtimes[ $prefix ] = WP_Markdown_Native_Runtime_Factory::runtime(
+				$this->state_root,
+				$prefix,
+				$prefix,
+				false,
+				$this->content_root,
+				advisory_locks: $this->advisory_locks
+			);
+		}
+		return $this->runtimes[ $prefix ]->execute( $request );
+	}
+
+	public function close(): void {
+		$this->advisory_locks->close();
+	}
+}
+
+/** Defer WordPress topology detection because db.php precedes multisite bootstrap. */
+final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Query_Runtime {
+
+	private WP_Markdown_Native_Prefix_Query_Runtime $prefix_runtime;
+	/** @var array<string,WP_Markdown_Native_Multisite_Query_Runtime> */
+	private array $multisite_runtimes = array();
+
+	public function __construct( string $state_root, private string $base_prefix, string $content_root ) {
+		$this->prefix_runtime = new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root );
+		$this->state_root = $state_root;
+		$this->content_root = $content_root;
+	}
+
+	private string $state_root;
+	private string $content_root;
+
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$multisite = ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
+		if ( ! $multisite ) {
+			return $this->prefix_runtime->execute( $request );
+		}
+		$base_prefix = isset( $GLOBALS['wpdb']->base_prefix ) && is_string( $GLOBALS['wpdb']->base_prefix )
+			? $GLOBALS['wpdb']->base_prefix
+			: $this->base_prefix;
+		if ( ! isset( $this->multisite_runtimes[ $base_prefix ] ) ) {
+			$this->multisite_runtimes[ $base_prefix ] = new WP_Markdown_Native_Multisite_Query_Runtime( $this->state_root, $base_prefix, $this->content_root );
+		}
+		return $this->multisite_runtimes[ $base_prefix ]->execute( $request );
+	}
+
+	public function close(): void {
+		$this->prefix_runtime->close();
+		foreach ( $this->multisite_runtimes as $runtime ) {
+			$runtime->close();
+		}
+	}
+}
+
+/** Lazily compose a native runtime for each WordPress multisite table scope. */
+final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Query_Runtime {
+
+	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
+	private array $runtimes = array();
+	private string $state_root;
+	private string $content_root;
+	private WP_Markdown_Native_Advisory_Locks $advisory_locks;
+
+	public function __construct(
+		string $state_root,
+		private string $base_prefix,
+		string $content_root
+	) {
+		if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $base_prefix ) ) {
+			throw new InvalidArgumentException( 'The base table prefix contains unsupported characters.' );
+		}
+		$this->state_root = rtrim( $state_root, '/\\' );
+		$this->content_root = rtrim( $content_root, '/\\' );
+		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $this->state_root );
+	}
+
+	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		$prefix = $request->table_prefix();
+		if ( ! $this->is_scope_prefix( $prefix ) ) {
+			return WP_Markdown_Query_Result::failure(
+				array(
+					'code'    => 'markdown_db_native_unsupported_query',
+					'reason'  => 'unsupported_table_prefix',
+					'message' => 'The native runtime requires the network or a numeric site table prefix.',
+				)
+			);
+		}
+		if ( ! isset( $this->runtimes[ $prefix ] ) ) {
+			$roots = $this->roots( $prefix );
+			if ( null === $roots ) {
+				return WP_Markdown_Query_Result::failure(
+					array(
+						'code' => 'markdown_db_native_unsafe_path',
+						'reason' => 'invalid_site_root',
+						'message' => 'The native runtime could not initialize the selected site root.',
+					)
+				);
+			}
+			try {
+				$this->runtimes[ $prefix ] = WP_Markdown_Native_Runtime_Factory::runtime(
+					$roots['state'],
+					$prefix,
+					$this->base_prefix,
+					true,
+					$roots['content'],
+					$this->state_root,
+					$this->content_root,
+					$this->advisory_locks
+				);
+			} catch ( Throwable ) {
+				return WP_Markdown_Query_Result::failure(
+					array(
+						'code' => 'markdown_db_native_unsafe_path',
+						'reason' => 'invalid_site_root',
+						'message' => 'The native runtime could not initialize the selected site root.',
+					)
+				);
+			}
+		}
+		return $this->runtimes[ $prefix ]->execute( $request );
+	}
+
+	public function close(): void {
+		$this->advisory_locks->close();
+	}
+
+	private function is_scope_prefix( string $prefix ): bool {
+		if ( $this->base_prefix === $prefix || ! str_starts_with( $prefix, $this->base_prefix ) ) {
+			return $this->base_prefix === $prefix;
+		}
+		$suffix = substr( $prefix, strlen( $this->base_prefix ) );
+		return 1 === preg_match( '/^[0-9]+_$/D', $suffix ) && (int) substr( $suffix, 0, -1 ) >= 2;
+	}
+
+	/** @return array{state:string,content:string}|null */
+	private function roots( string $prefix ): ?array {
+		if ( $this->base_prefix === $prefix ) {
+			return array( 'state' => $this->state_root, 'content' => $this->content_root );
+		}
+		preg_match( '/([0-9]+)_$/D', $prefix, $matches );
+		$blog_id = (int) ( $matches[1] ?? 0 );
+		if ( $blog_id < 2 ) {
+			return null;
+		}
+		$state = $this->state_root . '/sites/' . $blog_id;
+		$content = $this->content_root . '/sites/' . $blog_id;
+		foreach ( array_unique( array( $state, $content ) ) as $root ) {
+			if ( ! is_dir( $root ) && ! @mkdir( $root, 0755, true ) ) {
+				return null;
+			}
+			if ( is_link( $root ) ) {
+				return null;
+			}
+		}
+		return array( 'state' => $state, 'content' => $content );
 	}
 }

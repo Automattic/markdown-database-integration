@@ -103,9 +103,13 @@ mdi_coverage_statement( 'select.aggregate.sum', "SELECT SUM(ID) AS total, AVG(ID
 mdi_coverage_statement( 'select.join.inner', "SELECT p.ID, m.meta_key FROM {$posts} p INNER JOIN {$postmeta} m ON p.ID = m.post_id LIMIT 5" );
 mdi_coverage_statement( 'select.join.left', "SELECT p.ID, m.meta_key FROM {$posts} p LEFT JOIN {$postmeta} m ON p.ID = m.post_id LIMIT 5" );
 mdi_coverage_statement( 'select.join.three', "SELECT p.ID FROM {$posts} p INNER JOIN {$tr} r ON p.ID = r.object_id INNER JOIN {$tt} t ON r.term_taxonomy_id = t.term_taxonomy_id LIMIT 5" );
+mdi_coverage_statement( 'select.join.meta.aliases', "SELECT p.ID FROM {$posts} p LEFT JOIN {$postmeta} mt1 ON (p.ID = mt1.post_id AND mt1.meta_key = 'coverage_probe') LEFT JOIN {$postmeta} mt2 ON (p.ID = mt2.post_id AND mt2.meta_key = 'coverage_probe_secondary') LIMIT 5" );
+mdi_coverage_statement( 'select.from.derived.union.all', "SELECT d.ID FROM (SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION ALL SELECT ID FROM {$posts} WHERE post_status = 'draft') AS d LIMIT 5" );
 mdi_coverage_statement( 'select.subquery.in', "SELECT ID FROM {$posts} WHERE ID IN ( SELECT post_id FROM {$postmeta} WHERE meta_key = 'coverage_probe' )" );
 mdi_coverage_statement( 'select.subquery.exists', "SELECT ID FROM {$posts} p WHERE EXISTS ( SELECT 1 FROM {$postmeta} m WHERE m.post_id = p.ID )" );
+mdi_coverage_statement( 'select.subquery.scalar.in', "SELECT ID FROM {$posts} WHERE DATE(post_date) >= '2000-01-01' AND ID IN ( SELECT post_id FROM {$postmeta} WHERE meta_key = 'coverage_probe' )" );
 mdi_coverage_statement( 'select.union', "SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION SELECT ID FROM {$posts} WHERE post_status = 'draft'" );
+mdi_coverage_statement( 'select.union.global.order.limit', "SELECT ID FROM {$posts} WHERE post_status = 'publish' UNION ALL SELECT ID FROM {$posts} WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1" );
 mdi_coverage_statement( 'select.case', "SELECT ID, CASE WHEN post_status = 'publish' THEN 1 ELSE 0 END AS is_live FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.concat', "SELECT CONCAT(post_title, '-', ID) AS label FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.coalesce', "SELECT COALESCE(post_excerpt, post_title) AS shown FROM {$posts} LIMIT 5" );
@@ -113,10 +117,15 @@ mdi_coverage_statement( 'select.substring', "SELECT SUBSTRING(post_title, 1, 3) 
 mdi_coverage_statement( 'select.cast', "SELECT CAST(ID AS UNSIGNED) AS numeric_id FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.date.year', "SELECT YEAR(post_date) AS y, MONTH(post_date) AS m FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.date.format', "SELECT DATE_FORMAT(post_date, '%Y-%m') AS period FROM {$posts} LIMIT 5" );
+mdi_coverage_statement( 'select.date.format.full', "SELECT DATE_FORMAT(post_date, '%W %M %D %r %f %%') AS period FROM {$posts} LIMIT 5" );
+mdi_coverage_statement( 'select.scalar.where.date', "SELECT ID FROM {$posts} WHERE DATE_ADD(post_date, INTERVAL 1 DAY) >= '2000-01-01' LIMIT 5" );
+mdi_coverage_statement( 'select.scalar.group.date', "SELECT DATE(post_date) AS day, COUNT(*) AS total FROM {$posts} GROUP BY DATE(post_date) HAVING total > 0" );
+mdi_coverage_statement( 'select.scalar.order.math', "SELECT ID, ACOS(COS(RADIANS(ID))) AS distance FROM {$posts} HAVING ACOS(COS(RADIANS(ID))) >= 0 ORDER BY ACOS(COS(RADIANS(ID))) DESC LIMIT 5" );
 mdi_coverage_statement( 'select.group_concat', "SELECT post_type, GROUP_CONCAT(ID) AS ids FROM {$posts} GROUP BY post_type" );
 mdi_coverage_statement( 'select.order.field', "SELECT ID FROM {$posts} ORDER BY FIELD(post_status, 'publish', 'draft') LIMIT 5" );
 mdi_coverage_statement( 'select.regexp', "SELECT ID FROM {$posts} WHERE post_title REGEXP '^a'" );
 mdi_coverage_statement( 'select.found.rows', "SELECT SQL_CALC_FOUND_ROWS ID FROM {$posts} LIMIT 2" );
+mdi_coverage_statement( 'select.for.update', "SELECT ID FROM {$posts} WHERE ID = 1 FOR UPDATE" );
 mdi_coverage_statement( 'select.alias.table', "SELECT p.* FROM {$posts} AS p WHERE p.ID > 0 LIMIT 3" );
 mdi_coverage_statement( 'select.option.autoload', "SELECT option_name, option_value FROM {$options} WHERE autoload IN ('yes','on')" );
 mdi_coverage_statement( 'select.users.join.meta', "SELECT u.ID FROM {$users} u INNER JOIN {$wpdb->usermeta} um ON u.ID = um.user_id LIMIT 5" );
@@ -138,12 +147,25 @@ mdi_coverage_operation( 'post.insert', function () use ( &$post_id ) {
 mdi_coverage_operation( 'post.get', fn() => is_object( get_post( $post_id ) ) );
 mdi_coverage_operation( 'post.update', fn() => wp_update_post( array( 'ID' => $post_id, 'post_title' => 'Coverage probe updated' ), true ) === $post_id );
 mdi_coverage_operation( 'meta.add', fn() => (bool) update_post_meta( $post_id, 'coverage_probe', '42' ) );
+mdi_coverage_operation( 'meta.add.secondary', fn() => (bool) update_post_meta( $post_id, 'coverage_probe_secondary', 'blue' ) );
 mdi_coverage_operation( 'meta.get', fn() => get_post_meta( $post_id, 'coverage_probe', true ) );
 mdi_coverage_operation( 'meta.query.numeric', function () {
 	$query = new WP_Query( array(
 		'post_type'  => 'post',
 		'meta_query' => array( array( 'key' => 'coverage_probe', 'value' => 10, 'compare' => '>', 'type' => 'NUMERIC' ) ),
 		'fields'     => 'ids',
+	) );
+	return count( $query->posts );
+} );
+mdi_coverage_operation( 'meta.query.multiple.aliases', function () {
+	$query = new WP_Query( array(
+		'post_type'  => 'post',
+		'fields'     => 'ids',
+		'meta_query' => array(
+			'relation' => 'AND',
+			array( 'key' => 'coverage_probe', 'value' => '42' ),
+			array( 'key' => 'coverage_probe_secondary', 'value' => 'blue' ),
+		),
 	) );
 	return count( $query->posts );
 } );

@@ -62,7 +62,7 @@ foreach ( array( 'quick', 'read-only', 'crud', 'full', 'nightly' ) as $profile )
 
 $checks = array(
 	'generator replays identical cases' => $first === $second,
-	'every covered category has a bounded fixed count' => 30 === count( $categories )
+	'every covered category has a bounded fixed count' => 32 === count( $categories )
 		&& array() === array_filter(
 			$categories,
 			static fn( int $count ): bool => MDI_FUZZ_CASES_PER_CATEGORY !== $count
@@ -100,7 +100,7 @@ $checks = array(
 		&& 'homeboy/fuzz-replay/v1' === $report['replay']['schema']
 		&& 'homeboy/fuzz-case-log/v1' === $report['case_log'][0]['schema']
 		&& 'case_log' === $report['homeboy_campaign']['artifacts'][1]['kind'],
-	'direct default remains the complete 240-query campaign' => 240 === count( $report['cases'] )
+	'direct default remains the complete 256-query campaign' => 256 === count( $report['cases'] )
 		&& array( 'query.read' ) === $report['campaign']['operation_ids'],
 	'ordered comparisons retain row sequence' => ! mdi_fuzz_compare( $ordered_expected, $reversed, true )['compatible'],
 	'unordered comparisons preserve duplicate multiplicity' => mdi_fuzz_compare( $ordered_expected, $reversed, false )['compatible']

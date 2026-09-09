@@ -117,6 +117,8 @@ $show_table_escaped = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TA
 $show_missing_table = $runtime->execute( new WP_Markdown_Query_Request( "SHOW TABLES LIKE 'wp_missing'" ) );
 $describe = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE `wp_plugin_jobs`;' ) );
 $show_column = $runtime->execute( new WP_Markdown_Query_Request( "SHOW COLUMNS FROM wp_plugin_jobs LIKE 'status'" ) );
+$show_full_columns = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW FULL COLUMNS FROM wp_plugin_jobs' ) );
+$show_full_missing = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW FULL COLUMNS FROM wp_missing' ) );
 $show_indexes = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW INDEX FROM `wp_plugin_jobs`' ) );
 file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
@@ -147,6 +149,12 @@ $checks = array(
 		&& 'PRI' === ( $describe->wpdb_state()['last_result'][0]->Key ?? null )
 		&& 'auto_increment' === ( $describe->wpdb_state()['last_result'][0]->Extra ?? null )
 		&& 'status' === ( $show_column->wpdb_state()['last_result'][0]->Field ?? null ),
+	'full column introspection exposes the charset metadata WordPress reads for registered schemas' => 'utf8mb4_general_ci' === ( $show_full_columns->wpdb_state()['last_result'][2]->Collation ?? null )
+		&& null === ( $show_full_columns->wpdb_state()['last_result'][0]->Collation ?? null )
+		&& 'select,insert,update,references' === ( $show_full_columns->wpdb_state()['last_result'][2]->Privileges ?? null )
+		&& array( 'Field', 'Type', 'Collation', 'Null', 'Key', 'Default', 'Extra', 'Privileges', 'Comment' ) === array_map( static fn( object $column ): string => $column->name, $show_full_columns->wpdb_state()['col_info'] ),
+	'full column introspection keeps missing physical tables as errors' => false === $show_full_missing->return_value()
+		&& 'unsupported_table' === ( $show_full_missing->diagnostic()['reason'] ?? null ),
 	'generic index introspection preserves names, order, uniqueness, and prefix lengths' => array( 'PRIMARY', 'owner_id' ) === array_map(
 		static fn( object $row ): string => $row->Key_name,
 		$show_indexes->wpdb_state()['last_result']

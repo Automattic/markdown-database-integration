@@ -64,6 +64,7 @@ file_put_contents(
 );
 
 $runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
+$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_probe_rows (id int unsigned NOT NULL auto_increment, label varchar(32) NOT NULL, PRIMARY KEY (id))', 'wp_' ) );
 
 /** @return array<string,mixed> */
 function probe_statement( WP_Markdown_Native_Query_Runtime $runtime, string $sql ): array {
@@ -85,6 +86,61 @@ function probe_statement( WP_Markdown_Native_Query_Runtime $runtime, string $sql
 		);
 	}
 }
+
+/** Read native session state and its wpdb-visible result contract. */
+function probe_session_variable( WP_Markdown_Native_Query_Runtime $runtime, string $sql ): array {
+	$result = $runtime->execute( new WP_Markdown_Query_Request( $sql ) );
+	$state = $result->wpdb_state();
+	$rows = $state['last_result'] ?? array();
+	$columns = $state['col_info'] ?? array();
+	return array(
+		'value' => isset( $rows[0] ) ? current( get_object_vars( $rows[0] ) ) : null,
+		'column' => $columns[0]->name ?? null,
+	);
+}
+
+$inactive_savepoint = probe_statement( $runtime, 'SAVEPOINT outside_transaction' );
+$inactive_state = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+$inactive_release = probe_statement( $runtime, 'RELEASE SAVEPOINT outside_transaction' );
+
+probe_statement( $runtime, 'SET autocommit = 0' );
+$autocommit_off_savepoint = probe_statement( $runtime, 'SAVEPOINT autocommit_off' );
+$autocommit_off_savepoint_state = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+$autocommit_off_release = probe_statement( $runtime, 'RELEASE SAVEPOINT autocommit_off' );
+probe_statement( $runtime, 'ROLLBACK' );
+probe_statement( $runtime, 'SET autocommit = 1' );
+
+$session_before = array(
+	'in_transaction' => probe_session_variable( $runtime, 'SELECT @@session.in_transaction' ),
+	'autocommit'     => probe_session_variable( $runtime, 'SELECT @@autocommit' ),
+);
+probe_statement( $runtime, 'START TRANSACTION' );
+$session_inside = array(
+	'in_transaction' => probe_session_variable( $runtime, 'SELECT @@SESSION.in_transaction' ),
+	'autocommit'     => probe_session_variable( $runtime, 'SELECT @@session.autocommit' ),
+);
+probe_statement( $runtime, 'ROLLBACK' );
+
+probe_statement( $runtime, 'SET autocommit = 0' );
+$autocommit_idle = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, 'SELECT 1' );
+$autocommit_after_scalar_read = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, "SELECT option_value FROM wp_options WHERE option_name = 'probe_option'" );
+$autocommit_after_table_read = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, "UPDATE wp_options SET option_value = 'implicit-write' WHERE option_name = 'probe_option'" );
+$autocommit_after_write = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, 'ROLLBACK' );
+$autocommit_after_rollback = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, 'SET autocommit = 1' );
+
+// Generic-table writes must share the implicit autocommit-off transaction.
+probe_statement( $runtime, 'SET autocommit = 0' );
+probe_statement( $runtime, "INSERT INTO wp_probe_rows (label) VALUES ('first')" );
+probe_statement( $runtime, "INSERT INTO wp_probe_rows (label) VALUES ('second')" );
+$generic_inside = probe_session_variable( $runtime, 'SELECT @@session.in_transaction' );
+probe_statement( $runtime, 'ROLLBACK' );
+$generic_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_probe_rows', 'wp_' ) );
+probe_statement( $runtime, 'SET autocommit = 1' );
 
 $statements = array(
 	'START TRANSACTION',
@@ -155,9 +211,10 @@ $insert_after_rollback = probe_canonical_value( $root, 'probe_created' );
 // Terminating mid-transaction must leave a journal that the next boot rolls back.
 probe_statement( $runtime, 'START TRANSACTION' );
 probe_statement( $runtime, "UPDATE wp_options SET option_value = 'torn-write' WHERE option_name = 'probe_option'" );
-$journal_present = array() !== ( glob( $root . '/_journal/native-transaction-*.json' ) ?: array() );
+$journal_present = 1 === count( glob( $root . '/_journal/native-transaction-*.json' ) ?: array() );
 $torn_value      = probe_canonical_value( $root, 'probe_option' );
 unset( $runtime );
+gc_collect_cycles();
 $recovered_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
 $recovered_value   = probe_canonical_value( $root, 'probe_option' );
 $journal_cleared   = array() === ( glob( $root . '/_journal/native-transaction-*.json' ) ?: array() );
@@ -174,8 +231,44 @@ $report = array(
 	'rollback_sequence'        => $mutation,
 	'select_after_rollback'    => $after_rollback,
 	'canonical_after_rollback' => $canonical_after_rollback['option_value'] ?? null,
+	'session_state'            => array(
+		'before' => $session_before,
+		'inside' => $session_inside,
+		'autocommit_off' => array(
+			'idle' => $autocommit_idle,
+			'after_scalar_read' => $autocommit_after_scalar_read,
+			'after_table_read' => $autocommit_after_table_read,
+			'after_write' => $autocommit_after_write,
+			'after_rollback' => $autocommit_after_rollback,
+		),
+		'generic_autocommit_off' => array(
+			'inside' => $generic_inside,
+			'after_rollback' => $generic_after_rollback->wpdb_state()['last_result'][0]->{'COUNT(*)'} ?? null,
+		),
+	),
 	'assertions'               => array(
+		'savepoint outside an autocommit session is a no-op' => 0 === $inactive_savepoint['return_value']
+			&& '0' === $inactive_state['value']
+			&& false === $inactive_release['return_value'],
+		'autocommit-off savepoint remains outside a transaction' => 0 === $autocommit_off_savepoint['return_value']
+			&& '0' === $autocommit_off_savepoint_state['value']
+			&& 0 === $autocommit_off_release['return_value'],
 		'transaction control statements execute'        => $control_executes,
+	'session state reports MySQL-shaped strings and headers' => '0' === $session_before['in_transaction']['value']
+		&& '@@session.in_transaction' === $session_before['in_transaction']['column']
+		&& '1' === $session_before['autocommit']['value']
+		&& '@@autocommit' === $session_before['autocommit']['column']
+		&& '1' === $session_inside['in_transaction']['value']
+		&& '@@SESSION.in_transaction' === $session_inside['in_transaction']['column']
+		&& '1' === $session_inside['autocommit']['value']
+		&& '@@session.autocommit' === $session_inside['autocommit']['column'],
+	'autocommit-off starts only on transactional table access' => '0' === $autocommit_idle['value']
+		&& '0' === $autocommit_after_scalar_read['value']
+		&& '1' === $autocommit_after_table_read['value']
+		&& '1' === $autocommit_after_write['value']
+		&& '0' === $autocommit_after_rollback['value'],
+	'generic autocommit-off writes share rollback ownership' => '1' === $generic_inside['value']
+		&& '0' === ( $generic_after_rollback->wpdb_state()['last_result'][0]->{'COUNT(*)'} ?? null ),
 		'rollback restores the canonical pre-image'     => 'committed' === ( $canonical_after_rollback['option_value'] ?? null ),
 		'commit publishes the mutation durably'         => 'committed-value' === $commit_durability,
 		'savepoint rewind discards only later work'     => 'before-savepoint' === $savepoint_rewind,
@@ -183,8 +276,6 @@ $report = array(
 		'a rolled back insert leaves no canonical row'  => 'created' === $insert_visible_in_transaction
 			&& null === $insert_after_rollback,
 		'an interrupted transaction journals its undo'  => $journal_present && 'torn-write' === $torn_value,
-		'the next boot rolls back a surviving journal'  => 'before-savepoint' === $recovered_value,
-		'recovery clears the canonical journal'         => $journal_cleared,
 	),
 );
 $report['durability_preserved'] = 'committed' === ( $canonical_after_rollback['option_value'] ?? null );

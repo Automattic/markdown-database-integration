@@ -1,5 +1,52 @@
 # Changelog
 
+## [0.13.0] - 2026-09-02
+
+### Added
+- complete native SQL coverage
+- execute full-source equality joins
+- evaluate scalar select expressions
+- compare signed meta values
+- execute WordPress search relevance
+- rank rows by a LIKE match
+- report ungrouped aggregates
+- collapse DISTINCT rows on a single table
+- allow a conjunction inside an OR
+- answer range and BETWEEN comparisons
+- serve canonical files without SQLite by default
+- classify table durability
+
+### Changed
+- support PHP without mysqli
+- support SQLite fuzzing on PHP 8.3
+- fuzz the full database surface
+- fuzz the native SQL surface
+- report native MySQL surface coverage
+- normalize duplicate keys once per index
+- trust validated snapshot rows once
+- reuse complete snapshot rows
+- defer replace index rebuilds
+- add primary SQLite decision rig
+- use native scalar ordering
+- normalize native sort keys once
+- centralize native snapshot queries
+- reuse native table snapshots per request
+- profile plugin inventory operations
+- reuse query compatibility comparison
+- add seeded native SQLite differential
+- benchmark concurrent database reads
+- benchmark transactional plugin writes
+- validate benchmark rig component paths
+- seed native benchmark runtime
+- attest benchmark database backend
+- benchmark production query shapes
+
+### Fixed
+- cook markdown-database-integration
+- keep runtime benchmark outside file profile
+- validate generic text predicates
+- execute production plugin predicates
+
 ## [0.12.0] - 2026-08-30
 
 ### Added

@@ -25,14 +25,15 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'unbounded_or_tableless_source' );
 		}
 
+		$prefixes = self::schema_prefixes( $database, $prefix );
 		$registry = new WP_Markdown_Native_Table_Registry();
 		$provenance = array();
 		foreach ( $tables as $table ) {
 			$quoted = '`' . str_replace( '`', '``', $table ) . '`';
 			$ddl = self::one_row( $connection, 'SHOW CREATE TABLE ' . $quoted );
 			$definition = is_array( $ddl ) ? (string) ( array_values( $ddl )[1] ?? '' ) : '';
-			$compiled = '' === $definition ? array() : WP_Markdown_Native_Schema_Catalog::compile( $definition, array( $prefix ) );
-			$schema_definition = $compiled[ substr( $table, strlen( $prefix ) ) ] ?? null;
+			$compiled = '' === $definition ? array() : WP_Markdown_Native_Schema_Catalog::compile( $definition, $prefixes, array( $table ) );
+			$schema_definition = 1 === count( $compiled ) ? reset( $compiled ) : null;
 			$schema = is_array( $schema_definition ) ? WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $schema_definition ) : null;
 			if ( ! $schema instanceof WP_Markdown_Native_Table_Schema ) {
 				throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'source_schema_unavailable' );
@@ -42,6 +43,15 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
+	}
+
+	/** @return array<int,string> */
+	private static function schema_prefixes( object $database, string $prefix ): array {
+		$prefixes = array( $prefix );
+		if ( isset( $database->base_prefix ) && is_string( $database->base_prefix ) ) {
+			$prefixes[] = $database->base_prefix;
+		}
+		return array_values( array_unique( array_filter( $prefixes, static fn( string $candidate ): bool => '' !== $candidate ) ) );
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {

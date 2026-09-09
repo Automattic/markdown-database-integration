@@ -20,12 +20,21 @@ final class MDI_Snapshot_Connection {
 	public array $rows = array( array( 'ID' => '1', 'post_title' => 'First' ) );
 	/** @var array<int,array<string,mixed>> */
 	public array $meta_rows = array( array( 'meta_id' => '1', 'post_id' => '1' ) );
+	/** @var array<int,array<string,mixed>> */
+	public array $global_rows = array( array( 'meta_id' => '1', 'site_id' => '1', 'meta_key' => 'site_name', 'meta_value' => 'Example' ) );
+	/** @var array<int,array<string,mixed>> */
+	public array $plugin_rows = array( array( 'id' => '1', 'name' => 'Agent' ) );
 	/** @var array<int,MDI_Snapshot_Result> */
 	public array $results = array();
 	public function query( string $sql ): MDI_Snapshot_Result|false {
 		$result = false;
 		if ( 'SHOW CREATE TABLE `wp_postmeta`' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_postmeta', 'Create Table' => 'CREATE TABLE `wp_postmeta` (`meta_id` bigint(20) unsigned NOT NULL, `post_id` bigint(20) unsigned NOT NULL, PRIMARY KEY (`meta_id`))' ) ) );
+		} elseif ( 'SHOW CREATE TABLE `wp_sitemeta`' === $sql || 'SHOW CREATE TABLE `wp_usermeta`' === $sql ) {
+			$table = str_contains( $sql, 'sitemeta' ) ? 'wp_sitemeta' : 'wp_usermeta';
+			$result = new MDI_Snapshot_Result( array( array( 'Table' => $table, 'Create Table' => 'CREATE TABLE `' . $table . '` (`meta_id` bigint(20) unsigned NOT NULL, `site_id` bigint(20) unsigned NOT NULL, `meta_key` varchar(255) NOT NULL, `meta_value` longtext NOT NULL, PRIMARY KEY (`meta_id`))' ) ) );
+		} elseif ( 'SHOW CREATE TABLE `agents`' === $sql ) {
+			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'agents', 'Create Table' => 'CREATE TABLE `agents` (`id` bigint(20) unsigned NOT NULL, `name` varchar(255) NOT NULL, PRIMARY KEY (`id`))' ) ) );
 		} elseif ( str_starts_with( $sql, 'SHOW CREATE TABLE' ) ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_posts', 'Create Table' => 'CREATE TABLE `wp_posts` (`ID` bigint(20) unsigned NOT NULL, `post_title` varchar(255) NOT NULL, PRIMARY KEY (`ID`))' ) ) );
 		}
@@ -34,6 +43,12 @@ final class MDI_Snapshot_Connection {
 		}
 		if ( 'SELECT * FROM `wp_postmeta` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( $this->meta_rows );
+		}
+		if ( 'SELECT * FROM `wp_sitemeta` LIMIT 10001' === $sql || 'SELECT * FROM `wp_usermeta` LIMIT 10001' === $sql ) {
+			$result = new MDI_Snapshot_Result( $this->global_rows );
+		}
+		if ( 'SELECT * FROM `agents` LIMIT 10001' === $sql ) {
+			$result = new MDI_Snapshot_Result( $this->plugin_rows );
 		}
 		if ( $result instanceof MDI_Snapshot_Result ) {
 			$this->results[] = $result;
@@ -44,6 +59,7 @@ final class MDI_Snapshot_Connection {
 
 final class MDI_Snapshot_Database {
 	public string $prefix = 'wp_';
+	public string $base_prefix = 'wp_';
 	public array $last_result = array();
 	public int $num_rows = 0;
 	public string $last_error = '';
@@ -114,6 +130,23 @@ $derived_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
 	'SELECT derived.ID FROM (SELECT ID FROM wp_posts) AS derived',
 	'wp_'
 )->provenance();
+$database->prefix = 'wp_2_';
+$global_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	'SELECT meta_key, meta_value FROM wp_sitemeta WHERE site_id = 1',
+	$database->prefix
+)->provenance();
+$user_meta_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	'SELECT meta_key, meta_value FROM wp_usermeta WHERE site_id = 1',
+	$database->prefix
+)->provenance();
+$plugin_table = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	'SELECT id, name FROM agents WHERE id = 1',
+	$database->prefix
+)->provenance();
+$database->prefix = 'wp_';
 $reordered = new WP_Markdown_Native_Shadow_Verifier(
 	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
 	1,
@@ -177,6 +210,9 @@ $checks = array(
 		&& array() === ( $database_fast_path->report()['context']['last_input_state']['tables'] ?? null ),
 	'typed plan traversal captures every JOIN source' => array( 'wp_posts', 'wp_postmeta' ) === array_column( $multi_table['tables'], 'table' ),
 	'typed plan traversal skips a derived alias and captures its source table' => array( 'wp_posts' ) === array_column( $derived_table['tables'], 'table' ),
+	'global tables use the base prefix when the active blog prefix differs' => array( 'wp_sitemeta' ) === array_column( $global_table['tables'], 'table' )
+		&& array( 'wp_usermeta' ) === array_column( $user_meta_table['tables'], 'table' ),
+	'validated non-WordPress-prefixed plugin tables compile by exact captured identity' => array( 'agents' ) === array_column( $plugin_table['tables'], 'table' ),
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
 	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

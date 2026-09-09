@@ -23,6 +23,7 @@ require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
 require_once __DIR__ . '/../class-wp-markdown-table-durability-policy.php';
 require_once __DIR__ . '/class-wp-markdown-native-transactions.php';
+require_once __DIR__ . '/class-wp-markdown-native-advisory-locks.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
 final class WP_Markdown_Native_Runtime_Factory {
@@ -229,7 +230,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 		bool $multisite = false,
 		?string $content_root = null,
 		?string $global_state_root = null,
-		?string $global_content_root = null
+		?string $global_content_root = null,
+		?WP_Markdown_Native_Advisory_Locks $advisory_locks = null
 	): WP_Markdown_Native_Query_Runtime {
 		$state_root = self::materialize_state_root( $state_root );
 		if ( null !== $global_state_root ) {
@@ -265,7 +267,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 				$parser,
 				self::shared_storage( $content_root ?? $state_root ),
 				$transactions
-			)
+			),
+			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root )
 		);
 	}
 
@@ -598,11 +601,14 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 
 	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
 	private array $runtimes = array();
+	private WP_Markdown_Native_Advisory_Locks $advisory_locks;
 
 	public function __construct(
 		private string $state_root,
 		private string $content_root
-	) {}
+	) {
+		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $state_root );
+	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		$prefix = $request->table_prefix();
@@ -612,10 +618,15 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 				$prefix,
 				$prefix,
 				false,
-				$this->content_root
+				$this->content_root,
+				advisory_locks: $this->advisory_locks
 			);
 		}
 		return $this->runtimes[ $prefix ]->execute( $request );
+	}
+
+	public function close(): void {
+		$this->advisory_locks->close();
 	}
 }
 
@@ -647,6 +658,13 @@ final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Qu
 			$this->multisite_runtimes[ $base_prefix ] = new WP_Markdown_Native_Multisite_Query_Runtime( $this->state_root, $base_prefix, $this->content_root );
 		}
 		return $this->multisite_runtimes[ $base_prefix ]->execute( $request );
+	}
+
+	public function close(): void {
+		$this->prefix_runtime->close();
+		foreach ( $this->multisite_runtimes as $runtime ) {
+			$runtime->close();
+		}
 	}
 }
 
@@ -713,6 +731,12 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 			}
 		}
 		return $this->runtimes[ $prefix ]->execute( $request );
+	}
+
+	public function close(): void {
+		foreach ( $this->runtimes as $runtime ) {
+			$runtime->close();
+		}
 	}
 
 	private function is_scope_prefix( string $prefix ): bool {

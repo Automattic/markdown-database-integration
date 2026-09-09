@@ -87,6 +87,9 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 			return false;
 		}
 
+		if ( method_exists( $this->native_runtime, 'close' ) ) {
+			$this->native_runtime->close();
+		}
 		$this->ready = false;
 		return true;
 	}

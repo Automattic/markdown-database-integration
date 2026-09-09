@@ -220,10 +220,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 
 	public function savepoint( string $name ): true|string {
 		if ( ! $this->active ) {
-			$begun = $this->begin();
-			if ( true !== $begun ) {
-				return $begun;
-			}
+			return sprintf( 'SAVEPOINT %s does not exist.', $name );
 		}
 		$this->savepoints[ $name ] = count( $this->entries );
 		return true;

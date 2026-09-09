@@ -19,13 +19,23 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 	public ?array $last_runtime_diagnostic = null;
 
 	private WP_Markdown_Query_Runtime $native_runtime;
+	private string $native_table_prefix;
 
 	public function __construct( WP_Markdown_Query_Runtime $runtime, string $table_prefix = 'wp_' ) {
 		if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $table_prefix ) ) {
 			throw new InvalidArgumentException( 'The table prefix contains unsupported characters.' );
 		}
 		$this->native_runtime = $runtime;
+		$this->native_table_prefix = $table_prefix;
 		$this->set_prefix( $table_prefix );
+		// db.php replaces wpdb after its normal constructor would establish the
+		// primary site. Multisite switch_to_blog() requires that initial scope.
+		if ( property_exists( $this, 'blogid' ) ) {
+			$this->blogid = 1;
+		}
+		if ( property_exists( $this, 'siteid' ) ) {
+			$this->siteid = 1;
+		}
 		$this->last_result = array();
 		$this->ready       = true;
 		$this->check_current_query = false;
@@ -45,12 +55,14 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 			return false;
 		}
 		$query = $this->remove_placeholder_escape( $query );
-
 		$this->flush();
 		$this->func_call  = "\$db->query(\"$query\")";
 		$this->last_query = $query;
 		$query_start      = microtime( true );
-		$result = $this->native_runtime->execute( new WP_Markdown_Query_Request( $query, $this->prefix ) );
+		// wp-settings can temporarily clear $wpdb->prefix before multisite has
+		// selected its current blog. Continue serving that bootstrap query from
+		// the base canonical scope.
+		$result = $this->native_runtime->execute( new WP_Markdown_Query_Request( $query, '' === $this->prefix ? $this->native_table_prefix : $this->prefix ) );
 		$state  = $result->wpdb_state();
 		++$this->num_queries;
 

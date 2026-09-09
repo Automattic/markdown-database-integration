@@ -25,6 +25,14 @@ if ( false === $repo ) {
 	exit( 2 );
 }
 
+$wp_codebox = (string) ( getenv( 'MDI_WP_CODEBOX_BIN' ) ?: 'wp-codebox' );
+try {
+	mdi_native_lifecycle_require_wp_codebox( $wp_codebox );
+} catch ( RuntimeException $error ) {
+	fwrite( STDERR, $error->getMessage() . "\n" );
+	exit( 2 );
+}
+
 $root = sys_get_temp_dir() . '/mdi-native-coverage-' . bin2hex( random_bytes( 6 ) );
 $state = $root . '/state';
 $artifacts = $root . '/artifacts';
@@ -78,7 +86,6 @@ $recipe = array(
 $recipe_path = $root . '/recipe.json';
 file_put_contents( $recipe_path, json_encode( $recipe, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 
-$wp_codebox = (string) ( getenv( 'MDI_WP_CODEBOX_BIN' ) ?: 'wp-codebox' );
 $command = escapeshellarg( $wp_codebox ) . ' recipe-run --recipe ' . escapeshellarg( $recipe_path ) . ' --timeout 20m --json';
 $output = array();
 exec( $command, $output, $status );

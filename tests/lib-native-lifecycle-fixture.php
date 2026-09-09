@@ -3,6 +3,22 @@
 
 declare( strict_types=1 );
 
+if ( ! function_exists( 'mdi_native_lifecycle_require_wp_codebox' ) ) {
+	/** Require the WP Codebox recipe contract used by native lifecycle probes. */
+	function mdi_native_lifecycle_require_wp_codebox( string $wp_codebox ): void {
+		$minimum = '0.26.3';
+		$output = array();
+		exec( escapeshellarg( $wp_codebox ) . ' --version 2>&1', $output, $status );
+		$reported = implode( "\n", $output );
+		if ( 0 !== $status || 1 !== preg_match( '/\b(\d+\.\d+\.\d+)\b/', $reported, $matches ) ) {
+			throw new RuntimeException( "WP Codebox {$minimum} or newer is required; unable to determine the version from {$wp_codebox}." );
+		}
+		if ( version_compare( $matches[1], $minimum, '<' ) ) {
+			throw new RuntimeException( "WP Codebox {$minimum} or newer is required; {$matches[1]} was found." );
+		}
+	}
+}
+
 if ( ! function_exists( 'mdi_native_lifecycle_option' ) ) {
 	/** Write one canonical option row into a fixture state root. */
 	function mdi_native_lifecycle_option( string $root, int $id, string $name, string $value, string $autoload = 'on' ): void {

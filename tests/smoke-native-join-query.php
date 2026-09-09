@@ -91,6 +91,31 @@ $core_term_ids_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $core_te
 $core_term_ids = $runtime->execute( new WP_Markdown_Query_Request( $core_term_ids_query ) );
 $core_terms_query = 'SELECT t.*, tt.* FROM wp_terms AS t INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id WHERE t.term_id IN (3, 4)';
 $core_terms = $runtime->execute( new WP_Markdown_Query_Request( $core_terms_query ) );
+$derived_base_query = "SELECT d.object_id, d.term_taxonomy_id FROM ( SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 UNION ALL SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 ) AS d";
+$derived_base = $runtime->execute( new WP_Markdown_Query_Request( $derived_base_query ) );
+$derived_distinct_after_all = $runtime->execute( new WP_Markdown_Query_Request( "SELECT d.object_id, d.term_taxonomy_id FROM ( SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 UNION ALL SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 UNION SELECT object_id, term_taxonomy_id FROM wp_term_relationships WHERE object_id=41 ) AS d" ) );
+$derived_join_query = "SELECT tr.object_id, d.taxonomy FROM wp_term_relationships tr JOIN ( SELECT term_taxonomy_id, taxonomy FROM wp_term_taxonomy WHERE taxonomy='category' UNION ALL SELECT term_taxonomy_id, taxonomy FROM wp_term_taxonomy WHERE taxonomy='category' ) AS d ON tr.term_taxonomy_id=d.term_taxonomy_id WHERE tr.object_id=41";
+$derived_join_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $derived_join_query );
+$derived_join = $runtime->execute( new WP_Markdown_Query_Request( $derived_join_query ) );
+$calendar_schema = new WP_Markdown_Native_Table_Schema(
+	array(
+		'event_id' => new WP_Markdown_Native_Column( 8, false, 'is_int' ),
+		'post_status' => new WP_Markdown_Native_Column( 253, false, 'is_string', null, array( '=' ) ),
+		'start_datetime' => new WP_Markdown_Native_Column( 12, false, 'is_string' ),
+		'end_datetime' => new WP_Markdown_Native_Column( 12, true, 'is_string' ),
+	),
+	'event_id'
+);
+$calendar_registry = new WP_Markdown_Native_Table_Registry();
+$calendar_registry->register( 'wp_events', $calendar_schema, new MDI_Native_Join_Array_Provider( array(
+	array( 'event_id' => 1, 'post_status' => 'publish', 'start_datetime' => '2026-01-01 09:00:00', 'end_datetime' => '2026-01-01 11:00:00' ),
+	array( 'event_id' => 2, 'post_status' => 'publish', 'start_datetime' => '2026-01-02 09:00:00', 'end_datetime' => null ),
+	array( 'event_id' => 3, 'post_status' => 'draft', 'start_datetime' => '2026-01-01 08:00:00', 'end_datetime' => '2026-01-01 08:30:00' ),
+), $calendar_schema ) );
+$calendar_runtime = new WP_Markdown_Native_Query_Runtime( $calendar_registry );
+$calendar_query = "SELECT MIN(transition_datetime) FROM ( SELECT MIN(end_datetime) AS transition_datetime FROM wp_events WHERE post_status='publish' AND end_datetime >= '2026-01-01 00:00:00' UNION ALL SELECT MIN(start_datetime) AS transition_datetime FROM wp_events WHERE post_status='publish' AND end_datetime IS NULL AND start_datetime >= '2026-01-01 00:00:00' ) upcoming_transitions";
+$calendar = $calendar_runtime->execute( new WP_Markdown_Query_Request( $calendar_query ) );
+$calendar_none = $calendar_runtime->execute( new WP_Markdown_Query_Request( str_replace( '2026-01-01 00:00:00', '2027-01-01 00:00:00', $calendar_query ) ) );
 
 $unsigned = static fn( mixed $value ): ?string => WP_Markdown_Native_Runtime_Factory::normalize_unsigned( $value );
 $integer = static fn( array $lookups = array() ): WP_Markdown_Native_Column => new WP_Markdown_Native_Column(
@@ -143,12 +168,42 @@ $multiplicity_registry->register( 'wp_multiplicity_left', $multiplicity_left_sch
 $multiplicity_registry->register( 'wp_multiplicity_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array( array( 'row_id' => 1, 'left_id' => 1, 'label' => 'first' ), array( 'row_id' => 2, 'left_id' => 1, 'label' => 'second' ), array( 'row_id' => 3, 'left_id' => 3, 'label' => 'other' ) ), $multiplicity_right_schema ) );
 $multiplicity_runtime = new WP_Markdown_Native_Query_Runtime( $multiplicity_registry );
 $multiplicity = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LIMIT 3' ) );
+$chained_outer = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label, s.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id LEFT JOIN wp_multiplicity_right s ON r.left_id=s.left_id' ) );
+$non_equality_left = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id > r.left_id' ) );
+$or_on = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( "SELECT l.id, r.label FROM wp_multiplicity_left l JOIN wp_multiplicity_right r ON l.id=r.left_id OR r.label='other'" ) );
+$scalar_join = $multiplicity_runtime->execute( new WP_Markdown_Query_Request( "SELECT l.id, CONCAT(r.label, '!') AS marked FROM wp_multiplicity_left l LEFT JOIN wp_multiplicity_right r ON l.id=r.left_id WHERE LENGTH(r.label) > 5 ORDER BY LENGTH(r.label) DESC LIMIT 1" ) );
+$fanout_registry = new WP_Markdown_Native_Table_Registry();
+$fanout_registry->register( 'wp_fanout_left', $multiplicity_left_schema, new MDI_Native_Join_Array_Provider( array( array( 'id' => 1 ) ), $multiplicity_left_schema ) );
+$fanout_registry->register( 'wp_fanout_right', $multiplicity_right_schema, new MDI_Native_Join_Array_Provider( array_fill( 0, 100001, array( 'row_id' => 1, 'left_id' => 1, 'label' => 'fanout' ) ), $multiplicity_right_schema ) );
+$fanout = ( new WP_Markdown_Native_Query_Runtime( $fanout_registry ) )->execute( new WP_Markdown_Query_Request( 'SELECT l.id, r.label FROM wp_fanout_left l JOIN wp_fanout_right r ON l.id=r.left_id' ) );
+$meta_query = "SELECT p.ID, mt1.meta_value, mt2.meta_value FROM wp_posts p LEFT JOIN wp_postmeta mt1 ON (p.ID = mt1.post_id AND mt1.meta_key = 'color') LEFT JOIN wp_postmeta mt2 ON (p.ID = mt2.post_id AND mt2.meta_key = 'size') WHERE p.ID = 41";
+$meta_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $meta_query );
+$meta_registry = new WP_Markdown_Native_Table_Registry();
+$posts_schema = new WP_Markdown_Native_Table_Schema( array( 'ID' => $integer( array( '=' ) ) ), 'ID' );
+$postmeta_schema = new WP_Markdown_Native_Table_Schema(
+	array(
+		'meta_id' => $integer(),
+		'post_id' => $integer( array( '=', 'IN' ) ),
+		'meta_key' => new WP_Markdown_Native_Column( 253, false, 'is_string', null, array( '=', 'IN' ) ),
+		'meta_value' => new WP_Markdown_Native_Column( 253, true, 'is_string' ),
+	),
+	'meta_id'
+);
+$meta_registry->register( 'wp_posts', $posts_schema, new MDI_Native_Join_Array_Provider( array( array( 'ID' => 41 ) ), $posts_schema ) );
+$meta_registry->register( 'wp_postmeta', $postmeta_schema, new MDI_Native_Join_Array_Provider( array( array( 'meta_id' => 1, 'post_id' => 41, 'meta_key' => 'color', 'meta_value' => 'blue' ), array( 'meta_id' => 2, 'post_id' => 41, 'meta_key' => 'size', 'meta_value' => 'large' ) ), $postmeta_schema ) );
+$meta_result = ( new WP_Markdown_Native_Query_Runtime( $meta_registry ) )->execute( new WP_Markdown_Query_Request( $meta_query ) );
 
 $checks = array(
 	'tokenizer and parser lower aliases and chained equality JOINs into typed contracts' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'tr' === $plan->table_alias()
 		&& array( 'tr', 'tt', 't' ) === $plan->projection_sources()
 		&& array( 'tt', 't' ) === array_map( static fn( WP_Markdown_Native_Query_Join $join ): string => $join->alias(), $plan->joins() ),
+	'parser accepts WordPress meta-query self-joins with constant ON filters' => $meta_plan instanceof WP_Markdown_Native_Query_Plan
+		&& array( 'p', 'mt1', 'mt2' ) === $meta_plan->projection_sources()
+		&& array( 2, 2 ) === array_map( static fn( WP_Markdown_Native_Query_Join $join ): int => count( $join->on_filters() ), $meta_plan->joins() ),
+	'WordPress meta-query self-joins retain each alias-specific ON filter' => array(
+		array( 'ID' => '41', 'meta_value' => 'large' ),
+	) === array_map( 'get_object_vars', $meta_result->wpdb_state()['last_result'] ),
 	'retained taxonomy equality JOIN executes through registered generic providers' => array(
 		array( 'object_id' => '41', 'taxonomy' => 'category', 'slug' => 'news' ),
 		array( 'object_id' => '41', 'taxonomy' => 'post_tag', 'slug' => 'featured' ),
@@ -169,11 +224,38 @@ $checks = array(
 			$core_terms->wpdb_state()['last_result']
 		)
 		&& 10 === count( $core_terms->wpdb_state()['col_info'] ),
+	'parenthesized derived SELECT UNION ALL sources preserve duplicate rows under their alias' => array(
+		array( 'object_id' => '41', 'term_taxonomy_id' => '7' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '8' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '10' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '7' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '8' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '10' ),
+	) === array_map( 'get_object_vars', $derived_base->wpdb_state()['last_result'] ),
+	'UNION DISTINCT removes duplicates retained by a preceding UNION ALL' => array(
+		array( 'object_id' => '41', 'term_taxonomy_id' => '7' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '8' ),
+		array( 'object_id' => '41', 'term_taxonomy_id' => '10' ),
+	) === array_map( 'get_object_vars', $derived_distinct_after_all->wpdb_state()['last_result'] ),
+	'parenthesized derived JOIN sources expose columns only through their alias' => $derived_join_plan instanceof WP_Markdown_Native_Query_Plan
+		&& array( 'tr', 'd' ) === $derived_join_plan->projection_sources()
+		&& array(
+			array( 'object_id' => '41', 'taxonomy' => 'category' ),
+			array( 'object_id' => '41', 'taxonomy' => 'category' ),
+		) === array_map( 'get_object_vars', $derived_join->wpdb_state()['last_result'] ),
+	'calendar transition query aggregates nullable UNION ALL branch minima' => array(
+		array( 'MIN(transition_datetime)' => '2026-01-01 11:00:00' ),
+	) === array_map( 'get_object_vars', $calendar->wpdb_state()['last_result'] ),
+	'calendar transition query returns NULL when neither branch has a transition' => array(
+		array( 'MIN(transition_datetime)' => null ),
+	) === array_map( 'get_object_vars', $calendar_none->wpdb_state()['last_result'] ),
 	'bounded JOIN misses return an empty successful result' => 0 === $missing->return_value(),
 	'large equality JOINs scale by normalized identities rather than row pairs' => 1000 === count( $scale_rows )
 		&& array( 'id' => '1', 'label' => 'row-1' ) === get_object_vars( $scale_rows[0] ?? (object) array() )
 		&& array( 'id' => '1000', 'label' => 'row-1000' ) === get_object_vars( $scale_rows[999] ?? (object) array() )
 		&& $right_normalizations < 10000,
+	'indexed equality JOIN fan-out is bounded before materializing row pairs' => false === $fanout->return_value()
+		&& 'unsupported_join_cost' === ( $fanout->diagnostic()['reason'] ?? null ),
 	'LEFT JOIN with identity GROUP BY and LIMIT returns distinct left keys' => array( '99', '41' ) === array_map(
 		static fn( object $row ): string => (string) $row->object_id,
 		$catalog->wpdb_state()['last_result']
@@ -205,6 +287,27 @@ $checks = array(
 			array( 'id' => '1', 'label' => 'second' ),
 			array( 'id' => '2', 'label' => null ),
 		) === array_map( 'get_object_vars', $multiplicity->wpdb_state()['last_result'] ),
+	'chained LEFT JOINs carry unmatched NULL keys into later equality joins' => array(
+		array( 'id' => '1', 'label' => 'first' ),
+		array( 'id' => '1', 'label' => 'second' ),
+		array( 'id' => '1', 'label' => 'first' ),
+		array( 'id' => '1', 'label' => 'second' ),
+		array( 'id' => '2', 'label' => null ),
+	) === array_map( 'get_object_vars', $chained_outer->wpdb_state()['last_result'] ),
+	'non-equality ON predicates evaluate before LEFT JOIN NULL extension' => array(
+		array( 'id' => '1', 'label' => null ),
+		array( 'id' => '2', 'label' => 'first' ),
+		array( 'id' => '2', 'label' => 'second' ),
+	) === array_map( 'get_object_vars', $non_equality_left->wpdb_state()['last_result'] ),
+	'OR ON predicates evaluate against the combined alias row map' => array(
+		array( 'id' => '1', 'label' => 'first' ),
+		array( 'id' => '1', 'label' => 'second' ),
+		array( 'id' => '1', 'label' => 'other' ),
+		array( 'id' => '2', 'label' => 'other' ),
+	) === array_map( 'get_object_vars', $or_on->wpdb_state()['last_result'] ),
+	'scalar WHERE, projection, hidden ORDER BY, and LIMIT share the joined row stage' => array(
+		array( 'id' => '1', 'marked' => 'second!' ),
+	) === array_map( 'get_object_vars', $scalar_join->wpdb_state()['last_result'] ),
 	'unknown JOIN aliases fail closed' => false === $unknown_alias->return_value()
 		&& 'unsupported_column' === ( $unknown_alias->diagnostic()['reason'] ?? null ),
 );

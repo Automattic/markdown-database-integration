@@ -99,8 +99,46 @@ final class WP_Markdown_Native_SQL_Scalar_Expression {
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
 	private function predicate_columns( WP_Markdown_Native_SQL_Predicate $predicate ): array {
 		$columns = array( $predicate->column() );
+		if ( null !== $predicate->comparison() ) {
+			$columns[] = $predicate->comparison();
+		}
 		foreach ( $predicate->any() as $alternative ) {
 			$columns = array_merge( $columns, $this->predicate_columns( $alternative ) );
+		}
+		return $columns;
+	}
+}
+
+/** A comparison over row-local expressions, evaluated after bounded reads. */
+final class WP_Markdown_Native_SQL_Scalar_Predicate {
+	public function __construct(
+		private readonly WP_Markdown_Native_SQL_Scalar_Expression $left,
+		private readonly string $operator,
+		private readonly WP_Markdown_Native_SQL_Scalar_Expression $right
+	) {}
+	public function left(): WP_Markdown_Native_SQL_Scalar_Expression { return $this->left; }
+	public function operator(): string { return $this->operator; }
+	public function right(): WP_Markdown_Native_SQL_Scalar_Expression { return $this->right; }
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	public function columns(): array { return array_merge( $this->left->columns(), $this->right->columns() ); }
+}
+
+/** A disjunction of conjunctions evaluated after bounded source reads. */
+final class WP_Markdown_Native_SQL_Boolean_Predicate {
+	/** @param array<int,array<int,WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate>> $groups */
+	public function __construct( private readonly array $groups ) {}
+	public function groups(): array { return $this->groups; }
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	public function columns(): array {
+		$columns = array();
+		foreach ( $this->groups as $group ) {
+			foreach ( $group as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) {
+					if ( null !== $predicate->column() ) { $columns[] = $predicate->column(); }
+					continue;
+				}
+				$columns = array_merge( $columns, $predicate->columns() );
+			}
 		}
 		return $columns;
 	}
@@ -142,6 +180,14 @@ final class WP_Markdown_Native_SQL_Predicate {
 	public function comparison(): ?WP_Markdown_Native_SQL_Identifier {
 		return $this->comparison;
 	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
+	public function columns(): array {
+		$columns = array( $this->column );
+		if ( null !== $this->comparison ) { $columns[] = $this->comparison; }
+		foreach ( $this->any as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
+		return $columns;
+	}
 }
 
 /** A SELECT predicate whose right-hand side is another typed SELECT. */
@@ -161,10 +207,11 @@ final class WP_Markdown_Native_SQL_Join {
 	public function __construct(
 		private readonly WP_Markdown_Native_SQL_Identifier $table,
 		private readonly WP_Markdown_Native_SQL_Identifier $alias,
-		private readonly WP_Markdown_Native_SQL_Identifier $left,
-		private readonly WP_Markdown_Native_SQL_Identifier $right,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $left,
+		private readonly ?WP_Markdown_Native_SQL_Identifier $right,
 		private readonly bool $outer = false,
-		private readonly array $on_predicates = array()
+		private readonly array $on_predicates = array(),
+		private readonly ?WP_Markdown_Native_SQL_Select $derived = null
 	) {}
 
 	public function table(): WP_Markdown_Native_SQL_Identifier {
@@ -175,11 +222,11 @@ final class WP_Markdown_Native_SQL_Join {
 		return $this->alias;
 	}
 
-	public function left(): WP_Markdown_Native_SQL_Identifier {
+	public function left(): ?WP_Markdown_Native_SQL_Identifier {
 		return $this->left;
 	}
 
-	public function right(): WP_Markdown_Native_SQL_Identifier {
+	public function right(): ?WP_Markdown_Native_SQL_Identifier {
 		return $this->right;
 	}
 
@@ -190,6 +237,10 @@ final class WP_Markdown_Native_SQL_Join {
 	/** @return array<int,WP_Markdown_Native_SQL_Predicate> */
 	public function on_predicates(): array {
 		return $this->on_predicates;
+	}
+
+	public function derived(): ?WP_Markdown_Native_SQL_Select {
+		return $this->derived;
 	}
 }
 
@@ -216,7 +267,16 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly array $scalar_projection = array(),
 		private readonly array $having = array(),
 		private readonly array $subqueries = array(),
-		private readonly ?self $union = null
+		private readonly ?self $union = null,
+		private readonly array $scalar_predicates = array(),
+		private readonly array $scalar_having = array(),
+		private readonly ?WP_Markdown_Native_SQL_Scalar_Expression $group_expression = null,
+		private readonly ?WP_Markdown_Native_SQL_Boolean_Predicate $boolean_predicate = null,
+		private readonly ?self $derived = null,
+		private readonly bool $union_all = false,
+		private readonly array $union_orders = array(),
+		private readonly ?int $union_limit = null,
+		private readonly int $union_limit_offset = 0
 	) {}
 
 	public function selects_all(): bool {
@@ -310,4 +370,23 @@ final class WP_Markdown_Native_SQL_Select {
 	public function subqueries(): array { return $this->subqueries; }
 
 	public function union(): ?self { return $this->union; }
+	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Predicate> */
+	public function scalar_predicates(): array { return $this->scalar_predicates; }
+	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Predicate> */
+	public function scalar_having(): array { return $this->scalar_having; }
+	public function group_expression(): ?WP_Markdown_Native_SQL_Scalar_Expression { return $this->group_expression; }
+	public function boolean_predicate(): ?WP_Markdown_Native_SQL_Boolean_Predicate { return $this->boolean_predicate; }
+
+	public function derived(): ?self { return $this->derived; }
+
+	public function union_all(): bool { return $this->union_all; }
+	/** @return array<int,array{column:WP_Markdown_Native_SQL_Identifier,descending:bool}> */
+	public function union_orders(): array { return $this->union_orders; }
+	public function union_limit(): ?int { return $this->union_limit; }
+	public function union_limit_offset(): int { return $this->union_limit_offset; }
+
+	/** Remove clauses that syntactically follow an unparenthesized UNION branch. */
+	public function without_order_limit(): self {
+		return new self( $this->select_all, $this->count_all, $this->projection, $this->table, $this->predicates, array(), null, $this->alias, $this->joins, $this->calculates_found_rows, 0, $this->distinct, $this->contradiction, $this->group_by, $this->aggregates, $this->scalar_projection, $this->having, $this->subqueries, $this->union, $this->scalar_predicates, $this->scalar_having, $this->group_expression, $this->boolean_predicate, $this->derived, $this->union_all, $this->union_orders, $this->union_limit, $this->union_limit_offset );
+	}
 }

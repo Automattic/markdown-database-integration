@@ -80,6 +80,11 @@ $added = $runtime->execute(
 );
 $rows_after_add = snapshot_rows( $root );
 
+$default_added = $runtime->execute(
+	new WP_Markdown_Query_Request( 'ALTER TABLE wp_agents ADD COLUMN generation TINYINT NOT NULL DEFAULT 1', 'wp_' )
+);
+$rows_after_default_add = snapshot_rows( $root );
+
 $select_after_add = $runtime->execute(
 	new WP_Markdown_Query_Request( 'SELECT id, note FROM wp_agents WHERE id = 1', 'wp_' )
 );
@@ -114,6 +119,8 @@ $checks = array(
 	'ADD reconciles existing snapshot rows' => true === $added->succeeded()
 		&& array_key_exists( 'note', $rows_after_add[0] ?? array() )
 		&& null === $rows_after_add[0]['note'],
+	'ADD materializes deterministic defaults for existing rows' => true === $default_added->succeeded()
+		&& '1' === $rows_after_default_add[0]['generation'],
 	'an added column is immediately selectable' => 1 === $select_after_add->return_value(),
 	'DROP removes the column from persisted rows' => true === $dropped->succeeded()
 		&& ! array_key_exists( 'note', $rows_after_drop[0] ?? array( 'note' => null ) ),

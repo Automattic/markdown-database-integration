@@ -40,7 +40,13 @@ $plugin = $runtime->execute(
 );
 $added = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_wc_order_stats ADD INDEX status (status)', 'wp_' ) );
 $again = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_wc_order_stats ADD INDEX status (status)', 'wp_' ) );
+$sub_part = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_wc_order_stats ADD KEY status_parent (status(10), parent_id)', 'wp_' ) );
 $shown = $runtime->execute( new WP_Markdown_Query_Request( "SHOW INDEX FROM wp_wc_order_stats WHERE key_name = 'status'", 'wp_' ) );
+$persisted_before_drop = (string) file_get_contents( $root . '/_schema/wc_order_stats.sql' );
+$dropped = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_wc_order_stats DROP INDEX status', 'wp_' ) );
+$change = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_wc_order_stats CHANGE COLUMN status status varchar(20) NOT NULL', 'wp_' ) );
+$dropped_shown = $runtime->execute( new WP_Markdown_Query_Request( "SHOW INDEX FROM wp_wc_order_stats WHERE key_name = 'status'", 'wp_' ) );
+$sub_part_shown = $runtime->execute( new WP_Markdown_Query_Request( "SHOW INDEX FROM wp_wc_order_stats WHERE key_name = 'status_parent'", 'wp_' ) );
 $keys = $runtime->execute( new WP_Markdown_Query_Request( "SHOW KEYS FROM wp_wc_order_stats WHERE Key_name = 'PRIMARY' AND Column_name = 'order_id'", 'wp_' ) );
 $comments = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_comments ADD INDEX woo_idx_comment_type (comment_type)', 'wp_' ) );
 $date_type = $runtime->execute(
@@ -55,8 +61,13 @@ $persisted = (string) file_get_contents( $root . '/_schema/wc_order_stats.sql' )
 $checks = array(
 	'INDEX is a KEY synonym in CREATE TABLE' => false !== $index_create->return_value(),
 	'ADD INDEX persists on a plugin table' => false !== $added->return_value()
-		&& str_contains( $persisted, 'KEY `status` (`status`)' ),
+		&& str_contains( $persisted_before_drop, 'KEY `status` (`status`)' ),
 	'ADD INDEX is idempotent' => false !== $again->return_value(),
+	'ADD KEY retains composite sub-part metadata' => false !== $sub_part->return_value()
+		&& array( '10', null ) === array_map( static fn( object $row ): ?string => $row->Sub_part, $sub_part_shown->wpdb_state()['last_result'] ),
+	'DROP INDEX removes the persisted secondary key' => false !== $dropped->return_value()
+		&& array() === $dropped_shown->wpdb_state()['last_result'],
+	'CHANGE COLUMN accepts dbDelta-style same-name changes' => false !== $change->return_value(),
 	'SHOW INDEX WHERE filters by Key_name' => array( 'status' ) === array_map(
 		static fn( object $row ): string => (string) $row->Key_name,
 		$shown->wpdb_state()['last_result']

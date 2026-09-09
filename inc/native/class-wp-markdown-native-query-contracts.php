@@ -82,11 +82,13 @@ final class WP_Markdown_Native_Query_Subquery {
 	public function __construct(
 		private readonly string $operator,
 		private readonly ?string $column,
-		private readonly WP_Markdown_Native_Query_Plan $query
+		private readonly WP_Markdown_Native_Query_Plan $query,
+		private readonly ?string $source = null
 	) {}
 	public function operator(): string { return $this->operator; }
 	public function column(): ?string { return $this->column; }
 	public function query(): WP_Markdown_Native_Query_Plan { return $this->query; }
+	public function source(): ?string { return $this->source; }
 }
 
 /** Backend-neutral row-local expression used by query plans. */
@@ -98,7 +100,8 @@ final class WP_Markdown_Native_Query_Scalar_Expression {
 		private readonly int|string|null $literal = null,
 		private readonly array $arguments = array(),
 		private readonly array $branches = array(),
-		private readonly ?self $else = null
+		private readonly ?self $else = null,
+		private readonly ?string $source = null
 	) {}
 
 	public function kind(): string {
@@ -107,6 +110,10 @@ final class WP_Markdown_Native_Query_Scalar_Expression {
 
 	public function column(): ?string {
 		return $this->column;
+	}
+
+	public function source(): ?string {
+		return $this->source;
 	}
 
 	public function literal(): int|string|null {
@@ -158,17 +165,51 @@ final class WP_Markdown_Native_Query_Scalar_Expression {
 	}
 }
 
+final class WP_Markdown_Native_Query_Scalar_Predicate {
+	public function __construct(
+		private readonly WP_Markdown_Native_Query_Scalar_Expression $left,
+		private readonly string $operator,
+		private readonly WP_Markdown_Native_Query_Scalar_Expression $right
+	) {}
+	public function left(): WP_Markdown_Native_Query_Scalar_Expression { return $this->left; }
+	public function operator(): string { return $this->operator; }
+	public function right(): WP_Markdown_Native_Query_Scalar_Expression { return $this->right; }
+	/** @return array<int,string> */
+	public function columns(): array { return array_values( array_unique( array_merge( $this->left->columns(), $this->right->columns() ) ) ); }
+}
+
+final class WP_Markdown_Native_Query_Boolean_Predicate {
+	/** @param array<int,array<int,WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate|WP_Markdown_Native_Query_Subquery>> $groups */
+	public function __construct( private readonly array $groups ) {}
+	public function groups(): array { return $this->groups; }
+	/** @return array<int,string> */
+	public function columns(): array {
+		$columns = array();
+		foreach ( $this->groups as $group ) {
+			foreach ( $group as $predicate ) {
+				if ( $predicate instanceof WP_Markdown_Native_Query_Subquery ) {
+					if ( null !== $predicate->column() ) { $columns[] = $predicate->column(); }
+					continue;
+				}
+				$columns = array_merge( $columns, $predicate->columns() );
+			}
+		}
+		return array_values( array_unique( $columns ) );
+	}
+}
+
 final class WP_Markdown_Native_Query_Join {
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $on_filters */
 	public function __construct(
 		private readonly string $table,
 		private readonly string $alias,
-		private readonly string $left_source,
-		private readonly string $left_column,
-		private readonly string $right_source,
-		private readonly string $right_column,
+		private readonly ?string $left_source,
+		private readonly ?string $left_column,
+		private readonly ?string $right_source,
+		private readonly ?string $right_column,
 		private readonly bool $outer = false,
-		private readonly array $on_filters = array()
+		private readonly array $on_filters = array(),
+		private readonly ?WP_Markdown_Native_Query_Plan $derived = null
 	) {}
 
 	public function table(): string {
@@ -179,19 +220,19 @@ final class WP_Markdown_Native_Query_Join {
 		return $this->alias;
 	}
 
-	public function left_source(): string {
+	public function left_source(): ?string {
 		return $this->left_source;
 	}
 
-	public function left_column(): string {
+	public function left_column(): ?string {
 		return $this->left_column;
 	}
 
-	public function right_source(): string {
+	public function right_source(): ?string {
 		return $this->right_source;
 	}
 
-	public function right_column(): string {
+	public function right_column(): ?string {
 		return $this->right_column;
 	}
 
@@ -202,6 +243,10 @@ final class WP_Markdown_Native_Query_Join {
 	/** @return array<int,WP_Markdown_Native_Query_Predicate> */
 	public function on_filters(): array {
 		return $this->on_filters;
+	}
+
+	public function derived(): ?WP_Markdown_Native_Query_Plan {
+		return $this->derived;
 	}
 }
 
@@ -231,7 +276,16 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly array $scalar_projection = array(),
 		private readonly array $having = array(),
 		private readonly array $subqueries = array(),
-		private readonly ?self $union = null
+		private readonly ?self $union = null,
+		private readonly array $scalar_predicates = array(),
+		private readonly array $scalar_having = array(),
+		private readonly ?WP_Markdown_Native_Query_Scalar_Expression $group_expression = null,
+		private readonly ?WP_Markdown_Native_Query_Boolean_Predicate $boolean_predicate = null,
+		private readonly ?self $derived = null,
+		private readonly bool $union_all = false,
+		private readonly array $union_order_by = array(),
+		private readonly ?int $union_limit = null,
+		private readonly int $union_limit_offset = 0
 	) {}
 
 	public function table(): string {
@@ -342,6 +396,20 @@ final class WP_Markdown_Native_Query_Plan {
 	public function subqueries(): array { return $this->subqueries; }
 
 	public function union(): ?self { return $this->union; }
+	/** @return array<int,WP_Markdown_Native_Query_Scalar_Predicate> */
+	public function scalar_predicates(): array { return $this->scalar_predicates; }
+	/** @return array<int,WP_Markdown_Native_Query_Scalar_Predicate> */
+	public function scalar_having(): array { return $this->scalar_having; }
+	public function group_expression(): ?WP_Markdown_Native_Query_Scalar_Expression { return $this->group_expression; }
+	public function boolean_predicate(): ?WP_Markdown_Native_Query_Boolean_Predicate { return $this->boolean_predicate; }
+
+	public function derived(): ?self { return $this->derived; }
+
+	public function union_all(): bool { return $this->union_all; }
+	/** @return array<int,array{column:string,descending:bool,numeric?:bool}> */
+	public function union_order_by(): array { return $this->union_order_by; }
+	public function union_limit(): ?int { return $this->union_limit; }
+	public function union_limit_offset(): int { return $this->union_limit_offset; }
 }
 
 final class WP_Markdown_Native_Table_Access {

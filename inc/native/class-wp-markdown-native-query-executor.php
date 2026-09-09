@@ -1576,17 +1576,28 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$days = array( 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday' );
 		$months = array( 1 => 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December' );
 		$hour = (int) $date->format( 'G' );
-		$week_sunday = (int) $date->format( 'W' );
+		$week_sunday = $this->week_number( $date, false );
+		$week_monday = $this->week_number( $date, true );
+		$week_sunday_one = 0 === $week_sunday ? $this->week_number( $date->modify( 'last day of December last year' ), false ) : $week_sunday;
 		$tokens = array(
 			'a' => substr( $days[ (int) $date->format( 'w' ) ], 0, 3 ), 'b' => substr( $months[ (int) $date->format( 'n' ) ], 0, 3 ),
 			'c' => $date->format( 'n' ), 'D' => $this->day_ordinal( (int) $date->format( 'j' ) ), 'd' => $date->format( 'd' ), 'e' => $date->format( 'j' ), 'f' => $date->format( 'u' ),
-			'H' => $date->format( 'H' ), 'h' => $date->format( 'h' ), 'I' => $date->format( 'h' ), 'i' => $date->format( 'i' ), 'j' => $date->format( 'z' ) + 1,
+			'H' => $date->format( 'H' ), 'h' => $date->format( 'h' ), 'I' => $date->format( 'h' ), 'i' => $date->format( 'i' ), 'j' => str_pad( (string) ( $date->format( 'z' ) + 1 ), 3, '0', STR_PAD_LEFT ),
 			'k' => (string) $hour, 'l' => (string) ( 0 === $hour % 12 ? 12 : $hour % 12 ), 'M' => $months[ (int) $date->format( 'n' ) ], 'm' => $date->format( 'm' ),
 			'p' => 12 <= $hour ? 'PM' : 'AM', 'r' => $date->format( 'h:i:s A' ), 'S' => $date->format( 's' ), 's' => $date->format( 's' ), 'T' => $date->format( 'H:i:s' ),
-			'U' => str_pad( (string) $week_sunday, 2, '0', STR_PAD_LEFT ), 'u' => str_pad( (string) $week_sunday, 2, '0', STR_PAD_LEFT ), 'V' => $date->format( 'W' ), 'v' => $date->format( 'W' ),
+			'U' => str_pad( (string) $week_sunday, 2, '0', STR_PAD_LEFT ), 'u' => str_pad( (string) $week_monday, 2, '0', STR_PAD_LEFT ), 'V' => str_pad( (string) $week_sunday_one, 2, '0', STR_PAD_LEFT ), 'v' => $date->format( 'W' ),
 			'W' => $days[ (int) $date->format( 'w' ) ], 'w' => $date->format( 'w' ), 'X' => $date->format( 'o' ), 'x' => $date->format( 'o' ), 'Y' => $date->format( 'Y' ), 'y' => $date->format( 'y' ), '%' => '%',
 		);
 		return preg_replace_callback( '/%./', static fn( array $match ): string => (string) ( $tokens[ $match[0][1] ] ?? $match[0][1] ), (string) $format );
+	}
+
+	/** MySQL's %U/%u week number starts at zero before the first week day. */
+	private function week_number( DateTimeImmutable $date, bool $monday ): int {
+		$year_start = $date->setDate( (int) $date->format( 'Y' ), 1, 1 )->setTime( 0, 0 );
+		$start_day = $monday ? 1 : 0;
+		$first = ( $start_day - (int) $year_start->format( 'w' ) + 7 ) % 7;
+		$day = (int) $date->format( 'z' );
+		return $day < $first ? 0 : intdiv( $day - $first, 7 ) + 1;
 	}
 
 	private function day_ordinal( int $day ): string {

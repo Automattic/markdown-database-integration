@@ -170,13 +170,21 @@ $missing_table = new WP_Markdown_Native_Shadow_Verifier(
 	2,
 	array( 'input_mode' => 'sql_snapshot' )
 );
-$database->last_result = array();
-$database->num_rows = 0;
+$database->result_rows( array(), array() );
 $database->last_error = 'private missing table message';
 $database->last_errno = 1146;
+$database->insert_id = 0;
 $missing_table->capture_input( 'SELECT option_value FROM wp_2_options', $database );
 $missing_table->observe( 'SELECT option_value FROM wp_2_options', false, $database );
 $missing_table_report = $missing_table->report();
+$duplicate_alias = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	1,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$duplicate_alias->capture_input( 'SELECT p.ID FROM wp_posts p JOIN wp_2_options p ON p.ID = p.ID', $database );
+$duplicate_alias->observe( 'SELECT p.ID FROM wp_posts p JOIN wp_2_options p ON p.ID = p.ID', false, $database );
+$duplicate_alias_report = $duplicate_alias->report();
 $database->source()->blog_table_absent = false;
 $database->result_rows( array( array( 'option_value' => 'created' ) ), array( array( 'name' => 'option_value', 'type' => 253 ) ) );
 $database->last_error = '';
@@ -255,6 +263,8 @@ $checks = array(
 		&& ! str_contains( json_encode( $missing_table_report, JSON_THROW_ON_ERROR ), 'private missing table message' ),
 	'created source tables recover from a prior missing-table comparison' => 2 === ( $missing_table_recovered['counts']['compatible'] ?? null )
 		&& 1 === ( $missing_table_recovered['counts']['compatible_reads'] ?? null ),
+	'duplicate JOIN aliases cannot count as compatible missing-table errors' => 1 === ( $duplicate_alias_report['counts']['unsupported'] ?? null )
+		&& 0 === ( $duplicate_alias_report['counts']['compatible_missing_table_errors'] ?? null ),
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
 	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

@@ -234,8 +234,8 @@ $checks = array(
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'sql-secret' )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), 'D34DB33F' )
 		&& ! str_contains( json_encode( $failure_report, JSON_THROW_ON_ERROR ), '12.345e+6' ),
-	'missing-table failures compare independently by false return and normalized code' => 1 === ( $missing_table_report['counts']['compatible_missing_table_errors'] ?? null )
-		&& ! str_contains( json_encode( $missing_table_report, JSON_THROW_ON_ERROR ), 'private authoritative missing table error' ),
+	'unregistered native tables remain unsupported without a snapshot absence fact' => 1 === ( $missing_table_report['counts']['unsupported'] ?? null )
+		&& 0 === ( $missing_table_report['counts']['compatible_missing_table_errors'] ?? null ),
 	'a different native error does not match a missing-table oracle outcome' => 1 === ( $wrong_missing_table_report['counts']['mismatched'] ?? null ),
 	'SQLite authoritative returns and public state survive hostile observers' => 1 === $sqlite_return
 		&& 1 === $hostile->calls

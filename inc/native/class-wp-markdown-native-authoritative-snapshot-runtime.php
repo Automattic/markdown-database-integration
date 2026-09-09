@@ -60,7 +60,24 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		return $this->runtime->execute( $request );
+		$result = $this->runtime->execute( $request );
+		$diagnostic = $result->diagnostic() ?? array();
+		if ( 'unsupported_table' !== ( $diagnostic['reason'] ?? null ) || ! $this->has_explicitly_absent_source( $request->sql() ) ) {
+			return $result;
+		}
+		return WP_Markdown_Query_Result::failure(
+			array(
+				'code'    => 1146,
+				'reason'  => 'missing_table',
+				'message' => 'The requested table does not exist.',
+			)
+		);
+	}
+
+	/** Only snapshot discovery, never an unregistered native table, proves absence. */
+	private function has_explicitly_absent_source( string $sql ): bool {
+		$absent = array_column( array_filter( $this->provenance, static fn( array $table ): bool => false === $table['exists'] ), 'table' );
+		return array() !== array_intersect( self::tables_in( $sql ), $absent );
 	}
 
 	/** @return array{read_connection:string,tables:array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}>} */

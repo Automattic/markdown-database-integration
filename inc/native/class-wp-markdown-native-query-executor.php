@@ -50,7 +50,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private ?WP_Markdown_Native_Table_Mutation_Runtime $table_mutations = null,
 		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
 		private ?WP_Markdown_Native_Post_Mutation_Runtime $post_mutations = null,
-		private int $correlated_subquery_limit = self::MAX_CORRELATED_SUBQUERY_EVALUATIONS
+		private int $correlated_subquery_limit = self::MAX_CORRELATED_SUBQUERY_EVALUATIONS,
+		private ?WP_Markdown_Native_Advisory_Locks $advisory_locks = null
 	) {
 		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
 	}
@@ -62,6 +63,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
+		}
+		$advisory_lock = $this->advisory_lock_query( $request->sql() );
+		if ( null !== $advisory_lock ) {
+			return $advisory_lock;
 		}
 		// The canonical store is a directory, not a named server database.
 		if ( 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $request->sql() ) ) {
@@ -116,6 +121,38 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $this->execute_plan( $plan );
 	}
 
+	/** Release this logical connection's root-scoped advisory locks. */
+	public function close(): void {
+		$this->advisory_locks?->close();
+	}
+
+	private function advisory_lock_query( string $sql ): ?WP_Markdown_Query_Result {
+		if ( 1 !== preg_match( "/^\\s*SELECT\\s+((GET_LOCK|RELEASE_LOCK)\\s*\\(\\s*('(?:\\\\.|[^'])*')\\s*(?:,\\s*([0-9]+(?:\\.[0-9]+)?))?\\s*\\))\\s*;?\\s*$/i", $sql, $match ) ) {
+			return null;
+		}
+		$function = strtoupper( $match[2] );
+		if ( ( 'GET_LOCK' === $function && ! isset( $match[4] ) ) || ( 'RELEASE_LOCK' === $function && isset( $match[4] ) ) || null === $this->advisory_locks ) {
+			return $this->failure( 'unsupported_grammar', 'mdi-native advisory locks require a literal name and bounded timeout.' );
+		}
+		try {
+			$literal = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $match[3] )[0];
+			$name = $literal->value();
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return $this->failure( 'unsupported_literal', 'mdi-native cannot decode the requested advisory lock name.' );
+		}
+		if ( ! is_string( $name ) || ( isset( $match[4] ) && (float) $match[4] > WP_Markdown_Native_Advisory_Locks::MAX_WAIT_SECONDS ) ) {
+			return $this->failure( 'unsupported_grammar', 'mdi-native advisory lock timeouts must be between 0 and 10 seconds.' );
+		}
+		$value = 'GET_LOCK' === $function
+			? (int) $this->advisory_locks->acquire( $name, (float) $match[4] )
+			: $this->advisory_locks->release( $name );
+		$column = $match[1];
+		return WP_Markdown_Query_Result::selected(
+			array( array( $column => null === $value ? null : (string) $value ) ),
+			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
+		);
+	}
+
 	private function execute_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
 		if ( $allow_union && null !== $plan->union() ) {
 			return $this->execute_union( $plan );
@@ -128,7 +165,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $table;
 			}
 			if ( null === $table ) {
-				return $this->missing_table();
+				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
 			}
 			$schema = $table['schema'];
 			$projection = array( '*' ) === $plan->projection() ? $schema->column_names() : $plan->projection();
@@ -148,7 +185,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $table;
 		}
 		if ( null === $table ) {
-			return $this->missing_table();
+			return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested table.' );
 		}
 
 		$schema     = $table['schema'];
@@ -911,7 +948,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				// Keep simple UNION branches on the direct path: unlike a top-level
 				// query, they have always supported bounded in-memory filtering.
 				$table = $this->registry->table( $branch->table() );
-				if ( null === $table ) { return $this->missing_table(); }
+				if ( null === $table ) { return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested UNION table.' ); }
 				$schema = $table['schema'];
 				$projection = array( '*' ) === $branch->projection() ? $schema->column_names() : $branch->projection();
 				foreach ( $projection as $column ) { if ( ! $schema->has_column( $column ) ) { return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested UNION column.' ); } }
@@ -1010,7 +1047,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				return $table;
 			}
 			if ( null === $table || isset( $sources[ $join->alias() ] ) ) {
-				return $this->missing_table();
+				return $this->failure( 'unsupported_table', 'mdi-native cannot query the requested JOIN table.' );
 			}
 			$sources[ $join->alias() ] = array( 'table' => $join->table(), 'schema' => $table['schema'], 'provider' => $table['provider'] );
 		}
@@ -2261,16 +2298,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return null === $this->table_mutations
 			? $this->failure( 'unsupported_grammar', 'mdi-native generic table mutations are unavailable.' )
 			: $this->table_mutations->execute( $request );
-	}
-
-	private function missing_table(): WP_Markdown_Query_Result {
-		return WP_Markdown_Query_Result::failure(
-			array(
-				'code'    => 1146,
-				'reason'  => 'missing_table',
-				'message' => 'The requested table does not exist.',
-			)
-		);
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

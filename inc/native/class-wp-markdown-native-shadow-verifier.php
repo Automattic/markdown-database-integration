@@ -168,7 +168,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			);
 			if ( ! $native->succeeded() ) {
 				$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true );
-				if ( $this->is_missing_table_error( $expected ) && $this->is_missing_table_error( $native->corpus_result() ) ) {
+				if ( $this->has_matching_missing_table_error_state( $expected, $native->corpus_result() ) ) {
 					++$this->counts['compatible'];
 					++$this->counts['compatible_missing_table_errors'];
 					return;
@@ -334,9 +334,16 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		return '' === $reason ? 'unknown' : substr( $reason, 0, 128 );
 	}
 
-	/** Compare normalized errors without retaining server-specific error messages. */
-	private function is_missing_table_error( array $result ): bool {
-		return false === ( $result['return']['value'] ?? null ) && 1146 === (int) ( $result['error_code'] ?? 0 );
+	/** Compare all caller-visible error state except server-specific error text. */
+	private function has_matching_missing_table_error_state( array $expected, array $actual ): bool {
+		if ( false !== ( $expected['return']['value'] ?? null ) || 1146 !== (int) ( $expected['error_code'] ?? 0 ) ) {
+			return false;
+		}
+		if ( false !== ( $actual['return']['value'] ?? null ) || 1146 !== (int) ( $actual['error_code'] ?? 0 ) ) {
+			return false;
+		}
+		unset( $expected['last_error'], $actual['last_error'] );
+		return WP_Markdown_Query_Compatibility_Comparator::compare( $expected, $actual )['compatible'];
 	}
 
 	private function query_template( string $query ): string {

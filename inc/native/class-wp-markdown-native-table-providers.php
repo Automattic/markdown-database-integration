@@ -240,13 +240,14 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		string $content_root,
 		WP_Markdown_Native_Table_Schema $schema,
 		?WP_Markdown_Storage $storage = null,
-		?string $state_root = null
+		?string $state_root = null,
+		bool $network_root = false
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
 		// Writing a canonical file makes anything remembered about the corpus
 		// stale, so the parse is dropped the moment one changes.
-		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
+		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root, $network_root ? array( 'sites' ) : array() );
 		$this->storage->add_file_mutation_observer( function (): void {
 			$this->catalogue->forget();
 		} );

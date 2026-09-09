@@ -207,7 +207,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 		}
 		if ( 'posts' === $suffix ) {
 			$posts = self::posts_schema();
-			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root, $multisite && $prefix === $base_prefix ), $provider_state_root ) );
+			$network_root = $multisite && $prefix === $base_prefix;
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root, $network_root ), $provider_state_root, $network_root ) );
 			return true;
 		}
 		$bespoke = array(

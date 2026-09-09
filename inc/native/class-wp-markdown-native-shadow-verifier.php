@@ -14,16 +14,11 @@ final class WP_Markdown_Native_Shadow_Factory {
 		$state_root = defined( 'MARKDOWN_DB_STATE_DIR' )
 			? (string) MARKDOWN_DB_STATE_DIR
 			: ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir() );
-		$prefix = (string) ( $database->prefix ?? ( $GLOBALS['table_prefix'] ?? 'wp_' ) );
-		$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? $prefix ) );
+		$base_prefix = (string) ( $database->base_prefix ?? ( $GLOBALS['table_prefix'] ?? ( $database->prefix ?? 'wp_' ) ) );
 		$content_root = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? (string) MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir();
-		$runtime = WP_Markdown_Native_Runtime_Factory::runtime(
-			$state_root,
-			$prefix,
-			$base_prefix,
-			defined( 'MULTISITE' ) && MULTISITE,
-			$content_root
-		);
+		// db.php runs before WordPress finishes resolving its multisite prefix.
+		// The wrapper reads the active wpdb topology when each query is observed.
+		$runtime = WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $state_root, $base_prefix, $content_root );
 		$maximum = defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ? (int) MARKDOWN_DB_NATIVE_SHADOW_MAX : 1000;
 		return new WP_Markdown_Native_Shadow_Verifier( $runtime, $maximum );
 	}

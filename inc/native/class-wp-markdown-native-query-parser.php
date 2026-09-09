@@ -222,7 +222,8 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->union_all(),
 			array_map( fn( array $item ): array => array( 'column' => $item['column']->name(), 'descending' => $item['descending'], 'numeric' => str_starts_with( $item['column']->name(), '__union_ordinal_' ) ), $ast->union_orders() ),
 			$ast->union_limit(),
-			$ast->union_limit_offset()
+			$ast->union_limit_offset(),
+			array_map( fn( WP_Markdown_Native_SQL_Scalar_Expression $expression ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $expression, $base_source ), $ast->group_expressions() )
 		);
 	}
 

@@ -155,7 +155,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $scalar_predicates as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
 		if ( null !== $boolean_predicate ) { $columns = array_merge( $columns, $boolean_predicate->columns() ); }
 		if ( array() === $plan->aggregates() ) { foreach ( $plan->scalar_having() as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); } }
-		if ( null !== $plan->group_expression() ) { $columns = array_merge( $columns, $plan->group_expression()->columns() ); }
+		foreach ( $plan->group_expressions() as $expression ) { $columns = array_merge( $columns, $expression->columns() ); }
 		foreach ( $plan->subqueries() as $subquery ) {
 			if ( null !== $subquery->column() ) {
 				$columns[] = $subquery->column();
@@ -247,7 +247,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$provider_projection = array_merge( $provider_projection, $this->outer_correlation_columns( $subquery->query() )[ $plan->table_alias() ?? $plan->table() ] ?? array() );
 		}
 		if ( array() === $plan->aggregates() ) { foreach ( $plan->scalar_having() as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); } }
-		if ( null !== $plan->group_expression() ) { $provider_projection = array_merge( $provider_projection, $plan->group_expression()->columns() ); }
+		foreach ( $plan->group_expressions() as $expression ) { $provider_projection = array_merge( $provider_projection, $expression->columns() ); }
 		foreach ( $residual as $predicate ) {
 			foreach ( $predicate->columns() as $column ) {
 				$provider_projection[] = $column;
@@ -362,9 +362,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				if ( array() !== $aggregates ) {
 					if ( null !== $plan->group_by() ) {
 						$group_by = $plan->group_by();
-						$value = null === $plan->group_expression() ? ( $row[ $group_by ] ?? null ) : $this->evaluate_scalar( $plan->group_expression(), $row, $schema );
-						$key = null === $value ? "\0" : serialize( $value );
-						$groups[ $key ] ??= array( 'value' => $value, 'state' => array() );
+						$expressions = $plan->group_expressions();
+						$values = array() === $expressions ? array( $row[ $group_by ] ?? null ) : array_map( fn( WP_Markdown_Native_Query_Scalar_Expression $expression ): int|string|null => $this->evaluate_scalar( $expression, $row, $schema ), $expressions );
+						$key = serialize( $values );
+						$groups[ $key ] ??= array( 'value' => $values[0] ?? null, 'row' => $row, 'state' => array() );
 						$this->accumulate_aggregates( $groups[ $key ]['state'], $row, $aggregates, $schema );
 					} else {
 						$this->accumulate_aggregates( $aggregate_state, $row, $aggregates, $schema );
@@ -473,6 +474,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$rows = array();
 		foreach ( $groups as $group ) {
 			$row = array( $column => null === $group['value'] ? null : (string) $group['value'] );
+			foreach ( $scalar_projection as $scalar ) {
+				$row[ $scalar['alias'] ] = $this->string_scalar( $this->evaluate_scalar( $scalar['expression'], $group['row'] ?? array(), $schema ) );
+			}
 			foreach ( $aggregates as $index => $aggregate ) {
 				$row[ $aggregate['alias'] ] = $this->aggregate_value( $group['state'][ $index ] ?? array(), $aggregate['function'] );
 			}
@@ -493,7 +497,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( $calculates_found_rows ) { $this->last_found_rows = count( $rows ); }
 		$rows = array_values( array_slice( $rows, $offset, PHP_INT_MAX === $limit ? null : $limit ) );
-		$columns = array( array( 'name' => $group_name, 'table' => $group_name === $column ? $table : '', 'type' => $group_name === $column ? $schema->column( $column )->type() : 253 ) );
+		$columns = array();
+		if ( array() === $scalar_projection ) {
+			$columns[] = array( 'name' => $group_name, 'table' => $table, 'type' => $schema->column( $column )->type() );
+		} else {
+			foreach ( $scalar_projection as $scalar ) { $columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 ); }
+			ksort( $columns );
+			$columns = array_values( $columns );
+		}
 		foreach ( $aggregates as $aggregate ) { $columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 'GROUP_CONCAT' === $aggregate['function'] ? 253 : 8 ); }
 		return WP_Markdown_Query_Result::selected( $rows, $columns );
 	}

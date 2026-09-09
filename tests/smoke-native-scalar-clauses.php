@@ -20,6 +20,7 @@ $difference = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM 
 $date_or = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE (DATE_ADD(published_at, INTERVAL 1 DAY) < '2024-01-17 00:00:00' OR DATE_ADD(published_at, INTERVAL 1 DAY) >= '2024-02-02 00:00:00') AND label <> 'two' ORDER BY id", 'wp_' ) );
 $late_limit = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_dates WHERE DATE_ADD(published_at, INTERVAL 1 DAY) >= '2024-02-02 00:00:00' ORDER BY id LIMIT 1", 'wp_' ) );
 $group = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE_FORMAT(published_at, '%Y-%m') AS bucket, COUNT(*) AS total FROM wp_dates GROUP BY DATE_FORMAT(published_at, '%Y-%m') HAVING ABS(total) > 1", 'wp_' ) );
+$multi_group = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE(published_at) AS start_date, DATE_ADD(published_at, INTERVAL 1 DAY) AS end_date, COUNT(*) AS bucket_count FROM wp_dates GROUP BY DATE(published_at), DATE_ADD(published_at, INTERVAL 1 DAY)", 'wp_' ) );
 $haversine = '(6371 * ACOS(COS(RADIANS(latitude)) * COS(RADIANS(0)) * COS(RADIANS(0) - RADIANS(0)) + SIN(RADIANS(latitude)) * SIN(RADIANS(0))))';
 $ordered = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id, {$haversine} AS distance FROM wp_dates HAVING {$haversine} > 0 ORDER BY {$haversine} DESC", 'wp_' ) );
 $functions = $runtime->execute( new WP_Markdown_Query_Request( "SELECT UNIX_TIMESTAMP() AS current_timestamp, RAND(123) AS seeded_random, DATE_ADD('2024-01-15', INTERVAL -1 DAY) AS added_negative, DATE_SUB('2024-01-15', INTERVAL -1 DAY) AS subtracted_negative FROM wp_dates LIMIT 1", 'wp_' ) );
@@ -34,6 +35,11 @@ $checks = array(
 	'WP_Date_Query scalar OR composes with ordinary AND predicates without dropping disjuncts' => array( '1', '3' ) === array_map( static fn( object $row ): string => $row->id, $date_or->wpdb_state()['last_result'] ),
 	'scalar residual filtering precedes LIMIT even when the matching row is outside the provider bound' => array( '3' ) === array_map( static fn( object $row ): string => $row->id, $late_limit->wpdb_state()['last_result'] ),
 	'date bucketing applies scalar HAVING after aggregate inputs are filtered and grouped' => array( '2024-01' => '2' ) === array_reduce( $group->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->bucket ] = $row->total; return $values; }, array() ),
+	'multiple scalar grouping expressions preserve every selected alias and representative value' => array(
+		array( 'start_date' => '2024-01-15', 'end_date' => '2024-01-16 12:00:00', 'bucket_count' => '1' ),
+		array( 'start_date' => '2024-01-25', 'end_date' => '2024-01-26 12:00:00', 'bucket_count' => '1' ),
+		array( 'start_date' => '2024-02-01', 'end_date' => '2024-02-02 12:00:00', 'bucket_count' => '1' ),
+	) === array_map( 'get_object_vars', $multi_group->wpdb_state()['last_result'] ),
 	'parenthesized Haversine projection, HAVING, and ORDER BY share scalar evaluation' => array( '3', '2', '1' ) === array_map( static fn( object $row ): string => $row->id, $ordered->wpdb_state()['last_result'] ),
 	'UNIX_TIMESTAMP accepts zero arguments, RAND(seed) is repeatable, and negative intervals invert direction' => is_numeric( $functions->wpdb_state()['last_result'][0]->current_timestamp ?? null )
 		&& ( $functions->wpdb_state()['last_result'][0]->seeded_random ?? null ) === ( $runtime->execute( new WP_Markdown_Query_Request( 'SELECT RAND(123) AS seeded_random FROM wp_dates LIMIT 1', 'wp_' ) )->wpdb_state()['last_result'][0]->seeded_random ?? null )

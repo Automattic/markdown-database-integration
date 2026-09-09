@@ -276,7 +276,8 @@ final class WP_Markdown_Native_SQL_Select {
 		private readonly bool $union_all = false,
 		private readonly array $union_orders = array(),
 		private readonly ?int $union_limit = null,
-		private readonly int $union_limit_offset = 0
+		private readonly int $union_limit_offset = 0,
+		private readonly array $group_expressions = array()
 	) {}
 
 	public function selects_all(): bool {
@@ -375,6 +376,8 @@ final class WP_Markdown_Native_SQL_Select {
 	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Predicate> */
 	public function scalar_having(): array { return $this->scalar_having; }
 	public function group_expression(): ?WP_Markdown_Native_SQL_Scalar_Expression { return $this->group_expression; }
+	/** @return array<int,WP_Markdown_Native_SQL_Scalar_Expression> */
+	public function group_expressions(): array { return array() === $this->group_expressions && null !== $this->group_expression ? array( $this->group_expression ) : $this->group_expressions; }
 	public function boolean_predicate(): ?WP_Markdown_Native_SQL_Boolean_Predicate { return $this->boolean_predicate; }
 
 	public function derived(): ?self { return $this->derived; }

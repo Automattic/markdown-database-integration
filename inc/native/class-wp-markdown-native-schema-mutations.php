@@ -27,6 +27,14 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
+		// MySQL commits an open transaction before every table DDL statement.
+		// Otherwise a later rollback would erase a schema that MySQL retains.
+		if ( null !== $this->transactions ) {
+			$committed = $this->transactions->commit();
+			if ( true !== $committed ) {
+				return $this->failure( 'transaction_commit_failed', $committed );
+			}
+		}
 		$sql = trim( $request->sql() );
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );

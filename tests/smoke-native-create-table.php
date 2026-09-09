@@ -43,6 +43,10 @@ $unexecutable = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT label 
 $duplicate = $runtime->execute( new WP_Markdown_Query_Request( $ddl ) );
 $injected = $runtime->execute( new WP_Markdown_Query_Request( $ddl . '; DROP TABLE wp_options' ) );
 $reloaded = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_plugin_events' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
+$transactional_ddl = $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_ddl_commit (id bigint unsigned NOT NULL, PRIMARY KEY (id))' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
+$ddl_survives_rollback = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_commit' ) );
 
 $checks = array(
 	'generic CREATE TABLE returns the WordPress DDL success shape' => true === $created->return_value()
@@ -61,6 +65,8 @@ $checks = array(
 		&& 'unsupported_grammar' === ( $injected->diagnostic()['reason'] ?? null )
 		&& $ddl . ";\n" === file_get_contents( $root . '/_schema/plugin_events.sql' ),
 	'persisted definitions restore introspection after a cold reload' => 'event_key' === ( $reloaded->wpdb_state()['last_result'][0]->Field ?? null ),
+	'table DDL implicitly commits and survives a later rollback' => true === $transactional_ddl->return_value()
+		&& 'id' === ( $ddl_survives_rollback->wpdb_state()['last_result'][0]->Field ?? null ),
 );
 
 $failed = false;

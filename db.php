@@ -44,9 +44,7 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 				register_shutdown_function(
 					static function () use ( $verifier, $report_path ): void {
 						$report = $verifier->report();
-						if ( 0 < (int) ( $report['observed'] ?? 0 ) ) {
-							file_put_contents( $report_path, json_encode( $report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n", LOCK_EX );
-						}
+						file_put_contents( $report_path, json_encode( $report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n", LOCK_EX );
 					}
 				);
 			}

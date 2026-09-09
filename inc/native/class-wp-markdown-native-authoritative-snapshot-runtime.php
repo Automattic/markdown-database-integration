@@ -10,7 +10,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private const MAX_ROWS_PER_TABLE = 10000;
 	private const MAX_BYTES_PER_TABLE = 8388608;
 
-	/** @param array<int,array{table:string,exists:bool,rows?:int,sha256?:string,schema_sha256?:string}> $provenance */
+	/** @param array<int,array{table:string,exists:bool,temporary?:bool,rows?:int,sha256?:string,schema_sha256?:string}> $provenance */
 	public function __construct( private WP_Markdown_Query_Runtime $runtime, private array $provenance, private ?string $database_name = null, private ?array $catalog_observation = null ) {}
 
 	public static function capture( object $database, string $sql, string $prefix ): self {
@@ -47,8 +47,12 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 				throw new WP_Markdown_Native_Snapshot_Input_Exception( 'markdown_db_native_snapshot_input_unavailable', 'source_schema_unavailable' );
 			}
 			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
-			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
-			$provenance[] = array( 'table' => $table, 'exists' => true, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
+			$temporary = 1 === preg_match( '/^CREATE\s+TEMPORARY\s+TABLE\b/i', $definition );
+			// MySQL omits temporary tables from information_schema, despite SHOW CREATE exposing them.
+			if ( ! $temporary || null === $catalog_observation ) {
+				$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
+			}
+			$provenance[] = array( 'table' => $table, 'exists' => true, 'temporary' => $temporary, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
 		$catalog_observation = null === $catalog_observation ? null : array(
 			'before' => $catalog_observation,

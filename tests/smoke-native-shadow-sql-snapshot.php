@@ -41,6 +41,8 @@ final class MDI_Snapshot_Connection {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'agents', 'Create Table' => 'CREATE TABLE `agents` (`id` bigint(20) unsigned NOT NULL, `name` varchar(255) NOT NULL, PRIMARY KEY (`id`))' ) ) );
 		} elseif ( 'SHOW CREATE TABLE `wp_plugin_jobs`' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_plugin_jobs', 'Create Table' => 'CREATE TABLE `wp_plugin_jobs` (`id` bigint(20) unsigned NOT NULL, `status` varchar(64) NOT NULL, `payload` longtext NOT NULL, PRIMARY KEY (`id`))' ) ) );
+		} elseif ( 'SHOW CREATE TABLE `wp_temporary_jobs`' === $sql ) {
+			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_temporary_jobs', 'Create Table' => 'CREATE TEMPORARY TABLE `wp_temporary_jobs` (`id` bigint(20) unsigned NOT NULL, `status` varchar(64) NOT NULL, PRIMARY KEY (`id`))' ) ) );
 		} elseif ( 'SHOW CREATE TABLE `wp_2_options`' === $sql && $this->blog_table_absent ) {
 			$this->errno = 1146;
 			return false;
@@ -64,11 +66,14 @@ final class MDI_Snapshot_Connection {
 		if ( 'SELECT * FROM `wp_plugin_jobs` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( array() );
 		}
+		if ( 'SELECT * FROM `wp_temporary_jobs` LIMIT 10001' === $sql ) {
+			$result = new MDI_Snapshot_Result( array() );
+		}
 		if ( 'SELECT * FROM `wp_2_options` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'ID' => '1', 'option_value' => 'created' ) ) );
 		}
-		if ( str_starts_with( $sql, 'SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE FROM information_schema.COLUMNS' ) ) {
-			$result = new MDI_Snapshot_Result( $this->catalog_rows );
+		if ( str_starts_with( $sql, 'SELECT COLUMN_NAME' ) && str_contains( $sql, 'FROM information_schema.COLUMNS' ) ) {
+			$result = new MDI_Snapshot_Result( str_contains( $sql, "'wp_temporary_jobs'" ) ? array() : $this->catalog_rows );
 		}
 		if ( $result instanceof MDI_Snapshot_Result ) {
 			$this->results[] = $result;
@@ -259,6 +264,12 @@ $catalog_columns = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
 );
 $catalog_result = $catalog_columns->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME IN ('status', 'payload')", 'wp_' ) );
 $catalog_engine = $catalog_columns->execute( new WP_Markdown_Query_Request( "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_plugin_jobs'", 'wp_' ) );
+$temporary_catalog = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_temporary_jobs'",
+	'wp_'
+);
+$temporary_catalog_result = $temporary_catalog->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_temporary_jobs'", 'wp_' ) );
 $capture_count_at_bound = count( $database->source()->results );
 $bounded->capture_input( 'SELECT ID, post_title FROM wp_posts', $database );
 $bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
@@ -307,6 +318,8 @@ $checks = array(
 	'catalog capture records stable same-connection source metadata before and after the physical snapshot' => 1 === ( $catalog_columns->provenance()['catalog_observation']['before']['rows'] ?? null )
 		&& ( $catalog_columns->provenance()['catalog_observation']['before'] ?? null ) === ( $catalog_columns->provenance()['catalog_observation']['after'] ?? null )
 		&& 64 === strlen( (string) ( $catalog_columns->provenance()['catalog_observation']['before']['sha256'] ?? '' ) ),
+	'temporary source tables remain absent from information_schema catalog snapshots' => true === ( $temporary_catalog->provenance()['tables'][0]['temporary'] ?? null )
+		&& array() === $temporary_catalog_result->wpdb_state()['last_result'],
 	'catalog ENGINE remains an explicit unsupported projection after source discovery' => false === $catalog_engine->return_value()
 		&& 'unsupported_column' === ( $catalog_engine->diagnostic()['reason'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

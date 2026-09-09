@@ -141,7 +141,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->failure( 'unsupported_literal', 'mdi-native cannot decode the requested advisory lock name.' );
 		}
 		if ( ! is_string( $name ) || ( isset( $match[4] ) && (float) $match[4] > WP_Markdown_Native_Advisory_Locks::MAX_WAIT_SECONDS ) ) {
-			return $this->failure( 'unsupported_grammar', 'mdi-native advisory lock timeouts must be between 0 and 5 seconds.' );
+			return $this->failure( 'unsupported_grammar', 'mdi-native advisory lock timeouts must be between 0 and 10 seconds.' );
 		}
 		$value = 'GET_LOCK' === $function
 			? (int) $this->advisory_locks->acquire( $name, (float) $match[4] )

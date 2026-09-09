@@ -175,6 +175,11 @@ $noop_cron = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_o
 $read_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
 $direct_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE `wp_options` SET `option_value` = 'third', `autoload` = 'auto-off' WHERE `option_name` = 'cron'" ) );
 $noop_direct_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'third', autoload = 'auto-off' WHERE option_name = 'cron'" ) );
+$conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'fourth' WHERE option_name = 'cron' AND option_value = 'THIRD '" ) );
+$stale_conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'stale' WHERE option_name = 'cron' AND option_value = 'THIRD'" ) );
+$binary_mismatch_conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'binary-stale' WHERE option_name = 'cron' AND BINARY option_value = 'FOURTH'" ) );
+$binary_conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'binary-fourth' WHERE option_name = 'cron' AND BINARY option_value = 'fourth'" ) );
+$unsupported_collation_conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'unicode-stale' WHERE option_name = 'cron' AND option_value = 'caf" . chr( 195 ) . chr( 169 ) . "'" ) );
 $read_direct_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
 $reopened_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $read_persisted_cron = $reopened_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
@@ -205,6 +210,35 @@ $wpdb_unsupported_diagnostic = $database->last_runtime_diagnostic;
 $GLOBALS['mdi_native_query_filter'] = static fn( string $sql ): string => str_replace( "'siteurl'", "'missing'", $sql );
 $wpdb_filtered = $database->query( $prepared_query );
 $GLOBALS['mdi_native_query_filter'] = null;
+
+$write_option( 'cas-race', array( 'option_id' => 8, 'option_name' => 'cas-race', 'option_value' => 'pending', 'autoload' => 'off' ) );
+$cas_workers = array();
+$cas_worker_pipes = array();
+foreach ( array( 'winner-one', 'winner-two' ) as $replacement ) {
+	$worker_pipes = array();
+	$cas_workers[] = proc_open(
+		escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __DIR__ . '/native-option-cas-worker.php' ) . ' ' . escapeshellarg( $root ) . ' ' . escapeshellarg( $replacement ),
+		array( 0 => array( 'pipe', 'r' ), 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ),
+		$worker_pipes
+	);
+	$cas_worker_pipes[] = $worker_pipes;
+}
+$cas_results = array();
+$cas_outputs = array();
+foreach ( $cas_workers as $index => $worker ) {
+	if ( ! is_resource( $worker ) || ! isset( $cas_worker_pipes[ $index ] ) ) {
+		$cas_results[] = false;
+		continue;
+	}
+	$worker_pipes = $cas_worker_pipes[ $index ];
+	fclose( $worker_pipes[0] );
+	$cas_outputs[] = rtrim( (string) stream_get_contents( $worker_pipes[1] ) );
+	stream_get_contents( $worker_pipes[2] );
+	fclose( $worker_pipes[1] );
+	fclose( $worker_pipes[2] );
+	$cas_results[] = 0 === proc_close( $worker );
+}
+$cas_race = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'cas-race'" ) );
 
 $write_option( 'spaced option', array( 'option_id' => 7, 'option_name' => 'spaced option', 'option_value' => 'spaced', 'autoload' => 'off' ) );
 $case_insensitive_hashed_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'SPACED OPTION'" ) );
@@ -266,11 +300,21 @@ $checks = array(
 		&& array() === $cron_temp_files,
 	'canonical option updates mutate exact existing identities only' => 1 === $direct_update_cron->return_value()
 		&& 0 === $noop_direct_update_cron->return_value()
+		&& 1 === $conditional_update_cron->return_value()
+		&& 0 === $stale_conditional_update_cron->return_value()
+		&& 0 === $binary_mismatch_conditional_update_cron->return_value()
+		&& 1 === $binary_conditional_update_cron->return_value()
+		&& false === $unsupported_collation_conditional_update_cron->return_value()
+		&& 'unsupported_option_collation' === ( $unsupported_collation_conditional_update_cron->diagnostic()['reason'] ?? null )
+		&& 'binary-fourth' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 0 === $missing_direct_update->return_value()
 		&& '7' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_id ?? null )
-		&& 'third' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'binary-fourth' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'auto-off' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->autoload ?? null )
-		&& 'third' === ( $read_persisted_cron->wpdb_state()['last_result'][0]->option_value ?? null ),
+		&& 'binary-fourth' === ( $read_persisted_cron->wpdb_state()['last_result'][0]->option_value ?? null ),
+	'independent CAS contenders serialize to one affected row and one winner' => array( '0', '1' ) === ( sort( $cas_outputs, SORT_STRING ) ? $cas_outputs : array() )
+		&& array( true, true ) === $cas_results
+		&& in_array( $cas_race->wpdb_state()['last_result'][0]->option_value ?? null, array( 'winner-one', 'winner-two' ), true ),
 	'exact option deletes remove canonical rows and preserve missing-row semantics' => 1 === $delete_cron->return_value()
 		&& 1 === $delete_cron->wpdb_state()['rows_affected']
 		&& 0 === $delete_missing->return_value()
@@ -313,7 +357,7 @@ foreach ( $checks as $label => $passed ) {
 
 @unlink( $root . '/_options/siteurl.json' );
 @unlink( $root . '/_options/' . WP_Markdown_Canonical_Option_Path::filename( $escaped_name ) );
-foreach ( array( 'blogname', 'automatic', 'legacy', 'disabled', 'spaced option', 'SPACED OPTION', 'other option' ) as $option_name ) {
+foreach ( array( 'blogname', 'automatic', 'legacy', 'disabled', 'spaced option', 'SPACED OPTION', 'other option', 'cas-race' ) as $option_name ) {
 	@unlink( $root . '/_options/' . WP_Markdown_Canonical_Option_Path::filename( $option_name ) );
 }
 @unlink( $root . '/_options/broken.json' );

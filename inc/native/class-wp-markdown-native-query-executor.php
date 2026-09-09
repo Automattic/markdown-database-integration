@@ -32,6 +32,9 @@ final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Nat
 final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
 	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
 	private ?int $last_found_rows = null;
+	private ?string $statement_now = null;
+	/** @var array<string,array{seed1:int,seed2:int}> */
+	private array $rand_states = array();
 	private WP_Markdown_Native_Schema_Introspection $schema_introspection;
 
 	public function __construct(
@@ -77,6 +80,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				? $this->failure( 'unsupported_grammar', 'mdi-native supports bounded SELECT queries only.' )
 				: $this->option_mutations->execute( $request );
 		}
+		$this->rand_states = array();
+		$this->statement_now = gmdate( 'Y-m-d H:i:s' );
 		$plan = $this->parser->parse( $request->sql() );
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
 			return $plan;
@@ -1496,8 +1501,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'TIMESTAMPDIFF' => $this->timestamp_difference( $values[0], $values[1], $values[2] ),
 			'UNIX_TIMESTAMP' => $this->unix_timestamp( $values[0] ?? null ),
 			'FROM_UNIXTIME' => null === $values[0] ? null : gmdate( 'Y-m-d H:i:s', (int) $values[0] ),
-			'NOW', 'UTC_TIMESTAMP' => gmdate( 'Y-m-d H:i:s' ),
-			'CURDATE' => gmdate( 'Y-m-d' ),
+			'NOW', 'UTC_TIMESTAMP' => $this->statement_now ?? gmdate( 'Y-m-d H:i:s' ),
+			'CURDATE' => substr( $this->statement_now ?? gmdate( 'Y-m-d H:i:s' ), 0, 10 ),
 			'GREATEST' => in_array( null, $values, true ) ? null : max( $values ),
 			'LEAST' => in_array( null, $values, true ) ? null : min( $values ),
 			'IF' => $this->scalar_number( $values[0] ) != 0.0 ? $values[1] : $values[2],
@@ -1530,7 +1535,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'ASIN' => null === $values[0] || abs( (float) $this->scalar_number( $values[0] ) ) > 1 ? null : $this->scalar_number( asin( $this->scalar_number( $values[0] ) ) ),
 			'ATAN' => null === $values[0] ? null : $this->scalar_number( atan( $this->scalar_number( $values[0] ) ) ),
 			'ATAN2' => in_array( null, $values, true ) ? null : $this->scalar_number( atan2( $this->scalar_number( $values[0] ), $this->scalar_number( $values[1] ) ) ),
-			'RAND' => $this->scalar_number( mt_rand() / mt_getrandmax() ),
+			'RAND' => null === ( $values[0] ?? null ) && array() !== $values ? null : $this->rand( $values[0] ?? null ),
 			'ADD' => in_array( null, $values, true ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) + $this->scalar_number( $values[1] ) ),
 			'SUBTRACT' => in_array( null, $values, true ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) - $this->scalar_number( $values[1] ) ),
 			'MULTIPLY' => in_array( null, $values, true ) ? null : $this->scalar_number( $this->scalar_number( $values[0] ) * $this->scalar_number( $values[1] ) ),
@@ -1565,8 +1570,28 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function date_format( int|string|null $value, int|string|null $format ): ?string {
-		if ( null === $value || null === $format ) { return null; }
-		return str_replace( array( '%Y', '%m', '%d', '%H', '%i', '%s' ), array( substr( (string) $value, 0, 4 ), substr( (string) $value, 5, 2 ), substr( (string) $value, 8, 2 ), substr( (string) $value, 11, 2 ), substr( (string) $value, 14, 2 ), substr( (string) $value, 17, 2 ) ), (string) $format );
+		if ( null === $value || null === $format || '0000-00-00' === substr( (string) $value, 0, 10 ) ) { return null; }
+		$date = date_create_immutable( (string) $value, new DateTimeZone( 'UTC' ) );
+		if ( false === $date ) { return null; }
+		$days = array( 'Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday' );
+		$months = array( 1 => 'January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December' );
+		$hour = (int) $date->format( 'G' );
+		$week_sunday = (int) $date->format( 'W' );
+		$tokens = array(
+			'a' => substr( $days[ (int) $date->format( 'w' ) ], 0, 3 ), 'b' => substr( $months[ (int) $date->format( 'n' ) ], 0, 3 ),
+			'c' => $date->format( 'n' ), 'D' => $this->day_ordinal( (int) $date->format( 'j' ) ), 'd' => $date->format( 'd' ), 'e' => $date->format( 'j' ), 'f' => $date->format( 'u' ),
+			'H' => $date->format( 'H' ), 'h' => $date->format( 'h' ), 'I' => $date->format( 'h' ), 'i' => $date->format( 'i' ), 'j' => $date->format( 'z' ) + 1,
+			'k' => (string) $hour, 'l' => (string) ( 0 === $hour % 12 ? 12 : $hour % 12 ), 'M' => $months[ (int) $date->format( 'n' ) ], 'm' => $date->format( 'm' ),
+			'p' => 12 <= $hour ? 'PM' : 'AM', 'r' => $date->format( 'h:i:s A' ), 'S' => $date->format( 's' ), 's' => $date->format( 's' ), 'T' => $date->format( 'H:i:s' ),
+			'U' => str_pad( (string) $week_sunday, 2, '0', STR_PAD_LEFT ), 'u' => str_pad( (string) $week_sunday, 2, '0', STR_PAD_LEFT ), 'V' => $date->format( 'W' ), 'v' => $date->format( 'W' ),
+			'W' => $days[ (int) $date->format( 'w' ) ], 'w' => $date->format( 'w' ), 'X' => $date->format( 'o' ), 'x' => $date->format( 'o' ), 'Y' => $date->format( 'Y' ), 'y' => $date->format( 'y' ), '%' => '%',
+		);
+		return preg_replace_callback( '/%./', static fn( array $match ): string => (string) ( $tokens[ $match[0][1] ] ?? $match[0][1] ), (string) $format );
+	}
+
+	private function day_ordinal( int $day ): string {
+		$suffix = 11 <= $day % 100 && 13 >= $day % 100 ? 'th' : match ( $day % 10 ) { 1 => 'st', 2 => 'nd', 3 => 'rd', default => 'th' };
+		return $day . $suffix;
 	}
 
 	private function date_difference( int|string|null $left, int|string|null $right ): ?int {
@@ -1591,7 +1616,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$day = min( (int) $parsed->format( 'j' ), cal_days_in_month( CAL_GREGORIAN, $month, $year ) );
 			return $parsed->setDate( $year, $month, $day )->format( str_contains( (string) $date, ' ' ) ? 'Y-m-d H:i:s' : 'Y-m-d' );
 		}
-		return $parsed->modify( ( 0 > $direction ? '-' : '+' ) . (int) $amount . ' ' . $units[ (string) $unit ] )?->format( str_contains( (string) $date, ' ' ) ? 'Y-m-d H:i:s' : 'Y-m-d' );
+		$amount = $direction * (int) $amount;
+		return $parsed->modify( ( 0 <= $amount ? '+' : '' ) . $amount . ' ' . $units[ (string) $unit ] )?->format( str_contains( (string) $date, ' ' ) ? 'Y-m-d H:i:s' : 'Y-m-d' );
 	}
 
 	private function timestamp_difference( int|string|null $unit, int|string|null $left, int|string|null $right ): ?int {
@@ -1614,6 +1640,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $value ) { return time(); }
 		$timestamp = strtotime( (string) $value . ' UTC' );
 		return false === $timestamp ? null : $timestamp;
+	}
+
+	/** Return a repeatable RAND(seed) value without mutating PHP's process-global RNG. */
+	private function rand( int|string|null $seed ): string {
+		if ( null === $seed ) {
+			return (string) ( random_int( 0, PHP_INT_MAX ) / PHP_INT_MAX );
+		}
+		$maximum = 0x3fffffff;
+		$key = (string) $seed;
+		$this->rand_states[ $key ] ??= array( 'seed1' => ( (int) $seed * 0x10001 + 55555555 ) % $maximum, 'seed2' => ( (int) $seed * 0x10000001 ) % $maximum );
+		$state = &$this->rand_states[ $key ];
+		$state['seed1'] = ( $state['seed1'] * 3 + $state['seed2'] ) % $maximum;
+		$state['seed2'] = ( $state['seed1'] + $state['seed2'] + 33 ) % $maximum;
+		return (string) ( $state['seed1'] / $maximum );
 	}
 
 	private function evaluate_case( WP_Markdown_Native_Query_Scalar_Expression $expression, array $row, WP_Markdown_Native_Table_Schema $schema ): int|string|null {

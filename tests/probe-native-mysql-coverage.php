@@ -115,6 +115,7 @@ mdi_coverage_statement( 'select.substring', "SELECT SUBSTRING(post_title, 1, 3) 
 mdi_coverage_statement( 'select.cast', "SELECT CAST(ID AS UNSIGNED) AS numeric_id FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.date.year', "SELECT YEAR(post_date) AS y, MONTH(post_date) AS m FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.date.format', "SELECT DATE_FORMAT(post_date, '%Y-%m') AS period FROM {$posts} LIMIT 5" );
+mdi_coverage_statement( 'select.date.format.full', "SELECT DATE_FORMAT(post_date, '%W %M %D %r %f %%') AS period FROM {$posts} LIMIT 5" );
 mdi_coverage_statement( 'select.scalar.where.date', "SELECT ID FROM {$posts} WHERE DATE_ADD(post_date, INTERVAL 1 DAY) >= '2000-01-01' LIMIT 5" );
 mdi_coverage_statement( 'select.scalar.group.date', "SELECT DATE(post_date) AS day, COUNT(*) AS total FROM {$posts} GROUP BY DATE(post_date) HAVING total > 0" );
 mdi_coverage_statement( 'select.scalar.order.math', "SELECT ID, ACOS(COS(RADIANS(ID))) AS distance FROM {$posts} HAVING ACOS(COS(RADIANS(ID))) >= 0 ORDER BY ACOS(COS(RADIANS(ID))) DESC LIMIT 5" );

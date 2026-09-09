@@ -24,9 +24,12 @@ final class MDI_Snapshot_Connection {
 	public array $global_rows = array( array( 'meta_id' => '1', 'site_id' => '1', 'meta_key' => 'site_name', 'meta_value' => 'Example' ) );
 	/** @var array<int,array<string,mixed>> */
 	public array $plugin_rows = array( array( 'id' => '1', 'name' => 'Agent' ) );
+	public bool $blog_table_absent = true;
+	public int $errno = 0;
 	/** @var array<int,MDI_Snapshot_Result> */
 	public array $results = array();
 	public function query( string $sql ): MDI_Snapshot_Result|false {
+		$this->errno = 0;
 		$result = false;
 		if ( 'SHOW CREATE TABLE `wp_postmeta`' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_postmeta', 'Create Table' => 'CREATE TABLE `wp_postmeta` (`meta_id` bigint(20) unsigned NOT NULL, `post_id` bigint(20) unsigned NOT NULL, PRIMARY KEY (`meta_id`))' ) ) );
@@ -35,8 +38,11 @@ final class MDI_Snapshot_Connection {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => $table, 'Create Table' => 'CREATE TABLE `' . $table . '` (`meta_id` bigint(20) unsigned NOT NULL, `site_id` bigint(20) unsigned NOT NULL, `meta_key` varchar(255) NOT NULL, `meta_value` longtext NOT NULL, PRIMARY KEY (`meta_id`))' ) ) );
 		} elseif ( 'SHOW CREATE TABLE `agents`' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'agents', 'Create Table' => 'CREATE TABLE `agents` (`id` bigint(20) unsigned NOT NULL, `name` varchar(255) NOT NULL, PRIMARY KEY (`id`))' ) ) );
-		} elseif ( 'SHOW CREATE TABLE `wp_2_options`' === $sql ) {
+		} elseif ( 'SHOW CREATE TABLE `wp_2_options`' === $sql && $this->blog_table_absent ) {
+			$this->errno = 1146;
 			return false;
+		} elseif ( 'SHOW CREATE TABLE `wp_2_options`' === $sql ) {
+			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_2_options', 'Create Table' => 'CREATE TABLE `wp_2_options` (`ID` bigint(20) unsigned NOT NULL, `option_value` varchar(255) NOT NULL, PRIMARY KEY (`ID`))' ) ) );
 		} elseif ( str_starts_with( $sql, 'SHOW CREATE TABLE' ) ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_posts', 'Create Table' => 'CREATE TABLE `wp_posts` (`ID` bigint(20) unsigned NOT NULL, `post_title` varchar(255) NOT NULL, PRIMARY KEY (`ID`))' ) ) );
 		}
@@ -52,6 +58,9 @@ final class MDI_Snapshot_Connection {
 		if ( 'SELECT * FROM `agents` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( $this->plugin_rows );
 		}
+		if ( 'SELECT * FROM `wp_2_options` LIMIT 10001' === $sql ) {
+			$result = new MDI_Snapshot_Result( array( array( 'ID' => '1', 'option_value' => 'created' ) ) );
+		}
 		if ( $result instanceof MDI_Snapshot_Result ) {
 			$this->results[] = $result;
 		}
@@ -65,6 +74,7 @@ final class MDI_Snapshot_Database {
 	public array $last_result = array();
 	public int $num_rows = 0;
 	public string $last_error = '';
+	public int $last_errno = 0;
 	public int $insert_id = 0;
 	public int $rows_affected = 0;
 	protected ?array $col_info = null;
@@ -155,6 +165,33 @@ try {
 } catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
 	$missing_schema_reason = $error->diagnostic()['reason'];
 }
+$missing_table = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	2,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$database->result_rows( array(), array() );
+$database->last_error = 'private missing table message';
+$database->last_errno = 1146;
+	$database->insert_id = 73;
+$missing_table->capture_input( 'SELECT option_value FROM wp_2_options', $database );
+$missing_table->observe( 'SELECT option_value FROM wp_2_options', false, $database );
+$missing_table_report = $missing_table->report();
+$duplicate_alias = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	1,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$duplicate_alias->capture_input( 'SELECT p.ID FROM wp_posts p JOIN wp_2_options p ON p.ID = p.ID', $database );
+$duplicate_alias->observe( 'SELECT p.ID FROM wp_posts p JOIN wp_2_options p ON p.ID = p.ID', false, $database );
+$duplicate_alias_report = $duplicate_alias->report();
+$database->source()->blog_table_absent = false;
+$database->result_rows( array( array( 'option_value' => 'created' ) ), array( array( 'name' => 'option_value', 'type' => 253 ) ) );
+$database->last_error = '';
+$database->last_errno = 0;
+$missing_table->capture_input( 'SELECT option_value FROM wp_2_options', $database );
+$missing_table->observe( 'SELECT option_value FROM wp_2_options', 1, $database );
+$missing_table_recovered = $missing_table->report();
 $reordered = new WP_Markdown_Native_Shadow_Verifier(
 	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
 	1,
@@ -221,7 +258,13 @@ $checks = array(
 	'global tables use the base prefix when the active blog prefix differs' => array( 'wp_sitemeta' ) === array_column( $global_table['tables'], 'table' )
 		&& array( 'wp_usermeta' ) === array_column( $user_meta_table['tables'], 'table' ),
 	'validated non-WordPress-prefixed plugin tables compile by exact captured identity' => array( 'agents' ) === array_column( $plugin_table['tables'], 'table' ),
-	'absent blog-2 schemas remain explicit snapshot input limitations' => 'source_schema_unavailable' === $missing_schema_reason,
+	'absent blog-2 schemas are independently compared as normalized missing-table errors' => null === $missing_schema_reason
+		&& 1 === ( $missing_table_report['counts']['compatible_missing_table_errors'] ?? null )
+		&& ! str_contains( json_encode( $missing_table_report, JSON_THROW_ON_ERROR ), 'private missing table message' ),
+	'created source tables recover from a prior missing-table comparison' => 2 === ( $missing_table_recovered['counts']['compatible'] ?? null )
+		&& 1 === ( $missing_table_recovered['counts']['compatible_reads'] ?? null ),
+	'duplicate JOIN aliases cannot count as compatible missing-table errors' => 1 === ( $duplicate_alias_report['counts']['unsupported'] ?? null )
+		&& 0 === ( $duplicate_alias_report['counts']['compatible_missing_table_errors'] ?? null ),
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
 	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

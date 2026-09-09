@@ -262,6 +262,7 @@ $bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
 $checks = array(
 	'authoritative snapshots compare with independently evaluated native SQL' => 2 === $second['counts']['compatible'] && 0 === $second['counts']['verifier_failures'],
 	'input provenance records bounded source rows without their values' => 'authoritative_mysql_connection_pre_query' === ( $first['context']['last_input_state']['read_connection'] ?? null )
+		&& 1 === ( $first['context']['authoritative_snapshot_captures'] ?? null )
 		&& 1 === ( $first['context']['last_input_state']['tables'][0]['rows'] ?? 0 )
 		&& 64 === strlen( (string) ( $first['context']['last_input_state']['tables'][0]['schema_sha256'] ?? '' ) )
 		&& 'pre_query_wpdb_insert_id' === ( $first['context']['last_input_state']['facade_state']['native_insert_id'] ?? null )

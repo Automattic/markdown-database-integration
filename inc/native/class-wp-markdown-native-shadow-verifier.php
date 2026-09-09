@@ -79,6 +79,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private array $pending_insert_ids = array();
 	/** @var array<string,array{code:string,reason:string}> */
 	private array $pending_input_failures = array();
+	private int $authoritative_snapshot_captures = 0;
 
 	public function __construct(
 		private WP_Markdown_Query_Runtime $runtime,
@@ -106,6 +107,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		}
 		try {
 			$this->pending_inputs[ $key ] = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
+			++$this->authoritative_snapshot_captures;
 			unset( $this->pending_input_failures[ $key ] );
 		} catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
 			// Input capture is observational and must never interrupt wpdb's query.
@@ -242,7 +244,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'classifications'   => $this->classification_counts,
 			'first_blocker'    => $this->first_blocker,
 			'representatives'  => array_values( $this->representatives ),
-			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
+			'context'          => array_merge( $this->context, array( 'authoritative_snapshot_captures' => $this->authoritative_snapshot_captures ), null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
 		);
 	}
 

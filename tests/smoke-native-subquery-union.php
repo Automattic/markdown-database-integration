@@ -43,6 +43,7 @@ $aggregate_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FRO
 $two_outer_keys = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p INNER JOIN wp_postmeta j ON j.post_id = p.ID WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.post_id = p.ID AND ( m.meta_id = j.meta_id OR m.meta_key = 'other' ) )" ) );
 $correlated_join = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p INNER JOIN wp_postmeta j ON j.post_id = p.ID WHERE EXISTS ( SELECT 1 FROM wp_postmeta m INNER JOIN wp_posts q ON q.ID = m.post_id WHERE m.meta_id = j.meta_id AND q.post_status = p.post_status )" ) );
 $correlated_aggregate_in = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE p.ID IN ( SELECT MAX(m.post_id) AS post_id FROM wp_postmeta m WHERE m.post_id = p.ID )" ) );
+$boolean_only_correlation = $runtime->execute( new WP_Markdown_Query_Request( "SELECT p.ID FROM wp_posts p WHERE EXISTS ( SELECT 1 FROM wp_postmeta m WHERE m.meta_key = 'missing' OR m.post_id = p.ID )" ) );
 $union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft'" ) );
 $ordered_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_status = 'publish' UNION SELECT ID FROM wp_posts WHERE post_status = 'draft' ORDER BY ID DESC LIMIT 1" ) );
 $ordinal_union = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE(created_at) AS day FROM wp_posts WHERE ID = 1 UNION ALL SELECT DATE(created_at) AS day FROM wp_posts WHERE ID = 3 ORDER BY 1 DESC LIMIT 1" ) );
@@ -68,6 +69,7 @@ $checks = array(
 	'correlated EXISTS binds multiple outer aliases through boolean branches' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $two_outer_keys ),
 	'correlated EXISTS executes an inner JOIN through the shared plan executor' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $correlated_join ),
 	'correlated IN executes aggregate and scalar-projected child plans' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $correlated_aggregate_in ),
+	'correlated predicates in a child boolean branch retain their lexical outer binding' => array( array( 'ID' => '1' ), array( 'ID' => '3' ) ) === $rows( $boolean_only_correlation ),
 	'UNION deduplicates compatible projections with first-branch metadata' => array( array( 'ID' => '1' ), array( 'ID' => '3' ), array( 'ID' => '2' ) ) === $rows( $union ) && 'wp_posts' === ( $union->wpdb_state()['col_info'][0]->table ?? null ),
 	'UNION ORDER BY and LIMIT apply after all branches accumulate' => array( array( 'ID' => '3' ) ) === $rows( $ordered_union ),
 	'UNION global ORDER BY accepts output ordinals and scalar aliases' => array( array( 'day' => '2024-01-03' ) ) === $rows( $ordinal_union ),

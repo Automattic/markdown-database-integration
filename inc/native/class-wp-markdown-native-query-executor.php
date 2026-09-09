@@ -604,9 +604,29 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	/** A comparison source outside this plan's aliases is lexically enclosing. */
 	private function has_outer_correlation( WP_Markdown_Native_Query_Plan $query ): bool {
 		$sources = array_fill_keys( array_filter( array_merge( array( $query->table_alias() ?? $query->table() ), array_map( static fn( WP_Markdown_Native_Query_Join $join ): string => $join->alias(), $query->joins() ) ) ), true );
-		foreach ( $query->predicates() as $predicate ) {
+		$has_outer = function ( WP_Markdown_Native_Query_Predicate $predicate ) use ( $sources, &$has_outer ): bool {
 			if ( null !== $predicate->comparison_column() && ! isset( $sources[ $predicate->comparison_source() ] ) ) {
 				return true;
+			}
+			foreach ( $predicate->any() as $nested ) {
+				if ( $has_outer( $nested ) ) {
+					return true;
+				}
+			}
+			return false;
+		};
+		foreach ( $query->predicates() as $predicate ) {
+			if ( $has_outer( $predicate ) ) {
+				return true;
+			}
+		}
+		if ( null !== $query->boolean_predicate() ) {
+			foreach ( $query->boolean_predicate()->groups() as $group ) {
+				foreach ( $group as $term ) {
+					if ( $term instanceof WP_Markdown_Native_Query_Predicate && $has_outer( $term ) ) {
+						return true;
+					}
+				}
 			}
 		}
 		return false;

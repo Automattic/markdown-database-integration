@@ -183,7 +183,7 @@ $checks = array(
 		&& 'unsupported_column' === ( $information_engine->diagnostic()['reason'] ?? null ),
 	'information_schema catalog scans remain fail-closed without a bounded table name' => false === $unbounded_information->return_value()
 		&& 'unsupported_lookup' === ( $unbounded_information->diagnostic()['reason'] ?? null ),
-	'information_schema reports TEXT character maxima and bounds list cardinality' => array( 'payload' => '4294967295', 'task_url' => '65535' ) === array_reduce( $text_information->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() )
+	'information_schema reports TEXT character maxima and bounds list cardinality' => array( 'task_url' => '65535', 'payload' => '4294967295' ) === array_reduce( $text_information->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() )
 		&& false === $overwide_information->return_value()
 		&& 'resource_limit' === ( $overwide_information->diagnostic()['reason'] ?? null ),
 	'finite result limits do not authorize unbounded residual source scans' => false === $limited_residual->return_value()

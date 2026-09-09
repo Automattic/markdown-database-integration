@@ -299,7 +299,7 @@ $checks = array(
 		&& 'native_runtime_fast_path' === ( $json_tableless->report()['context']['last_input_state']['read_connection'] ?? null ),
 	'catalog capture snapshots requested physical DDL and independently executes COLUMNS metadata' => array( 'wp_plugin_jobs' ) === array_column( $catalog_columns->provenance()['tables'], 'table' )
 		&& 251 === ( $catalog_result->wpdb_state()['col_info'][1]->type ?? null )
-		&& array( 'payload' => '4294967295', 'status' => '64' ) === array_reduce( $catalog_result->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() ),
+		&& array( 'status' => '64', 'payload' => '4294967295' ) === array_reduce( $catalog_result->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() ),
 	'catalog ENGINE remains an explicit unsupported projection after source discovery' => false === $catalog_engine->return_value()
 		&& 'unsupported_column' === ( $catalog_engine->diagnostic()['reason'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),

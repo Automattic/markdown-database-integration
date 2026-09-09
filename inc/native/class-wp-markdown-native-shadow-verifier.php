@@ -202,7 +202,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				$expected,
 				$actual
 			);
-			if ( ! $comparison['compatible'] && $this->has_unordered_unbounded_result( $query ) ) {
+			if ( ! $comparison['compatible'] && ( $this->has_unordered_unbounded_result( $query ) || WP_Markdown_Native_Schema_Introspection::is_unordered_unbounded_catalog_read( $query ) ) ) {
 				$comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $this->rows_as_bag( $expected ), $this->rows_as_bag( $actual ) );
 			}
 			if ( $comparison['compatible'] ) {

@@ -385,9 +385,6 @@ final class WP_Markdown_Native_Schema_Introspection {
 					$rows[] = $row;
 				}
 			}
-			if ( 'COLUMNS' === $catalog && 1 === count( $predicates['TABLE_NAME'] ) && in_array( 'COLUMN_NAME', array_column( $projection, 'name' ), true ) ) {
-				usort( $rows, static fn( array $left, array $right ): int => strcmp( (string) ( $left['COLUMN_NAME'] ?? '' ), (string) ( $right['COLUMN_NAME'] ?? '' ) ) );
-			}
 			return WP_Markdown_Query_Result::selected( $rows, $this->information_schema_metadata( $projection, $catalog ) );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
 			return null;
@@ -472,6 +469,24 @@ final class WP_Markdown_Native_Schema_Introspection {
 		return WP_Markdown_Native_SQL_Token::END === ( $tokens[ $position ] ?? null )?->type() && is_array( $tables ) && array() !== $tables
 			? array_values( array_unique( $tables ) )
 			: null;
+	}
+
+	/** Catalog reads without an ORDER BY or LIMIT have relationally unordered rows. */
+	public static function is_unordered_unbounded_catalog_read( string $sql ): bool {
+		if ( null === self::requested_information_schema_tables( $sql ) ) {
+			return false;
+		}
+		try {
+			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( rtrim( trim( $sql ), ';' ) );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return false;
+		}
+		foreach ( $tokens as $token ) {
+			if ( in_array( strtoupper( (string) $token->value() ), array( 'ORDER', 'LIMIT' ), true ) ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition @return array<int,array<string,int|string|null>> */

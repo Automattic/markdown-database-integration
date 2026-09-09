@@ -172,6 +172,12 @@
             "failure": null
         },
         {
+            "feature": "select.date.format.full",
+            "sql": "SELECT DATE_FORMAT(post_date, '%W %M %D %r %f %%') AS period FROM wp_posts LIMIT 5",
+            "supported": true,
+            "failure": null
+        },
+        {
             "feature": "select.scalar.where.date",
             "sql": "SELECT ID FROM wp_posts WHERE DATE_ADD(post_date, INTERVAL 1 DAY) >= '2000-01-01' LIMIT 5",
             "supported": true,
@@ -415,8 +421,8 @@
         }
     ],
     "summary": {
-        "statements_total": 42,
-        "statements_supported": 42,
+        "statements_total": 43,
+        "statements_supported": 43,
         "statements_failed": 0,
         "operations_total": 26,
         "operations_supported": 26,

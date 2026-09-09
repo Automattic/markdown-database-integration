@@ -584,6 +584,19 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			foreach ( $this->conjunction() as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { $scalar_having[] = $predicate; } else { $having[] = $predicate; }
 			}
+			if ( ! $grouped && array() !== $having ) {
+				$scalar_by_alias = array_column( $scalar_projection, 'expression', 'alias' );
+				foreach ( $having as $index => $predicate ) {
+					$values = $predicate->values();
+					$expression = $scalar_by_alias[ $predicate->column()->name() ] ?? null;
+					if ( null === $expression || 1 !== count( $values ) || ! in_array( $predicate->operator(), array( '=', '<>', '<', '<=', '>', '>=' ), true ) ) {
+						continue;
+					}
+					$scalar_having[] = new WP_Markdown_Native_SQL_Scalar_Predicate( $expression, $predicate->operator(), new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $values[0]->value() ) );
+					unset( $having[ $index ] );
+				}
+				$having = array_values( $having );
+			}
 			if ( array() !== $having && ( ! $grouped || array() === $aggregates ) ) { $this->unsupported( $this->current() ); }
 			$aggregate_aliases = array_column( $aggregates, 'alias' );
 			foreach ( $having as $predicate ) {
@@ -637,6 +650,12 @@ final class WP_Markdown_Native_Select_AST_Parser {
 						$column = new WP_Markdown_Native_SQL_Identifier( '__union_ordinal_' . $ordinal, $ordinal_offset );
 					} else {
 						$column = $this->identifier();
+						foreach ( $scalar_projection as $scalar ) {
+							if ( $scalar['alias'] === $column->name() && null === $column->qualifier() ) {
+								$expression = $scalar['expression'];
+								break;
+							}
+						}
 					}
 				}
 				$numeric = false;

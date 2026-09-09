@@ -224,6 +224,9 @@ final class WP_Markdown_Native_Schema_Introspection_Parser {
 }
 
 final class WP_Markdown_Native_Schema_Introspection {
+	private const MAX_INFORMATION_SCHEMA_PROJECTIONS = 32;
+	private const MAX_INFORMATION_SCHEMA_VALUES = 100;
+	private const MAX_INFORMATION_SCHEMA_ROWS = 1000;
 	public function __construct(
 		private readonly WP_Markdown_Native_Table_Registry $registry,
 		private readonly WP_Markdown_Native_Schema_Introspection_Parser $parser = new WP_Markdown_Native_Schema_Introspection_Parser()
@@ -281,6 +284,9 @@ final class WP_Markdown_Native_Schema_Introspection {
 			}
 			$projection = array();
 			do {
+				if ( count( $projection ) >= self::MAX_INFORMATION_SCHEMA_PROJECTIONS ) {
+					return $this->failure( 'resource_limit', 'mdi-native limits information_schema projection cardinality.' );
+				}
 				$name = $identifier();
 				if ( null === $name ) {
 					return null;
@@ -332,6 +338,9 @@ final class WP_Markdown_Native_Schema_Introspection {
 						if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
 						++$position;
 						do {
+							if ( count( $values ) >= self::MAX_INFORMATION_SCHEMA_VALUES ) {
+								return $this->failure( 'resource_limit', 'mdi-native limits information_schema predicate cardinality.' );
+							}
 							$token = $tokens[ $position++ ] ?? null;
 							if ( ! $token instanceof WP_Markdown_Native_SQL_Token || WP_Markdown_Native_SQL_Token::STRING !== $token->type() ) { return null; }
 							$values[] = (string) $token->value();
@@ -359,6 +368,9 @@ final class WP_Markdown_Native_Schema_Introspection {
 				}
 				$catalog_rows = 'COLUMNS' === $catalog ? $this->information_schema_columns( $table, $definition ) : array( $this->information_schema_table( $table ) );
 				foreach ( $catalog_rows as $catalog_row ) {
+					if ( count( $rows ) >= self::MAX_INFORMATION_SCHEMA_ROWS ) {
+						return $this->failure( 'resource_limit', 'mdi-native limits information_schema result cardinality.' );
+					}
 					if ( isset( $predicates['COLUMN_NAME'] ) && ! in_array( $catalog_row['COLUMN_NAME'] ?? null, $predicates['COLUMN_NAME'], true ) ) {
 						continue;
 					}
@@ -406,9 +418,17 @@ final class WP_Markdown_Native_Schema_Introspection {
 
 	/** @param array<string,mixed> $column */
 	private function character_maximum_length( array $column ): ?int {
-		return in_array( strtolower( (string) $column['type'] ), array( 'char', 'varchar', 'binary', 'varbinary' ), true ) && is_int( $column['length'] )
-			? $column['length']
-			: null;
+		$type = strtolower( (string) $column['type'] );
+		if ( in_array( $type, array( 'char', 'varchar', 'binary', 'varbinary' ), true ) && is_int( $column['length'] ) ) {
+			return $column['length'];
+		}
+		return match ( $type ) {
+			'tinytext', 'tinyblob' => 255,
+			'text', 'blob' => 65535,
+			'mediumtext', 'mediumblob' => 16777215,
+			'longtext', 'longblob' => 4294967295,
+			default => null,
+		};
 	}
 
 	/** @param array<int,array{name:string,alias:string}> $projection @return array<int,array{name:string,type:int,table:string}> */

@@ -63,6 +63,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( strlen( $request->sql() ) > self::MAX_SQL_BYTES ) {
 			return $this->failure( 'request_too_large', 'mdi-native cannot execute a request larger than max_allowed_packet.' );
 		}
+		// Scalar functions share one statement scope, including tableless SELECTs.
+		$this->rand_states = array();
+		$this->correlated_subquery_cache = array();
+		$this->correlated_subquery_failure = null;
+		$this->statement_now = gmdate( 'Y-m-d H:i:s' );
 		$transaction_control = WP_Markdown_SQL_Classifier::transaction_control( $request->sql() );
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
@@ -118,10 +123,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				? $this->failure( 'unsupported_grammar', 'mdi-native supports bounded SELECT queries only.' )
 				: $this->option_mutations->execute( $request );
 		}
-		$this->rand_states = array();
-		$this->correlated_subquery_cache = array();
-		$this->correlated_subquery_failure = null;
-		$this->statement_now = gmdate( 'Y-m-d H:i:s' );
 		$plan = $this->parser->parse( $request->sql() );
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
 			return $plan;
@@ -335,7 +336,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		$pushdown = $this->pushdown( $predicates, $schema );
-		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema, PHP_INT_MAX !== $plan->limit() ) ) {
+		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema ) ) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
@@ -1752,7 +1753,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
-	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema, bool $bounded = false ): bool {
+	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
 		$indexed = $this->indexed_columns( $schema );
 		foreach ( $predicates as $predicate ) {
 			if ( null !== $predicate->cast() ) {
@@ -1786,12 +1787,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( isset( $indexed[ $column ] )
 				&& ! $schema->is_lookup( $column )
 				&& $schema->allows_filter( $column, $predicate->operator(), $predicate->values() ) ) {
-				continue;
-			}
-			// Providers already apply all schema-validated residual filters before
-			// ORDER/LIMIT. Do not require a separate lookup declaration merely
-			// because a bounded query combines ordinary text predicates.
-			if ( $bounded && $schema->allows_filter( $column, $predicate->operator(), $predicate->values() ) ) {
 				continue;
 			}
 			return false;
@@ -2116,7 +2111,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	private function json_valid( string $value ): string {
 		try {
-			json_decode( $value, true, 512, JSON_THROW_ON_ERROR );
+			// MariaDB 11.4 rejects JSON nesting at 32 levels; its parser counts
+			// the outermost array/object as the first level.
+			json_decode( $value, true, 32, JSON_THROW_ON_ERROR );
 			return '1';
 		} catch ( JsonException ) {
 			return '0';
@@ -2305,9 +2302,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return (string) ( random_int( 0, PHP_INT_MAX ) / PHP_INT_MAX );
 		}
 		$maximum = 0x3fffffff;
-		$key = (string) $seed;
-		$this->rand_states[ $key ] ??= array( 'seed1' => ( (int) $seed * 0x10001 + 55555555 ) % $maximum, 'seed2' => ( (int) $seed * 0x10000001 ) % $maximum );
-		$state = &$this->rand_states[ $key ];
+		// RAND(seed) reseeds for each expression evaluation, so two occurrences
+		// of the same seeded expression in one projection return the same value.
+		$state = array( 'seed1' => ( (int) $seed * 0x10001 + 55555555 ) % $maximum, 'seed2' => ( (int) $seed * 0x10000001 ) % $maximum );
 		$state['seed1'] = ( $state['seed1'] * 3 + $state['seed2'] ) % $maximum;
 		$state['seed2'] = ( $state['seed1'] + $state['seed2'] + 33 ) % $maximum;
 		return (string) ( $state['seed1'] / $maximum );

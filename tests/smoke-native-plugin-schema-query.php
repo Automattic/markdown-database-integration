@@ -127,6 +127,9 @@ $contradictory_information_tables = $runtime->execute( new WP_Markdown_Query_Req
 $contradictory_information_columns = $runtime->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME = 'id' AND COLUMN_NAME = 'status'" ) );
 $information_engine = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ENGINE AS Engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs'" ) );
 $unbounded_information = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()' ) );
+$text_information = $runtime->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME IN ('task_url', 'payload')" ) );
+$overwide_information = $runtime->execute( new WP_Markdown_Query_Request( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (" . implode( ',', array_fill( 0, 101, "'wp_plugin_jobs'" ) ) . ')' ) );
+$limited_residual = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE status = 'queued' LIMIT 1" ) );
 file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
 	json_encode(
@@ -180,6 +183,11 @@ $checks = array(
 		&& 'unsupported_column' === ( $information_engine->diagnostic()['reason'] ?? null ),
 	'information_schema catalog scans remain fail-closed without a bounded table name' => false === $unbounded_information->return_value()
 		&& 'unsupported_lookup' === ( $unbounded_information->diagnostic()['reason'] ?? null ),
+	'information_schema reports TEXT character maxima and bounds list cardinality' => array( 'task_url' => '65535', 'payload' => '4294967295' ) === array_reduce( $text_information->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() )
+		&& false === $overwide_information->return_value()
+		&& 'resource_limit' === ( $overwide_information->diagnostic()['reason'] ?? null ),
+	'finite result limits do not authorize unbounded residual source scans' => false === $limited_residual->return_value()
+		&& 'unsupported_lookup' === ( $limited_residual->diagnostic()['reason'] ?? null ),
 	'primary and secondary numeric indexes derive bounded lookup capabilities' => array( '1', '2' ) === array_map(
 		static fn( object $row ): string => $row->id,
 		$secondary->wpdb_state()['last_result']

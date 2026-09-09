@@ -167,6 +167,34 @@ SQLite removal and production cutover remain separate. They require actual
 native post transaction rollback and crash recovery, then an accepted-site
 rehearsal with backups, workers, and compatibility verification.
 
+#### `82496a0` landing verification
+
+Direct Lab verification ran the exact `82496a0` source archive through the WP
+Codebox bench adapter on PHP 8.5.4. The corrected bursty source hash was
+`e456e89dc0e350e10fbc4d6b3a088a9013505934efbd3af90c43321dd3fda86e`.
+Each backend ran sequentially with five measured iterations, one warmup,
+`BENCH_CORPUS_SIZE=1000`, and `BENCH_PROFILE=0`. All six executable decision
+workloads passed their assertions; `boot-timing` is explicitly excluded because
+the direct adapter had no `BENCH_BOOT_PHASE` orchestration.
+
+| Workload | Native mean (ms) | SQLite mean (ms) | Verified result |
+|---|---:|---:|---|
+| bulk-import | 20979.5895828 | 23417.1083924 | 1,000 imported and stored per iteration |
+| obsidian-bursty | 5869.5756488 | 1168.0614782 | 50 operations per iteration; shared plan checksum |
+| read-heavy | 96.971733 | 27.741137 | 1,000-post corpus and 100 operations per iteration |
+| wiki-hierarchy | 65.1619966 | 3.6566216 | 881 rows returned per iteration |
+| plugin-table-inventory | 5.5260672 | 4.8947472 | 501 inventory, 20 repository, and 5 task rows |
+| transaction-heavy | 103.6012634 | 81.0144764 | 90 committed rows, 15 commits, 5 rollbacks, and 120 writes |
+
+This is one sequential diagnostic pair, not a statistical or causal
+performance claim. It confirms the known native scaling weakness in bursty,
+read, and hierarchy workloads. The PR remains experimental and not ready to
+land without reviewer acceptance of that boundary and the separate native post
+transaction limitation.
+
+OpenAI GPT-5.6 Terra through OpenCode assisted Chris Huber with this evidence
+collection and documentation.
+
 ### Operation profiling
 
 Set `--setting-json 'bench_env={"BENCH_CORPUS_SIZE":"1000","BENCH_PROFILE":"1"}'`

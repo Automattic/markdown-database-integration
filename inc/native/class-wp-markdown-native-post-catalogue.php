@@ -46,7 +46,7 @@ final class WP_Markdown_Native_Post_Catalogue {
 	public function remember( WP_Markdown_File_Witness $witness, array $file, object $post, array $row, bool $path_is_canonical = false ): void {
 		$this->load();
 		$path = (string) ( $file['absolute'] ?? '' );
-		if ( ! $path_is_canonical && null === $this->relative_path( $path ) ) {
+		if ( ( ! $path_is_canonical || array() !== $this->excluded_roots ) && null === $this->relative_path( $path ) ) {
 			return;
 		}
 		$this->entries[ $path ] = array( 'witness' => $witness, 'file' => $file, 'post' => $post, 'row' => $row );

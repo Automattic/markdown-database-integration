@@ -32,6 +32,8 @@ final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Nat
 final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
 	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
 	private const MAX_CORRELATED_SUBQUERY_EVALUATIONS = 10000;
+	/** The largest SQL request accepted by the native request boundary. */
+	public const MAX_SQL_BYTES = 67108864;
 	private ?int $last_found_rows = null;
 	private ?string $statement_now = null;
 	/** @var array<string,array{values:array<string,true>,has_null:bool}> */
@@ -57,6 +59,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		self::trace_runtime_phase( 'executor' );
+		if ( strlen( $request->sql() ) > self::MAX_SQL_BYTES ) {
+			return $this->failure( 'request_too_large', 'mdi-native cannot execute a request larger than max_allowed_packet.' );
+		}
 		$transaction_control = WP_Markdown_SQL_Classifier::transaction_control( $request->sql() );
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
@@ -79,12 +84,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $tableless ) {
 			return $tableless;
 		}
-		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT))\s*;?\s*$/i', $request->sql(), $match ) ) {
-			$column = $match[1];
+		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT|MAX_ALLOWED_PACKET))(?:\s+AS\s+([A-Za-z_][A-Za-z0-9_]*))?\s*;?\s*$/i', $request->sql(), $match ) ) {
+			$column = $match[3] ?? $match[1];
 			$variable = strtolower( $match[2] );
 			$value = 'in_transaction' === $variable
 				? (string) (int) ( $this->transactions?->is_in_transaction() ?? false )
-				: (string) (int) ( $this->transactions?->is_autocommit() ?? true );
+				: ( 'autocommit' === $variable
+					? (string) (int) ( $this->transactions?->is_autocommit() ?? true )
+					: (string) self::MAX_SQL_BYTES );
 			return WP_Markdown_Query_Result::selected(
 				array( array( $column => $value ) ),
 				array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )

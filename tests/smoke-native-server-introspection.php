@@ -23,12 +23,15 @@ $liked = $runtime->execute( new WP_Markdown_Query_Request( "SHOW VARIABLES LIKE 
 $liked_names = array_map( static fn( object $row ): string => (string) $row->Variable_name, $liked->wpdb_state()['last_result'] );
 $status = $runtime->execute( new WP_Markdown_Query_Request( "SHOW GLOBAL STATUS LIKE 'Uptime'", 'wp_' ) );
 $database = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT DATABASE()', 'wp_' ) );
+$max_allowed_packet = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT @@SESSION.max_allowed_packet as packet_limit', 'wp_' ) );
 $columns = array_map( static fn( object $column ): string => $column->name, $named->wpdb_state()['col_info'] );
 
 $checks = array(
 	'named variables report engine identity' => WP_Markdown_Native_Schema_Catalog::SERVER_VERSION === ( $variables['version'] ?? null )
 		&& array_key_exists( 'sql_mode', $variables ),
 	'a client/server tuning knob is absent rather than invented' => ! array_key_exists( 'max_allowed_packet', $variables ),
+	'SELECT session max_allowed_packet reports the native request boundary' => (string) WP_Markdown_Native_Query_Runtime::MAX_SQL_BYTES === ( $max_allowed_packet->wpdb_state()['last_result'][0]->packet_limit ?? null )
+		&& 8 === ( $max_allowed_packet->wpdb_state()['col_info'][0]->type ?? null ),
 	'LIKE selects matching variables' => array( 'character_set_server' ) === $liked_names,
 	'SHOW STATUS answers with a scoped qualifier' => array( 'Uptime' ) === array_map(
 		static fn( object $row ): string => (string) $row->Variable_name,

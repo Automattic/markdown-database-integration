@@ -80,9 +80,12 @@ $recipe = array(
 	),
 	'workflow' => array( 'steps' => array(
 		array( 'command' => 'wordpress.phpunit', 'args' => array_merge( array( 'plugin-slug=' . $plugin_slug, 'database-type=mysql', 'multisite=1' ), false === $harness_dir ? array() : array( 'autoload-file=/wordpress/wp-content/mdi-shadow-phpunit/autoload.php', 'tests-dir=/wordpress/wp-content/mdi-shadow-phpunit/wp-phpunit/wp-phpunit' ), array() === $dependency_mounts ? array() : array( 'dependency-mounts=' . implode( ',', $dependency_mounts ) ), $phpunit_args ) ),
-		array( 'command' => 'wordpress.run-php', 'args' => array( 'code=$report = $GLOBALS["markdown_db_native_shadow_verifier"]->report(); if (0 === (int) ($report["observed"] ?? 0)) { throw new RuntimeException("Native shadow did not observe bootstrap queries."); } echo json_encode($report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);' ) ),
 	) ),
-	'artifacts' => array( 'directory' => $artifacts ),
+	'artifacts' => array(
+		'directory' => $artifacts,
+		'paths' => array( array( 'name' => 'mdi-shadow-report-result', 'path' => $report_path, 'required' => true, 'parseJson' => true ) ),
+		'typed' => array( array( 'name' => 'mdi-shadow-report', 'type' => 'mdi-native-shadow-report/v1', 'path' => $report_path, 'required' => true, 'parseJson' => true, 'contentType' => 'application/json', 'payloadSchema' => 'mdi-native-shadow-report/v1', 'metadata' => array( 'producer' => 'wordpress.phpunit', 'revision' => trim( (string) shell_exec( 'git -C ' . escapeshellarg( $repo ) . ' rev-parse HEAD' ) ) ) ) ),
+	),
 	'metadata' => array( 'purpose' => 'Authoritative MySQL corpus with mdi-native shadow verification' ),
 );
 
@@ -93,14 +96,12 @@ $output = array();
 exec( $command, $output, $status );
 $run = json_decode( implode( "\n", $output ), true );
 $executions = is_array( $run ) && is_array( $run['executions'] ?? null ) ? $run['executions'] : array();
-$shadow = is_file( $bootstrap . '/mdi-shadow-report.json' )
-	? json_decode( (string) file_get_contents( $bootstrap . '/mdi-shadow-report.json' ), true )
-	: null;
-if ( ! is_array( $shadow ) ) {
-	foreach ( $executions as $execution ) {
-		if ( 'wordpress.run-php' === ( $execution['command'] ?? null ) ) {
-			$shadow = json_decode( (string) ( $execution['stdout'] ?? '' ), true );
-		}
+$declared_artifacts = is_array( $run ) && is_array( $run['declaredArtifacts'] ?? null ) ? $run['declaredArtifacts'] : array();
+$shadow = null;
+foreach ( $declared_artifacts as $artifact ) {
+	if ( 'mdi-shadow-report-result' === ( $artifact['name'] ?? null ) && 'collected' === ( $artifact['status'] ?? null ) && is_array( $artifact['parsedJson'] ?? null ) ) {
+		$shadow = $artifact['parsedJson'];
+		break;
 	}
 }
 if ( ! is_array( $shadow ) || 0 === (int) ( $shadow['observed'] ?? 0 ) ) {
@@ -112,6 +113,7 @@ $result = array(
 	'schema' => 'mdi-mysql-shadow-corpus/v1',
 	'phpunit' => array_values( array_filter( $executions, static fn( array $execution ): bool => 'wordpress.phpunit' === ( $execution['command'] ?? null ) ) ),
 	'shadow' => $shadow,
+	'declared_artifacts' => $declared_artifacts,
 );
 fwrite( 0 === $status ? STDOUT : STDERR, json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . "\n" );
 fwrite( STDERR, "Shadow artifacts: {$root}\n" );

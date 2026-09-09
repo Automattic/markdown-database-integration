@@ -168,7 +168,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			);
 			if ( ! $native->succeeded() ) {
 				$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database );
-				if ( $this->has_matching_missing_table_error_state( $expected, $native->corpus_result() ) ) {
+				if ( $this->has_matching_missing_table_error_state( $expected, $native->corpus_result( $pre_query_insert_id ) ) ) {
 					++$this->counts['compatible'];
 					++$this->counts['compatible_missing_table_errors'];
 					return;

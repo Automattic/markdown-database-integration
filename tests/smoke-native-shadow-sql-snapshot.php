@@ -173,7 +173,7 @@ $missing_table = new WP_Markdown_Native_Shadow_Verifier(
 $database->result_rows( array(), array() );
 $database->last_error = 'private missing table message';
 $database->last_errno = 1146;
-$database->insert_id = 0;
+	$database->insert_id = 73;
 $missing_table->capture_input( 'SELECT option_value FROM wp_2_options', $database );
 $missing_table->observe( 'SELECT option_value FROM wp_2_options', false, $database );
 $missing_table_report = $missing_table->report();

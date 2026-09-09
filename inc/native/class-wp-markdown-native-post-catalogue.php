@@ -6,6 +6,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
+require_once __DIR__ . '/../class-wp-markdown-operation-profile.php';
 
 /**
  * The rows the corpus produced, held against the files that produced them.
@@ -40,11 +41,12 @@ final class WP_Markdown_Native_Post_Catalogue {
 	/**
 	 * @param array<string,mixed> $file The manifest entry the row came from.
 	 * @param array<string,mixed> $row
+	 * @param bool                $path_is_canonical The strict manifest already verified this path is under the canonical root.
 	 */
-	public function remember( WP_Markdown_File_Witness $witness, array $file, object $post, array $row ): void {
+	public function remember( WP_Markdown_File_Witness $witness, array $file, object $post, array $row, bool $path_is_canonical = false ): void {
 		$this->load();
 		$path = (string) ( $file['absolute'] ?? '' );
-		if ( null === $this->relative_path( $path ) ) {
+		if ( ! $path_is_canonical && null === $this->relative_path( $path ) ) {
 			return;
 		}
 		$this->entries[ $path ] = array( 'witness' => $witness, 'file' => $file, 'post' => $post, 'row' => $row );
@@ -86,7 +88,7 @@ final class WP_Markdown_Native_Post_Catalogue {
 	}
 
 	/** Publish a catalogue only after every canonical post has been proven. */
-	public function complete_scan(): void {
+	public function complete_scan( bool $publish = true ): void {
 		if ( ! $this->scanning ) {
 			return;
 		}
@@ -104,16 +106,71 @@ final class WP_Markdown_Native_Post_Catalogue {
 			}
 		}
 		$this->seen = array();
-		$this->persist();
+		if ( $publish ) {
+			$this->persist();
+		}
 	}
 
-	/** A write makes every recorded statement about the corpus unproven. */
-	public function forget(): void {
-		$this->entries = array();
-		$this->paths   = array();
-		$this->loaded  = true;
+	public function abort_scan(): void {
 		$this->scanning = false;
-		$this->seen = array();
+		$this->seen     = array();
+	}
+
+	/**
+	 * A write makes what was recorded about the written file unproven.
+	 *
+	 * A witness speaks for the bytes of one file, so a write to one file
+	 * leaves every other entry provable exactly as before and it is kept.
+	 * What a witness cannot speak for is the parent a file derives from its
+	 * directory: a non-index file takes it from `index.md` beside it, and an
+	 * `index.md` takes it from the one above. Writing an `index.md` can
+	 * therefore restate the parent of everything below its directory, so that
+	 * subtree is surrendered with it. Writing any other file restates nothing
+	 * about its neighbours.
+	 *
+	 * Passing no path surrenders the whole catalogue.
+	 */
+	public function forget( ?string $path = null ): void {
+		if ( null === $path ) {
+			$this->entries = array();
+			$this->paths   = array();
+			$this->loaded  = true;
+			$this->scanning = false;
+			$this->seen = array();
+			$this->discard_durable();
+			return;
+		}
+		// What is already recorded has to be in hand before part of it can be
+		// given up, or the durable file would be read back after the write.
+		$this->load();
+		$this->drop( $path );
+		if ( 'index.md' === basename( str_replace( '\\', '/', $path ) ) ) {
+			$prefix = rtrim( str_replace( '\\', '/', dirname( $path ) ), '/' ) . '/';
+			foreach ( array_keys( $this->entries ) as $recorded ) {
+				if ( str_starts_with( str_replace( '\\', '/', $recorded ), $prefix ) ) {
+					$this->drop( $recorded );
+				}
+			}
+		}
+		// Memory no longer matches what was written down, and the difference
+		// is a derived parent no witness can catch, so the durable copy goes.
+		$this->discard_durable();
+	}
+
+	/** Give up one recorded entry and every trace of it. */
+	private function drop( string $path ): void {
+		$entry = $this->entries[ $path ] ?? null;
+		if ( null === $entry ) {
+			return;
+		}
+		unset( $this->entries[ $path ], $this->seen[ $path ] );
+		$id = (int) ( $entry['post']->ID ?? 0 );
+		if ( $id > 0 && ( $this->paths[ $id ] ?? null ) === $path ) {
+			unset( $this->paths[ $id ] );
+		}
+	}
+
+	private function discard_durable(): void {
 		$path = $this->catalogue_path();
 		if ( null !== $path && is_file( $path ) && ! is_link( $path ) ) {
 			@unlink( $path );
@@ -202,6 +259,15 @@ final class WP_Markdown_Native_Post_Catalogue {
 	}
 
 	private function persist(): void {
+		$start = WP_Markdown_Operation_Profile::begin();
+		try {
+			$this->persist_catalogue();
+		} finally {
+			WP_Markdown_Operation_Profile::end( 'catalogue_publish', $start );
+		}
+	}
+
+	private function persist_catalogue(): void {
 		$path = $this->catalogue_path( true );
 		if ( null === $path ) {
 			return;

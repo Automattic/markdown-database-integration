@@ -195,8 +195,10 @@ $checks = array(
 		&& 'ready' === ( $partitioned->wpdb_state()['last_result'][0]->status ?? null )
 		&& '1' === ( $partitioned->wpdb_state()['last_result'][0]->id ?? null ),
 	'partitioned plugin tables compose exact count execution' => '2' === ( $partition_count->wpdb_state()['last_result'][0]->{'COUNT(*)'} ?? null ),
-	'partitioned plugin tables keep scans and incompatible identity markers fail closed' => false === $partition_scan->return_value()
-		&& 'unsupported_partition_access' === ( $partition_scan->diagnostic()['reason'] ?? null )
+	'partitioned plugin tables scan active canonical generations and reject incompatible identity markers' => array( '1', '2' ) === array_map(
+		static fn( object $row ): string => $row->id,
+		$partition_scan->wpdb_state()['last_result']
+	)
 		&& false === $partition_mismatch->return_value()
 		&& 'unsupported_table' === ( $partition_mismatch->diagnostic()['reason'] ?? null ),
 	'invalid and linked partition markers fail closed during composition' => false === $partition_invalid->return_value()

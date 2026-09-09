@@ -77,6 +77,11 @@ $foo = $posts[0] ?? null;
 if ( ! is_object( $foo ) || 'page' !== $foo->post_type || 'foo' !== $foo->post_name || 'foo.md' !== ( $foo->_source_identity ?? '' ) ) {
 	$failures[] = 'fixture profile did not map content/foo.md to page /foo with its stable source identity';
 }
+$manifest = iterator_to_array( $storage->get_markdown_file_manifest_iterator() );
+$manifest_entry = $manifest['foo.md'] ?? null;
+if ( ! is_array( $manifest_entry ) || 0 >= ( $manifest_entry['mtime'] ?? 0 ) || strlen( (string) file_get_contents( $root . '/foo.md' ) ) !== ( $manifest_entry['size'] ?? null ) || ! ( $manifest_entry['witness'] ?? null ) instanceof WP_Markdown_File_Witness ) {
+	$failures[] = 'fixture profile manifest reuses its fresh file observation for metadata and witness identity';
+}
 
 $outside = $root . '-outside';
 mkdir( $outside, 0777, true );

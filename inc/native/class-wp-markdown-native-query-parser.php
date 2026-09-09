@@ -355,11 +355,13 @@ final class WP_Markdown_Native_Query_Parser {
 }
 
 final class WP_Markdown_Native_Select_AST_Parser {
-	private int $current = 0;
+	private int $current;
 	private bool $contradiction = false;
 
 	/** @param array<int,WP_Markdown_Native_SQL_Token> $tokens */
-	public function __construct( private readonly array $tokens ) {}
+	public function __construct( private readonly array $tokens, int $position = 0 ) {
+		$this->current = $position;
+	}
 
 	public function parse(): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
 		$result = WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
@@ -367,6 +369,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			: $this->select( false );
 		$this->expect_type( WP_Markdown_Native_SQL_Token::END );
 		return $result;
+	}
+
+	/** Parse one SELECT embedded in a statement owned by another parser. */
+	public function parse_nested(): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows {
+		return $this->select( true );
+	}
+
+	/** Report the next token after a nested SELECT. */
+	public function position(): int {
+		return $this->current;
 	}
 
 	/** Parse grouped UNION operands while retaining branch-local ORDER BY and LIMIT. */
@@ -1186,6 +1198,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$predicates = $this->disjunction( $arbitrary );
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 			return $predicates;
+		}
+		if ( $this->match_keyword( 'NOT' ) ) {
+			$this->expect_keyword( 'EXISTS' );
+			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+			$query = $this->select( true );
+			if ( ! $query instanceof WP_Markdown_Native_SQL_Select ) {
+				$this->unsupported( $this->current() );
+			}
+			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+			return array( new WP_Markdown_Native_SQL_Subquery_Predicate( 'NOT EXISTS', null, $query ) );
 		}
 		if ( $this->match_keyword( 'EXISTS' ) ) {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );

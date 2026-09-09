@@ -11,6 +11,8 @@ require_once __DIR__ . '/class-wp-markdown-native-table-insert-parser.php';
 final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private string $state_root;
 	private WP_Markdown_Native_Table_Index $index;
+	/** @var array<string,WP_Markdown_File_Witness> */
+	private array $unique_sets_verified = array();
 
 	public function __construct(
 		string $state_root,
@@ -126,6 +128,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				? null
 				: $this->index->load( $suffix, $path );
 			if ( null !== $index ) {
+				// The index enforces this candidate's keys, while this witnessed
+				// snapshot proves the pre-existing keys were already unique.
+				$unique_set_verified = $this->unique_set_is_verified( $suffix, $path );
 				// The index answers identity and uniqueness, so the snapshot is
 				// appended to rather than read, decoded, and republished.
 				$row = $this->complete_row( $insert->values(), $definition, array(), $index['max'] );
@@ -147,10 +152,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( $appended instanceof WP_Markdown_Query_Result ) {
 					return $appended;
 				}
-				if ( ! $this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ), $this->transactions ) ) {
-					// A snapshot without a current index stays correct and simply
-					// costs a rebuild on the next insert.
-					$this->index->forget( $suffix, $this->transactions );
+				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
+				if ( $unique_set_verified ) {
+					$this->remember_verified_unique_set( $suffix, $path );
 				}
 				$provider->append_row( $row );
 				return $this->insert_result( $row, $definition );
@@ -467,7 +471,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( ! $this->supports_unique_indexes( $definition ) ) {
 			return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 		}
-		foreach ( $write->predicates() as $predicate ) {
+		$predicates = $this->resolve_subquery_predicates( $write->predicates(), $schema, $write->table() );
+		if ( $predicates instanceof WP_Markdown_Query_Result ) {
+			return $predicates;
+		}
+		foreach ( $predicates as $predicate ) {
 			foreach ( $this->predicate_columns( $predicate ) as $column ) {
 				if ( ! $schema->has_column( $column ) ) {
 					return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
@@ -479,7 +487,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the persisted table schema.' );
 			}
 		}
-
 		$directory = $this->tables_directory();
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
@@ -493,7 +500,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$path = $directory . '/' . $suffix . '.json';
 			$provider = $table['provider'];
 			$index = $this->index->load( $suffix, $path );
-			if ( null !== $index && $this->index_excludes( $index, $write->predicates() ) ) {
+			if ( null !== $index && $this->index_excludes( $index, $predicates ) ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			$rows = $provider->rows();
@@ -504,8 +511,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 
 			$retained = array();
 			$affected = 0;
+			$preserves_index_values = $write->is_update() && $this->preserves_index_values( $write->values(), $definition );
+			$updated_index = $preserves_index_values ? $index : null;
 			foreach ( $rows as $row ) {
-				if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
+				if ( ! $this->restricts( $row, $predicates, $schema ) ) {
 					$retained[] = $row;
 					continue;
 				}
@@ -517,30 +526,110 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_update_row', 'The UPDATE row is outside the persisted table schema.' );
 				}
+				if ( null !== $updated_index ) {
+					$updated_index = WP_Markdown_Native_Table_Index::with_non_key_update( $updated_index, $row, $updated );
+				}
 				$retained[] = $updated;
 			}
 
 			if ( 0 === $affected ) {
-				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
-			$violation = $this->unique_set_violation( $retained, $definition, $schema );
-			if ( $violation instanceof WP_Markdown_Query_Result ) {
-				return $violation;
+			$unique_set_verified = $write->is_update()
+				&& $this->preserves_unique_values( $write->values(), $definition )
+				&& $this->unique_set_is_verified( $suffix, $path );
+			if ( ! $unique_set_verified ) {
+				$violation = $this->unique_set_violation( $retained, $definition, $schema );
+				if ( $violation instanceof WP_Markdown_Query_Result ) {
+					return $violation;
+				}
 			}
 			$written = $this->write( $path, $retained );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
-			// The republished snapshot invalidates the previous index, so it is
-			// refreshed from the rows already in memory.
-			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ), $this->transactions );
+			$this->remember_verified_unique_set( $suffix, $path );
+			// The sidecar is derived state. Keep this runtime's witnessed index
+			// current without republishing it after every canonical table write.
+			$this->index->remember( $suffix, $path, $updated_index ?? WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
 			$provider->replace_rows( $retained );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	/**
+	 * Materialize typed IN subqueries before any target-table mutation begins.
+	 *
+	 * The SELECT executor owns query validation and provider error propagation;
+	 * this write path only turns its one projected column into its established
+	 * membership predicate.
+	 *
+	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate> $predicates
+	 * @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group>|WP_Markdown_Query_Result
+	 */
+	private function resolve_subquery_predicates( array $predicates, WP_Markdown_Native_Table_Schema $schema, string $target_table ): array|WP_Markdown_Query_Result {
+		$resolved = array();
+		$query_parser = new WP_Markdown_Native_Query_Parser();
+		$query_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, $query_parser );
+		foreach ( $predicates as $predicate ) {
+			if ( ! $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
+				$resolved[] = $predicate;
+				continue;
+			}
+			if ( ! $schema->has_column( $predicate->column() ) ) {
+				return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the persisted table schema.' );
+			}
+			$plan = $query_parser->lower( $predicate->query() );
+			if ( ! $plan instanceof WP_Markdown_Native_Query_Plan ) {
+				return $plan;
+			}
+			if ( 0 === strcasecmp( $target_table, $plan->table() ) ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot materialize a write subquery from its target table before the mutation lock.' );
+			}
+			if ( array() !== $plan->joins()
+				|| null !== $plan->union()
+				|| array() !== $plan->subqueries()
+				|| $this->has_comparison_predicate( $plan->predicates() )
+			) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native write subqueries must be uncorrelated single-table SELECTs.' );
+			}
+			if ( 1 !== count( $plan->projection() ) ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native IN subqueries must project exactly one column.' );
+			}
+			$result = $query_runtime->execute_plan( $plan );
+			if ( false === $result->return_value() ) {
+				return $result;
+			}
+			$state = $result->wpdb_state();
+			$columns = $state['col_info'];
+			if ( 1 !== count( $columns ) || ! is_string( $columns[0]->name ?? null ) || '' === $columns[0]->name ) {
+				return $this->failure( 'unsupported_subquery_shape', 'mdi-native IN subqueries must return exactly one named result column.' );
+			}
+			$rows = $state['last_result'];
+			$values = array();
+			foreach ( $rows as $row ) {
+				$value = $row->{ $columns[0]->name } ?? null;
+				if ( null !== $value ) {
+					$values[] = $value;
+				}
+			}
+			$resolved[] = new WP_Markdown_Native_Table_Predicate( $predicate->column(), $values, false );
+		}
+		return $resolved;
+	}
+
+	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
+	private function has_comparison_predicate( array $predicates ): bool {
+		foreach ( $predicates as $predicate ) {
+			if ( null !== $predicate->comparison_column() ) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/** @param array{summary:array<string,array{null:int,empty:int}>} $index @param array<int,mixed> $predicates */
@@ -700,6 +789,48 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		return true;
 	}
 
+	/** @param array<string,int|string|null> $values @param array<string,mixed> $definition */
+	private function preserves_unique_values( array $values, array $definition ): bool {
+		foreach ( $definition['indexes'] as $index ) {
+			if ( true !== ( $index['unique'] ?? false ) ) {
+				continue;
+			}
+			foreach ( $index['columns'] as $column ) {
+				if ( array_key_exists( (string) ( $column['name'] ?? '' ), $values ) ) {
+					return false;
+				}
+			}
+		}
+		return true;
+	}
+
+	/** @param array<string,int|string|null> $values @param array<string,mixed> $definition */
+	private function preserves_index_values( array $values, array $definition ): bool {
+		if ( ! $this->preserves_unique_values( $values, $definition ) ) {
+			return false;
+		}
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( true === ( $column['auto_increment'] ?? false ) && array_key_exists( $name, $values ) ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	private function unique_set_is_verified( string $suffix, string $path ): bool {
+		return isset( $this->unique_sets_verified[ $suffix ] )
+			&& $this->unique_sets_verified[ $suffix ]->is( WP_Markdown_File_Witness::take( $path ) );
+	}
+
+	private function remember_verified_unique_set( string $suffix, string $path ): void {
+		$witness = WP_Markdown_File_Witness::take( $path );
+		if ( null === $witness ) {
+			unset( $this->unique_sets_verified[ $suffix ] );
+			return;
+		}
+		$this->unique_sets_verified[ $suffix ] = $witness;
+	}
+
 	/**
 	 * @param array<int,array<string,mixed>> $rows
 	 * @param array<string,mixed>            $definition
@@ -710,10 +841,33 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( ! $this->unique_values_enforceable( $row, $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a unique key that is not exact ASCII or integer identity.' );
 			}
-			if ( $this->duplicates_unique_index( $row, $seen, $definition, $schema ) ) {
-				return $this->failure( 'duplicate_key', 'The UPDATE row duplicates a persisted unique key.' );
+			foreach ( $definition['indexes'] as $position => $index ) {
+				if ( true !== ( $index['unique'] ?? false ) ) {
+					continue;
+				}
+				$parts = array();
+				foreach ( $index['columns'] as $column ) {
+					$name = (string) ( $column['name'] ?? '' );
+					if ( ! array_key_exists( $name, $row ) || null === $row[ $name ] ) {
+						// MySQL permits multiple NULL values in a unique index.
+						continue 2;
+					}
+					$key = $schema->value_key(
+						$name,
+						$this->unique_index_value( $row[ $name ], $column['length'] ?? null )
+					);
+					if ( null === $key ) {
+						continue 2;
+					}
+					$parts[] = $key;
+				}
+				$name = (string) ( $index['name'] ?? $position );
+				$key  = implode( "\x1f", $parts );
+				if ( isset( $seen[ $name ][ $key ] ) ) {
+					return $this->failure( 'duplicate_key', 'The UPDATE row duplicates a persisted unique key.' );
+				}
+				$seen[ $name ][ $key ] = true;
 			}
-			$seen[] = $row;
 		}
 		return null;
 	}

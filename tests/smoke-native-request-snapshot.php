@@ -20,8 +20,10 @@ $runtime->execute(
 );
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_inventory (handle, label) VALUES ('alpha', 'one')", 'wp_' ) );
 $first = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, handle, label FROM wp_inventory ORDER BY id', 'wp_' ) );
+$before_append = $runtime->execute( new WP_Markdown_Query_Request( "SELECT label FROM wp_inventory WHERE handle = 'alpha' AND id = 1", 'wp_' ) );
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_inventory (handle, label) VALUES ('beta', 'two')", 'wp_' ) );
 $after_insert = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id, handle, label FROM wp_inventory WHERE handle = 'beta'", 'wp_' ) );
+$after_append_count = $runtime->execute( new WP_Markdown_Query_Request( "SELECT COUNT(*) FROM wp_inventory WHERE handle = 'beta' AND id = 2", 'wp_' ) );
 
 $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION', 'wp_' ) );
 $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_inventory SET label = 'temporary' WHERE handle = 'alpha'", 'wp_' ) );
@@ -50,6 +52,8 @@ $checks = array(
 		&& 'one' === (string) ( $first_rows[0]->label ?? '' ),
 	'a successful insert updates the request snapshot' => 1 === count( $insert_rows )
 		&& 'two' === (string) ( $insert_rows[0]->label ?? '' ),
+	'exact equality candidates retain appended COUNT results' => 'one' === (string) ( $before_append->wpdb_state()['last_result'][0]->label ?? '' )
+		&& '1' === (string) ( $after_append_count->wpdb_state()['last_result'][0]->{'COUNT(*)'} ?? '' ),
 	'a transaction reads its own generic-table write' => 'temporary' === (string) ( $transaction_rows[0]->label ?? '' ),
 	'rollback invalidates and reloads the restored snapshot' => 'one' === (string) ( $rollback_rows[0]->label ?? '' ),
 	'external changes do not alter a loaded request snapshot' => 'one' === (string) ( $stable_rows[0]->label ?? '' ),

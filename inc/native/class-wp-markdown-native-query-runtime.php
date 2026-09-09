@@ -277,7 +277,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 				$registry,
 				$parser,
 				self::shared_storage( $content_root ?? $state_root, $multisite && $prefix === $resolved_base ),
-				$transactions
+				$transactions,
 			),
 			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root )
 		);

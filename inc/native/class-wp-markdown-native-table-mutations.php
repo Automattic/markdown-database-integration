@@ -590,7 +590,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( 0 === strcasecmp( $target_table, $plan->table() ) ) {
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native cannot materialize a write subquery from its target table before the mutation lock.' );
 			}
-			if ( array() !== $plan->subqueries() || $this->has_comparison_predicate( $plan->predicates() ) ) {
+			if ( array() !== $plan->joins()
+				|| null !== $plan->union()
+				|| array() !== $plan->subqueries()
+				|| $this->has_comparison_predicate( $plan->predicates() )
+			) {
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native write subqueries must be uncorrelated single-table SELECTs.' );
 			}
 			if ( 1 !== count( $plan->projection() ) ) {

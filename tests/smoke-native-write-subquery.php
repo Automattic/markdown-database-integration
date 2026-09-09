@@ -39,6 +39,10 @@ $delete = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM wp_post
 $after_delete = json_decode( (string) file_get_contents( $root . '/_tables/postmeta.json' ), true );
 $self_target = $runtime->execute( new WP_Markdown_Query_Request( 'DELETE FROM wp_postmeta WHERE post_id IN (SELECT post_id FROM wp_postmeta)' ) );
 $after_self_target = json_decode( (string) file_get_contents( $root . '/_tables/postmeta.json' ), true );
+$union_target = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_postmeta SET meta_value = 'union-bypass' WHERE meta_id IN (SELECT ID FROM wp_posts UNION SELECT meta_id FROM wp_postmeta)" ) );
+$after_union_target = json_decode( (string) file_get_contents( $root . '/_tables/postmeta.json' ), true );
+$join_target = $runtime->execute( new WP_Markdown_Query_Request( 'DELETE FROM wp_postmeta WHERE meta_id IN (SELECT p.ID FROM wp_posts p JOIN wp_postmeta m ON p.ID = m.post_id)' ) );
+$after_join_target = json_decode( (string) file_get_contents( $root . '/_tables/postmeta.json' ), true );
 $null_member = $runtime->execute( new WP_Markdown_Query_Request( 'DELETE FROM wp_postmeta WHERE meta_key IN (SELECT meta_key FROM wp_termmeta)' ) );
 $after_null_member = json_decode( (string) file_get_contents( $root . '/_tables/postmeta.json' ), true );
 $empty = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_postmeta SET meta_value = 'changed' WHERE post_id IN (SELECT ID FROM wp_posts WHERE post_type = 'revision')" ) );
@@ -69,6 +73,14 @@ $checks = array(
 	'self-target subquery fails before acquiring the target mutation lock' => false === $self_target->return_value()
 		&& 'unsupported_subquery_shape' === ( $self_target->diagnostic()['reason'] ?? null )
 		&& $after_delete === $after_self_target,
+	'UNION write subqueries fail closed before a target-table branch can update rows' => false === $union_target->return_value()
+		&& 'markdown_db_native_table_mutation_failed' === ( $union_target->diagnostic()['code'] ?? null )
+		&& 'unsupported_subquery_shape' === ( $union_target->diagnostic()['reason'] ?? null )
+		&& $after_self_target === $after_union_target,
+	'JOIN write subqueries fail closed before a target-table branch can delete rows' => false === $join_target->return_value()
+		&& 'markdown_db_native_table_mutation_failed' === ( $join_target->diagnostic()['code'] ?? null )
+		&& 'unsupported_subquery_shape' === ( $join_target->diagnostic()['reason'] ?? null )
+		&& $after_union_target === $after_join_target,
 	'NULL members do not match a NULL outer value' => 3 === $null_member->return_value()
 		&& array( array( 'meta_id' => 4, 'post_id' => 4, 'meta_key' => null, 'meta_value' => null ) ) === $after_null_member,
 	'empty typed IN selection leaves rows unchanged' => 0 === $empty->return_value() && $after_null_member === $after_empty,

@@ -13,11 +13,12 @@ const mdi = join(root, "mdi")
 const corpus = process.env.DME_CORPUS_ROOT ?? "/home/chubes/labs/mdi-parity-wave2-corpus"
 const artifacts = join(root, "artifacts", process.env.DME_RUN_NAME ?? "native-focused")
 const selectedTestFile = process.env.DME_TEST_FILE ?? "tests/Integration/EventSourceUpdateMySqlAtomicityTest.php"
+const databaseType = process.env.DME_DATABASE_TYPE === "mysql" ? "mysql" : "mdi-native"
 
 const recipe = buildWordPressPhpunitRecipe({
 	wordpressVersion: "7.1",
 	phpVersion: "8.3",
-	databaseType: "mdi-native",
+	databaseType,
 	multisite: true,
 	pluginSlug: "data-machine-events",
 	pluginSource: join(corpus, "data-machine-events"),
@@ -39,9 +40,11 @@ const recipe = buildWordPressPhpunitRecipe({
 	],
 }) as any
 
-recipe.inputs.extra_plugins = recipe.inputs.extra_plugins.map((plugin: any) => plugin.slug === "markdown-database-integration"
-	? { ...plugin, source: mdi, metadata: { ...plugin.metadata, revision: process.env.MDI_CANDIDATE_SHA } }
-	: plugin)
+if (databaseType === "mdi-native") {
+	recipe.inputs.extra_plugins = recipe.inputs.extra_plugins.map((plugin: any) => plugin.slug === "markdown-database-integration"
+		? { ...plugin, source: mdi, metadata: { ...plugin.metadata, revision: process.env.MDI_CANDIDATE_SHA } }
+		: plugin)
+}
 
 const recipePath = join(artifacts, "recipe.json")
 await mkdir(dirname(recipePath), { recursive: true })

@@ -16,6 +16,7 @@ class wpdb {
 	public int $insert_id = 0;
 	public string $last_error = '';
 	public ?string $last_query = null;
+	public ?bool $is_mysql = null;
 	public string $func_call = '';
 	public array $last_result = array();
 	protected array $col_info = array();
@@ -55,6 +56,7 @@ $reconnected_after_error = $database->check_connection( false );
 
 $checks = array(
 	'database selection succeeds without mysqli, keeps wpdb return semantics, and preserves the canonical prefix' => null === $selection && 'wp_' === $database->prefix,
+	'native wpdb advertises the MySQL dialect without creating a mysqli connection' => true === $database->is_mysql,
 	'logical close and reconnect report wpdb lifecycle state' => true === $closed && true === $reconnected && true === $database->ready,
 	'invalid selection exposes a normal database error state' => false === $invalid_selection && 1049 === $invalid_errno && 'Unknown database' === $invalid_error,
 	'connection checks restore the ready state without a reconnect loop' => true === $reconnected_after_error && true === $database->ready && 0 === $database->last_errno,

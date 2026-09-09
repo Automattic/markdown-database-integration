@@ -246,7 +246,8 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		string $content_root,
 		WP_Markdown_Native_Table_Schema $schema,
 		?WP_Markdown_Storage $storage = null,
-		?string $state_root = null
+		?string $state_root = null,
+		private bool $network_root = false
 	) {
 		parent::__construct( $content_root, $schema );
 		$this->storage = $storage ?? new WP_Markdown_Storage( $content_root );
@@ -256,7 +257,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		// recorded under and are kept. The scoped views are lists of which
 		// files answered a read, which a new or removed file changes, so they
 		// are rebuilt — from the surviving parses, not from the corpus.
-		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
+		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root, $network_root ? array( 'sites' ) : array() );
 		$this->storage->add_file_mutation_observer( function ( string $path ): void {
 			$this->catalogue->forget( $path );
 			$this->scoped_posts = array();
@@ -351,7 +352,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		foreach ( $predicate->values() as $value ) {
 			$id = (int) $value;
 			$file = $this->catalogue->file_for( $id );
-			if ( null === $file ) {
+			if ( null === $file && ! $this->network_root ) {
 				$file = $this->storage->indexed_post_file( $id );
 			}
 			if ( null === $file ) {

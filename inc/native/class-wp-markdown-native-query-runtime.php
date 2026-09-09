@@ -163,6 +163,12 @@ final class WP_Markdown_Native_Runtime_Factory {
 			foreach ( array_keys( WP_Markdown_Native_Schema_Catalog::definitions( $multisite ) ) as $suffix ) {
 				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, $multisite, (string) $suffix, $global_state_root, $global_content_root );
 			}
+		} elseif ( $multisite && self::holds_canonical_site( $global_state_root, $global_content_root ) ) {
+			// A new site's local root is empty while wp_initialize_site() still
+			// needs established network tables such as sitemeta.
+			foreach ( array( 'blogs', 'blogmeta', 'registration_log', 'site', 'sitemeta', 'signups' ) as $suffix ) {
+				self::register_core_table( $registry, $state_root, $content_root, $prefix, $base_prefix, true, $suffix, $global_state_root, $global_content_root );
+			}
 		}
 		self::register_persisted_plugin_tables( $registry, $state_root, $prefix, $multisite );
 		return $registry;
@@ -207,7 +213,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 		}
 		if ( 'posts' === $suffix ) {
 			$posts = self::posts_schema();
-			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root ), $provider_state_root ) );
+			$network_root = $multisite && $prefix === $base_prefix;
+			$registry->register( $prefix . 'posts', $posts, new WP_Markdown_Native_Post_Provider( $provider_content_root, $posts, self::shared_storage( $provider_content_root, $network_root ), $provider_state_root, $network_root ) );
 			return true;
 		}
 		$bespoke = array(
@@ -269,7 +276,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			new WP_Markdown_Native_Post_Mutation_Runtime(
 				$registry,
 				$parser,
-				self::shared_storage( $content_root ?? $state_root ),
+				self::shared_storage( $content_root ?? $state_root, $multisite && $prefix === $resolved_base ),
 				$transactions,
 			),
 			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root )
@@ -367,10 +374,11 @@ final class WP_Markdown_Native_Runtime_Factory {
 	 * a read that remembers what it parsed must be told when a write changes
 	 * a file underneath it.
 	 */
-	private static function shared_storage( string $content_root ): WP_Markdown_Storage {
-		$key = rtrim( $content_root, '/\\' );
+	private static function shared_storage( string $content_root, bool $network_root = false ): WP_Markdown_Storage {
+		$key = ( $network_root ? 'network:' : 'site:' ) . rtrim( $content_root, '/\\' );
 		if ( ! isset( self::$storages[ $key ] ) ) {
-			self::$storages[ $key ] = new WP_Markdown_Storage( $content_root );
+			// The network root owns sites/{blog_id}; it is not a post-type tree.
+			self::$storages[ $key ] = new WP_Markdown_Storage( $content_root, $network_root ? array( 'sites' ) : array() );
 		}
 		return self::$storages[ $key ];
 	}
@@ -656,7 +664,7 @@ final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Qu
 	private string $content_root;
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		$multisite = ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
+		$multisite = ( defined( 'WP_INSTALLING_NETWORK' ) && WP_INSTALLING_NETWORK ) || ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
 		if ( ! $multisite ) {
 			return $this->prefix_runtime->execute( $request );
 		}

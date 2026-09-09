@@ -167,7 +167,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				new WP_Markdown_Query_Request( $query, $prefix )
 			);
 			if ( ! $native->succeeded() ) {
-				$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database, null, true );
+				$expected = WP_Markdown_WPDB_Result_Snapshot::capture( $return_value, $database );
 				if ( $this->has_matching_missing_table_error_state( $expected, $native->corpus_result() ) ) {
 					++$this->counts['compatible'];
 					++$this->counts['compatible_missing_table_errors'];
@@ -244,9 +244,6 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	}
 
 	private function failure_reason( Throwable $error ): string {
-		if ( $error instanceof TypeError ) {
-			return 'native_verifier_type_error_line_' . $error->getLine();
-		}
 		$message = $error->getMessage();
 		if ( str_contains( $message, 'canonical state root' ) ) {
 			return 'invalid_canonical_state_root';

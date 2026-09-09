@@ -247,7 +247,7 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 		// Writing a canonical file makes anything remembered about the corpus
 		// stale, so the parse is dropped the moment one changes.
 		$this->catalogue = new WP_Markdown_Native_Post_Catalogue( $content_root, $state_root ?? $content_root );
-		$this->storage->set_file_mutation_observer( function (): void {
+		$this->storage->add_file_mutation_observer( function (): void {
 			$this->catalogue->forget();
 		} );
 	}

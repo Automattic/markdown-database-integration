@@ -44,7 +44,16 @@ $duplicate = $runtime->execute( new WP_Markdown_Query_Request( $ddl ) );
 $injected = $runtime->execute( new WP_Markdown_Query_Request( $ddl . '; DROP TABLE wp_options' ) );
 $reloaded = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_plugin_events' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
-$transactional_ddl = $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_ddl_commit (id bigint unsigned NOT NULL, PRIMARY KEY (id))' ) );
+$transactional_ddl = $runtime->execute( new WP_Markdown_Query_Request( "CREATE TABLE wp_ddl_commit (\n"
+	. " id bigint unsigned NOT NULL,\n"
+	. " start_datetime datetime NOT NULL,\n"
+	. " end_datetime datetime DEFAULT NULL,\n"
+	. " post_status varchar(20) NOT NULL DEFAULT 'publish',\n"
+	. " PRIMARY KEY (id),\n"
+	. " KEY start_datetime (start_datetime),\n"
+	. " KEY end_datetime (end_datetime),\n"
+	. " KEY status_start (post_status, start_datetime)\n"
+	. ') ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
 $ddl_survives_rollback = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_commit' ) );
 

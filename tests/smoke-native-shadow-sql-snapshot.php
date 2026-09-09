@@ -192,8 +192,9 @@ $tableless = new WP_Markdown_Native_Shadow_Verifier(
 	1,
 	array( 'input_mode' => 'sql_snapshot' )
 );
-$tableless->capture_input( 'SELECT 1', $database );
-$tableless->observe( 'SELECT 1', 1, $database );
+$database->result_rows( array( array( 'one' => '1' ) ), array( array( 'name' => 'one', 'type' => 3 ) ) );
+$tableless->capture_input( 'SELECT 1 AS one', $database );
+$tableless->observe( 'SELECT 1 AS one', 1, $database );
 $capture_count_at_bound = count( $database->source()->results );
 $bounded->capture_input( 'SELECT ID, post_title FROM wp_posts', $database );
 $bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
@@ -223,7 +224,9 @@ $checks = array(
 	'validated non-WordPress-prefixed plugin tables compile by exact captured identity' => array( 'agents' ) === array_column( $plugin_table['tables'], 'table' ),
 	'absent blog-2 schemas remain explicit snapshot input limitations' => 'source_schema_unavailable' === $missing_schema_reason,
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
-	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
+	'tableless scalar SQL is independently compared through the stateless runtime path' => 1 === $tableless->report()['counts']['compatible']
+		&& 'native_runtime_fast_path' === ( $tableless->report()['context']['last_input_state']['read_connection'] ?? null )
+		&& array() === ( $tableless->report()['context']['last_input_state']['tables'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),
 );
 $failed = 0;

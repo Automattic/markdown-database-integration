@@ -74,9 +74,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
 			);
 		}
-		$json_valid = $this->tableless_json_valid( $request->sql() );
-		if ( null !== $json_valid ) {
-			return $json_valid;
+		$tableless = $this->tableless_scalar_projection( $request->sql() );
+		if ( null !== $tableless ) {
+			return $tableless;
 		}
 		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT))\s*;?\s*$/i', $request->sql(), $match ) ) {
 			$column = $match[1];
@@ -124,7 +124,29 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		return $this->execute_plan( $plan );
 	}
 
-	/** Execute the bounded tableless scalar form without treating JSON as a table source. */
+	/** Execute source-free typed scalar expressions as the one-row SQL result. */
+	private function tableless_scalar_projection( string $sql ): ?WP_Markdown_Query_Result {
+		$projection = $this->parser->parse_tableless_scalar_projection( $sql );
+		if ( $projection instanceof WP_Markdown_Query_Result ) {
+			return $this->tableless_json_valid( $sql );
+		}
+		// The evaluator accepts a schema for CASE predicates; this sentinel is
+		// unreachable because tableless expressions have no column references.
+		$schema = new WP_Markdown_Native_Table_Schema(
+			array( '__mdi_native_tableless' => new WP_Markdown_Native_Column( 3, false ) ),
+			'__mdi_native_tableless'
+		);
+		$row = array();
+		$columns = array();
+		foreach ( $projection as $scalar ) {
+			$value = $this->evaluate_scalar( $scalar['expression'], array(), $schema );
+			$row[ $scalar['alias'] ] = $this->string_scalar( $value );
+			$columns[] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => $this->tableless_scalar_type( $scalar['expression'], $value ) );
+		}
+		return WP_Markdown_Query_Result::selected( array( $row ), $columns );
+	}
+
+	/** Preserve the legacy unaliased JSON column label while typed aliases use the shared evaluator. */
 	private function tableless_json_valid( string $sql ): ?WP_Markdown_Query_Result {
 		try {
 			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( rtrim( trim( $sql ), ';' ) );
@@ -132,39 +154,34 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return null;
 		}
 		$end = count( $tokens ) - 1;
-		if ( $end < 5
+		if ( $end !== 5
 			|| 0 !== strcasecmp( 'SELECT', (string) $tokens[0]->value() )
 			|| 0 !== strcasecmp( 'JSON_VALID', (string) $tokens[1]->value() )
 			|| WP_Markdown_Native_SQL_Token::LEFT_PAREN !== $tokens[2]->type()
 			|| WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== $tokens[4]->type()
-			|| WP_Markdown_Native_SQL_Token::END !== $tokens[ $end ]->type()
+			|| WP_Markdown_Native_SQL_Token::END !== $tokens[5]->type()
 		) {
 			return null;
-		}
-		$column = 'JSON_VALID(' . $tokens[3]->lexeme() . ')';
-		if ( 5 < $end ) {
-			if ( 7 !== $end || 0 !== strcasecmp( 'AS', (string) $tokens[5]->value() ) || ! in_array( $tokens[6]->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
-				return null;
-			}
-			$column = (string) $tokens[6]->value();
 		}
 		$value = 0 === strcasecmp( 'NULL', (string) $tokens[3]->value() ) ? null : $tokens[3]->value();
 		if ( null !== $value && WP_Markdown_Native_SQL_Token::STRING !== $tokens[3]->type() ) {
 			return null;
 		}
-		$valid = null;
-		if ( null !== $value ) {
-			try {
-				json_decode( (string) $value, true, 512, JSON_THROW_ON_ERROR );
-				$valid = '1';
-			} catch ( JsonException ) {
-				$valid = '0';
-			}
-		}
+		$column = 'JSON_VALID(' . $tokens[3]->lexeme() . ')';
 		return WP_Markdown_Query_Result::selected(
-			array( array( $column => $valid ) ),
-			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
+			array( array( $column => null === $value ? null : $this->json_valid( (string) $value ) ) ),
+			array( array( 'name' => $column, 'table' => '', 'type' => 3 ) )
 		);
+	}
+
+	public static function supports_tableless_scalar_projection( string $sql ): bool {
+		return ! ( ( new WP_Markdown_Native_Query_Parser() )->parse_tableless_scalar_projection( $sql ) instanceof WP_Markdown_Query_Result );
+	}
+
+	private function tableless_scalar_type( WP_Markdown_Native_Query_Scalar_Expression $expression, int|string|null $value ): int {
+		if ( null === $value ) { return 6; }
+		if ( 'literal' === $expression->kind() ) { return is_int( $value ) ? 3 : ( is_numeric( $value ) ? 246 : 253 ); }
+		return 'JSON_VALID' === $expression->kind() ? 3 : 253;
 	}
 
 	private function execute_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
@@ -2011,6 +2028,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			'LOCATE' => in_array( null, $values, true ) ? null : ( false === strpos( (string) $values[1], (string) $values[0] ) ? 0 : strpos( (string) $values[1], (string) $values[0] ) + 1 ),
 			'MD5' => null === $values[0] ? null : md5( (string) $values[0] ),
 			'SHA1' => null === $values[0] ? null : sha1( (string) $values[0] ),
+			'JSON_VALID' => null === $values[0] ? null : $this->json_valid( (string) $values[0] ),
 			'ABS' => null === $values[0] ? null : $this->scalar_number( abs( $this->scalar_number( $values[0] ) ) ),
 			'ROUND' => null === $values[0] ? null : $this->scalar_number( round( $this->scalar_number( $values[0] ), (int) ( $values[1] ?? 0 ) ) ),
 			'FLOOR' => null === $values[0] ? null : $this->scalar_number( floor( $this->scalar_number( $values[0] ) ) ),
@@ -2041,6 +2059,15 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null === $value ) { return null; }
 		$number = (float) $value;
 		return floor( $number ) === $number ? (int) $number : (string) $number;
+	}
+
+	private function json_valid( string $value ): string {
+		try {
+			json_decode( $value, true, 512, JSON_THROW_ON_ERROR );
+			return '1';
+		} catch ( JsonException ) {
+			return '0';
+		}
 	}
 
 	/** Cast through decimal digits instead of PHP floats, which lose declared scale. */

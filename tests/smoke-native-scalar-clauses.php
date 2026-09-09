@@ -36,6 +36,7 @@ $json_valid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VAL
 $json_invalid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('{broken}')", 'wp_' ) );
 $json_null = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT JSON_VALID(NULL)', 'wp_' ) );
 $json_alias = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('[]') AS valid_json", 'wp_' ) );
+$literals = $runtime->execute( new WP_Markdown_Query_Request( "SELECT 1 AS one, 'event' AS label, NULL AS missing", 'wp_' ) );
 $checks = array(
 	'WP date WHERE evaluates DATE_ADD INTERVAL after the bounded read' => array( '2', '3' ) === array_map( static fn( object $row ): string => $row->id, $where->wpdb_state()['last_result'] ),
 	'DATE_SUB INTERVAL and TIMESTAMPDIFF use the shared WHERE scalar path' => array( '1' ) === array_map( static fn( object $row ): string => $row->id, $subtracted->wpdb_state()['last_result'] )
@@ -68,8 +69,11 @@ $checks = array(
 		&& '0' === ( $json_invalid->wpdb_state()['last_result'][0]->{'JSON_VALID(\'{broken}\')'} ?? null )
 		&& null === ( $json_null->wpdb_state()['last_result'][0]->{'JSON_VALID(NULL)'} ?? null )
 		&& 'JSON_VALID(\'{"event":true}\')' === ( $json_valid->wpdb_state()['col_info'][0]->name ?? null )
-		&& 8 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null )
+		&& 3 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null )
 		&& '1' === ( $json_alias->wpdb_state()['last_result'][0]->valid_json ?? null ),
+	'tableless numeric, string, and NULL literals preserve aliases, values, and MySQL field types' => array( 'one' => '1', 'label' => 'event', 'missing' => null ) === (array) ( $literals->wpdb_state()['last_result'][0] ?? array() )
+		&& array( 'one', 'label', 'missing' ) === array_map( static fn( object $column ): string => $column->name, $literals->wpdb_state()['col_info'] )
+		&& array( 3, 253, 6 ) === array_map( static fn( object $column ): int => $column->type, $literals->wpdb_state()['col_info'] ),
 );
 $failed = false;
 foreach ( $checks as $label => $passed ) { echo ( $passed ? 'PASS: ' : 'FAIL: ' ) . $label . "\n"; $failed = $failed || ! $passed; }

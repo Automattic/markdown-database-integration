@@ -391,7 +391,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	}
 
 	private function is_stateless_runtime_fast_path( string $query ): bool {
-		return 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $query );
+		return 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $query )
+			|| WP_Markdown_Native_Query_Runtime::supports_tableless_scalar_projection( $query );
 	}
 
 	private function has_unordered_unbounded_result( string $query ): bool {

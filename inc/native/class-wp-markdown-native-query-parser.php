@@ -22,6 +22,47 @@ final class WP_Markdown_Native_Query_Parser {
 		}
 	}
 
+	/**
+	 * Parse scalar projections that have no row source without fabricating a
+	 * source schema. The synthetic FROM exists only to reuse the typed SELECT
+	 * grammar; all source-dependent plan shapes are rejected below.
+	 *
+	 * @return array<int,array{expression:WP_Markdown_Native_Query_Scalar_Expression,alias:string,position:int}>|WP_Markdown_Query_Result
+	 */
+	public function parse_tableless_scalar_projection( string $sql ): array|WP_Markdown_Query_Result {
+		$terminated = rtrim( $sql );
+		if ( str_ends_with( $terminated, ';' ) ) {
+			$terminated = rtrim( substr( $terminated, 0, -1 ) );
+		}
+		$plan = $this->parse( $terminated . ' FROM wp_mdi_native_tableless' );
+		if ( ! $plan instanceof WP_Markdown_Native_Query_Plan
+			|| 'wp_mdi_native_tableless' !== $plan->table()
+			|| array() !== $plan->projection()
+			|| array() === $plan->scalar_projection()
+			|| $plan->counts_all()
+			|| $plan->is_distinct()
+			|| array() !== $plan->joins()
+			|| array() !== $plan->predicates()
+			|| array() !== $plan->scalar_predicates()
+			|| null !== $plan->boolean_predicate()
+			|| array() !== $plan->aggregates()
+			|| null !== $plan->group_by()
+			|| array() !== $plan->order_by()
+			|| PHP_INT_MAX !== $plan->limit()
+			|| 0 !== $plan->limit_offset()
+		) {
+			return $plan instanceof WP_Markdown_Query_Result
+				? $plan
+				: $this->failure( 'unsupported_tableless_projection', 'mdi-native supports only source-free scalar SELECT projections.', 0 );
+		}
+		foreach ( $plan->scalar_projection() as $scalar ) {
+			if ( array() !== $scalar['expression']->columns() ) {
+				return $this->failure( 'unsupported_tableless_projection', 'mdi-native tableless scalar projections cannot reference columns.', 0 );
+			}
+		}
+		return $plan->scalar_projection();
+	}
+
 	public function parse_ast( string $sql ): WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows|WP_Markdown_Query_Result {
 		try {
 			// A single trailing statement terminator is not a second statement.
@@ -444,6 +485,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 		} elseif ( ! $select_all ) {
 			do {
+				if ( $this->match_keyword( 'NULL' ) ) {
+					$scalar_projection[] = array(
+						'expression' => new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, null ),
+						'alias' => $this->match_keyword( 'AS' ) ? $this->unqualified_identifier()->name() : 'NULL',
+						'position' => count( $projection ) + count( $scalar_projection ),
+					);
+					continue;
+				}
 				$aggregate = $this->match_aggregate();
 				if ( null !== $aggregate ) {
 					$aggregates[] = $aggregate;
@@ -461,7 +510,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					$literal = $this->literal();
 					$scalar_projection[] = array(
 						'expression' => new WP_Markdown_Native_SQL_Scalar_Expression( 'literal', null, $literal->value() ),
-						'alias' => (string) $literal->value(),
+						'alias' => $this->match_keyword( 'AS' ) ? $this->unqualified_identifier()->name() : (string) $literal->value(),
 						'position' => count( $projection ) + count( $scalar_projection ),
 					);
 					continue;
@@ -757,7 +806,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 	private function matches_scalar_expression(): bool {
 		return WP_Markdown_Native_SQL_Token::LEFT_PAREN === $this->current()->type()
-			|| in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'SUBSTRING_INDEX', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
+			|| in_array( strtoupper( (string) $this->current()->value() ), array( 'CONCAT', 'COALESCE', 'SUBSTRING', 'SUBSTRING_INDEX', 'CAST', 'YEAR', 'MONTH', 'DATE_FORMAT', 'DATE', 'TIME', 'NOW', 'UTC_TIMESTAMP', 'CURDATE', 'UNIX_TIMESTAMP', 'FROM_UNIXTIME', 'DATEDIFF', 'TIMESTAMPDIFF', 'DATE_ADD', 'DATE_SUB', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'WEEK', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'GREATEST', 'LEAST', 'IF', 'IFNULL', 'NULLIF', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'REPLACE', 'LEFT', 'RIGHT', 'LOCATE', 'MD5', 'SHA1', 'JSON_VALID', 'ABS', 'ROUND', 'FLOOR', 'CEIL', 'MOD', 'POW', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN', 'ATAN2', 'RAND' ), true )
 			&& WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $this->tokens[ $this->current + 1 ] ?? null )?->type()
 			|| ( WP_Markdown_Native_SQL_Token::KEYWORD === $this->current()->type() && 0 === strcasecmp( 'CASE', (string) $this->current()->value() ) );
 	}
@@ -836,7 +885,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		$valid = match ( $function ) {
 			'CONCAT', 'COALESCE' => 2 <= count( $arguments ),
 			'SUBSTRING', 'SUBSTRING_INDEX' => 3 === count( $arguments ),
-			'YEAR', 'MONTH', 'DATE', 'TIME', 'FROM_UNIXTIME', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
+			'YEAR', 'MONTH', 'DATE', 'TIME', 'FROM_UNIXTIME', 'DAY', 'DAYOFMONTH', 'DAYOFYEAR', 'WEEKDAY', 'SECOND', 'HOUR', 'MINUTE', 'DAYOFWEEK', 'LOWER', 'UPPER', 'TRIM', 'LENGTH', 'CHAR_LENGTH', 'MD5', 'SHA1', 'JSON_VALID', 'ABS', 'FLOOR', 'CEIL', 'SQRT', 'RADIANS', 'DEGREES', 'SIN', 'COS', 'TAN', 'ACOS', 'ASIN', 'ATAN' => 1 === count( $arguments ),
 			'UNIX_TIMESTAMP', 'RAND' => 0 === count( $arguments ) || 1 === count( $arguments ),
 			'WEEK' => 2 === count( $arguments ) && 1 === (int) $arguments[1]->literal(),
 			'DATE_FORMAT', 'DATEDIFF', 'IFNULL', 'NULLIF', 'LEFT', 'RIGHT', 'LOCATE', 'MOD', 'POW', 'ATAN2' => 2 === count( $arguments ),

@@ -208,7 +208,9 @@ $checks = array(
 		&& strpos( $unterminated_sql, "'open" ) === ( $unterminated->diagnostic()['sql_offset'] ?? null )
 		&& $malformed_and instanceof WP_Markdown_Query_Result
 		&& strpos( $malformed_and_sql, 'BY' ) === ( $malformed_and->diagnostic()['sql_offset'] ?? null ),
-	'an aliased column count is an aggregate like any other' => $counted_column instanceof WP_Markdown_Native_Query_Plan
+	'column counts retain typed aggregate plans with or without an alias' => $count_column instanceof WP_Markdown_Native_Query_Plan
+		&& 'COUNT(row_id)' === $count_column->aggregates()[0]['alias']
+		&& $counted_column instanceof WP_Markdown_Native_Query_Plan
 		&& 1 === count( $counted_column->aggregates() )
 		&& 'COUNT' === $counted_column->aggregates()[0]['function']
 		&& 'row_id' === $counted_column->aggregates()[0]['column'],
@@ -216,9 +218,7 @@ $checks = array(
 		&& 'COUNT' === $distinct_count->aggregates()[0]['function']
 		&& 'row_id' === $distinct_count->aggregates()[0]['column']
 		&& true === $distinct_count->aggregates()[0]['distinct'],
-	'unsupported aggregate shapes fail closed at exact source positions' => $count_column instanceof WP_Markdown_Query_Result
-		&& strpos( $count_column_sql, 'FROM' ) === ( $count_column->diagnostic()['sql_offset'] ?? null )
-		&& $mixed_count instanceof WP_Markdown_Query_Result
+	'unsupported aggregate shapes fail closed at exact source positions' => $mixed_count instanceof WP_Markdown_Query_Result
 		&& strpos( $mixed_count_sql, ',' ) === ( $mixed_count->diagnostic()['sql_offset'] ?? null )
 		&& $aliased_count instanceof WP_Markdown_Query_Result
 		&& strpos( $aliased_count_sql, 'AS' ) === ( $aliased_count->diagnostic()['sql_offset'] ?? null )
@@ -227,7 +227,7 @@ $checks = array(
 		&& $unsupported_function instanceof WP_Markdown_Query_Result
 		&& strpos( $unsupported_function_sql, '*' ) === ( $unsupported_function->diagnostic()['sql_offset'] ?? null )
 		&& array_reduce(
-			array( $count_column, $mixed_count, $aliased_count, $grouped_count, $unsupported_function ),
+			array( $mixed_count, $aliased_count, $grouped_count, $unsupported_function ),
 			static fn( bool $valid, WP_Markdown_Query_Result $result ): bool => $valid && 'unsupported_grammar' === ( $result->diagnostic()['reason'] ?? null ),
 			true
 		),

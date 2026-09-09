@@ -32,6 +32,9 @@ $semantics = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE_ADD(
 $calendar = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DAYOFWEEK('2024-01-14') AS sunday, DAYOFMONTH(published_at) AS day, DAYOFYEAR(published_at) AS ordinal, WEEKDAY(published_at) AS weekday, WEEK(published_at, 1) AS week, SECOND(published_at) AS second, ABS(1 + 2 * 3) AS precedence FROM wp_dates WHERE id = 1", 'wp_' ) );
 $formatted = $runtime->execute( new WP_Markdown_Query_Request( "SELECT DATE_FORMAT('2021-01-01 13:02:03.123456', '%a|%W|%b|%M|%c|%D|%d|%e|%f|%H|%h|%I|%i|%j|%k|%l|%m|%p|%r|%S|%s|%T|%U|%u|%V|%v|%w|%X|%x|%Y|%y|%%|%q') AS formatted FROM wp_dates LIMIT 1", 'wp_' ) );
 $decimal = $runtime->execute( new WP_Markdown_Query_Request( "SELECT CAST('1.235' AS DECIMAL(5,2)) AS rounded, CAST('-1.235' AS DECIMAL(5,2)) AS negative, CAST('12.9' AS DECIMAL) AS default_decimal, CAST('1e3' AS DECIMAL(10,0)) AS exponent, CAST('0.125' AS DECIMAL(3,3)) AS fractional, CAST('-0.001' AS DECIMAL(3,2)) AS negative_zero, CAST('9999' AS DECIMAL(3,1)) AS overflow, CAST('99.96' AS DECIMAL(3,1)) AS round_overflow, SUBSTRING_INDEX('a,b,c', '', 1) AS empty_delimiter, SUBSTRING_INDEX('a,b,c', ',', 0) AS zero_count, SUBSTRING_INDEX('a,b,c', ',', -2) AS negative_count FROM wp_dates LIMIT 1", 'wp_' ) );
+$json_valid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('{\"event\":true}')", 'wp_' ) );
+$json_invalid = $runtime->execute( new WP_Markdown_Query_Request( "SELECT JSON_VALID('{broken}')", 'wp_' ) );
+$json_null = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT JSON_VALID(NULL)', 'wp_' ) );
 $checks = array(
 	'WP date WHERE evaluates DATE_ADD INTERVAL after the bounded read' => array( '2', '3' ) === array_map( static fn( object $row ): string => $row->id, $where->wpdb_state()['last_result'] ),
 	'DATE_SUB INTERVAL and TIMESTAMPDIFF use the shared WHERE scalar path' => array( '1' ) === array_map( static fn( object $row ): string => $row->id, $subtracted->wpdb_state()['last_result'] )
@@ -60,6 +63,11 @@ $checks = array(
 	'WP_Date_Query calendar parts and arithmetic precedence match MySQL' => array( 'sunday' => '1', 'day' => '15', 'ordinal' => '15', 'weekday' => '0', 'week' => '3', 'second' => '00', 'precedence' => '7' ) === (array) ( $calendar->wpdb_state()['last_result'][0] ?? array() ),
 	'DATE_FORMAT handles names, ordinals, 12-hour time, fractions, week modes, escapes, and unknown specifiers' => 'Fri|Friday|Jan|January|1|1st|01|1|123456|13|01|01|02|001|13|1|01|PM|01:02:03 PM|03|03|13:02:03|00|00|52|53|5|2020|2020|2021|21|%|q' === ( $formatted->wpdb_state()['last_result'][0]->formatted ?? null ),
 	'DECIMAL precision, exponents, saturation, and SUBSTRING_INDEX edge semantics match MariaDB' => array( 'rounded' => '1.24', 'negative' => '-1.24', 'default_decimal' => '13', 'exponent' => '1000', 'fractional' => '0.125', 'negative_zero' => '0.00', 'overflow' => '99.9', 'round_overflow' => '99.9', 'empty_delimiter' => '', 'zero_count' => '', 'negative_count' => 'b,c' ) === (array) ( $decimal->wpdb_state()['last_result'][0] ?? array() ),
+	'tableless JSON_VALID preserves valid, invalid, NULL, and column metadata semantics' => '1' === ( $json_valid->wpdb_state()['last_result'][0]->{'JSON_VALID(\'{"event":true}\')'} ?? null )
+		&& '0' === ( $json_invalid->wpdb_state()['last_result'][0]->{'JSON_VALID(\'{broken}\')'} ?? null )
+		&& null === ( $json_null->wpdb_state()['last_result'][0]->{'JSON_VALID(NULL)'} ?? null )
+		&& 'JSON_VALID(\'{"event":true}\')' === ( $json_valid->wpdb_state()['col_info'][0]->name ?? null )
+		&& 8 === ( $json_valid->wpdb_state()['col_info'][0]->type ?? null ),
 );
 $failed = false;
 foreach ( $checks as $label => $passed ) { echo ( $passed ? 'PASS: ' : 'FAIL: ' ) . $label . "\n"; $failed = $failed || ! $passed; }

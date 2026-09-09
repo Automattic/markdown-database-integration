@@ -63,12 +63,20 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( 1 === preg_match( '/^\s*(?:SHOW|DESCRIBE)\b/i', $request->sql() ) ) {
 			return $this->schema_introspection->execute( $request );
 		}
+		$information_schema = $this->schema_introspection->select_information_schema( $request );
+		if ( null !== $information_schema ) {
+			return $information_schema;
+		}
 		// The canonical store is a directory, not a named server database.
 		if ( 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $request->sql() ) ) {
 			return WP_Markdown_Query_Result::selected(
 				array( array( 'DATABASE()' => defined( 'DB_NAME' ) ? (string) DB_NAME : '' ) ),
 				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
 			);
+		}
+		$json_valid = $this->tableless_json_valid( $request->sql() );
+		if ( null !== $json_valid ) {
+			return $json_valid;
 		}
 		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?(IN_TRANSACTION|AUTOCOMMIT))\s*;?\s*$/i', $request->sql(), $match ) ) {
 			$column = $match[1];
@@ -114,6 +122,41 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				);
 		}
 		return $this->execute_plan( $plan );
+	}
+
+	/** Execute the bounded tableless scalar form without treating JSON as a table source. */
+	private function tableless_json_valid( string $sql ): ?WP_Markdown_Query_Result {
+		try {
+			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( rtrim( trim( $sql ), ';' ) );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return null;
+		}
+		if ( 6 !== count( $tokens )
+			|| 0 !== strcasecmp( 'SELECT', (string) $tokens[0]->value() )
+			|| 0 !== strcasecmp( 'JSON_VALID', (string) $tokens[1]->value() )
+			|| WP_Markdown_Native_SQL_Token::LEFT_PAREN !== $tokens[2]->type()
+			|| WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== $tokens[4]->type()
+			|| WP_Markdown_Native_SQL_Token::END !== $tokens[5]->type()
+		) {
+			return null;
+		}
+		$value = 0 === strcasecmp( 'NULL', (string) $tokens[3]->value() ) ? null : $tokens[3]->value();
+		if ( null !== $value && WP_Markdown_Native_SQL_Token::STRING !== $tokens[3]->type() ) {
+			return null;
+		}
+		$valid = null;
+		if ( null !== $value ) {
+			try {
+				json_decode( (string) $value, true, 512, JSON_THROW_ON_ERROR );
+				$valid = '1';
+			} catch ( JsonException ) {
+				$valid = '0';
+			}
+		}
+		return WP_Markdown_Query_Result::selected(
+			array( array( 'JSON_VALID(' . $tokens[3]->lexeme() . ')' => $valid ) ),
+			array( array( 'name' => 'JSON_VALID(' . $tokens[3]->lexeme() . ')', 'table' => '', 'type' => 8 ) )
+		);
 	}
 
 	private function execute_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
@@ -214,7 +257,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			}
 		}
 		$pushdown = $this->pushdown( $predicates, $schema );
-		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema ) ) {
+		if ( array() !== $predicates && null === $pushdown && ! $this->allows_residual_scan( $predicates, $schema, PHP_INT_MAX !== $plan->limit() ) ) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
 		foreach ( $plan->order_by() as $item ) {
@@ -1631,7 +1674,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
-	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema, bool $bounded = false ): bool {
 		$indexed = $this->indexed_columns( $schema );
 		foreach ( $predicates as $predicate ) {
 			if ( null !== $predicate->cast() ) {
@@ -1665,6 +1708,12 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( isset( $indexed[ $column ] )
 				&& ! $schema->is_lookup( $column )
 				&& $schema->allows_filter( $column, $predicate->operator(), $predicate->values() ) ) {
+				continue;
+			}
+			// Providers already apply all schema-validated residual filters before
+			// ORDER/LIMIT. Do not require a separate lookup declaration merely
+			// because a bounded query combines ordinary text predicates.
+			if ( $bounded && $schema->allows_filter( $column, $predicate->operator(), $predicate->values() ) ) {
 				continue;
 			}
 			return false;

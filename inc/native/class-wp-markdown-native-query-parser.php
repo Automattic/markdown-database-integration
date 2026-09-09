@@ -1235,10 +1235,6 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$alias = $function . '(' . ( null === $column ? '*' : $column->name() ) . ')';
 			if ( $this->match_keyword( 'AS' ) ) {
 				$alias = $this->unqualified_identifier()->name();
-			} elseif ( 'MIN' !== $function ) {
-				// Existing native aggregate support requires an explicit result
-				// name. The calendar derived-source query is the bounded exception.
-				$this->unsupported( $this->current() );
 			}
 			return array(
 				'function' => $function,

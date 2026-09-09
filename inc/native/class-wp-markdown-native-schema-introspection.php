@@ -251,6 +251,142 @@ final class WP_Markdown_Native_Schema_Introspection {
 	}
 
 	/**
+	 * Answer bounded information_schema catalog reads from registered native DDL.
+	 *
+	 * This is deliberately separate from physical-table SELECT planning: a native
+	 * directory has no server catalog to scan, so callers must name the requested
+	 * tables before catalog rows are materialized.
+	 */
+	public function select_information_schema( WP_Markdown_Query_Request $request ): ?WP_Markdown_Query_Result {
+		try {
+			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( rtrim( trim( $request->sql() ), ';' ) );
+			$position = 0;
+			$word = static function ( string $expected ) use ( &$tokens, &$position ): bool {
+				if ( 0 !== strcasecmp( $expected, (string) ( $tokens[ $position ] ?? null )?->value() ) ) {
+					return false;
+				}
+				++$position;
+				return true;
+			};
+			$identifier = static function () use ( &$tokens, &$position ): ?string {
+				$token = $tokens[ $position ] ?? null;
+				if ( ! $token instanceof WP_Markdown_Native_SQL_Token || ! in_array( $token->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
+					return null;
+				}
+				++$position;
+				return (string) $token->value();
+			};
+			if ( ! $word( 'SELECT' ) ) {
+				return null;
+			}
+			$projection = array();
+			do {
+				$name = $identifier();
+				if ( null === $name ) {
+					return null;
+				}
+				$alias = $name;
+				if ( $word( 'AS' ) ) {
+					$alias = $identifier();
+					if ( null === $alias ) {
+						return null;
+					}
+				}
+				$projection[] = array( 'name' => strtoupper( $name ), 'alias' => $alias );
+			} while ( WP_Markdown_Native_SQL_Token::COMMA === ( $tokens[ $position ] ?? null )?->type() && ++$position );
+			if ( ! $word( 'FROM' ) || 0 !== strcasecmp( 'information_schema', (string) $identifier() ) || WP_Markdown_Native_SQL_Token::DOT !== ( $tokens[ $position ] ?? null )?->type() ) {
+				return null;
+			}
+			++$position;
+			$catalog = strtoupper( (string) $identifier() );
+			if ( ! in_array( $catalog, array( 'COLUMNS', 'TABLES' ), true ) ) {
+				return null;
+			}
+			if ( ! $word( 'WHERE' ) ) {
+				return $this->failure( 'unsupported_lookup', 'mdi-native requires a bounded information_schema table lookup.' );
+			}
+			$names = array();
+			$schema_match = false;
+			do {
+				$column = strtoupper( (string) $identifier() );
+				if ( 'TABLE_SCHEMA' === $column && WP_Markdown_Native_SQL_Token::EQUALS === ( $tokens[ $position ] ?? null )?->type() ) {
+					++$position;
+					$schema_match = $word( 'DATABASE' ) && WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $tokens[ $position ] ?? null )?->type() && WP_Markdown_Native_SQL_Token::RIGHT_PAREN === ( $tokens[ $position + 1 ] ?? null )?->type();
+					$position += $schema_match ? 2 : 0;
+				} elseif ( 'TABLE_NAME' === $column && ( $word( 'IN' ) || WP_Markdown_Native_SQL_Token::EQUALS === ( $tokens[ $position ] ?? null )?->type() ) ) {
+					if ( WP_Markdown_Native_SQL_Token::EQUALS === ( $tokens[ $position ] ?? null )?->type() ) {
+						++$position;
+						$token = $tokens[ $position++ ] ?? null;
+						if ( ! $token instanceof WP_Markdown_Native_SQL_Token || WP_Markdown_Native_SQL_Token::STRING !== $token->type() ) { return null; }
+						$names[] = (string) $token->value();
+					} else {
+						if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
+						++$position;
+						do {
+							$token = $tokens[ $position++ ] ?? null;
+							if ( ! $token instanceof WP_Markdown_Native_SQL_Token || WP_Markdown_Native_SQL_Token::STRING !== $token->type() ) { return null; }
+							$names[] = (string) $token->value();
+						} while ( WP_Markdown_Native_SQL_Token::COMMA === ( $tokens[ $position ] ?? null )?->type() && ++$position );
+						if ( WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
+						++$position;
+					}
+				} else {
+					return null;
+				}
+			} while ( $word( 'AND' ) );
+			if ( ! $schema_match || array() === $names || WP_Markdown_Native_SQL_Token::END !== ( $tokens[ $position ] ?? null )?->type() ) {
+				return $this->failure( 'unsupported_lookup', 'mdi-native requires a bounded information_schema table lookup.' );
+			}
+			$rows = array();
+			foreach ( array_values( array_unique( $names ) ) as $table ) {
+				$definition = $this->registry->definition( $table );
+				if ( null === $definition || array() === $definition ) {
+					continue;
+				}
+				$catalog_rows = 'COLUMNS' === $catalog ? $this->information_schema_columns( $table, $definition ) : array( $this->information_schema_table( $table ) );
+				foreach ( $catalog_rows as $catalog_row ) {
+					$row = array();
+					foreach ( $projection as $column ) {
+						if ( ! array_key_exists( $column['name'], $catalog_row ) ) {
+							return $this->failure( 'unsupported_column', 'mdi-native cannot report the requested information_schema column.' );
+						}
+						$row[ $column['alias'] ] = $catalog_row[ $column['name'] ];
+					}
+					$rows[] = $row;
+				}
+			}
+			return WP_Markdown_Query_Result::selected( $rows, array_map( static fn( array $column ): array => array( 'name' => $column['alias'], 'table' => '', 'type' => 253 ), $projection ) );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return null;
+		}
+	}
+
+	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition @return array<int,array<string,int|string|null>> */
+	private function information_schema_columns( string $table, array $definition ): array {
+		$rows = array();
+		foreach ( $definition['columns'] as $position => $column ) {
+			$rows[] = array(
+				'TABLE_SCHEMA' => defined( 'DB_NAME' ) ? (string) DB_NAME : '',
+				'TABLE_NAME' => $table,
+				'COLUMN_NAME' => $position,
+				'ORDINAL_POSITION' => (string) ( count( $rows ) + 1 ),
+				'COLUMN_DEFAULT' => $column['default'],
+				'IS_NULLABLE' => $column['nullable'] ? 'YES' : 'NO',
+				'DATA_TYPE' => strtolower( (string) $column['type'] ),
+				'COLUMN_TYPE' => $this->column_type( $column ),
+				'COLUMN_KEY' => $this->column_key( $position, $definition['indexes'] ),
+				'EXTRA' => $column['auto_increment'] ? 'auto_increment' : '',
+			);
+		}
+		return $rows;
+	}
+
+	/** @return array<string,string> */
+	private function information_schema_table( string $table ): array {
+		return array( 'TABLE_SCHEMA' => defined( 'DB_NAME' ) ? (string) DB_NAME : '', 'TABLE_NAME' => $table, 'ENGINE' => 'InnoDB', 'TABLE_TYPE' => 'BASE TABLE' );
+	}
+
+	/**
 	 * Report the server variables a file-backed engine can answer honestly.
 	 *
 	 * A tuning knob that describes a client/server database has no meaning

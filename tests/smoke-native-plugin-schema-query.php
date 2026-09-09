@@ -120,6 +120,9 @@ $show_column = $runtime->execute( new WP_Markdown_Query_Request( "SHOW COLUMNS F
 $show_full_columns = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW FULL COLUMNS FROM wp_plugin_jobs' ) );
 $show_full_missing = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW FULL COLUMNS FROM wp_missing' ) );
 $show_indexes = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW INDEX FROM `wp_plugin_jobs`' ) );
+$information_columns = $runtime->execute( new WP_Markdown_Query_Request( "SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, COLUMN_TYPE, COLUMN_KEY, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN ('wp_plugin_jobs', 'wp_inline_items')" ) );
+$information_tables = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ENGINE AS Engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs'" ) );
+$unbounded_information = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()' ) );
 file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
 	json_encode(
@@ -160,6 +163,13 @@ $checks = array(
 		$show_indexes->wpdb_state()['last_result']
 	)
 		&& array( '0', '1' ) === array_map( static fn( object $row ): string => $row->Non_unique, $show_indexes->wpdb_state()['last_result'] ),
+	'bounded information_schema reads derive column and engine metadata from registered DDL' => array( 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_inline_items', 'wp_inline_items' ) === array_map( static fn( object $row ): string => $row->TABLE_NAME, $information_columns->wpdb_state()['last_result'] )
+		&& array( 'id', 'owner_id', 'status', 'task_url', 'owner_run_ref', 'payload' ) === array_map( static fn( object $row ): string => $row->COLUMN_NAME, array_slice( $information_columns->wpdb_state()['last_result'], 0, 6 ) )
+		&& 'PRI' === ( $information_columns->wpdb_state()['last_result'][0]->COLUMN_KEY ?? null )
+		&& 'InnoDB' === ( $information_tables->wpdb_state()['last_result'][0]->Engine ?? null )
+		&& array( 'Engine' ) === array_map( static fn( object $column ): string => $column->name, $information_tables->wpdb_state()['col_info'] ),
+	'information_schema catalog scans remain fail-closed without a bounded table name' => false === $unbounded_information->return_value()
+		&& 'unsupported_lookup' === ( $unbounded_information->diagnostic()['reason'] ?? null ),
 	'primary and secondary numeric indexes derive bounded lookup capabilities' => array( '1', '2' ) === array_map(
 		static fn( object $row ): string => $row->id,
 		$secondary->wpdb_state()['last_result']

@@ -40,6 +40,8 @@ $all_rows = mdi_aggregate_row( $runtime, 'SELECT COUNT(*) FROM wp_items' );
 $filtered = mdi_aggregate_row( $runtime, "SELECT SUM(score) AS total FROM wp_items WHERE kind = 'a'" );
 $empty = mdi_aggregate_row( $runtime, "SELECT SUM(score) AS total, COUNT(score) AS scored FROM wp_items WHERE kind = 'missing'" );
 $textual = mdi_aggregate_row( $runtime, 'SELECT SUM(kind) AS total FROM wp_items' );
+$default_names = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT MAX(score), COUNT(score) FROM wp_items', 'wp_' ) );
+$default_empty = $runtime->execute( new WP_Markdown_Query_Request( "SELECT MAX(score), COUNT(score) FROM wp_items WHERE kind = 'missing'", 'wp_' ) );
 
 $checks = array(
 	'one row reports every ungrouped aggregate' => array( 'total' => '60', 'mean' => '20', 'lowest' => '10', 'highest' => '30' ) === $totals,
@@ -48,6 +50,9 @@ $checks = array(
 	'a restriction narrows the aggregate' => array( 'total' => '40' ) === $filtered,
 	'an aggregate over no rows is NULL, and a count is zero' => array( 'total' => null, 'scored' => '0' ) === $empty,
 	'summing a text column stays fail-closed' => 'unsupported_aggregate' === ( $textual['unsupported'] ?? null ),
+	'unaliased column aggregates retain MySQL result names, values, and metadata' => array( 'MAX(score)' => '30', 'COUNT(score)' => '3' ) === (array) ( $default_names->wpdb_state()['last_result'][0] ?? array() )
+		&& array( 'MAX(score)', 'COUNT(score)' ) === array_map( static fn( object $column ): string => $column->name, $default_names->wpdb_state()['col_info'] ),
+	'unaliased column aggregates retain NULL and empty-set semantics' => array( 'MAX(score)' => null, 'COUNT(score)' => '0' ) === (array) ( $default_empty->wpdb_state()['last_result'][0] ?? array() ),
 );
 
 $failed = false;

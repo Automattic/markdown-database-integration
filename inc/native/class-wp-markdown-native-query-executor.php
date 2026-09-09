@@ -182,6 +182,28 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	/** Preserve the legacy unaliased JSON column label while typed aliases use the shared evaluator. */
 	private function tableless_json_valid( string $sql ): ?WP_Markdown_Query_Result {
+		$literal = self::tableless_json_valid_literal( $sql );
+		if ( null === $literal ) {
+			return null;
+		}
+		$value = $literal['value'];
+		$column = $literal['column'];
+		if ( null !== $value && $this->json_depth_exceeded_value( (string) $value ) ) {
+			return $this->mysql_json_depth_failure();
+		}
+		return WP_Markdown_Query_Result::selected(
+			array( array( $column => null === $value ? null : $this->json_valid( (string) $value ) ) ),
+			array( array( 'name' => $column, 'table' => '', 'type' => 3 ) )
+		);
+	}
+
+	public static function supports_tableless_scalar_projection( string $sql ): bool {
+		return null !== self::tableless_json_valid_literal( $sql )
+			|| ! ( ( new WP_Markdown_Native_Query_Parser() )->parse_tableless_scalar_projection( $sql ) instanceof WP_Markdown_Query_Result );
+	}
+
+	/** @return array{value:?string,column:string}|null */
+	private static function tableless_json_valid_literal( string $sql ): ?array {
 		try {
 			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( rtrim( trim( $sql ), ';' ) );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
@@ -201,18 +223,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $value && WP_Markdown_Native_SQL_Token::STRING !== $tokens[3]->type() ) {
 			return null;
 		}
-		$column = 'JSON_VALID(' . $tokens[3]->lexeme() . ')';
-		if ( null !== $value && $this->json_depth_exceeded_value( (string) $value ) ) {
-			return $this->mysql_json_depth_failure();
-		}
-		return WP_Markdown_Query_Result::selected(
-			array( array( $column => null === $value ? null : $this->json_valid( (string) $value ) ) ),
-			array( array( 'name' => $column, 'table' => '', 'type' => 3 ) )
-		);
-	}
-
-	public static function supports_tableless_scalar_projection( string $sql ): bool {
-		return ! ( ( new WP_Markdown_Native_Query_Parser() )->parse_tableless_scalar_projection( $sql ) instanceof WP_Markdown_Query_Result );
+		return array( 'value' => $value, 'column' => 'JSON_VALID(' . $tokens[3]->lexeme() . ')' );
 	}
 
 	private function tableless_scalar_type( WP_Markdown_Native_Query_Scalar_Expression $expression, int|string|null $value ): int {

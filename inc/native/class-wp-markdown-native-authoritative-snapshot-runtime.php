@@ -113,6 +113,10 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 	private static function tables_in( string $sql ): array {
 		$plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $sql );
 		if ( $plan instanceof WP_Markdown_Query_Result ) {
+			$catalog_tables = WP_Markdown_Native_Schema_Introspection::requested_information_schema_tables( $sql );
+			if ( null !== $catalog_tables ) {
+				return $catalog_tables;
+			}
 			$diagnostic = $plan->diagnostic() ?? array();
 			throw new WP_Markdown_Native_Snapshot_Input_Exception(
 				(string) ( $diagnostic['code'] ?? 'markdown_db_native_unsupported_query' ),

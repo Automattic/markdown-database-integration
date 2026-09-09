@@ -390,6 +390,86 @@ final class WP_Markdown_Native_Schema_Introspection {
 		}
 	}
 
+	/**
+	 * Discover the real tables needed to answer a bounded catalog request. This
+	 * intentionally recognizes only the literal TABLE_NAME predicates accepted
+	 * by the catalog executor; virtual catalog tables are never snapshotted.
+	 *
+	 * @return array<int,string>|null
+	 */
+	public static function requested_information_schema_tables( string $sql ): ?array {
+		try {
+			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( rtrim( trim( $sql ), ';' ) );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return null;
+		}
+		$position = 0;
+		$word = static function ( string $expected ) use ( &$tokens, &$position ): bool {
+			if ( 0 !== strcasecmp( $expected, (string) ( $tokens[ $position ] ?? null )?->value() ) ) {
+				return false;
+			}
+			++$position;
+			return true;
+		};
+		$identifier = static function () use ( &$tokens, &$position ): ?string {
+			$token = $tokens[ $position ] ?? null;
+			if ( ! $token instanceof WP_Markdown_Native_SQL_Token || ! in_array( $token->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::KEYWORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
+				return null;
+			}
+			++$position;
+			return (string) $token->value();
+		};
+		if ( ! $word( 'SELECT' ) ) {
+			return null;
+		}
+		while ( ! $word( 'FROM' ) ) {
+			if ( WP_Markdown_Native_SQL_Token::END === ( $tokens[ $position ] ?? null )?->type() ) {
+				return null;
+			}
+			++$position;
+		}
+		if ( 0 !== strcasecmp( 'information_schema', (string) $identifier() ) || WP_Markdown_Native_SQL_Token::DOT !== ( $tokens[ $position ] ?? null )?->type() ) {
+			return null;
+		}
+		++$position;
+		$catalog = strtoupper( (string) $identifier() );
+		if ( ! in_array( $catalog, array( 'COLUMNS', 'TABLES' ), true ) || ! $word( 'WHERE' ) ) {
+			return null;
+		}
+		$tables = null;
+		do {
+			$column = strtoupper( (string) $identifier() );
+			if ( 'TABLE_NAME' !== $column ) {
+				while ( WP_Markdown_Native_SQL_Token::END !== ( $tokens[ $position ] ?? null )?->type() && 0 !== strcasecmp( 'AND', (string) ( $tokens[ $position ] ?? null )?->value() ) ) {
+					++$position;
+				}
+				continue;
+			}
+			$values = array();
+			if ( WP_Markdown_Native_SQL_Token::EQUALS === ( $tokens[ $position ] ?? null )?->type() ) {
+				++$position;
+				$token = $tokens[ $position++ ] ?? null;
+				if ( ! $token instanceof WP_Markdown_Native_SQL_Token || WP_Markdown_Native_SQL_Token::STRING !== $token->type() ) { return null; }
+				$values[] = (string) $token->value();
+			} elseif ( $word( 'IN' ) && WP_Markdown_Native_SQL_Token::LEFT_PAREN === ( $tokens[ $position ] ?? null )?->type() ) {
+				++$position;
+				do {
+					$token = $tokens[ $position++ ] ?? null;
+					if ( ! $token instanceof WP_Markdown_Native_SQL_Token || WP_Markdown_Native_SQL_Token::STRING !== $token->type() || count( $values ) >= self::MAX_INFORMATION_SCHEMA_VALUES ) { return null; }
+					$values[] = (string) $token->value();
+				} while ( WP_Markdown_Native_SQL_Token::COMMA === ( $tokens[ $position ] ?? null )?->type() && ++$position );
+				if ( WP_Markdown_Native_SQL_Token::RIGHT_PAREN !== ( $tokens[ $position ] ?? null )?->type() ) { return null; }
+				++$position;
+			} else {
+				return null;
+			}
+			$tables = null === $tables ? $values : array_values( array_intersect( $tables, $values ) );
+		} while ( $word( 'AND' ) );
+		return WP_Markdown_Native_SQL_Token::END === ( $tokens[ $position ] ?? null )?->type() && is_array( $tables ) && array() !== $tables
+			? array_values( array_unique( $tables ) )
+			: null;
+	}
+
 	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition @return array<int,array<string,int|string|null>> */
 	private function information_schema_columns( string $table, array $definition ): array {
 		$rows = array();

@@ -110,7 +110,10 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		} catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
 			// Input capture is observational and must never interrupt wpdb's query.
 			unset( $this->pending_inputs[ $key ] );
-			$this->pending_input_failures[ $key ] = $error->diagnostic();
+			$this->pending_input_failures[ $key ] = array(
+				'code'   => 'markdown_db_native_snapshot_input_unavailable',
+				'reason' => (string) ( $error->diagnostic()['reason'] ?? 'snapshot_capture_failed' ),
+			);
 		} catch ( Throwable $error ) {
 			unset( $this->pending_inputs[ $key ] );
 			$this->pending_input_failures[ $key ] = array( 'code' => 'markdown_db_native_snapshot_input_unavailable', 'reason' => 'snapshot_capture_failed' );

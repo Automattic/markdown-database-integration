@@ -37,8 +37,8 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			if ( ! $schema instanceof WP_Markdown_Native_Table_Schema ) {
 				throw new RuntimeException( 'The SQL snapshot input mode could not compile a source table schema.' );
 			}
-			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted );
-			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows ) );
+			$rows = self::rows( $connection, 'SELECT * FROM ' . $quoted . ' LIMIT ' . ( self::MAX_ROWS_PER_TABLE + 1 ) );
+			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
 			$provenance[] = array( 'table' => $table, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', json_encode( $rows, JSON_THROW_ON_ERROR ) ) );
 		}
 		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
@@ -55,49 +55,121 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 
 	/** @return array<int,string> */
 	private static function tables_in( string $sql ): array {
-		if ( 1 !== preg_match_all( '/\b(?:FROM|JOIN)\s+`?([A-Za-z_][A-Za-z0-9_]*)`?/i', $sql, $matches ) ) {
+		$plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $sql );
+		if ( ! $plan instanceof WP_Markdown_Native_Query_Plan ) {
 			return array();
 		}
-		return array_values( array_unique( $matches[1] ) );
+		$tables = array();
+		self::collect_tables( $plan, $tables );
+		return array_values( array_unique( $tables ) );
+	}
+
+	/** @param array<int,string> $tables */
+	private static function collect_tables( WP_Markdown_Native_Query_Plan $plan, array &$tables ): void {
+		$tables[] = $plan->table();
+		foreach ( $plan->joins() as $join ) {
+			if ( null !== $join->derived() ) {
+				self::collect_tables( $join->derived(), $tables );
+			} else {
+				$tables[] = $join->table();
+			}
+		}
+		foreach ( $plan->subqueries() as $subquery ) {
+			self::collect_tables( $subquery->query(), $tables );
+		}
+		if ( null !== $plan->boolean_predicate() ) {
+			foreach ( $plan->boolean_predicate()->groups() as $group ) {
+				foreach ( $group as $predicate ) {
+					if ( $predicate instanceof WP_Markdown_Native_Query_Subquery ) {
+						self::collect_tables( $predicate->query(), $tables );
+					}
+				}
+			}
+		}
+		if ( null !== $plan->derived() ) {
+			self::collect_tables( $plan->derived(), $tables );
+		}
+		if ( null !== $plan->union() ) {
+			self::collect_tables( $plan->union(), $tables );
+		}
 	}
 
 	/** @return array<string,mixed>|null */
 	private static function one_row( object $connection, string $sql ): ?array {
-		$result = $connection->query( $sql );
+		$result = self::query( $connection, $sql );
 		if ( ! is_object( $result ) || ! method_exists( $result, 'fetch_assoc' ) ) {
 			return null;
 		}
-		$row = $result->fetch_assoc();
-		return is_array( $row ) ? $row : null;
+		try {
+			$row = $result->fetch_assoc();
+			return is_array( $row ) ? $row : null;
+		} finally {
+			self::free( $result );
+		}
 	}
 
 	/** @return array<int,array<string,mixed>> */
 	private static function rows( object $connection, string $sql ): array {
-		$result = $connection->query( $sql );
+		$result = self::query( $connection, $sql );
 		if ( ! is_object( $result ) || ! method_exists( $result, 'fetch_assoc' ) ) {
 			throw new RuntimeException( 'The SQL snapshot input mode could not read a source table.' );
 		}
 		$rows = array();
 		$bytes = 0;
-		while ( null !== ( $row = $result->fetch_assoc() ) ) {
-			if ( ! is_array( $row ) || count( $rows ) >= self::MAX_ROWS_PER_TABLE ) {
-				throw new RuntimeException( 'The SQL snapshot input mode exceeded its source row bound.' );
+		try {
+			while ( null !== ( $row = $result->fetch_assoc() ) ) {
+				if ( ! is_array( $row ) || count( $rows ) >= self::MAX_ROWS_PER_TABLE ) {
+					throw new RuntimeException( 'The SQL snapshot input mode exceeded its source row bound.' );
+				}
+				$bytes += strlen( json_encode( $row, JSON_THROW_ON_ERROR ) );
+				if ( $bytes > self::MAX_BYTES_PER_TABLE ) {
+					throw new RuntimeException( 'The SQL snapshot input mode exceeded its source byte bound.' );
+				}
+				$rows[] = $row;
 			}
-			$bytes += strlen( json_encode( $row, JSON_THROW_ON_ERROR ) );
-			if ( $bytes > self::MAX_BYTES_PER_TABLE ) {
-				throw new RuntimeException( 'The SQL snapshot input mode exceeded its source byte bound.' );
-			}
-			$rows[] = $row;
+		} finally {
+			self::free( $result );
 		}
 		return $rows;
+	}
+
+	private static function query( object $connection, string $sql ): mixed {
+		if ( $connection instanceof mysqli && defined( 'MYSQLI_USE_RESULT' ) ) {
+			return $connection->query( $sql, MYSQLI_USE_RESULT );
+		}
+		return $connection->query( $sql );
+	}
+
+	private static function free( object $result ): void {
+		if ( method_exists( $result, 'free' ) ) {
+			$result->free();
+		} elseif ( method_exists( $result, 'free_result' ) ) {
+			$result->free_result();
+		}
 	}
 }
 
 final class WP_Markdown_Native_Authoritative_Snapshot_Provider implements WP_Markdown_Native_Table_Provider {
 	/** @param array<int,array<string,mixed>> $rows */
-	public function __construct( private array $rows ) {}
+	public function __construct( private array $rows, private WP_Markdown_Native_Table_Schema $schema ) {}
 
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
-		return $this->rows;
+		$predicates = $access->predicates();
+		if ( array() === $predicates && null !== $access->predicate() ) {
+			$predicates[] = $access->predicate();
+		}
+		$rows = array_values( array_filter( $this->rows, fn( array $row ): bool => $this->schema->matches( $row, $predicates ) ) );
+		$rows = $this->schema->ordered_rows( $rows, $access->order_by() );
+		if ( null === $rows ) {
+			return WP_Markdown_Query_Result::failure( array( 'code' => 'markdown_db_native_unsupported_query', 'reason' => 'unsupported_order', 'message' => 'mdi-native cannot apply the requested ordering collation.' ) );
+		}
+		$selected = array();
+		foreach ( $rows as $row ) {
+			if ( count( $selected ) >= $access->limit() ) {
+				break;
+			}
+			$selected[] = array_intersect_key( $row, array_flip( $access->projection() ) );
+		}
+		return $selected;
 	}
 }

@@ -27,6 +27,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 		}
 
 		$prefixes = self::schema_prefixes( $database, $prefix );
+		$database_name = self::database_name( $connection );
 		$registry = new WP_Markdown_Native_Table_Registry();
 		$provenance = array();
 		foreach ( $tables as $table ) {
@@ -48,7 +49,7 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$registry->register( $table, $schema, new WP_Markdown_Native_Authoritative_Snapshot_Provider( $rows, $schema ) );
 			$provenance[] = array( 'table' => $table, 'exists' => true, 'rows' => count( $rows ), 'sha256' => hash( 'sha256', self::encode_rows( $rows ) ), 'schema_sha256' => hash( 'sha256', $definition ) );
 		}
-		return new self( new WP_Markdown_Native_Query_Runtime( $registry ), $provenance );
+		return new self( new WP_Markdown_Native_Query_Runtime( $registry, database_name: $database_name ), $provenance );
 	}
 
 	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
@@ -76,6 +77,12 @@ final class WP_Markdown_Native_Authoritative_Snapshot_Runtime implements WP_Mark
 			$prefixes[] = $database->base_prefix;
 		}
 		return array_values( array_unique( array_filter( $prefixes, static fn( string $candidate ): bool => '' !== $candidate ) ) );
+	}
+
+	private static function database_name( object $connection ): ?string {
+		$row = self::one_row( $connection, 'SELECT DATABASE()' );
+		$value = is_array( $row ) ? reset( $row ) : null;
+		return is_string( $value ) ? $value : null;
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {

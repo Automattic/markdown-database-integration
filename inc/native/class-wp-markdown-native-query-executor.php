@@ -43,6 +43,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	/** @var array<string,array{seed1:int,seed2:int}> */
 	private array $rand_states = array();
 	private WP_Markdown_Native_Schema_Introspection $schema_introspection;
+	private ?string $database_name;
 
 	public function __construct(
 		private WP_Markdown_Native_Table_Registry $registry,
@@ -53,9 +54,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
 		private ?WP_Markdown_Native_Post_Mutation_Runtime $post_mutations = null,
 		private int $correlated_subquery_limit = self::MAX_CORRELATED_SUBQUERY_EVALUATIONS,
-		private ?WP_Markdown_Native_Advisory_Locks $advisory_locks = null
+		private ?WP_Markdown_Native_Advisory_Locks $advisory_locks = null,
+		?string $database_name = null
 	) {
-		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry );
+		$this->database_name = $database_name;
+		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry, database_name: $database_name );
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -86,7 +89,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		// The canonical store is a directory, not a named server database.
 		if ( 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $request->sql() ) ) {
 			return WP_Markdown_Query_Result::selected(
-				array( array( 'DATABASE()' => defined( 'DB_NAME' ) ? (string) DB_NAME : '' ) ),
+				array( array( 'DATABASE()' => $this->database_name ?? ( defined( 'DB_NAME' ) ? (string) DB_NAME : '' ) ) ),
 				array( array( 'name' => 'DATABASE()', 'table' => '', 'type' => 253 ) )
 			);
 		}

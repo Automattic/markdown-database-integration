@@ -21,6 +21,8 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private const WRITE_LOCK_WAIT_US = 5000000;
 
 	private string $state_root;
+	/** @var list<string> Trusted canonical roots supplied by the runtime factory. */
+	private array $admitted_roots;
 	private string $owner;
 	/** @var resource|null */
 	private $claim = null;
@@ -29,6 +31,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private bool $active = false;
 	private bool $autocommit = true;
 	private bool $in_transaction = false;
+	private bool $recovery_required = false;
 
 	/** @var list<array{path:string,existed:bool,contents:?string}> */
 	private array $entries = array();
@@ -38,12 +41,22 @@ final class WP_Markdown_Native_Transaction_Journal {
 	/** @var array<string,callable> */
 	private array $restore_observers = array();
 
-	public function __construct( string $state_root ) {
+	/** @param list<string> $admitted_roots */
+	public function __construct( string $state_root, array $admitted_roots = array() ) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
 			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
 		}
 		$this->state_root = rtrim( $root, DIRECTORY_SEPARATOR );
+		$this->admitted_roots = array( $this->state_root );
+		foreach ( $admitted_roots as $admitted_root ) {
+			$resolved = realpath( $admitted_root );
+			if ( false === $resolved || ! is_dir( $resolved ) || is_link( $admitted_root ) ) {
+				throw new InvalidArgumentException( 'A canonical transaction root must be an existing directory.' );
+			}
+			$this->admitted_roots[] = rtrim( $resolved, DIRECTORY_SEPARATOR );
+		}
+		$this->admitted_roots = array_values( array_unique( $this->admitted_roots ) );
 		$this->owner = bin2hex( random_bytes( 8 ) );
 	}
 
@@ -92,6 +105,12 @@ final class WP_Markdown_Native_Transaction_Journal {
 	 */
 	public function begin_write(): true|string {
 		if ( null !== $this->write_lock ) {
+			if ( $this->recovery_required ) {
+				$recovered = $this->recover_locked();
+				if ( true !== $recovered ) {
+					return $recovered;
+				}
+			}
 			return true;
 		}
 		$locked = $this->acquire_write_lock();
@@ -116,7 +135,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( is_link( $lock_path ) ) {
 			return 'The canonical transaction write lock path is unsafe.';
 		}
-		$handle = @fopen( $lock_path, 'c+b' );
+		$handle = $this->open_safe_lock( $lock_path );
 		if ( false === $handle ) {
 			return 'The canonical transaction write lock could not be opened.';
 		}
@@ -153,7 +172,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 			if ( is_link( $claim ) ) {
 				return 'A canonical transaction claim path is unsafe.';
 			}
-			$handle = @fopen( $claim, 'c+b' );
+			$handle = $this->open_safe_lock( $claim );
 			if ( false === $handle ) {
 				return 'A canonical transaction claim could not be opened.';
 			}
@@ -167,16 +186,19 @@ final class WP_Markdown_Native_Transaction_Journal {
 			if ( true !== $restored ) {
 				flock( $handle, LOCK_UN );
 				fclose( $handle );
+				$this->recovery_required = true;
 				return $restored;
 			}
 			if ( ! @unlink( $path ) || ! @unlink( $claim ) ) {
 				flock( $handle, LOCK_UN );
 				fclose( $handle );
+				$this->recovery_required = true;
 				return 'A recovered canonical transaction journal could not be cleared.';
 			}
 			flock( $handle, LOCK_UN );
 			fclose( $handle );
 		}
+		$this->recovery_required = false;
 		return true;
 	}
 
@@ -205,7 +227,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 		if ( is_link( $path ) ) {
 			return 'The canonical transaction claim path is unsafe.';
 		}
-		$handle = @fopen( $path, 'c+b' );
+		$handle = $this->open_safe_lock( $path );
 		if ( false !== $handle && flock( $handle, LOCK_EX | LOCK_NB ) ) {
 			$this->claim = $handle;
 			return true;
@@ -229,6 +251,32 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private function claim_path( string $owner ): string {
 		return $this->state_root . DIRECTORY_SEPARATOR . self::JOURNAL_DIRECTORY
 			. DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . $owner . self::CLAIM_SUFFIX;
+	}
+
+	/** @return resource|false */
+	private function open_safe_lock( string $path ) {
+		$existing = @lstat( $path );
+		if ( false !== $existing && ( 0100000 !== ( $existing['mode'] & 0170000 ) || 1 !== ( $existing['nlink'] ?? 1 ) ) ) {
+			return false;
+		}
+		$handle = @fopen( $path, 'c+b' );
+		if ( false === $handle ) {
+			return false;
+		}
+		$opened = fstat( $handle );
+		$current = @lstat( $path );
+		if ( false === $opened
+			|| false === $current
+			|| $opened['dev'] !== $current['dev']
+			|| $opened['ino'] !== $current['ino']
+			|| 0100000 !== ( $opened['mode'] & 0170000 )
+			|| 1 !== ( $opened['nlink'] ?? 1 )
+			|| is_link( $path )
+		) {
+			fclose( $handle );
+			return false;
+		}
+		return $handle;
 	}
 
 	public function begin(): true|string {
@@ -507,9 +555,17 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return $directory;
 	}
 
-	/** Only restore canonical files beneath this journal's state root. */
+	/** Only restore files beneath runtime-configured canonical roots. */
 	private function admitted_path( string $path ): bool {
 		$directory = realpath( dirname( $path ) );
-		return false !== $directory && ( $directory === $this->state_root || str_starts_with( $directory, $this->state_root . DIRECTORY_SEPARATOR ) );
+		if ( false === $directory || is_link( $path ) ) {
+			return false;
+		}
+		foreach ( $this->admitted_roots as $root ) {
+			if ( $directory === $root || str_starts_with( $directory, $root . DIRECTORY_SEPARATOR ) ) {
+				return true;
+			}
+		}
+		return false;
 	}
 }

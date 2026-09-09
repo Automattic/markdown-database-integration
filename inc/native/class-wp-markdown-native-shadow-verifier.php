@@ -222,6 +222,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				array(
 					'mismatch_paths'     => $paths,
 					'mismatches_truncated' => count( $comparison['mismatches'] ) > count( $paths ),
+					'comparison_receipt' => $this->comparison_receipt( $expected, $actual ),
 				)
 			);
 		} catch ( Throwable $error ) {
@@ -337,6 +338,26 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private function safe_reason( string $reason ): string {
 		$reason = (string) preg_replace( '/[^A-Za-z0-9_.-]/', '_', $reason );
 		return '' === $reason ? 'unknown' : substr( $reason, 0, 128 );
+	}
+
+	/** Retain field descriptors and opaque row receipts without publishing query values. */
+	private function comparison_receipt( array $expected, array $actual ): array {
+		$columns = static fn( array $result ): array => array_map(
+			static fn( array $column ): array => array(
+				'name' => (string) ( $column['name'] ?? '' ),
+				'type' => null === ( $column['type'] ?? null ) ? null : (string) $column['type'],
+			),
+			is_array( $result['columns'] ?? null ) ? $result['columns'] : array()
+		);
+		$rows = static fn( array $result ): array => is_array( $result['rows'] ?? null ) ? $result['rows'] : array();
+		$expected_rows = $rows( $expected );
+		$actual_rows = $rows( $actual );
+		return array(
+			'expected_columns' => $columns( $expected ),
+			'actual_columns'   => $columns( $actual ),
+			'expected_rows'    => array( 'count' => count( $expected_rows ), 'sha256' => hash( 'sha256', serialize( $expected_rows ) ) ),
+			'actual_rows'      => array( 'count' => count( $actual_rows ), 'sha256' => hash( 'sha256', serialize( $actual_rows ) ) ),
+		);
 	}
 
 	/** Compare all caller-visible error state except server-specific error text. */

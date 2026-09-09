@@ -39,11 +39,23 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 			$verifier = WP_Markdown_Native_Shadow_Factory::from_globals( $database );
 			$database->set_native_shadow_verifier( $verifier );
 			$GLOBALS['markdown_db_native_shadow_verifier'] = $verifier;
+			$report_path = defined( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' ) ? MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH : '';
+			if ( is_string( $report_path ) && '' !== $report_path ) {
+				register_shutdown_function(
+					static function () use ( $verifier, $report_path ): void {
+						$report = $verifier->report();
+						file_put_contents( $report_path, json_encode( $report, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n", LOCK_EX );
+					}
+				);
+			}
 		} catch ( Throwable $error ) {
 			$GLOBALS['markdown_db_native_shadow_diagnostic'] = array(
 				'code'  => 'markdown_db_native_shadow_bootstrap_failed',
 				'class' => get_class( $error ),
 			);
+			if ( defined( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' ) && '' !== MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH ) {
+				file_put_contents( MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH, json_encode( array( 'schema' => 'mdi-native-shadow-report/v1', 'observed' => 0, 'counts' => array(), 'bootstrap_diagnostic' => $GLOBALS['markdown_db_native_shadow_diagnostic'] ), JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) . "\n", LOCK_EX );
+			}
 		}
 	}
 }
@@ -83,6 +95,37 @@ if ( ! function_exists( 'markdown_database_integration_native_plugin_dir' ) ) {
 			}
 		}
 		return null;
+	}
+}
+
+// A process supervisor may provide these early-bootstrap settings through its
+// environment. This supports external disposable MySQL runtimes that generate
+// wp-config.php after WordPress has already loaded db.php.
+if ( ! defined( 'MARKDOWN_DB_BACKEND' ) ) {
+	$markdown_db_environment_backend = getenv( 'MARKDOWN_DB_BACKEND' );
+	if ( is_string( $markdown_db_environment_backend ) && in_array( $markdown_db_environment_backend, array( 'sqlite', 'mdi-native', 'mysql-content', 'mysql-full' ), true ) ) {
+		define( 'MARKDOWN_DB_BACKEND', $markdown_db_environment_backend );
+	}
+}
+if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW' ) && 'true' === getenv( 'MARKDOWN_DB_NATIVE_SHADOW' ) ) {
+	define( 'MARKDOWN_DB_NATIVE_SHADOW', true );
+}
+if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) && ctype_digit( (string) getenv( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) ) ) {
+	define( 'MARKDOWN_DB_NATIVE_SHADOW_MAX', (int) getenv( 'MARKDOWN_DB_NATIVE_SHADOW_MAX' ) );
+}
+if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' ) ) {
+	$markdown_db_shadow_input_mode = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' );
+	if ( false !== $markdown_db_shadow_input_mode && ! in_array( $markdown_db_shadow_input_mode, array( 'canonical', 'sql_snapshot' ), true ) ) {
+		throw new InvalidArgumentException( 'The native shadow input mode must be canonical or sql_snapshot.' );
+	}
+	if ( is_string( $markdown_db_shadow_input_mode ) && '' !== $markdown_db_shadow_input_mode ) {
+		define( 'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE', $markdown_db_shadow_input_mode );
+	}
+}
+if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' ) ) {
+	$markdown_db_shadow_report_path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' );
+	if ( is_string( $markdown_db_shadow_report_path ) && '' !== $markdown_db_shadow_report_path ) {
+		define( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH', $markdown_db_shadow_report_path );
 	}
 }
 

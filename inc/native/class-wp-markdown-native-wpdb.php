@@ -120,7 +120,7 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		$this->col_info               = $state['col_info'];
 		$this->last_error             = $state['last_error'];
 		$this->last_errno             = $state['last_errno'];
-		$this->insert_id              = $state['insert_id'];
+		$this->insert_id              = WP_Markdown_Native_WPDB_State_Projection::insert_id( $result, $query, (int) $this->insert_id );
 		$this->rows_affected          = $state['rows_affected'];
 		$this->num_rows               = $state['num_rows'];
 		$this->last_runtime_diagnostic = $result->diagnostic();

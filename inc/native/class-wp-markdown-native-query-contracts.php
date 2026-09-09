@@ -526,7 +526,7 @@ final class WP_Markdown_Query_Result {
 		);
 	}
 
-	public function corpus_result(): array {
+	public function corpus_result( ?int $insert_id = null ): array {
 		return array(
 			'return' => array(
 				'type' => is_bool( $this->return_value ) ? 'boolean' : 'integer',
@@ -536,11 +536,24 @@ final class WP_Markdown_Query_Result {
 			'columns' => array_map( static fn( array $column ): array => array( 'name' => $column['name'], 'type' => (string) $column['type'] ), $this->columns ),
 			'last_error' => $this->last_error,
 			'error_code' => $this->error_code,
-			'insert_id' => $this->insert_id,
+			'insert_id' => $insert_id ?? $this->insert_id,
 			'rows_affected' => $this->rows_affected,
 			'num_rows' => count( $this->rows ),
 			'exception' => null,
 		);
+	}
+}
+
+/** Project stateless runtime results onto wpdb's stateful public contract. */
+final class WP_Markdown_Native_WPDB_State_Projection {
+	public static function insert_id( WP_Markdown_Query_Result $result, string $query, int $previous_insert_id ): int {
+		if ( 1 !== preg_match( '/^\s*(INSERT|REPLACE)\b/i', $query ) ) {
+			return $previous_insert_id;
+		}
+		if ( ! $result->succeeded() ) {
+			return 0;
+		}
+		return (int) $result->wpdb_state()['insert_id'];
 	}
 }
 

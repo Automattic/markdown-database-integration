@@ -11,10 +11,11 @@ require_once ABSPATH . 'wp-admin/includes/plugin.php';
 global $wpdb;
 
 $result = array(
-	'schema'  => 'mdi-native-plugin-corpus/v1',
-	'backend' => defined( 'MARKDOWN_DB_BACKEND' ) ? MARKDOWN_DB_BACKEND : null,
-	'wpdb'    => get_class( $wpdb ),
-	'plugins' => array(),
+	'schema'    => 'mdi-native-plugin-corpus/v1',
+	'backend'   => defined( 'MARKDOWN_DB_BACKEND' ) ? MARKDOWN_DB_BACKEND : null,
+	'wpdb'      => get_class( $wpdb ),
+	'multisite' => is_multisite(),
+	'plugins'   => array(),
 );
 
 if ( ! $wpdb instanceof WP_Markdown_Native_WPDB || 'mdi-native' !== $result['backend'] ) {
@@ -62,13 +63,13 @@ foreach ( $corpus as $slug => $file ) {
 function mdi_native_activate_plugin( wpdb $wpdb, string $slug, string $file ): array {
 	$wpdb->last_runtime_diagnostic = null;
 	try {
-		$activation = activate_plugin( $file );
+		$activation = activate_plugin( $file, '', is_multisite() );
 		$error      = is_wp_error( $activation ) ? $activation->get_error_message() : null;
 	} catch ( Throwable $thrown ) {
 		$error = get_class( $thrown ) . ': ' . $thrown->getMessage();
 	}
 
-	$active = is_plugin_active( $file );
+	$active = is_plugin_active( $file ) || ( is_multisite() && is_plugin_active_for_network( $file ) );
 	return array(
 		'slug'       => $slug,
 		'file'       => $file,

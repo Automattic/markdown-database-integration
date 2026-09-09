@@ -175,6 +175,8 @@ $noop_cron = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_o
 $read_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
 $direct_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE `wp_options` SET `option_value` = 'third', `autoload` = 'auto-off' WHERE `option_name` = 'cron'" ) );
 $noop_direct_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'third', autoload = 'auto-off' WHERE option_name = 'cron'" ) );
+$conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'fourth' WHERE option_name = 'cron' AND option_value = 'third'" ) );
+$stale_conditional_update_cron = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'stale' WHERE option_name = 'cron' AND option_value = 'third'" ) );
 $read_direct_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
 $reopened_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $read_persisted_cron = $reopened_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
@@ -266,11 +268,14 @@ $checks = array(
 		&& array() === $cron_temp_files,
 	'canonical option updates mutate exact existing identities only' => 1 === $direct_update_cron->return_value()
 		&& 0 === $noop_direct_update_cron->return_value()
+		&& 1 === $conditional_update_cron->return_value()
+		&& 0 === $stale_conditional_update_cron->return_value()
+		&& 'fourth' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 0 === $missing_direct_update->return_value()
 		&& '7' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_id ?? null )
-		&& 'third' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'fourth' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'auto-off' === ( $read_direct_updated_cron->wpdb_state()['last_result'][0]->autoload ?? null )
-		&& 'third' === ( $read_persisted_cron->wpdb_state()['last_result'][0]->option_value ?? null ),
+		&& 'fourth' === ( $read_persisted_cron->wpdb_state()['last_result'][0]->option_value ?? null ),
 	'exact option deletes remove canonical rows and preserve missing-row semantics' => 1 === $delete_cron->return_value()
 		&& 1 === $delete_cron->wpdb_state()['rows_affected']
 		&& 0 === $delete_missing->return_value()

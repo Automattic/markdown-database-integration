@@ -117,6 +117,16 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( ! $schema->has_column( $assignment['target'] ) || ( null !== $assignment['source'] && ! $schema->has_column( $assignment['source'] ) ) ) {
 					return $this->failure( 'unsupported_column', 'The duplicate-key assignment references an undeclared column.' );
 				}
+				if ( $assignment['value'] instanceof WP_Markdown_Native_Query_Scalar_Expression ) {
+					if ( ! WP_Markdown_Native_Scalar_Evaluator::supports( $assignment['value'] ) ) {
+						return $this->failure( 'unsupported_mutation_expression', 'The duplicate-key assignment uses an unsupported expression.' );
+					}
+					foreach ( $assignment['value']->columns() as $column ) {
+						if ( ! $schema->has_column( $column ) ) {
+							return $this->failure( 'unsupported_column', 'The duplicate-key assignment references an undeclared column.' );
+						}
+					}
+				}
 			}
 			if ( ! $this->supports_unique_indexes( $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
@@ -213,13 +223,15 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 				$duplicate = $duplicates[0];
 				$updated = $rows[ $duplicate ];
+				$scalar_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, new WP_Markdown_Native_Query_Parser() );
 				foreach ( $upsert_assignments as $assignment ) {
 					// Existing-column references see earlier assignments; VALUES sees the proposed insert.
-					$updated[ $assignment['target'] ] = match ( $assignment['kind'] ) {
+					$value = match ( $assignment['kind'] ) {
 						'inserted' => $row[ $assignment['source'] ],
-						'column' => $updated[ $assignment['source'] ],
+						'expression' => $scalar_runtime->evaluate_scalar( $assignment['value'], $updated, $schema ),
 						default => $assignment['value'],
 					};
+					$updated[ $assignment['target'] ] = null === $value ? null : (string) $value;
 				}
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );

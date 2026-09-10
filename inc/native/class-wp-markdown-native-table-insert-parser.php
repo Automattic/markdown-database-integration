@@ -75,7 +75,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				if ( $replace || $ignore_duplicate || null !== $unless_exists ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native cannot combine INSERT IGNORE or INSERT SELECT FROM DUAL with ON DUPLICATE KEY UPDATE.' );
 				}
-				$upsert_assignments = $this->upsert_assignments();
+				$upsert_assignments = $this->upsert_assignments( $table );
 			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
 			$inserts = array();
@@ -351,8 +351,8 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		return array_values( $columns );
 	}
 
-	/** @return array<int,array{target:string,kind:string,source:?string,value:int|string|null}> */
-	private function upsert_assignments(): array {
+	/** @return array<int,array{target:string,kind:string,source:?string,value:int|string|null|WP_Markdown_Native_Query_Scalar_Expression}> */
+	private function upsert_assignments( string $table ): array {
 		$this->word( 'ON' );
 		$this->word( 'DUPLICATE' );
 		$this->word( 'KEY' );
@@ -369,12 +369,19 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				$source = $this->identifier();
 				$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
 				$kind = 'inserted';
-			} elseif ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
-				$source = $this->identifier();
-				$kind = 'column';
 			} else {
-				$value = $this->literal();
-				$kind = 'literal';
+				$parser = new WP_Markdown_Native_Select_AST_Parser( $this->tokens, $this->position );
+				$expression = $parser->scalar_value();
+				$this->position = $parser->position();
+				foreach ( $expression->columns() as $column ) {
+					if ( null !== $column->qualifier() && 0 !== strcasecmp( $table, $column->qualifier() ) ) {
+						throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_mutation_column', $column->sql_offset(), 'A duplicate-key expression must reference its target table.' );
+					}
+				}
+				$value = 'literal' === $expression->kind()
+					? $expression->literal()
+					: ( new WP_Markdown_Native_Query_Parser() )->lower_scalar_expression( $expression, null, $table );
+				$kind = $value instanceof WP_Markdown_Native_Query_Scalar_Expression ? 'expression' : 'literal';
 			}
 			$assignments[] = array( 'target' => $target, 'kind' => $kind, 'source' => $source, 'value' => $value );
 			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {

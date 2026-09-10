@@ -35,8 +35,10 @@ $ordered = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoa
 $ordered_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT object_id, title FROM wp_yoast_indexable WHERE id = 1' ) );
 $cross_values = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 9, 'incoming') ON DUPLICATE KEY UPDATE title = VALUES(object_id)" ) );
 $bad_target = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (3, 10, 'new') ON DUPLICATE KEY UPDATE absent_column = NULL" ) );
-$new_literal = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (3, 10, 'new') ON DUPLICATE KEY UPDATE title = NULL" ) );
+$new_literal = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (3, 11, 'new') ON DUPLICATE KEY UPDATE title = NULL" ) );
 $new_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT title FROM wp_yoast_indexable WHERE id = 3' ) );
+$increment = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 9, 'ignored') ON DUPLICATE KEY UPDATE object_id = object_id + 1" ) );
+$incremented_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT object_id FROM wp_yoast_indexable WHERE id = 1' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_unique_labels (id int NOT NULL, label varchar(20) NOT NULL, PRIMARY KEY(id), UNIQUE KEY label(label))' ) );
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_unique_labels (id,label) VALUES (1,'original')" ) );
 $unsupported_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_unique_labels (id,label) VALUES (1,'original') ON DUPLICATE KEY UPDATE label='caf\xC3\xA9'" ) );
@@ -50,6 +52,7 @@ $checks = array(
 	'VALUES may refer to a different inserted column' => $cross_values->succeeded() && 0 === $cross_values->return_value(),
 	'unknown duplicate target fails even on the insert branch' => ! $bad_target->succeeded() && 'unsupported_column' === $bad_target->diagnostic()['reason'],
 	'duplicate literals are not applied to a newly inserted row' => 1 === $new_literal->return_value() && 'new' === $new_row->corpus_result()['rows'][0]['title'],
+	'duplicate assignments support bounded row-local arithmetic' => 2 === $increment->return_value() && '10' === $incremented_row->corpus_result()['rows'][0]['object_id'],
 	'the first insert persists' => 1 === $insert->return_value() && 1 === $insert->wpdb_state()['insert_id'],
 	'ON DUPLICATE KEY UPDATE rewrites the conflicting row' => 2 === $upsert->return_value()
 		&& 1 === $upsert->wpdb_state()['insert_id']

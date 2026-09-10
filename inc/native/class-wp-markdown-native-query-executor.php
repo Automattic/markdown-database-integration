@@ -108,17 +108,24 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
 		}
-		$write_admitted = null !== $this->transactions && null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
-		if ( $write_admitted ) {
+		// Advisory locks have their own root-scoped lock files. Holding the
+		// transaction lock while waiting for one would invert their release order.
+		$mutation = null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
+		$canonical_admitted = null !== $this->transactions && ! $this->is_advisory_lock_statement( $request->sql() );
+		if ( $canonical_admitted ) {
 			$locked = $this->transactions->begin_write();
 			if ( true !== $locked ) {
-				return $this->failure( 'transaction_write_lock_failed', $locked );
+				return $this->failure( $mutation ? 'transaction_write_lock_failed' : 'transaction_read_lock_failed', $locked );
+			}
+			if ( $this->transactions->waited_for_write_lock() ) {
+				// A process that waited may hold snapshots loaded before the writer committed.
+				$this->registry->forget_snapshots();
 			}
 		}
 		try {
 			return $this->execute_unlocked_request( $request );
 		} finally {
-			if ( $write_admitted ) {
+			if ( $canonical_admitted ) {
 				$this->transactions->finish_write();
 			}
 		}
@@ -352,6 +359,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			array( array( $column => null === $value ? null : (string) $value ) ),
 			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
 		);
+	}
+
+	private function is_advisory_lock_statement( string $sql ): bool {
+		return 1 === preg_match( '/^\s*SELECT\s+(?:GET_LOCK|RELEASE_LOCK)\s*\(/i', $sql );
 	}
 
 	private function execute_query_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
@@ -2582,6 +2593,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( true !== $outcome ) {
 			return $this->failure( 'transaction_control_failed', $outcome );
+		}
+		if ( $this->transactions->waited_for_write_lock() ) {
+			$this->registry->forget_snapshots();
 		}
 		if ( 'commit_chain' === $control['action'] || 'rollback_chain' === $control['action'] ) {
 			$chained = $this->transactions->begin();

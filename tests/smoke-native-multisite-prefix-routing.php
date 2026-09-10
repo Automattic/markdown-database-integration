@@ -29,11 +29,6 @@ $network_insert = $runtime->execute( new WP_Markdown_Query_Request( sprintf( "IN
 $cross_scope_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK', 'wp_' ) );
 $site_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_2_posts WHERE post_name = 'site-transaction'", 'wp_2_' ) );
 $network_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_name = 'network-transaction'", 'wp_' ) );
-$temporary_created = $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TEMPORARY TABLE wp_2_session_probe (id bigint unsigned NOT NULL, PRIMARY KEY (id))', 'wp_2_' ) );
-$temporary_inserted = $runtime->execute( new WP_Markdown_Query_Request( 'INSERT INTO wp_2_session_probe (id) VALUES (7)', 'wp_2_' ) );
-// Construct the base-prefix runtime after site 2, as switch_to_blog() does.
-$base_scope = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT option_value FROM wp_options WHERE option_name = \'siteurl\'', 'wp_' ) );
-$temporary_after_switch = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_2_session_probe', 'wp_2_' ) );
 
 $listed = array_map( static fn( object $row ): string => (string) array_values( get_object_vars( $row ) )[0], $tables->wpdb_state()['last_result'] );
 $checks = array(
@@ -51,10 +46,6 @@ $checks = array(
 		&& 0 === $network_after_rollback->wpdb_state()['num_rows']
 		&& empty( glob( $root . '/sites/2/post/*.md' ) )
 		&& empty( glob( $root . '/post/*.md' ) ),
-	'temporary tables retain one logical wpdb session across lazy site-prefix runtimes' => $temporary_created->succeeded()
-		&& 1 === $temporary_inserted->return_value()
-		&& $base_scope->succeeded()
-		&& '7' === (string) ( $temporary_after_switch->wpdb_state()['last_result'][0]->id ?? '' ),
 );
 
 $failed = 0;

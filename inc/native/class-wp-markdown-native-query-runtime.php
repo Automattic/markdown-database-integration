@@ -253,8 +253,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 		?string $global_state_root = null,
 		?string $global_content_root = null,
 		?WP_Markdown_Native_Advisory_Locks $advisory_locks = null,
-		?string $transaction_state_root = null,
-		?WP_Markdown_Native_Temporary_Tables $temporary_tables = null
+		?string $transaction_state_root = null
 	): WP_Markdown_Native_Query_Runtime {
 		$state_root = self::materialize_state_root( $state_root );
 		if ( null !== $content_root ) {
@@ -271,7 +270,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			array_filter( array( $state_root, $content_root, $global_state_root, $global_content_root ) )
 		);
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
-		$temporary_tables = $temporary_tables ?? new WP_Markdown_Native_Temporary_Tables();
+		$temporary_tables = new WP_Markdown_Native_Temporary_Tables();
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
 		$resolved_content = $content_root ?? $state_root;
@@ -645,14 +644,12 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
 	private array $runtimes = array();
 	private WP_Markdown_Native_Advisory_Locks $advisory_locks;
-	private WP_Markdown_Native_Temporary_Tables $temporary_tables;
 
 	public function __construct(
 		private string $state_root,
 		private string $content_root
 	) {
 		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $state_root );
-		$this->temporary_tables = new WP_Markdown_Native_Temporary_Tables();
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -664,8 +661,7 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 				$prefix,
 				false,
 				$this->content_root,
-				advisory_locks: $this->advisory_locks,
-				temporary_tables: $this->temporary_tables
+				advisory_locks: $this->advisory_locks
 			);
 		}
 		return $this->runtimes[ $prefix ]->execute( $request );
@@ -722,7 +718,6 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 	private string $state_root;
 	private string $content_root;
 	private WP_Markdown_Native_Advisory_Locks $advisory_locks;
-	private WP_Markdown_Native_Temporary_Tables $temporary_tables;
 
 	public function __construct(
 		string $state_root,
@@ -735,7 +730,6 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 		$this->state_root = rtrim( $state_root, '/\\' );
 		$this->content_root = rtrim( $content_root, '/\\' );
 		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $this->state_root );
-		$this->temporary_tables = new WP_Markdown_Native_Temporary_Tables();
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -770,8 +764,7 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 					$this->state_root,
 					$this->content_root,
 					$this->advisory_locks,
-					$this->state_root,
-					$this->temporary_tables
+					$this->state_root
 				);
 			} catch ( Throwable ) {
 				return WP_Markdown_Query_Result::failure(

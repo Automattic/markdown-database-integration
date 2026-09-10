@@ -266,7 +266,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			return $this->failure( 'unsupported_schema', 'mdi-native requires a simple table identifier.' );
 		}
 		// Core tables are structural, not plugin state, so they are never dropped.
-		if ( isset( WP_Markdown_Native_Schema_Catalog::definitions()[ $suffix ] ) ) {
+		if ( ! $temporary && isset( WP_Markdown_Native_Schema_Catalog::definitions()[ $suffix ] ) ) {
 			return $this->failure( 'unsupported_schema', 'mdi-native cannot drop a core table.' );
 		}
 		if ( $temporary ) {

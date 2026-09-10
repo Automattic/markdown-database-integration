@@ -163,7 +163,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				: $this->schema_mutations->execute( $request );
 		}
 		$dml_table = $this->dml_table( $request );
-		if ( null !== $dml_table && 0 !== strcasecmp( $request->table_prefix() . 'options', $dml_table ) ) {
+		if ( null !== $dml_table && ( 0 !== strcasecmp( $request->table_prefix() . 'options', $dml_table ) || $this->registry->is_shadowed( $dml_table ) ) ) {
 			return $this->execute_table_dml( $request, $dml_table );
 		}
 		if ( 1 !== preg_match( '/^\s*(?:SELECT\b|(?:\(\s*)+SELECT\b)/i', $request->sql() ) ) {
@@ -2541,7 +2541,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function execute_table_dml( WP_Markdown_Query_Request $request, string $table ): WP_Markdown_Query_Result {
-		if ( 0 === strcasecmp( $request->table_prefix() . 'posts', $table ) ) {
+		if ( 0 === strcasecmp( $request->table_prefix() . 'posts', $table ) && ! $this->registry->is_shadowed( $table ) ) {
 			return null === $this->post_mutations
 				? $this->failure( 'unsupported_grammar', 'mdi-native post mutations are unavailable.' )
 				: $this->post_mutations->execute( $request );

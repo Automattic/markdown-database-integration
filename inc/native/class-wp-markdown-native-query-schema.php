@@ -748,6 +748,11 @@ final class WP_Markdown_Native_Table_Registry {
 		return $this->definitions[ $table ] ?? null;
 	}
 
+	/** Whether a connection-local temporary table currently hides this identifier. */
+	public function is_shadowed( string $table ): bool {
+		return isset( $this->shadows[ $table ] );
+	}
+
 	/**
 	 * Replace a registered table after its schema is altered.
 	 *

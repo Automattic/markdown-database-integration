@@ -89,6 +89,24 @@ $shadow_dropped = $runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPOR
 $permanent_rows_after_shadow = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT event_key, owner_id, payload FROM wp_plugin_events' ) );
 $cold_temporary = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_temporary_generation' ) );
 
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('temporary_shadow', 'permanent', 'no')" ) );
+$core_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
+$permanent_options_before = $core_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'temporary_shadow'" ) );
+$temporary_options_created = $core_runtime->execute( new WP_Markdown_Query_Request( 'CREATE TEMPORARY TABLE wp_options (option_name varchar(64) NOT NULL, option_value longtext DEFAULT NULL, PRIMARY KEY (option_name))' ) );
+$temporary_options_inserted = $core_runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value) VALUES ('temporary_shadow', 'temporary')" ) );
+$core_runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'updated' WHERE option_name = 'temporary_shadow'" ) );
+$temporary_options_rows = $core_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'temporary_shadow'" ) );
+$core_runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_options' ) );
+$permanent_options_rows = $core_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'temporary_shadow'" ) );
+
+$permanent_posts_before = $core_runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID = 900' ) );
+$temporary_posts_created = $core_runtime->execute( new WP_Markdown_Query_Request( 'CREATE TEMPORARY TABLE wp_posts (ID bigint unsigned NOT NULL, post_title varchar(255) NOT NULL, PRIMARY KEY (ID))' ) );
+$temporary_posts_inserted = $core_runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_posts (ID, post_title) VALUES (900, 'temporary')" ) );
+$core_runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_posts SET post_title = 'updated' WHERE ID = 900" ) );
+$temporary_posts_rows = $core_runtime->execute( new WP_Markdown_Query_Request( 'SELECT post_title FROM wp_posts WHERE ID = 900' ) );
+$core_runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_posts' ) );
+$permanent_posts_rows = $core_runtime->execute( new WP_Markdown_Query_Request( 'SELECT ID FROM wp_posts WHERE ID = 900' ) );
+
 $checks = array(
 	'generic CREATE TABLE returns the WordPress DDL success shape' => true === $created->return_value()
 		&& 0 === $created->wpdb_state()['rows_affected'],
@@ -124,6 +142,16 @@ $checks = array(
 		&& true === $shadow_dropped->return_value()
 		&& 'permanent' === (string) ( $permanent_rows_after_shadow->wpdb_state()['last_result'][0]->event_key ?? '' )
 		&& false === $cold_temporary->return_value(),
+	'temporary options shadows route DML to their JSON provider and restore the unchanged canonical provider' => true === $temporary_options_created->return_value()
+		&& 'permanent' === (string) ( $permanent_options_before->wpdb_state()['last_result'][0]->option_value ?? '' )
+		&& 1 === $temporary_options_inserted->wpdb_state()['rows_affected']
+		&& 'updated' === (string) ( $temporary_options_rows->wpdb_state()['last_result'][0]->option_value ?? '' )
+		&& 'permanent' === (string) ( $permanent_options_rows->wpdb_state()['last_result'][0]->option_value ?? '' ),
+	'temporary posts shadows route DML to their JSON provider and restore the unchanged canonical provider' => true === $temporary_posts_created->return_value()
+		&& array() === $permanent_posts_before->wpdb_state()['last_result']
+		&& 1 === $temporary_posts_inserted->wpdb_state()['rows_affected']
+		&& 'updated' === (string) ( $temporary_posts_rows->wpdb_state()['last_result'][0]->post_title ?? '' )
+		&& array() === $permanent_posts_rows->wpdb_state()['last_result'],
 );
 
 $failed = false;

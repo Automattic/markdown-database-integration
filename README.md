@@ -654,6 +654,31 @@ Both commands default to `MARKDOWN_DB_CONTENT_DIR`. Pass
 `--path` remains the WP-CLI global option for selecting the WordPress installation.
 Export accepts `--post-type=post,page,wiki` to limit the post types.
 
+### WP-CLI Option Migration
+
+`--path` was previously documented as the Markdown content-root option for
+`markdown-db import` and `markdown-db export`. It is now reserved exclusively
+for WP-CLI's WordPress-installation selector. Replace the old invocations:
+
+```bash
+wp markdown-db import --path=/path/to/markdown
+wp markdown-db export --path=/path/to/markdown
+```
+
+with:
+
+```bash
+wp markdown-db import --content-dir=/path/to/markdown
+wp markdown-db export --content-dir=/path/to/markdown
+```
+
+Select a WordPress installation and a Markdown content root independently:
+
+```bash
+wp --path=/path/to/wordpress markdown-db import --content-dir=/path/to/markdown --dry-run
+wp --path=/path/to/wordpress markdown-db export --content-dir=/path/to/markdown --dry-run
+```
+
 The same operations are available to agents through abilities:
 
 - `markdown-db/import`

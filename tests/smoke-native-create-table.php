@@ -67,6 +67,27 @@ $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
 $temporary_dropped = $runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_ddl_temporary' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
 $temporary_after_drop_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_temporary' ) );
+$permanent_only_drop = $runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_ddl_commit' ) );
+$permanent_only_drop_if_exists = $runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE IF EXISTS wp_ddl_commit' ) );
+$permanent_after_temporary_drop = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_commit' ) );
+
+$generation_ddl = 'CREATE TEMPORARY TABLE wp_temporary_generation (id bigint unsigned NOT NULL, PRIMARY KEY (id))';
+$runtime->execute( new WP_Markdown_Query_Request( $generation_ddl ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'INSERT INTO wp_temporary_generation (id) VALUES (1)' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'UPDATE wp_temporary_generation SET id = 3 WHERE id = 1' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_temporary_generation' ) );
+$runtime->execute( new WP_Markdown_Query_Request( $generation_ddl ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
+$generation_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_temporary_generation' ) );
+
+$runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_events (event_key, owner_id, payload) VALUES ('permanent', 7, 'safe')" ) );
+$shadow_created = $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TEMPORARY TABLE wp_plugin_events (id bigint unsigned NOT NULL, PRIMARY KEY (id))' ) );
+$shadow_inserted = $runtime->execute( new WP_Markdown_Query_Request( 'INSERT INTO wp_plugin_events (id) VALUES (9)' ) );
+$shadow_rows = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_plugin_events' ) );
+$shadow_dropped = $runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_plugin_events' ) );
+$permanent_rows_after_shadow = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT event_key, owner_id, payload FROM wp_plugin_events' ) );
+$cold_temporary = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_temporary_generation' ) );
 
 $checks = array(
 	'generic CREATE TABLE returns the WordPress DDL success shape' => true === $created->return_value()
@@ -93,6 +114,16 @@ $checks = array(
 		&& array() === $temporary_rows_after_rollback->wpdb_state()['last_result'],
 	'DROP TEMPORARY TABLE survives rollback and refreshes the table registry' => true === $temporary_dropped->return_value()
 		&& false === $temporary_after_drop_rollback->return_value(),
+	'DROP TEMPORARY TABLE refuses a permanent-only name without touching its schema' => false === $permanent_only_drop->return_value()
+		&& true === $permanent_only_drop_if_exists->return_value()
+		&& 'id' === ( $permanent_after_temporary_drop->wpdb_state()['last_result'][0]->Field ?? null ),
+	'a dropped temporary generation cannot restore its old transactional row journal into a recreated table' => array() === $generation_after_rollback->wpdb_state()['last_result'],
+	'temporary tables shadow same-name permanent tables without overwriting their data and are absent from a cold runtime' => true === $shadow_created->return_value()
+		&& 1 === $shadow_inserted->wpdb_state()['rows_affected']
+		&& '9' === (string) ( $shadow_rows->wpdb_state()['last_result'][0]->id ?? '' )
+		&& true === $shadow_dropped->return_value()
+		&& 'permanent' === (string) ( $permanent_rows_after_shadow->wpdb_state()['last_result'][0]->event_key ?? '' )
+		&& false === $cold_temporary->return_value(),
 );
 
 $failed = false;

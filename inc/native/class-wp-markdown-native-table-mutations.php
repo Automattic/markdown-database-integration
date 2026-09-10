@@ -11,6 +11,8 @@ require_once __DIR__ . '/class-wp-markdown-native-table-insert-parser.php';
 final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private string $state_root;
 	private WP_Markdown_Native_Table_Index $index;
+	/** @var array<string,WP_Markdown_Native_Table_Index> */
+	private array $temporary_indexes = array();
 	/** @var array<string,WP_Markdown_File_Witness> */
 	private array $unique_sets_verified = array();
 
@@ -18,7 +20,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		string $state_root,
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Table_Insert_Parser $parser = new WP_Markdown_Native_Table_Insert_Parser(),
-		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
+		private ?WP_Markdown_Native_Temporary_Tables $temporary_tables = null
 	) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
@@ -91,12 +94,13 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			|| null === $table
 			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			|| ! is_array( $definition )
-			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix )
+			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix, $insert->table() )
 		) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can insert only into a persisted generic snapshot table.' );
 		}
 
-		$directory = $this->tables_directory();
+		$root = $this->root_for( $insert->table() );
+		$directory = $this->tables_directory( $root );
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
@@ -124,9 +128,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 			}
 			$path = $directory . '/' . $suffix . '.json';
+			$table_index = $this->index_for( $root );
 			$index = $insert->is_replace() || null !== $insert->upsert_columns() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
 				? null
-				: $this->index->load( $suffix, $path );
+				: $table_index->load( $suffix, $path );
 			if ( null !== $index ) {
 				// The index enforces this candidate's keys, while this witnessed
 				// snapshot proves the pre-existing keys were already unique.
@@ -152,7 +157,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( $appended instanceof WP_Markdown_Query_Result ) {
 					return $appended;
 				}
-				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
+				$table_index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
 				if ( $unique_set_verified ) {
 					$this->remember_verified_unique_set( $suffix, $path );
 				}
@@ -189,7 +194,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					}
 					// REPLACE already scans and republishes the snapshot. Leave the
 					// derived insert index for the next operation that needs it.
-					$this->index->forget( $suffix, $this->transactions );
+					$table_index->forget( $suffix, $this->transactions );
 					$provider->replace_rows( $rows );
 					return WP_Markdown_Query_Result::mutated( count( $duplicates ) + 1, $this->auto_increment_value( $row, $definition ) );
 				}
@@ -218,7 +223,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( $written instanceof WP_Markdown_Query_Result ) {
 					return $written;
 				}
-				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
+				$table_index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
 				$provider->replace_rows( array_values( $rows ) );
 				return WP_Markdown_Query_Result::mutated( 2, $this->auto_increment_value( $updated, $definition ) );
 			}
@@ -227,7 +232,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
-			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+			$table_index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
 			$provider->replace_rows( $rows );
 			return WP_Markdown_Query_Result::mutated( 1, $this->auto_increment_value( $row, $definition ) );
 		} finally {
@@ -269,7 +274,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'unsafe_table_file', 'The canonical table file is unavailable or unsafe.' );
 		}
 		if ( null !== $this->transactions ) {
-			$recorded = $this->transactions->record( $path );
+			$recorded = $this->is_temporary_path( $path ) ? $this->transactions->record_ephemeral( $path ) : $this->transactions->record( $path );
 			if ( true !== $recorded ) {
 				return $this->failure( 'transaction_journal_failed', $recorded );
 			}
@@ -462,7 +467,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			|| null === $table
 			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			|| ! is_array( $definition )
-			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix )
+			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix, $write->table() )
 		) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
 		}
@@ -487,7 +492,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the persisted table schema.' );
 			}
 		}
-		$directory = $this->tables_directory();
+		$root = $this->root_for( $write->table() );
+		$directory = $this->tables_directory( $root );
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
@@ -499,7 +505,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		try {
 			$path = $directory . '/' . $suffix . '.json';
 			$provider = $table['provider'];
-			$index = $this->index->load( $suffix, $path );
+			$table_index = $this->index_for( $root );
+			$index = $table_index->load( $suffix, $path );
 			if ( null !== $index && $this->index_excludes( $index, $predicates ) ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
@@ -533,7 +540,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 
 			if ( 0 === $affected ) {
-				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
+				$table_index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			$unique_set_verified = $write->is_update()
@@ -552,7 +559,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$this->remember_verified_unique_set( $suffix, $path );
 			// The sidecar is derived state. Keep this runtime's witnessed index
 			// current without republishing it after every canonical table write.
-			$this->index->remember( $suffix, $path, $updated_index ?? WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
+			$table_index->remember( $suffix, $path, $updated_index ?? WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
 			$provider->replace_rows( $retained );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
@@ -887,8 +894,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 *
 	 * @param array<string,mixed> $definition
 	 */
-	private function is_authoritative_definition( string $suffix, array $definition, string $prefix ): bool {
-		return $this->is_persisted_definition( $suffix, $definition, $prefix )
+	private function is_authoritative_definition( string $suffix, array $definition, string $prefix, string $table ): bool {
+		return $this->is_persisted_definition( $suffix, $definition, $prefix, $this->root_for( $table ) )
 			|| $this->is_generated_core_definition( $suffix, $definition );
 	}
 
@@ -897,10 +904,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		return WP_Markdown_Native_Schema_Catalog::is_generated_core_definition( $suffix, $definition );
 	}
 
-	private function is_persisted_definition( string $suffix, array $definition, string $prefix ): bool {
-		$directory = realpath( $this->state_root . '/_schema' );
+	private function is_persisted_definition( string $suffix, array $definition, string $prefix, string $root ): bool {
+		$directory = realpath( $root . '/_schema' );
 		$path = false === $directory ? '' : $directory . '/' . $suffix . '.sql';
-		if ( false === $directory || is_link( $this->state_root . '/_schema' ) || ! is_file( $path ) || is_link( $path ) ) {
+		if ( false === $directory || is_link( $root . '/_schema' ) || ! is_file( $path ) || is_link( $path ) ) {
 			return false;
 		}
 		try {
@@ -911,16 +918,16 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		}
 	}
 
-	private function tables_directory(): string|WP_Markdown_Query_Result {
-		$path = $this->state_root . '/_tables';
+	private function tables_directory( string $root ): string|WP_Markdown_Query_Result {
+		$path = $root . '/_tables';
 		if ( ! file_exists( $path ) && ! @mkdir( $path, 0755 ) && ! is_dir( $path ) ) {
 			return $this->failure( 'tables_directory_failed', 'The canonical tables directory could not be created.' );
 		}
-		$root = realpath( $path );
-		if ( false === $root || ! is_dir( $root ) || is_link( $path ) || dirname( $root ) !== $this->state_root ) {
+		$directory = realpath( $path );
+		if ( false === $directory || ! is_dir( $directory ) || is_link( $path ) || dirname( $directory ) !== $root ) {
 			return $this->failure( 'unsafe_tables_directory', 'The canonical tables directory is unavailable or unsafe.' );
 		}
-		return $root;
+		return $directory;
 	}
 
 	/** Coordinate only writers that publish the same canonical table. */
@@ -942,7 +949,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'unsafe_table_file', 'The canonical table file is unavailable or unsafe.' );
 		}
 		if ( null !== $this->transactions ) {
-			$recorded = $this->transactions->record( $path );
+			$recorded = $this->is_temporary_path( $path ) ? $this->transactions->record_ephemeral( $path ) : $this->transactions->record( $path );
 			if ( true !== $recorded ) {
 				return $this->failure( 'transaction_journal_failed', $recorded );
 			}
@@ -984,6 +991,23 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'table_publish_failed', 'The canonical table rows could not be atomically published.' );
 		}
 		return true;
+	}
+
+	private function root_for( string $table ): string {
+		return null !== $this->temporary_tables && $this->temporary_tables->has( $table )
+			? $this->temporary_tables->root()
+			: $this->state_root;
+	}
+
+	private function index_for( string $root ): WP_Markdown_Native_Table_Index {
+		if ( $root === $this->state_root ) {
+			return $this->index;
+		}
+		return $this->temporary_indexes[ $root ] ??= new WP_Markdown_Native_Table_Index( $root . DIRECTORY_SEPARATOR . '_tables' );
+	}
+
+	private function is_temporary_path( string $path ): bool {
+		return null !== $this->temporary_tables && str_starts_with( $path, $this->temporary_tables->root() . DIRECTORY_SEPARATOR );
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

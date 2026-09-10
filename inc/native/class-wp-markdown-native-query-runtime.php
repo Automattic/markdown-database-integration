@@ -23,6 +23,7 @@ require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
 require_once __DIR__ . '/../class-wp-markdown-table-durability-policy.php';
 require_once __DIR__ . '/class-wp-markdown-native-transactions.php';
+require_once __DIR__ . '/class-wp-markdown-native-temporary-tables.php';
 require_once __DIR__ . '/class-wp-markdown-native-advisory-locks.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
@@ -269,6 +270,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			array_filter( array( $state_root, $content_root, $global_state_root, $global_content_root ) )
 		);
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
+		$temporary_tables = new WP_Markdown_Native_Temporary_Tables();
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
 		$resolved_content = $content_root ?? $state_root;
@@ -289,8 +291,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$registry,
 			new WP_Markdown_Native_Query_Parser(),
 			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root, new WP_Markdown_Native_Option_Mutation_Parser(), $transactions ),
-			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions, $core_registrar ),
-			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, $parser, $transactions ),
+			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions, $core_registrar, $temporary_tables ),
+			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, $parser, $transactions, $temporary_tables ),
 			$transactions,
 			new WP_Markdown_Native_Post_Mutation_Runtime(
 				$registry,

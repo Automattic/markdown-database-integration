@@ -345,6 +345,37 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return $this->persist();
 	}
 
+	/** Record a session-local pre-image without serializing it into the durable journal. */
+	public function record_ephemeral( string $path, ?callable $restore_observer = null ): true|string {
+		if ( ! $this->active ) {
+			return true;
+		}
+		if ( null !== $restore_observer ) {
+			$this->restore_observers[ $path ] = $restore_observer;
+		}
+		foreach ( $this->entries as $entry ) {
+			if ( $path === $entry['path'] ) {
+				return true;
+			}
+		}
+		$contents = is_file( $path ) ? @file_get_contents( $path ) : false;
+		if ( is_file( $path ) && false === $contents ) {
+			return 'The temporary table pre-image could not be journaled.';
+		}
+		$this->entries[] = array( 'path' => $path, 'existed' => false !== $contents, 'contents' => false === $contents ? null : base64_encode( $contents ) );
+		return true;
+	}
+
+	/** A dropped temporary table ends its generation, so old row pre-images are invalid. */
+	public function discard_ephemeral( string $path ): void {
+		$this->entries = array_values( array_filter( $this->entries, static fn( array $entry ): bool => $path !== $entry['path'] ) );
+		foreach ( array_keys( $this->restore_observers ) as $observed_path ) {
+			if ( $observed_path === $path ) {
+				unset( $this->restore_observers[ $observed_path ] );
+			}
+		}
+	}
+
 	/** Start an autocommit-off transaction when a transactional table is read. */
 	public function access(): true|string {
 		return ! $this->active && ! $this->autocommit ? $this->begin() : true;

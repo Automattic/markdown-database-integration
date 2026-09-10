@@ -16,7 +16,8 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		string $state_root,
 		private WP_Markdown_Native_Table_Registry $registry,
 		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
-		?callable $core_registrar = null
+		?callable $core_registrar = null,
+		private ?WP_Markdown_Native_Temporary_Tables $temporary_tables = null
 	) {
 		$this->core_registrar = $core_registrar;
 		$root = realpath( $state_root );
@@ -66,10 +67,13 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		$definition = $definitions[ $suffix ];
 		// IF NOT EXISTS makes an existing table a successful no-op in MySQL.
 		$tolerates_existing = 1 === preg_match( '/^\s*CREATE\s+(?:TEMPORARY\s+)?TABLE\s+IF\s+NOT\s+EXISTS\b/i', $sql );
-		if ( null !== $this->registry->definition( $table ) ) {
+		if ( $temporary && null !== $this->temporary_tables && $this->temporary_tables->has( $table ) ) {
 			return $tolerates_existing
 				? WP_Markdown_Query_Result::schema_changed()
 				: $this->failure( 'table_exists', 'mdi-native cannot create a table that already exists.' );
+		}
+		if ( ! $temporary && null !== $this->registry->definition( $table ) ) {
+			return $tolerates_existing ? WP_Markdown_Query_Result::schema_changed() : $this->failure( 'table_exists', 'mdi-native cannot create a table that already exists.' );
 		}
 
 		// A core table is generated from WordPress itself, so creating it
@@ -77,14 +81,15 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		// file that would shadow the definition core already supplies. The
 		// name identifies it, because the release being installed states its
 		// own column list and that varies independently of canonical form.
-		if ( WP_Markdown_Native_Schema_Catalog::is_core_table( $suffix ) ) {
+		if ( ! $temporary && WP_Markdown_Native_Schema_Catalog::is_core_table( $suffix ) ) {
 			if ( null === $this->core_registrar || true !== ( $this->core_registrar )( $suffix ) ) {
 				return $this->failure( 'unsupported_schema', 'mdi-native cannot create the requested core table.' );
 			}
 			return WP_Markdown_Query_Result::schema_changed();
 		}
 
-		$directory = $this->schema_directory();
+		$root = $temporary && null !== $this->temporary_tables ? $this->temporary_tables->root() : $this->state_root;
+		$directory = $this->schema_directory( $root );
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
@@ -98,7 +103,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 
 		try {
 			$path = $directory . '/' . $suffix . '.sql';
-			if ( file_exists( $path ) || is_link( $path ) || null !== $this->registry->definition( $table ) ) {
+			if ( file_exists( $path ) || is_link( $path ) || ( ! $temporary && null !== $this->registry->definition( $table ) ) ) {
 				return $tolerates_existing
 					? WP_Markdown_Query_Result::schema_changed()
 					: $this->failure( 'table_exists', 'mdi-native cannot create a table that already exists.' );
@@ -112,14 +117,17 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			} catch ( InvalidArgumentException ) {
 				return $this->failure( 'unsupported_schema', 'mdi-native cannot compile the requested table definition.' );
 			}
-			if ( null === $schema ) {
+			if ( $temporary && null !== $this->temporary_tables ) {
+				if ( null === $schema ) {
+					$this->registry->shadow( $table, null, null, $definition );
+				} else {
+					$this->registry->shadow( $table, $schema, new WP_Markdown_Native_JSON_Snapshot_Provider( $root, $schema, $suffix . '.json' ), $definition );
+				}
+				$this->temporary_tables->add( $table );
+			} elseif ( null === $schema ) {
 				$this->registry->register_definition( $table, $definition );
 			} else {
-				$this->registry->register(
-					$table,
-					$schema,
-					new WP_Markdown_Native_JSON_Snapshot_Provider( $this->state_root, $schema, $suffix . '.json' )
-				);
+				$this->registry->register( $table, $schema, new WP_Markdown_Native_JSON_Snapshot_Provider( $root, $schema, $suffix . '.json' ) );
 			}
 			return WP_Markdown_Query_Result::schema_changed();
 		} finally {
@@ -260,6 +268,23 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		// Core tables are structural, not plugin state, so they are never dropped.
 		if ( isset( WP_Markdown_Native_Schema_Catalog::definitions()[ $suffix ] ) ) {
 			return $this->failure( 'unsupported_schema', 'mdi-native cannot drop a core table.' );
+		}
+		if ( $temporary ) {
+			if ( null === $this->temporary_tables || ! $this->temporary_tables->has( $table ) ) {
+				return $tolerates_missing ? WP_Markdown_Query_Result::schema_changed() : $this->failure( 'unknown_table', 'mdi-native cannot drop a temporary table that does not exist.' );
+			}
+			$root = $this->temporary_tables->root();
+			if ( null !== $this->transactions ) {
+				$this->transactions->discard_ephemeral( $root . '/_tables/' . $suffix . '.json' );
+			}
+			@unlink( $root . '/_schema/' . $suffix . '.sql' );
+			@unlink( $root . '/_tables/' . $suffix . '.json' );
+			$this->temporary_tables->remove( $table );
+			$this->registry->unshadow( $table );
+			return WP_Markdown_Query_Result::schema_changed();
+		}
+		if ( null !== $this->temporary_tables && $this->temporary_tables->has( $table ) ) {
+			return $this->failure( 'temporary_table_shadowed', 'mdi-native cannot safely apply permanent DDL while a temporary table shadows that name.' );
 		}
 
 		$directory = $this->schema_directory();
@@ -679,13 +704,14 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		return null;
 	}
 
-	private function schema_directory(): string|WP_Markdown_Query_Result {
-		$path = $this->state_root . '/_schema';
+	private function schema_directory( ?string $root = null ): string|WP_Markdown_Query_Result {
+		$base_root = $root ?? $this->state_root;
+		$path = $base_root . '/_schema';
 		if ( ! file_exists( $path ) && ! @mkdir( $path, 0755 ) && ! is_dir( $path ) ) {
 			return $this->failure( 'schema_directory_failed', 'The canonical schema directory could not be created.' );
 		}
 		$root = realpath( $path );
-		if ( false === $root || ! is_dir( $root ) || is_link( $path ) || dirname( $root ) !== $this->state_root ) {
+		if ( false === $root || ! is_dir( $root ) || is_link( $path ) || dirname( $root ) !== $base_root ) {
 			return $this->failure( 'unsafe_schema_directory', 'The canonical schema directory is unavailable or unsafe.' );
 		}
 		return $root;

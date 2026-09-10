@@ -59,10 +59,14 @@ $ddl_survives_rollback = WP_Markdown_Native_Runtime_Factory::runtime( $root )->e
 $temporary_ddl = 'CREATE TEMPORARY TABLE wp_ddl_temporary (id bigint unsigned NOT NULL, PRIMARY KEY (id))';
 $runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
 $temporary_created = $runtime->execute( new WP_Markdown_Query_Request( $temporary_ddl ) );
+$temporary_inserted = $runtime->execute( new WP_Markdown_Query_Request( 'INSERT INTO wp_ddl_temporary (id) VALUES (1)' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
 $temporary_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_temporary' ) );
-$temporary_schema_rolled_back = ! file_exists( $root . '/_schema/ddl_temporary.sql' );
-$temporary_recreated = $runtime->execute( new WP_Markdown_Query_Request( $temporary_ddl ) );
+$temporary_rows_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_ddl_temporary' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
+$temporary_dropped = $runtime->execute( new WP_Markdown_Query_Request( 'DROP TEMPORARY TABLE wp_ddl_temporary' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
+$temporary_after_drop_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_temporary' ) );
 
 $checks = array(
 	'generic CREATE TABLE returns the WordPress DDL success shape' => true === $created->return_value()
@@ -83,10 +87,12 @@ $checks = array(
 	'persisted definitions restore introspection after a cold reload' => 'event_key' === ( $reloaded->wpdb_state()['last_result'][0]->Field ?? null ),
 	'table DDL implicitly commits and survives a later rollback' => true === $transactional_ddl->return_value()
 		&& 'id' === ( $ddl_survives_rollback->wpdb_state()['last_result'][0]->Field ?? null ),
-	'temporary DDL remains transactional and does not leave a stale registry entry' => true === $temporary_created->return_value()
-		&& false === $temporary_after_rollback->return_value()
-		&& true === $temporary_recreated->return_value()
-		&& $temporary_schema_rolled_back,
+	'temporary table DDL survives rollback while its transactional rows roll back' => true === $temporary_created->return_value()
+		&& 1 === $temporary_inserted->wpdb_state()['rows_affected']
+		&& 'id' === ( $temporary_after_rollback->wpdb_state()['last_result'][0]->Field ?? null )
+		&& array() === $temporary_rows_after_rollback->wpdb_state()['last_result'],
+	'DROP TEMPORARY TABLE survives rollback and refreshes the table registry' => true === $temporary_dropped->return_value()
+		&& false === $temporary_after_drop_rollback->return_value(),
 );
 
 $failed = false;

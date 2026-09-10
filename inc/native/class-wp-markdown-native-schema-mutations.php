@@ -34,8 +34,9 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one bounded CREATE TABLE statement.' );
 		}
-		// Unlike permanent DDL, CREATE TEMPORARY TABLE does not implicitly commit.
-		if ( null !== $this->transactions && 1 !== preg_match( '/^CREATE\s+TEMPORARY\s+TABLE\b/i', $sql ) ) {
+		$temporary = 1 === preg_match( '/^(?:CREATE|DROP)\s+TEMPORARY\s+TABLE\b/i', $sql );
+		// Temporary table DDL neither commits nor participates in transaction rollback.
+		if ( null !== $this->transactions && ! $temporary ) {
 			$committed = $this->transactions->commit();
 			if ( true !== $committed ) {
 				return $this->failure( 'transaction_commit_failed', $committed );
@@ -102,7 +103,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 					? WP_Markdown_Query_Result::schema_changed()
 					: $this->failure( 'table_exists', 'mdi-native cannot create a table that already exists.' );
 			}
-			$written = $this->write_schema( $path, $sql . ";\n", $table, $suffix, $request->table_prefix() );
+			$written = $this->write_schema( $path, $sql . ";\n", $table, $suffix, $request->table_prefix(), $temporary );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
@@ -243,6 +244,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		if ( 1 !== preg_match( '/^\s*DROP\s+(?:TEMPORARY\s+)?TABLE\s+(IF\s+EXISTS\s+)?`?([A-Za-z0-9_]+)`?\s*$/is', $sql, $matched ) ) {
 			return $this->failure( 'unsupported_schema', 'mdi-native supports one bounded DROP TABLE statement.' );
 		}
+		$temporary = 1 === preg_match( '/^\s*DROP\s+TEMPORARY\s+TABLE\b/i', $sql );
 		$tolerates_missing = '' !== trim( (string) $matched[1] );
 		$table = $matched[2];
 		$prefix = $request->table_prefix();
@@ -281,7 +283,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 					: $this->failure( 'unknown_table', 'mdi-native cannot drop a table it does not persist.' );
 			}
 			if ( is_file( $path ) && ! is_link( $path ) ) {
-				if ( null !== $this->transactions ) {
+				if ( null !== $this->transactions && ! $temporary ) {
 					$recorded = $this->record_schema( $path, $table, $suffix, $prefix );
 					if ( true !== $recorded ) {
 						return $this->failure( 'transaction_journal_failed', $recorded );
@@ -293,7 +295,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			}
 			$snapshot = $this->state_root . '/_tables/' . $suffix . '.json';
 			if ( is_file( $snapshot ) && ! is_link( $snapshot ) ) {
-				if ( null !== $this->transactions ) {
+				if ( null !== $this->transactions && ! $temporary ) {
 					$recorded = $this->transactions->record( $snapshot );
 					if ( true !== $recorded ) {
 						return $this->failure( 'transaction_journal_failed', $recorded );
@@ -689,10 +691,12 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		return $root;
 	}
 
-	private function write_schema( string $path, string $contents, string $table, string $suffix, string $prefix ): true|WP_Markdown_Query_Result {
-		$recorded = $this->record_schema( $path, $table, $suffix, $prefix );
-		if ( true !== $recorded ) {
-			return $this->failure( 'transaction_journal_failed', $recorded );
+	private function write_schema( string $path, string $contents, string $table, string $suffix, string $prefix, bool $temporary = false ): true|WP_Markdown_Query_Result {
+		if ( ! $temporary ) {
+			$recorded = $this->record_schema( $path, $table, $suffix, $prefix );
+			if ( true !== $recorded ) {
+				return $this->failure( 'transaction_journal_failed', $recorded );
+			}
 		}
 		return $this->publish( $path, $contents );
 	}

@@ -349,6 +349,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	private function execute_query_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
+		$hint_error = $this->validate_index_hints( $plan );
+		if ( null !== $hint_error ) {
+			return $hint_error;
+		}
 		if ( $allow_union && null !== $plan->union() ) {
 			return $this->execute_union( $plan );
 		}
@@ -2531,6 +2535,25 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 
 		return WP_Markdown_Query_Result::mutated( 0 );
+	}
+
+	/** Hints affect access strategy, not rows; validate names before using native planning. */
+	private function validate_index_hints( WP_Markdown_Native_Query_Plan $plan ): ?WP_Markdown_Query_Result {
+		foreach ( $plan->index_hints() as $hint ) {
+			$definition = $this->registry->definition( $hint['table'] );
+			if ( null === $definition ) {
+				return $this->failure( 'unsupported_table', 'mdi-native cannot validate an index hint for an unknown table.' );
+			}
+			$names = array_map( static fn( array $index ): string => strtolower( $index['name'] ), $definition['indexes'] ?? array() );
+			foreach ( $hint['indexes'] as $name ) {
+				$name = strtolower( $name );
+				$matches = in_array( $name, $names, true ) ? array( $name ) : array_values( array_filter( $names, static fn( string $index ): bool => str_starts_with( $index, $name ) ) );
+				if ( 1 !== count( $matches ) ) {
+					return $this->failure( 'unsupported_index_hint', 'mdi-native requires an existing, unambiguous index in a table hint.' );
+				}
+			}
+		}
+		return null === $plan->union() ? null : $this->validate_index_hints( $plan->union() );
 	}
 
 	private function dml_table( WP_Markdown_Query_Request $request ): ?string {

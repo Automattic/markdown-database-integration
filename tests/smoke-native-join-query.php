@@ -74,6 +74,9 @@ $query = 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr
 $plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $query );
 $result = $runtime->execute( new WP_Markdown_Query_Request( $query ) );
 $state = $result->wpdb_state();
+$hinted = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr FORCE INDEX (term_taxonomy_id) JOIN', $query ) ) );
+$bad_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr FORCE INDEX (missing_index) JOIN', $query ) ) );
+$joined_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tt ON', 'tt USE KEY FOR JOIN (PRIMARY) ON', $query ) ) );
 $missing = $runtime->execute( new WP_Markdown_Query_Request( str_replace( '=41', '=404', $query ) ) );
 $unbounded = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0, strpos( $query, ' WHERE' ) ) ) );
 $unindexed_filter = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0, strpos( $query, ' WHERE' ) ) . " WHERE tt.description = ''" ) );
@@ -213,6 +216,8 @@ $meta_registry->register( 'wp_postmeta', $postmeta_schema, new MDI_Native_Join_A
 $meta_result = ( new WP_Markdown_Native_Query_Runtime( $meta_registry ) )->execute( new WP_Markdown_Query_Request( $meta_query ) );
 
 $checks = array(
+	'validated source index hints preserve taxonomy JOIN results' => $hinted->succeeded() && $result->corpus_result() === $hinted->corpus_result() && $joined_hint->succeeded() && $result->corpus_result() === $joined_hint->corpus_result(),
+	'unknown hinted indexes fail instead of silently executing' => ! $bad_hint->succeeded() && 'unsupported_index_hint' === ( $bad_hint->diagnostic()['reason'] ?? null ),
 	'tokenizer and parser lower aliases and chained equality JOINs into typed contracts' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'tr' === $plan->table_alias()
 		&& array( 'tr', 'tt', 't' ) === $plan->projection_sources()

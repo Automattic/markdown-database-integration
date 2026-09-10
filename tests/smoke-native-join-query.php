@@ -74,6 +74,11 @@ $query = 'SELECT tr.object_id, tt.taxonomy, t.slug FROM wp_term_relationships tr
 $plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $query );
 $result = $runtime->execute( new WP_Markdown_Query_Request( $query ) );
 $state = $result->wpdb_state();
+$aliased = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr.object_id, tt.taxonomy, t.slug', 'tr.object_id AS object_identity, tt.taxonomy, t.slug AS term_slug', $query ) ) );
+$expected_aliases = $result->corpus_result();
+$expected_aliases['rows'] = array_map( static fn( array $row ): array => array( 'object_identity' => $row['object_id'], 'taxonomy' => $row['taxonomy'], 'term_slug' => $row['slug'] ), $expected_aliases['rows'] );
+$expected_aliases['columns'][0]['name'] = 'object_identity';
+$expected_aliases['columns'][2]['name'] = 'term_slug';
 $hinted = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr FORCE INDEX (term_taxonomy_id) JOIN', $query ) ) );
 $bad_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr FORCE INDEX (missing_index) JOIN', $query ) ) );
 $joined_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tt ON', 'tt USE KEY FOR JOIN (PRIMARY) ON', $query ) ) );
@@ -219,6 +224,7 @@ $meta_registry->register( 'wp_postmeta', $postmeta_schema, new MDI_Native_Join_A
 $meta_result = ( new WP_Markdown_Native_Query_Runtime( $meta_registry ) )->execute( new WP_Markdown_Query_Request( $meta_query ) );
 
 $checks = array(
+	'plain column aliases preserve joined row order and source metadata' => $aliased->succeeded() && $expected_aliases === $aliased->corpus_result(),
 	'validated source index hints preserve taxonomy JOIN results' => $hinted->succeeded() && $result->corpus_result() === $hinted->corpus_result() && $joined_hint->succeeded() && $result->corpus_result() === $joined_hint->corpus_result(),
 	'unknown hinted indexes fail instead of silently executing' => ! $bad_hint->succeeded() && 'unsupported_index_hint' === ( $bad_hint->diagnostic()['reason'] ?? null ),
 	'empty USE hints preserve rows while conflicting USE and FORCE hints fail' => $empty_use_hint->succeeded() && $result->corpus_result() === $empty_use_hint->corpus_result() && ! $mixed_hints->succeeded(),

@@ -761,7 +761,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() === $scalar_projection ) {
 			$columns[] = array( 'name' => $group_name, 'table' => $table, 'type' => $schema->column( $column )->type() );
 		} else {
-			foreach ( $scalar_projection as $scalar ) { $columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 ); }
+			foreach ( $scalar_projection as $scalar ) { $columns[ $scalar['position'] ] = $this->scalar_projection_column( $scalar, $table, $schema ); }
 			ksort( $columns );
 			$columns = array_values( $columns );
 		}
@@ -1672,9 +1672,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$columns[] = array( 'name' => $column, 'table' => $sources[ $source ]['table'], 'type' => $sources[ $source ]['schema']->column( $column )->type() );
 		}
 		foreach ( $plan->scalar_projection() as $scalar ) {
-			$columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 );
+			$source = $scalar['expression']->source() ?? $plan->table_alias() ?? $plan->table();
+			$metadata = $this->scalar_projection_column( $scalar, $sources[ $source ]['table'], $sources[ $source ]['schema'] );
+			array_splice( $columns, $scalar['position'], 0, array( $metadata ) );
 		}
-		ksort( $columns );
 		foreach ( $aggregates as $aggregate ) {
 			$columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 8 );
 		}
@@ -2119,13 +2120,23 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			$projection
 		);
 		$scalar_columns = array();
-		foreach ( $scalar_projection as $scalar ) { $scalar_columns[ $scalar['position'] ] = array( 'name' => $scalar['alias'], 'table' => '', 'type' => 253 ); }
+		foreach ( $scalar_projection as $scalar ) { $scalar_columns[ $scalar['position'] ] = $this->scalar_projection_column( $scalar, $table, $schema ); }
 		$columns = array();
 		$total_columns = count( $regular ) + count( $scalar_columns );
 		for ( $position = 0; $position < $total_columns; ++$position ) {
 			$columns[] = $scalar_columns[ $position ] ?? array_shift( $regular );
 		}
 		return WP_Markdown_Query_Result::selected( $rows, $columns );
+	}
+
+	/** A bare column alias keeps the source column's type and table metadata. */
+	private function scalar_projection_column( array $scalar, string $table, WP_Markdown_Native_Table_Schema $schema ): array {
+		$expression = $scalar['expression'];
+		return array(
+			'name' => $scalar['alias'],
+			'table' => 'column' === $expression->kind() ? $table : '',
+			'type' => 'column' === $expression->kind() ? $schema->column( $expression->column() )->type() : 253,
+		);
 	}
 
 	/** @param array<string,mixed> $source @param array<int,string> $projection @return array<string,string|null> */

@@ -563,7 +563,16 @@ final class WP_Markdown_Native_Select_AST_Parser {
 					);
 					continue;
 				}
-				$projection[] = $this->identifier();
+				$column = $this->identifier();
+				if ( $this->match_keyword( 'AS' ) ) {
+					$scalar_projection[] = array(
+						'expression' => new WP_Markdown_Native_SQL_Scalar_Expression( 'column', $column ),
+						'alias' => $this->unqualified_identifier()->name(),
+						'position' => count( $projection ) + count( $scalar_projection ),
+					);
+				} else {
+					$projection[] = $column;
+				}
 			} while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) );
 		}
 

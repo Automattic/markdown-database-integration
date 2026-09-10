@@ -838,15 +838,22 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$alias = null;
 			if ( $this->match_keyword( 'AS' ) ) {
 				$alias = $this->unqualified_identifier();
-			} elseif ( $this->matches_identifier() && ! in_array( strtoupper( (string) $this->current()->value() ), array( 'USE', 'FORCE', 'IGNORE' ), true ) && ( ! $base || ! $this->is_on() ) ) {
+			} elseif ( $this->matches_identifier() && ( WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER === $this->current()->type() || ! in_array( strtoupper( (string) $this->current()->value() ), array( 'USE', 'FORCE', 'IGNORE' ), true ) ) && ( ! $base || ! $this->is_on() ) ) {
 				$alias = $this->unqualified_identifier();
 			}
 			if ( ! $base && null === $alias ) {
 				$alias = $table;
 			}
 			$hints = array();
+			$access_mode = null;
 			while ( WP_Markdown_Native_SQL_Token::WORD === $this->current()->type() && in_array( strtoupper( (string) $this->current()->value() ), array( 'USE', 'FORCE', 'IGNORE' ), true ) ) {
 				$mode = strtoupper( (string) $this->current()->value() );
+				if ( 'IGNORE' !== $mode ) {
+					if ( null !== $access_mode && $access_mode !== $mode ) {
+						$this->unsupported( $this->current() );
+					}
+					$access_mode = $mode;
+				}
 				++$this->current;
 				if ( WP_Markdown_Native_SQL_Token::WORD !== $this->current()->type() || ! in_array( strtoupper( (string) $this->current()->value() ), array( 'INDEX', 'KEY' ), true ) ) {
 					$this->unsupported( $this->current() );

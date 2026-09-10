@@ -77,6 +77,9 @@ $state = $result->wpdb_state();
 $hinted = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr FORCE INDEX (term_taxonomy_id) JOIN', $query ) ) );
 $bad_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr FORCE INDEX (missing_index) JOIN', $query ) ) );
 $joined_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tt ON', 'tt USE KEY FOR JOIN (PRIMARY) ON', $query ) ) );
+$empty_use_hint = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr USE INDEX () JOIN', $query ) ) );
+$mixed_hints = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr JOIN', 'tr USE INDEX (PRIMARY) FORCE INDEX (term_taxonomy_id) JOIN', $query ) ) );
+$union_hint = $runtime->execute( new WP_Markdown_Query_Request( "SELECT object_id FROM wp_term_relationships WHERE object_id=41 UNION SELECT object_id FROM wp_term_relationships FORCE INDEX (missing_index) WHERE object_id=99" ) );
 $missing = $runtime->execute( new WP_Markdown_Query_Request( str_replace( '=41', '=404', $query ) ) );
 $unbounded = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0, strpos( $query, ' WHERE' ) ) ) );
 $unindexed_filter = $runtime->execute( new WP_Markdown_Query_Request( substr( $query, 0, strpos( $query, ' WHERE' ) ) . " WHERE tt.description = ''" ) );
@@ -218,6 +221,8 @@ $meta_result = ( new WP_Markdown_Native_Query_Runtime( $meta_registry ) )->execu
 $checks = array(
 	'validated source index hints preserve taxonomy JOIN results' => $hinted->succeeded() && $result->corpus_result() === $hinted->corpus_result() && $joined_hint->succeeded() && $result->corpus_result() === $joined_hint->corpus_result(),
 	'unknown hinted indexes fail instead of silently executing' => ! $bad_hint->succeeded() && 'unsupported_index_hint' === ( $bad_hint->diagnostic()['reason'] ?? null ),
+	'empty USE hints preserve rows while conflicting USE and FORCE hints fail' => $empty_use_hint->succeeded() && $result->corpus_result() === $empty_use_hint->corpus_result() && ! $mixed_hints->succeeded(),
+	'UNION branches retain index-hint validation' => ! $union_hint->succeeded() && 'unsupported_index_hint' === ( $union_hint->diagnostic()['reason'] ?? null ),
 	'tokenizer and parser lower aliases and chained equality JOINs into typed contracts' => $plan instanceof WP_Markdown_Native_Query_Plan
 		&& 'tr' === $plan->table_alias()
 		&& array( 'tr', 'tt', 't' ) === $plan->projection_sources()

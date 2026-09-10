@@ -35,7 +35,9 @@ $runtime->execute( new WP_Markdown_Query_Request( $ddl ) );
 $first = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO `wp_plugin_jobs` (`job_id`, `hook`, `payload`) VALUES (0, 'first_job', NULL)" ) );
 $second = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_jobs (job_id, hook, priority) VALUES (8, 'second_job', 2);" ) );
 $duplicate = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_jobs (job_id, hook) VALUES (8, 'duplicate_job')" ) );
+$runtime->execute( new WP_Markdown_Query_Request( "SET sql_mode = 'STRICT_TRANS_TABLES'" ) );
 $missing = $runtime->execute( new WP_Markdown_Query_Request( 'INSERT INTO wp_plugin_jobs (priority) VALUES (3)' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "SET sql_mode = ''" ) );
 $multi = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_plugin_jobs (hook) VALUES ('third'); INSERT INTO wp_plugin_jobs (hook) VALUES ('fourth')" ) );
 $selected = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT * FROM wp_plugin_jobs ORDER BY job_id ASC' ) );
 $reloaded = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( "SELECT hook, priority FROM wp_plugin_jobs WHERE job_id IN (1, 8) ORDER BY job_id ASC" ) );
@@ -66,7 +68,7 @@ $checks = array(
 	'persisted rows retain schema order and typed values' => array( '1', '8' ) === array_map( static fn( object $row ): string => $row->job_id, $selected->wpdb_state()['last_result'] )
 		&& '10' === $selected->wpdb_state()['last_result'][0]->priority
 		&& null === $selected->wpdb_state()['last_result'][0]->payload,
-	'unique conflicts and missing required columns fail without mutation' => false === $duplicate->return_value()
+	'unique conflicts and strict-mode missing required columns fail without mutation' => false === $duplicate->return_value()
 		&& 'duplicate_key' === ( $duplicate->diagnostic()['reason'] ?? null )
 		&& false === $missing->return_value()
 		&& 'missing_required_column' === ( $missing->diagnostic()['reason'] ?? null )

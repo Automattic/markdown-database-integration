@@ -230,7 +230,8 @@ final class WP_Markdown_Native_Schema_Introspection {
 	public function __construct(
 		private readonly WP_Markdown_Native_Table_Registry $registry,
 		private readonly WP_Markdown_Native_Schema_Introspection_Parser $parser = new WP_Markdown_Native_Schema_Introspection_Parser(),
-		private readonly ?string $database_name = null
+		private readonly ?string $database_name = null,
+		private readonly ?WP_Markdown_Native_SQL_Session $session = null
 	) {}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -560,7 +561,7 @@ final class WP_Markdown_Native_Schema_Introspection {
 			? array(
 				'version' => WP_Markdown_Native_Schema_Catalog::SERVER_VERSION,
 				'version_comment' => 'Markdown Database Integration native engine',
-				'sql_mode' => '',
+				'sql_mode' => $this->session?->sql_mode() ?? '',
 				'character_set_server' => 'utf8mb4',
 				'collation_server' => 'utf8mb4_general_ci',
 				'foreign_key_checks' => 'ON',

@@ -56,10 +56,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		private ?WP_Markdown_Native_Post_Mutation_Runtime $post_mutations = null,
 		private int $correlated_subquery_limit = self::MAX_CORRELATED_SUBQUERY_EVALUATIONS,
 		private ?WP_Markdown_Native_Advisory_Locks $advisory_locks = null,
-		?string $database_name = null
+		?string $database_name = null,
+		private WP_Markdown_Native_SQL_Session $session = new WP_Markdown_Native_SQL_Session()
 	) {
 		$this->database_name = $database_name;
-		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry, database_name: $database_name );
+		$this->schema_introspection = new WP_Markdown_Native_Schema_Introspection( $registry, database_name: $database_name, session: $this->session );
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
@@ -99,6 +100,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$this->correlated_subquery_cache = array();
 		$this->correlated_subquery_failure = null;
 		$this->statement_now = gmdate( 'Y-m-d H:i:s' );
+		$session_result = $this->session->execute( $request->sql() );
+		if ( null !== $session_result ) {
+			return $session_result;
+		}
 		$transaction_control = WP_Markdown_SQL_Classifier::transaction_control( $request->sql() );
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
@@ -319,6 +324,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	/** Release this logical connection's root-scoped advisory locks. */
 	public function close(): void {
 		$this->advisory_locks?->close();
+		$this->session->reset();
 	}
 
 	private function advisory_lock_query( string $sql ): ?WP_Markdown_Query_Result {

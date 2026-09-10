@@ -21,7 +21,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Table_Insert_Parser $parser = new WP_Markdown_Native_Table_Insert_Parser(),
 		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
-		private ?WP_Markdown_Native_Temporary_Tables $temporary_tables = null
+		private ?WP_Markdown_Native_Temporary_Tables $temporary_tables = null,
+		private WP_Markdown_Native_SQL_Session $session = new WP_Markdown_Native_SQL_Session()
 	) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
@@ -375,6 +376,25 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( true === ( $column['nullable'] ?? false ) ) {
 				$row[ $name ] = null;
 				continue;
+			}
+			if ( ! $this->session->strict() ) {
+				$type = strtolower( $column['type'] ?? '' );
+				$implicit = match ( $type ) {
+					'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint', 'decimal', 'numeric', 'float', 'double', 'real', 'year' => '0',
+					'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'tinyblob', 'blob', 'mediumblob', 'longblob', 'varbinary' => '',
+					'date' => '0000-00-00',
+					'datetime', 'timestamp' => '0000-00-00 00:00:00',
+					'time' => '00:00:00',
+					default => null,
+				};
+				if ( null !== $implicit ) {
+					$row[ $name ] = $implicit;
+					$this->session->warn_missing_default( $name );
+					continue;
+				}
+			}
+			if ( $this->session->strict() ) {
+				return WP_Markdown_Query_Result::failure( array( 'code' => 1364, 'reason' => 'missing_required_column', 'message' => "Field '{$name}' doesn't have a default value" ) );
 			}
 			return $this->failure( 'missing_required_column', 'The INSERT omits a required column without a deterministic default.' );
 		}

@@ -27,20 +27,19 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 	}
 
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		// MySQL commits an open transaction before every table DDL statement.
-		// Otherwise a later rollback would erase a schema that MySQL retains.
-		if ( null !== $this->transactions ) {
-			$committed = $this->transactions->commit();
-			if ( true !== $committed ) {
-				return $this->failure( 'transaction_commit_failed', $committed );
-			}
-		}
 		$sql = trim( $request->sql() );
 		if ( str_ends_with( $sql, ';' ) ) {
 			$sql = rtrim( substr( $sql, 0, -1 ) );
 		}
 		if ( '' === $sql || WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $sql ) ) {
 			return $this->failure( 'unsupported_grammar', 'mdi-native requires one bounded CREATE TABLE statement.' );
+		}
+		// Unlike permanent DDL, CREATE TEMPORARY TABLE does not implicitly commit.
+		if ( null !== $this->transactions && 1 !== preg_match( '/^CREATE\s+TEMPORARY\s+TABLE\b/i', $sql ) ) {
+			$committed = $this->transactions->commit();
+			if ( true !== $committed ) {
+				return $this->failure( 'transaction_commit_failed', $committed );
+			}
 		}
 		if ( 1 === preg_match( '/^\s*ALTER\s+TABLE\b/i', $sql ) ) {
 			return $this->execute_alter( $request, $sql );
@@ -103,7 +102,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 					? WP_Markdown_Query_Result::schema_changed()
 					: $this->failure( 'table_exists', 'mdi-native cannot create a table that already exists.' );
 			}
-			$written = $this->write( $path, $sql . ";\n" );
+			$written = $this->write_schema( $path, $sql . ";\n", $table, $suffix, $request->table_prefix() );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
@@ -217,7 +216,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				return $reconciled;
 			}
 
-			$written = $this->write( $path, $rewritten );
+			$written = $this->write_schema( $path, $rewritten, $table, $suffix, $prefix );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
@@ -283,7 +282,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			}
 			if ( is_file( $path ) && ! is_link( $path ) ) {
 				if ( null !== $this->transactions ) {
-					$recorded = $this->transactions->record( $path );
+					$recorded = $this->record_schema( $path, $table, $suffix, $prefix );
 					if ( true !== $recorded ) {
 						return $this->failure( 'transaction_journal_failed', $recorded );
 					}
@@ -398,7 +397,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				} catch ( InvalidArgumentException ) {
 					return $this->failure( 'unsupported_schema', 'The altered table definition could not be compiled.' );
 				}
-				$written = $this->write( $path, $rewritten );
+				$written = $this->write_schema( $path, $rewritten, $table, $suffix, $this->table_prefix_from( $table, $suffix ) );
 				if ( $written instanceof WP_Markdown_Query_Result ) {
 					return $written;
 				}
@@ -488,7 +487,7 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			}
 			$definition = $compiled[ $suffix ];
 			$schema = WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition );
-			$written = $this->write( $path, $rewritten );
+			$written = $this->write_schema( $path, $rewritten, $table, $suffix, $this->table_prefix_from( $table, $suffix ) );
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
@@ -690,6 +689,41 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		return $root;
 	}
 
+	private function write_schema( string $path, string $contents, string $table, string $suffix, string $prefix ): true|WP_Markdown_Query_Result {
+		$recorded = $this->record_schema( $path, $table, $suffix, $prefix );
+		if ( true !== $recorded ) {
+			return $this->failure( 'transaction_journal_failed', $recorded );
+		}
+		return $this->publish( $path, $contents );
+	}
+
+	/** Rebuild the registry after a transaction restores a schema pre-image. */
+	private function record_schema( string $path, string $table, string $suffix, string $prefix ): true|string {
+		return null === $this->transactions
+			? true
+			: $this->transactions->record( $path, function () use ( $path, $table, $suffix, $prefix ): void {
+				$this->registry->unregister( $table );
+				if ( ! is_file( $path ) || is_link( $path ) ) {
+					return;
+				}
+				try {
+					$definitions = WP_Markdown_Native_Schema_Catalog::compile( (string) file_get_contents( $path ), array( $prefix ) );
+					$definition = $definitions[ $suffix ] ?? null;
+					$schema = is_array( $definition ) ? WP_Markdown_Native_Schema_Catalog::indexed_snapshot_schema( $definition ) : null;
+				} catch ( InvalidArgumentException ) {
+					return;
+				}
+				if ( ! is_array( $definition ) ) {
+					return;
+				}
+				if ( null === $schema ) {
+					$this->registry->register_definition( $table, $definition );
+					return;
+				}
+				$this->registry->register( $table, $schema, new WP_Markdown_Native_JSON_Snapshot_Provider( $this->state_root, $schema, $suffix . '.json' ) );
+			} );
+	}
+
 	private function write( string $path, string $contents ): true|WP_Markdown_Query_Result {
 		if ( null !== $this->transactions ) {
 			$recorded = $this->transactions->record( $path );
@@ -697,6 +731,10 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				return $this->failure( 'transaction_journal_failed', $recorded );
 			}
 		}
+		return $this->publish( $path, $contents );
+	}
+
+	private function publish( string $path, string $contents ): true|WP_Markdown_Query_Result {
 		try {
 			$temp = $path . '.tmp-' . getmypid() . '-' . bin2hex( random_bytes( 8 ) );
 		} catch ( Throwable ) {

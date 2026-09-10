@@ -56,6 +56,13 @@ $transactional_ddl = $runtime->execute( new WP_Markdown_Query_Request( "CREATE T
 	. ') ENGINE=InnoDB DEFAULT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_520_ci' ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
 $ddl_survives_rollback = WP_Markdown_Native_Runtime_Factory::runtime( $root )->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_commit' ) );
+$temporary_ddl = 'CREATE TEMPORARY TABLE wp_ddl_temporary (id bigint unsigned NOT NULL, PRIMARY KEY (id))';
+$runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
+$temporary_created = $runtime->execute( new WP_Markdown_Query_Request( $temporary_ddl ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
+$temporary_after_rollback = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_ddl_temporary' ) );
+$temporary_schema_rolled_back = ! file_exists( $root . '/_schema/ddl_temporary.sql' );
+$temporary_recreated = $runtime->execute( new WP_Markdown_Query_Request( $temporary_ddl ) );
 
 $checks = array(
 	'generic CREATE TABLE returns the WordPress DDL success shape' => true === $created->return_value()
@@ -76,6 +83,10 @@ $checks = array(
 	'persisted definitions restore introspection after a cold reload' => 'event_key' === ( $reloaded->wpdb_state()['last_result'][0]->Field ?? null ),
 	'table DDL implicitly commits and survives a later rollback' => true === $transactional_ddl->return_value()
 		&& 'id' === ( $ddl_survives_rollback->wpdb_state()['last_result'][0]->Field ?? null ),
+	'temporary DDL remains transactional and does not leave a stale registry entry' => true === $temporary_created->return_value()
+		&& false === $temporary_after_rollback->return_value()
+		&& true === $temporary_recreated->return_value()
+		&& $temporary_schema_rolled_back,
 );
 
 $failed = false;

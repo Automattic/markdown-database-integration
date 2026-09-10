@@ -147,12 +147,14 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		$mutation = null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
 		$canonical_admitted = null !== $this->transactions && ! $this->is_advisory_lock_statement( $request->sql() );
 		if ( $canonical_admitted ) {
+			$transactional_view = $this->transactions->is_in_transaction();
 			$locked = $this->transactions->begin_write();
 			if ( true !== $locked ) {
 				return $this->failure( $mutation ? 'transaction_write_lock_failed' : 'transaction_read_lock_failed', $locked );
 			}
-			if ( $this->transactions->waited_for_write_lock() ) {
-				// A process that waited may hold snapshots loaded before the writer committed.
+			if ( ! $transactional_view || $this->transactions->waited_for_write_lock() ) {
+				// Autocommit requests start a fresh canonical view. A transaction that
+				// waited also cannot retain snapshots from before the prior commit.
 				$this->registry->forget_snapshots();
 			}
 		}
@@ -2628,7 +2630,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( true !== $outcome ) {
 			return $this->failure( 'transaction_control_failed', $outcome );
 		}
-		if ( $this->transactions->waited_for_write_lock() ) {
+		if ( $this->transactions->waited_for_write_lock() || in_array( $control['action'], array( 'begin', 'autocommit_0' ), true ) ) {
 			$this->registry->forget_snapshots();
 		}
 		if ( 'commit_chain' === $control['action'] || 'rollback_chain' === $control['action'] ) {

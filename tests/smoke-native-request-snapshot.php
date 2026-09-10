@@ -56,7 +56,7 @@ $checks = array(
 		&& '1' === (string) ( $after_append_count->wpdb_state()['last_result'][0]->{'COUNT(*)'} ?? '' ),
 	'a transaction reads its own generic-table write' => 'temporary' === (string) ( $transaction_rows[0]->label ?? '' ),
 	'rollback invalidates and reloads the restored snapshot' => 'one' === (string) ( $rollback_rows[0]->label ?? '' ),
-	'external changes do not alter a loaded request snapshot' => 'one' === (string) ( $stable_rows[0]->label ?? '' ),
+	'an autocommit request refreshes its snapshot at the next canonical admission' => 'external' === (string) ( $stable_rows[0]->label ?? '' ),
 	'a new request observes the externally published snapshot' => 'external' === (string) ( $fresh_rows[0]->label ?? '' ),
 );
 

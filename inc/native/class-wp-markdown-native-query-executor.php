@@ -178,7 +178,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		$start = WP_Markdown_Operation_Profile::begin();
 		try {
-			$plan = $this->parser->parse( $request->sql() );
+			$plan = $this->parser->parse( $request->sql(), fn( string $table ): array => array_keys( $this->registry->definition( $table )['columns'] ?? array() ) );
 		} finally {
 			WP_Markdown_Operation_Profile::end( 'select_parse', $start );
 		}

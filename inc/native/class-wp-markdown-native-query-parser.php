@@ -10,14 +10,14 @@ final class WP_Markdown_Native_Query_Parser {
 		private WP_Markdown_Native_SQL_Tokenizer $tokenizer = new WP_Markdown_Native_SQL_Tokenizer()
 	) {}
 
-	public function parse( string $sql ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
+	public function parse( string $sql, ?callable $table_columns = null ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
 		self::trace_runtime_phase( 'parser', $sql );
 		$ast = $this->parse_ast( $sql );
 		if ( $ast instanceof WP_Markdown_Query_Result ) {
 			return $ast;
 		}
 		try {
-			return $this->lower( $ast );
+			return $this->lower( $ast, array(), $table_columns );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return $this->failure( $error->reason(), $error->getMessage(), $error->sql_offset() );
 		}
@@ -113,7 +113,7 @@ final class WP_Markdown_Native_Query_Parser {
 	}
 
 	/** @param array<string,true> $outer_sources */
-	public function lower( WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows $ast, array $outer_sources = array() ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
+	public function lower( WP_Markdown_Native_SQL_Select|WP_Markdown_Native_SQL_Found_Rows $ast, array $outer_sources = array(), ?callable $table_columns = null ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
 		if ( $ast instanceof WP_Markdown_Native_SQL_Found_Rows ) {
 			return new WP_Markdown_Native_Found_Rows_Plan();
 		}
@@ -123,6 +123,7 @@ final class WP_Markdown_Native_Query_Parser {
 			return $this->failure( 'unsupported_select_modifier', 'DISTINCT requires a row projection.', $ast->table()->sql_offset() );
 		}
 		$base_source = array() === $ast->joins() ? null : ( $ast->alias()?->name() ?? $ast->table()->name() );
+		$bindings = null === $table_columns || null === $base_source ? array() : $this->column_bindings( $ast, $table_columns );
 		$flat_source = array() === $ast->joins() ? ( $ast->alias()?->name() ?? $ast->table()->name() ) : null;
 		$child_outer_sources = $outer_sources;
 		$child_outer_sources[ $ast->alias()?->name() ?? $ast->table()->name() ] = true;
@@ -132,21 +133,21 @@ final class WP_Markdown_Native_Query_Parser {
 			: array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): string => $column->name(), $ast->projection() );
 		$scalar_projection = array_map(
 			fn( array $scalar ): array => array(
-				'expression' => $this->lower_scalar_expression( $scalar['expression'], $base_source, $flat_source ),
+				'expression' => $this->lower_scalar_expression( $scalar['expression'], $base_source, $flat_source, $bindings ),
 				'alias'      => $scalar['alias'],
 				'position'   => $scalar['position'],
 			),
 			$ast->scalar_projection()
 		);
-		$scalar_predicates = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, $base_source, $flat_source ), $ast->scalar_predicates() );
-		$boolean_predicate = null === $ast->boolean_predicate() ? null : new WP_Markdown_Native_Query_Boolean_Predicate( array_map( function ( array $group ) use ( $base_source, $flat_source, $child_outer_sources ): array {
-			return array_map( function ( WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate $predicate ) use ( $base_source, $flat_source, $child_outer_sources ): WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate|WP_Markdown_Native_Query_Subquery {
-				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { return $this->lower_scalar_predicate( $predicate, $base_source, $flat_source ); }
-				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) { return $this->lower_subquery( $predicate, $child_outer_sources ); }
-				return $this->lower_predicate( $predicate, $base_source );
+		$scalar_predicates = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, $base_source, $flat_source, $bindings ), $ast->scalar_predicates() );
+		$boolean_predicate = null === $ast->boolean_predicate() ? null : new WP_Markdown_Native_Query_Boolean_Predicate( array_map( function ( array $group ) use ( $base_source, $flat_source, $child_outer_sources, $bindings, $table_columns ): array {
+			return array_map( function ( WP_Markdown_Native_SQL_Predicate|WP_Markdown_Native_SQL_Scalar_Predicate|WP_Markdown_Native_SQL_Subquery_Predicate $predicate ) use ( $base_source, $flat_source, $child_outer_sources, $bindings, $table_columns ): WP_Markdown_Native_Query_Predicate|WP_Markdown_Native_Query_Scalar_Predicate|WP_Markdown_Native_Query_Subquery {
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate ) { return $this->lower_scalar_predicate( $predicate, $base_source, $flat_source, $bindings ); }
+				if ( $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate ) { return $this->lower_subquery( $predicate, $child_outer_sources, $table_columns, $bindings ); }
+				return $this->lower_predicate( $predicate, $base_source, $bindings );
 			}, $group );
 		}, $ast->boolean_predicate()->groups() ) );
-		$scalar_having = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, null, $flat_source ), $ast->scalar_having() );
+		$scalar_having = array_map( fn( WP_Markdown_Native_SQL_Scalar_Predicate $predicate ): WP_Markdown_Native_Query_Scalar_Predicate => $this->lower_scalar_predicate( $predicate, null, $flat_source, $bindings ), $ast->scalar_having() );
 		$seen = array();
 		foreach ( $ast->projection() as $column ) {
 			$key = ( $column->qualifier() ?? '' ) . '.' . $column->name();
@@ -168,26 +169,26 @@ final class WP_Markdown_Native_Query_Parser {
 
 		$predicates = array();
 		$subqueries = array();
-		foreach ( $ast->subqueries() as $subquery_predicate ) { $subqueries[] = $this->lower_subquery( $subquery_predicate, $child_outer_sources ); }
+		foreach ( $ast->subqueries() as $subquery_predicate ) { $subqueries[] = $this->lower_subquery( $subquery_predicate, $child_outer_sources, $table_columns, $bindings ); }
 		foreach ( $ast->predicates() as $predicate ) {
-			$predicates[] = $this->lower_predicate( $predicate, $base_source );
+			$predicates[] = $this->lower_predicate( $predicate, $base_source, $bindings );
 		}
 		$joins = array();
 		foreach ( $ast->joins() as $join ) {
-			$join_derived = null === $join->derived() ? null : $this->lower( $join->derived() );
+			$join_derived = null === $join->derived() ? null : $this->lower( $join->derived(), array(), $table_columns );
 			if ( null !== $join_derived && ! $join_derived instanceof WP_Markdown_Native_Query_Plan ) {
 				return $join_derived;
 			}
 			$joins[] = new WP_Markdown_Native_Query_Join(
 				$join->table()->name(),
 				$join->alias()->name(),
-				$join->left()?->qualifier(),
+				$this->column_source( $join->left(), null, $bindings ),
 				$join->left()?->name(),
-				$join->right()?->qualifier(),
+				$this->column_source( $join->right(), null, $bindings ),
 				$join->right()?->name(),
 				$join->is_outer(),
 				array_map(
-					fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $join->alias()->name() ),
+					fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $join->alias()->name(), $bindings ),
 					$join->on_predicates()
 				),
 				$join_derived
@@ -228,33 +229,33 @@ final class WP_Markdown_Native_Query_Parser {
 			fn( array $item ): array => array(
 				'column'     => $item['column']->name(),
 				'descending' => $item['descending'],
-				'source'     => in_array( $item['column']->name(), $aggregate_aliases, true ) ? null : ( $item['column']->qualifier() ?? $base_source ),
+				'source'     => in_array( $item['column']->name(), $aggregate_aliases, true ) ? null : $this->column_source( $item['column'], $base_source, $bindings ),
 				'numeric'    => $item['numeric'] ?? false,
 				'like'       => $item['like'] ?? null,
 				'field'      => $item['field'] ?? null,
 				'case'       => null === ( $item['case'] ?? null ) ? null : array(
 					'branches' => array_map(
 						fn( array $branch ): array => array(
-							'predicates' => array_map( fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $base_source ), $branch['predicates'] ),
+							'predicates' => array_map( fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $base_source, $bindings ), $branch['predicates'] ),
 							'value'      => $branch['value'],
 						),
 						$item['case']['branches']
 					),
 					'else' => $item['case']['else'],
 				),
-				'expression' => null === ( $item['expression'] ?? null ) ? null : $this->lower_scalar_expression( $item['expression'], $base_source, $flat_source ),
+				'expression' => null === ( $item['expression'] ?? null ) ? null : $this->lower_scalar_expression( $item['expression'], $base_source, $flat_source, $bindings ),
 			),
 			$ast->orders()
 		);
 		$having = array_map( fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, null ), $ast->having() );
 		$union = null;
 		if ( null !== $ast->union() ) {
-			$union = $this->lower( $ast->union() );
+			$union = $this->lower( $ast->union(), $outer_sources, $table_columns );
 			if ( ! $union instanceof WP_Markdown_Native_Query_Plan ) {
 				return $union;
 			}
 		}
-		$derived = null === $ast->derived() ? null : $this->lower( $ast->derived() );
+		$derived = null === $ast->derived() ? null : $this->lower( $ast->derived(), array(), $table_columns );
 		if ( null !== $derived && ! $derived instanceof WP_Markdown_Native_Query_Plan ) {
 			return $derived;
 		}
@@ -266,7 +267,7 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->limit() ?? PHP_INT_MAX,
 			$ast->counts_all(),
 			$ast->alias()?->name(),
-			array_map( static fn( WP_Markdown_Native_SQL_Identifier $column ): ?string => $column->qualifier() ?? $base_source, $ast->projection() ),
+			array_map( fn( WP_Markdown_Native_SQL_Identifier $column ): ?string => $this->column_source( $column, $base_source, $bindings ), $ast->projection() ),
 			$joins,
 			$ast->calculates_found_rows(),
 			$ast->order_descending(),
@@ -277,10 +278,10 @@ final class WP_Markdown_Native_Query_Parser {
 			$ast->is_contradiction(),
 			$ast->group_by()?->name(),
 			array_map(
-				static fn( array $aggregate ): array => array(
+				fn( array $aggregate ): array => array(
 					'function' => $aggregate['function'],
 					'column'   => $aggregate['column']?->name(),
-					'source'   => $aggregate['column']?->qualifier() ?? $base_source,
+					'source'   => $this->column_source( $aggregate['column'], $base_source, $bindings ),
 					'alias'    => $aggregate['alias'],
 					'distinct' => $aggregate['distinct'] ?? false,
 				),
@@ -293,28 +294,89 @@ final class WP_Markdown_Native_Query_Parser {
 			$union,
 			$scalar_predicates,
 			$scalar_having,
-			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source, $flat_source ),
+			null === $ast->group_expression() ? null : $this->lower_scalar_expression( $ast->group_expression(), $base_source, $flat_source, $bindings ),
 			$boolean_predicate,
 			$derived,
 			$ast->union_all(),
 			array_map( fn( array $item ): array => array( 'column' => $item['column']->name(), 'descending' => $item['descending'], 'numeric' => str_starts_with( $item['column']->name(), '__union_ordinal_' ) ), $ast->union_orders() ),
 			$ast->union_limit(),
 			$ast->union_limit_offset(),
-			array_map( fn( WP_Markdown_Native_SQL_Scalar_Expression $expression ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $expression, $base_source, $flat_source ), $ast->group_expressions() ),
+			array_map( fn( WP_Markdown_Native_SQL_Scalar_Expression $expression ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $expression, $base_source, $flat_source, $bindings ), $ast->group_expressions() ),
 			$ast->index_hints()
 		);
 	}
 
+	/** Resolve unqualified identifiers only when their source schemas are known. */
+	private function column_bindings( WP_Markdown_Native_SQL_Select $ast, callable $table_columns ): array {
+		$sources = array( $ast->alias()?->name() ?? $ast->table()->name() => $this->source_columns( $ast->table()->name(), $ast->derived(), $table_columns ) );
+		$join_scopes = array();
+		foreach ( $ast->joins() as $join ) {
+			$sources[ $join->alias()->name() ] = $this->source_columns( $join->table()->name(), $join->derived(), $table_columns );
+			foreach ( $join->on_predicates() as $predicate ) {
+				foreach ( $this->predicate_columns( $predicate ) as $column ) {
+					$join_scopes[ spl_object_id( $column ) ] = $sources;
+				}
+			}
+		}
+		$aliases = array_merge( array_column( $ast->scalar_projection(), 'alias' ), array_column( $ast->aggregates(), 'alias' ) );
+		$order_aliases = array();
+		foreach ( $ast->orders() as $order ) {
+			if ( null === $order['column']->qualifier() && in_array( $order['column']->name(), $aliases, true ) ) {
+				$order_aliases[ spl_object_id( $order['column'] ) ] = true;
+			}
+		}
+		$bindings = array();
+		foreach ( $this->referenced_columns( $ast ) as $column ) {
+			if ( null !== $column->qualifier() || '*' === $column->name() || isset( $order_aliases[ spl_object_id( $column ) ] ) ) {
+				continue;
+			}
+			$owners = array_keys( array_filter( $join_scopes[ spl_object_id( $column ) ] ?? $sources, static fn( array $columns ): bool => in_array( $column->name(), $columns, true ) ) );
+			if ( 1 < count( $owners ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'ambiguous_column', $column->sql_offset(), 'The unqualified column belongs to more than one query source.' );
+			}
+			if ( 1 === count( $owners ) ) {
+				$bindings[ spl_object_id( $column ) ] = $owners[0];
+			}
+		}
+		return $bindings;
+	}
+
+	/** Derived sources expose their projected names, not their underlying tables. */
+	private function source_columns( string $table, ?WP_Markdown_Native_SQL_Select $derived, callable $table_columns ): array {
+		if ( null === $derived ) {
+			return $table_columns( $table ) ?? array();
+		}
+		if ( $derived->selects_all() ) {
+			return $this->source_columns( $derived->table()->name(), $derived->derived(), $table_columns );
+		}
+		$columns = array();
+		$inner_sources = array( $derived->alias()?->name() ?? $derived->table()->name() => array( $derived->table()->name(), $derived->derived() ) );
+		foreach ( $derived->joins() as $join ) { $inner_sources[ $join->alias()->name() ] = array( $join->table()->name(), $join->derived() ); }
+		foreach ( $derived->projection() as $column ) {
+			if ( '*' === $column->name() && isset( $inner_sources[ $column->qualifier() ] ) ) {
+				$source = $inner_sources[ $column->qualifier() ];
+				$columns = array_merge( $columns, $this->source_columns( $source[0], $source[1], $table_columns ) );
+			} else {
+				$columns[] = $column->name();
+			}
+		}
+		return array_merge( $columns, array_column( $derived->scalar_projection(), 'alias' ), array_column( $derived->aggregates(), 'alias' ) );
+	}
+
+	private function column_source( ?WP_Markdown_Native_SQL_Identifier $column, ?string $fallback, array $bindings ): ?string {
+		return null === $column ? $fallback : ( $column->qualifier() ?? $bindings[ spl_object_id( $column ) ] ?? $fallback );
+	}
+
 	/** @param array<string,true> $outer_sources */
-	private function lower_subquery( WP_Markdown_Native_SQL_Subquery_Predicate $predicate, array $outer_sources = array() ): WP_Markdown_Native_Query_Subquery {
-		$subquery = $this->lower( $predicate->query(), $outer_sources );
+	private function lower_subquery( WP_Markdown_Native_SQL_Subquery_Predicate $predicate, array $outer_sources = array(), ?callable $table_columns = null, array $bindings = array() ): WP_Markdown_Native_Query_Subquery {
+		$subquery = $this->lower( $predicate->query(), $outer_sources, $table_columns );
 		if ( ! $subquery instanceof WP_Markdown_Native_Query_Plan ) {
 			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $predicate->column()?->sql_offset() ?? 0, 'mdi-native could not lower the requested subquery.' );
 		}
-		return new WP_Markdown_Native_Query_Subquery( $predicate->operator(), $predicate->column()?->name(), $subquery, $predicate->column()?->qualifier() );
+		return new WP_Markdown_Native_Query_Subquery( $predicate->operator(), $predicate->column()?->name(), $subquery, $this->column_source( $predicate->column(), null, $bindings ) );
 	}
 
-	private function lower_predicate( WP_Markdown_Native_SQL_Predicate $predicate, ?string $base_source = null ): WP_Markdown_Native_Query_Predicate {
+	private function lower_predicate( WP_Markdown_Native_SQL_Predicate $predicate, ?string $base_source = null, array $bindings = array() ): WP_Markdown_Native_Query_Predicate {
 		$values = array_map( static fn( WP_Markdown_Native_SQL_Literal $literal ): int|string => $literal->value(), $predicate->values() );
 		if ( 'IN' === $predicate->operator() || 'NOT IN' === $predicate->operator() ) {
 			$values = array_values( array_unique( $values, SORT_REGULAR ) );
@@ -323,40 +385,41 @@ final class WP_Markdown_Native_Query_Parser {
 			$predicate->column()->name(),
 			$predicate->operator(),
 			$values,
-			$predicate->column()->qualifier() ?? $base_source,
-			array_map( fn( WP_Markdown_Native_SQL_Predicate $alternative ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $alternative, $base_source ), $predicate->any() ),
+			$this->column_source( $predicate->column(), $base_source, $bindings ),
+			array_map( fn( WP_Markdown_Native_SQL_Predicate $alternative ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $alternative, $base_source, $bindings ), $predicate->any() ),
 			$predicate->cast(),
 			$predicate->comparison()?->name(),
-			$predicate->comparison()?->qualifier()
+			$this->column_source( $predicate->comparison(), null, $bindings )
 		);
 	}
 
-	private function lower_scalar_expression( WP_Markdown_Native_SQL_Scalar_Expression $expression, ?string $base_source, ?string $flat_source = null ): WP_Markdown_Native_Query_Scalar_Expression {
+	private function lower_scalar_expression( WP_Markdown_Native_SQL_Scalar_Expression $expression, ?string $base_source, ?string $flat_source = null, array $bindings = array() ): WP_Markdown_Native_Query_Scalar_Expression {
+		$source = $this->column_source( $expression->identifier(), $base_source, $bindings );
 		return new WP_Markdown_Native_Query_Scalar_Expression(
 			$expression->kind(),
 			$expression->identifier()?->name(),
 			$expression->literal(),
 			array_map(
-				fn( WP_Markdown_Native_SQL_Scalar_Expression $argument ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $argument, $base_source, $flat_source ),
+				fn( WP_Markdown_Native_SQL_Scalar_Expression $argument ): WP_Markdown_Native_Query_Scalar_Expression => $this->lower_scalar_expression( $argument, $base_source, $flat_source, $bindings ),
 				$expression->arguments()
 			),
 			array_map(
 				fn( array $branch ): array => array(
 					'predicates' => array_map(
-						fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $base_source ),
+						fn( WP_Markdown_Native_SQL_Predicate $predicate ): WP_Markdown_Native_Query_Predicate => $this->lower_predicate( $predicate, $base_source, $bindings ),
 						$branch['predicates']
 					),
-					'value' => $this->lower_scalar_expression( $branch['value'], $base_source, $flat_source ),
+					'value' => $this->lower_scalar_expression( $branch['value'], $base_source, $flat_source, $bindings ),
 			),
 			$expression->branches()
 		),
-			null === $expression->else() ? null : $this->lower_scalar_expression( $expression->else(), $base_source, $flat_source ),
-			$flat_source === ( $expression->identifier()?->qualifier() ?? $base_source ) ? null : ( $expression->identifier()?->qualifier() ?? $base_source )
+			null === $expression->else() ? null : $this->lower_scalar_expression( $expression->else(), $base_source, $flat_source, $bindings ),
+			$flat_source === $source ? null : $source
 		);
 	}
 
-	private function lower_scalar_predicate( WP_Markdown_Native_SQL_Scalar_Predicate $predicate, ?string $base_source, ?string $flat_source = null ): WP_Markdown_Native_Query_Scalar_Predicate {
-		return new WP_Markdown_Native_Query_Scalar_Predicate( $this->lower_scalar_expression( $predicate->left(), $base_source, $flat_source ), $predicate->operator(), $this->lower_scalar_expression( $predicate->right(), $base_source, $flat_source ) );
+	private function lower_scalar_predicate( WP_Markdown_Native_SQL_Scalar_Predicate $predicate, ?string $base_source, ?string $flat_source = null, array $bindings = array() ): WP_Markdown_Native_Query_Scalar_Predicate {
+		return new WP_Markdown_Native_Query_Scalar_Predicate( $this->lower_scalar_expression( $predicate->left(), $base_source, $flat_source, $bindings ), $predicate->operator(), $this->lower_scalar_expression( $predicate->right(), $base_source, $flat_source, $bindings ) );
 	}
 
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
@@ -382,7 +445,7 @@ final class WP_Markdown_Native_Query_Parser {
 			$columns = array_merge( $columns, $ast->boolean_predicate()->columns() );
 		}
 		foreach ( $ast->scalar_having() as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
-		if ( null !== $ast->group_expression() ) { $columns = array_merge( $columns, $ast->group_expression()->columns() ); }
+		foreach ( $ast->group_expressions() as $expression ) { $columns = array_merge( $columns, $expression->columns() ); }
 		foreach ( $ast->orders() as $item ) {
 			if ( null !== ( $item['expression'] ?? null ) ) { $columns = array_merge( $columns, $item['expression']->columns() ); continue; }
 			if ( null === ( $item['case'] ?? null ) ) {
@@ -413,6 +476,7 @@ final class WP_Markdown_Native_Query_Parser {
 	/** @return array<int,WP_Markdown_Native_SQL_Identifier> */
 	private function predicate_columns( WP_Markdown_Native_SQL_Predicate $predicate ): array {
 		$columns = array( $predicate->column() );
+		if ( null !== $predicate->comparison() ) { $columns[] = $predicate->comparison(); }
 		foreach ( $predicate->any() as $alternative ) {
 			$columns = array_merge( $columns, $this->predicate_columns( $alternative ) );
 		}
@@ -605,13 +669,6 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			}
 			$left = null === $equality ? null : $equality->column();
 			$right = null === $equality ? null : $equality->comparison();
-			$base_source = $alias ?? $table;
-			if ( null !== $left && null === $left->qualifier() ) {
-				$left = new WP_Markdown_Native_SQL_Identifier( $left->name(), $left->sql_offset(), $base_source->name() );
-			}
-			if ( null !== $right && null === $right->qualifier() ) {
-				$right = new WP_Markdown_Native_SQL_Identifier( $right->name(), $right->sql_offset(), $base_source->name() );
-			}
 			if ( null !== $equality_index && null !== $left && null !== $right ) {
 				$on_predicates[ $equality_index ] = new WP_Markdown_Native_SQL_Predicate( $left, '=', array(), array(), null, $right );
 			}

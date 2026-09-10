@@ -91,13 +91,19 @@ $unindexed_filter = $runtime->execute( new WP_Markdown_Query_Request( substr( $q
 $unbounded_left = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT tr.object_id, tt.taxonomy FROM wp_term_relationships tr LEFT JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id' ) );
 $unqualified = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tr.object_id=41', 'object_id=41', $query ) ) );
 $unknown_alias = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 't.slug', 'x.slug', $query ) ) );
+$bound_columns = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT object_id, taxonomy, slug FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id JOIN wp_terms t ON t.term_id=tt.term_id WHERE object_id=41' ) );
+$bound_where = $runtime->execute( new WP_Markdown_Query_Request( "SELECT object_id FROM wp_term_relationships tr, wp_term_taxonomy tt WHERE tr.term_taxonomy_id=tt.term_taxonomy_id AND taxonomy='category' AND object_id=41" ) );
+$ambiguous_column = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT term_taxonomy_id FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id WHERE object_id=41' ) );
+$ambiguous_on = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT object_id FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON term_taxonomy_id=tt.term_taxonomy_id WHERE object_id=41' ) );
+$wrong_explicit_source = $runtime->execute( new WP_Markdown_Query_Request( str_replace( 'tt.taxonomy', 'tr.taxonomy', $query ) ) );
+$derived_binding = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT object_id, label FROM wp_term_relationships tr JOIN (SELECT term_taxonomy_id AS key_id, taxonomy AS label FROM wp_term_taxonomy) d ON key_id=tr.term_taxonomy_id WHERE object_id=41' ) );
 $limited = $runtime->execute( new WP_Markdown_Query_Request( $query . ' LIMIT 1' ) );
 $catalog_query = "SELECT wp_term_relationships.object_id FROM wp_term_relationships LEFT JOIN wp_term_taxonomy ON (wp_term_relationships.term_taxonomy_id = wp_term_taxonomy.term_taxonomy_id) WHERE wp_term_taxonomy.taxonomy IN ('category') GROUP BY wp_term_relationships.object_id ORDER BY wp_term_relationships.object_id DESC LIMIT 0, 5";
 $catalog = $runtime->execute( new WP_Markdown_Query_Request( $catalog_query ) );
 $distinct_identity_group_query = "SELECT DISTINCT tr.object_id FROM wp_term_relationships tr JOIN wp_term_taxonomy tt ON tr.term_taxonomy_id=tt.term_taxonomy_id WHERE tt.taxonomy='category' GROUP BY tr.object_id";
 $distinct_identity_group = $runtime->execute( new WP_Markdown_Query_Request( $distinct_identity_group_query ) );
 $counted = $runtime->execute(
-	new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_term_relationships LEFT JOIN wp_term_taxonomy ON term_taxonomy_id = wp_term_taxonomy.term_taxonomy_id WHERE object_id = 41' )
+	new WP_Markdown_Query_Request( 'SELECT COUNT(*) FROM wp_term_relationships LEFT JOIN wp_term_taxonomy ON wp_term_relationships.term_taxonomy_id = wp_term_taxonomy.term_taxonomy_id WHERE object_id = 41' )
 );
 $core_term_ids_query = "SELECT DISTINCT t.term_id, tr.object_id FROM wp_terms AS t INNER JOIN wp_term_taxonomy AS tt ON t.term_id = tt.term_id INNER JOIN wp_term_relationships AS tr ON tr.term_taxonomy_id = tt.term_taxonomy_id WHERE tt.taxonomy IN ('category', 'post_tag', 'post_format') AND tr.object_id IN (41) ORDER BY t.name ASC";
 $core_term_ids_plan = ( new WP_Markdown_Native_Query_Parser() )->parse( $core_term_ids_query );
@@ -224,6 +230,11 @@ $meta_registry->register( 'wp_postmeta', $postmeta_schema, new MDI_Native_Join_A
 $meta_result = ( new WP_Markdown_Native_Query_Runtime( $meta_registry ) )->execute( new WP_Markdown_Query_Request( $meta_query ) );
 
 $checks = array(
+	'unqualified JOIN projections resolve against all source schemas' => $bound_columns->succeeded() && $result->corpus_result() === $bound_columns->corpus_result(),
+	'unqualified WHERE columns resolve to the unique joined owner' => $bound_where->succeeded() && array( array( 'object_id' => '41' ) ) === $bound_where->corpus_result()['rows'],
+	'ambiguous projection and ON columns fail rather than choosing the base table' => 'ambiguous_column' === ( $ambiguous_column->diagnostic()['reason'] ?? null ) && 'ambiguous_column' === ( $ambiguous_on->diagnostic()['reason'] ?? null ),
+	'an explicit wrong source is never rebound to another table' => ! $wrong_explicit_source->succeeded(),
+	'derived table aliases expose only their projected column names' => $derived_binding->succeeded() && array( 'object_id' => '41', 'label' => 'category' ) === $derived_binding->corpus_result()['rows'][0],
 	'plain column aliases preserve joined row order and source metadata' => $aliased->succeeded() && $expected_aliases === $aliased->corpus_result(),
 	'validated source index hints preserve taxonomy JOIN results' => $hinted->succeeded() && $result->corpus_result() === $hinted->corpus_result() && $joined_hint->succeeded() && $result->corpus_result() === $joined_hint->corpus_result(),
 	'unknown hinted indexes fail instead of silently executing' => ! $bad_hint->succeeded() && 'unsupported_index_hint' === ( $bad_hint->diagnostic()['reason'] ?? null ),

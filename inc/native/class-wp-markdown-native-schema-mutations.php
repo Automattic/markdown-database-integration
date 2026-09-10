@@ -157,6 +157,25 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $suffix ) || null === $this->registry->definition( $table ) ) {
 			return $this->failure( 'unknown_table', 'mdi-native cannot alter a table it does not persist.' );
 		}
+		try {
+			$actions = array();
+			$start = 0;
+			$depth = 0;
+			foreach ( ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $action ) as $token ) {
+				if ( WP_Markdown_Native_SQL_Token::LEFT_PAREN === $token->type() ) { ++$depth; }
+				if ( WP_Markdown_Native_SQL_Token::RIGHT_PAREN === $token->type() ) { --$depth; }
+				if ( 0 === $depth && WP_Markdown_Native_SQL_Token::COMMA === $token->type() ) {
+					$actions[] = trim( substr( $action, $start, $token->sql_offset() - $start ) );
+					$start = $token->sql_offset() + 1;
+				}
+			}
+			$actions[] = trim( substr( $action, $start ) );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
+			return $this->failure( 'unsupported_schema', 'The ALTER TABLE actions could not be parsed.' );
+		}
+		if ( count( $actions ) > 1 ) {
+			return $this->execute_alter_actions( $request, $table, $actions );
+		}
 
 		if ( 1 === preg_match( '/^ADD\s+(?:(?:UNIQUE\s+)?(?:INDEX|KEY)\s+`?[A-Za-z0-9_]+`?|PRIMARY\s+KEY)\s*\(.+\)$/is', $action ) ) {
 			return $this->execute_add_index( $table, $suffix, $action );
@@ -239,6 +258,35 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		} finally {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
+		}
+	}
+
+	/** Apply supported ALTER actions atomically after the outer DDL implicit commit. */
+	private function execute_alter_actions( WP_Markdown_Query_Request $request, string $table, array $actions ): WP_Markdown_Query_Result {
+		if ( null === $this->transactions || count( $actions ) > 64 || in_array( '', $actions, true ) ) {
+			return $this->failure( 'unsupported_schema', 'A bounded multi-action ALTER requires a transaction journal.' );
+		}
+		$locked = $this->transactions->begin_write();
+		if ( true !== $locked ) {
+			return $this->failure( 'transaction_write_lock_failed', $locked );
+		}
+		$begun = $this->transactions->begin();
+		if ( true !== $begun ) {
+			return $this->failure( 'transaction_journal_failed', $begun );
+		}
+		try {
+			foreach ( $actions as $action ) {
+				$result = $this->execute_alter( $request, 'ALTER TABLE `' . $table . '` ' . $action );
+				if ( ! $result->succeeded() ) {
+					$restored = $this->transactions->rollback();
+					return true === $restored ? $result : $this->failure( 'transaction_rollback_failed', $restored );
+				}
+			}
+			$committed = $this->transactions->commit();
+			return true === $committed ? WP_Markdown_Query_Result::schema_changed() : $this->failure( 'transaction_commit_failed', $committed );
+		} catch ( Throwable ) {
+			$restored = $this->transactions->rollback();
+			return $this->failure( 'schema_mutation_failed', true === $restored ? 'The ALTER actions failed and were restored.' : $restored );
 		}
 	}
 

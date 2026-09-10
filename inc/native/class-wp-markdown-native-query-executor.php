@@ -649,7 +649,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( array() !== $aggregates ) {
 			if ( null !== $plan->group_by() ) {
-				return $this->grouped_aggregate_result( $groups, $plan->group_by(), $aggregates, $plan->having(), $plan->scalar_having(), $plan->table(), $schema, $plan->scalar_projection(), $plan->order_by(), $plan->limit_offset(), $plan->limit(), $plan->calculates_found_rows() );
+				return $this->grouped_aggregate_result( $groups, $projection, $aggregates, $plan->having(), $plan->scalar_having(), $plan->table(), $schema, $plan->scalar_projection(), $plan->order_by(), $plan->limit_offset(), $plan->limit(), $plan->calculates_found_rows() );
 			}
 			return $this->aggregate_result( $aggregate_state, $aggregates );
 		}
@@ -730,13 +730,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		};
 	}
 
-	private function grouped_aggregate_result( array $groups, string $column, array $aggregates, array $having, array $scalar_having, string $table, WP_Markdown_Native_Table_Schema $schema, array $scalar_projection, array $orders, int $offset, int $limit, bool $calculates_found_rows ): WP_Markdown_Query_Result {
+	private function grouped_aggregate_result( array $groups, array $projection, array $aggregates, array $having, array $scalar_having, string $table, WP_Markdown_Native_Table_Schema $schema, array $scalar_projection, array $orders, int $offset, int $limit, bool $calculates_found_rows ): WP_Markdown_Query_Result {
 		$rows = array();
 		foreach ( $groups as $group ) {
-			$row = array( $column => null === $group['value'] ? null : (string) $group['value'] );
-			foreach ( $scalar_projection as $scalar ) {
-				$row[ $scalar['alias'] ] = $this->string_scalar( $this->evaluate_scalar( $scalar['expression'], $group['row'] ?? array(), $schema ) );
-			}
+			$row = $this->string_row( $group['row'], $projection, $scalar_projection, $schema );
 			foreach ( $aggregates as $index => $aggregate ) {
 				$row[ $aggregate['alias'] ] = $this->aggregate_value( $group['state'][ $index ] ?? array(), $aggregate['function'] );
 			}
@@ -744,8 +741,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				$rows[] = $row;
 			}
 		}
-		$group_name = $scalar_projection[0]['alias'] ?? $column;
-		if ( $group_name !== $column ) { foreach ( $rows as &$row ) { $row[ $group_name ] = $row[ $column ]; unset( $row[ $column ] ); } unset( $row ); }
 		if ( array() !== $orders ) {
 			usort( $rows, function ( array $left, array $right ) use ( $orders ): int {
 				foreach ( $orders as $order ) {
@@ -758,12 +753,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( $calculates_found_rows ) { $this->last_found_rows = count( $rows ); }
 		$rows = array_values( array_slice( $rows, $offset, PHP_INT_MAX === $limit ? null : $limit ) );
 		$columns = array();
-		if ( array() === $scalar_projection ) {
-			$columns[] = array( 'name' => $group_name, 'table' => $table, 'type' => $schema->column( $column )->type() );
-		} else {
-			foreach ( $scalar_projection as $scalar ) { $columns[ $scalar['position'] ] = $this->scalar_projection_column( $scalar, $table, $schema ); }
-			ksort( $columns );
-			$columns = array_values( $columns );
+		foreach ( $projection as $column ) {
+			$columns[] = array( 'name' => $column, 'table' => $table, 'type' => $schema->column( $column )->type() );
+		}
+		foreach ( $scalar_projection as $scalar ) {
+			array_splice( $columns, $scalar['position'], 0, array( $this->scalar_projection_column( $scalar, $table, $schema ) ) );
 		}
 		foreach ( $aggregates as $aggregate ) { $columns[] = array( 'name' => $aggregate['alias'], 'table' => '', 'type' => 'GROUP_CONCAT' === $aggregate['function'] ? 253 : 8 ); }
 		return WP_Markdown_Query_Result::selected( $rows, $columns );

@@ -671,7 +671,11 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				// grouping column. A wildcard over the grouped table qualifies
 				// because its identity is the group.
 				foreach ( $projection as $column ) {
-					$same_column = $column->name() === $group->name() && $column->qualifier() === $group->qualifier();
+					$same_column = false;
+					foreach ( $group_expressions as $expression ) {
+						$identifier = 'column' === $expression->kind() ? $expression->identifier() : null;
+						$same_column = $same_column || ( null !== $identifier && $column->name() === $identifier->name() && $column->qualifier() === $identifier->qualifier() );
+					}
 					$grouped_wildcard = '*' === $column->name() && null !== $group->qualifier() && $column->qualifier() === $group->qualifier();
 					if ( ! $same_column && ! $grouped_wildcard ) {
 						throw new WP_Markdown_Native_SQL_Parse_Error(

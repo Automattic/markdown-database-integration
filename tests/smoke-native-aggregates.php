@@ -42,8 +42,30 @@ $empty = mdi_aggregate_row( $runtime, "SELECT SUM(score) AS total, COUNT(score) 
 $textual = mdi_aggregate_row( $runtime, 'SELECT SUM(kind) AS total FROM wp_items' );
 $default_names = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT MAX(score), COUNT(score) FROM wp_items', 'wp_' ) );
 $default_empty = $runtime->execute( new WP_Markdown_Query_Request( "SELECT MAX(score), COUNT(score) FROM wp_items WHERE kind = 'missing'", 'wp_' ) );
+$grouped = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT kind, score, COUNT(id) AS n FROM wp_items GROUP BY kind, score' ) );
+$grouped_alias = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT kind, score AS points, COUNT(id) AS n FROM wp_items GROUP BY kind, score' ) );
+$grouped_join = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT a.kind, b.score, COUNT(a.id) AS n FROM wp_items a JOIN wp_items b ON a.id = b.id GROUP BY a.kind, b.score' ) );
+$grouped_rows = $grouped->corpus_result()['rows'];
+$alias_rows = $grouped_alias->corpus_result()['rows'];
+$joined_rows = $grouped_join->corpus_result()['rows'];
+usort( $grouped_rows, static fn( array $left, array $right ): int => (int) $left['score'] <=> (int) $right['score'] );
+usort( $alias_rows, static fn( array $left, array $right ): int => (int) $left['points'] <=> (int) $right['points'] );
+usort( $joined_rows, static fn( array $left, array $right ): int => (int) $left['score'] <=> (int) $right['score'] );
 
 $checks = array(
+	'multiple explicit grouping columns preserve every projected value' => $grouped->succeeded() && array(
+		array( 'kind' => 'c', 'score' => null, 'n' => '1' ),
+		array( 'kind' => 'a', 'score' => '10', 'n' => '1' ),
+		array( 'kind' => 'b', 'score' => '20', 'n' => '1' ),
+		array( 'kind' => 'a', 'score' => '30', 'n' => '1' ),
+	) === $grouped_rows,
+	'aliased grouping columns retain their position and numeric type' => $grouped_alias->succeeded() && array( 'kind' => 'a', 'points' => '10', 'n' => '1' ) === $alias_rows[1] && '8' === $grouped_alias->corpus_result()['columns'][1]['type'],
+	'joined grouping keys include all explicit columns' => $grouped_join->succeeded() && array(
+		array( 'kind' => 'c', 'score' => null, 'n' => '1' ),
+		array( 'kind' => 'a', 'score' => '10', 'n' => '1' ),
+		array( 'kind' => 'b', 'score' => '20', 'n' => '1' ),
+		array( 'kind' => 'a', 'score' => '30', 'n' => '1' ),
+	) === $joined_rows,
 	'one row reports every ungrouped aggregate' => array( 'total' => '60', 'mean' => '20', 'lowest' => '10', 'highest' => '30' ) === $totals,
 	'COUNT over a column skips its NULL rows' => array( 'scored' => '3' ) === $counts,
 	'COUNT over rows keeps them' => '4' === ( $all_rows['COUNT(*)'] ?? null ),

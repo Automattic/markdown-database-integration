@@ -26,6 +26,7 @@ $state = $root . '/state';
 $artifacts = $root . '/artifacts';
 $report_path = '/tmp/mdi-shadow-report.json';
 $report_name = 'mdi-shadow-report';
+$trace_path = '/tmp/mdi-shadow-runtime-trace.jsonl';
 $revision = trim( (string) shell_exec( 'git -C ' . escapeshellarg( $repo ) . ' rev-parse HEAD' ) );
 mkdir( $bootstrap, 0755, true );
 mkdir( $state, 0755, true );
@@ -73,6 +74,7 @@ $recipe = array(
 			'MARKDOWN_DB_NATIVE_SHADOW_MAX' => '10000',
 			'MARKDOWN_DB_NATIVE_SHADOW_INPUT_MODE' => 'sql_snapshot',
 			'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' => $report_path,
+			'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' => $trace_path,
 		),
 		'services' => array( array(
 			'id' => 'mysql',
@@ -85,7 +87,9 @@ $recipe = array(
 		array(
 			'command' => 'wordpress.phpunit',
 			'args' => array_merge( array( 'plugin-slug=' . $plugin_slug, 'database-type=mysql', 'multisite=1' ), false === $harness_dir ? array() : array( 'autoload-file=/wordpress/wp-content/mdi-shadow-phpunit/autoload.php', 'tests-dir=/wordpress/wp-content/mdi-shadow-phpunit/wp-phpunit/wp-phpunit' ), array() === $dependency_mounts ? array() : array( 'dependency-mounts=' . implode( ',', $dependency_mounts ) ), $phpunit_args ),
-			'resultPaths' => array( array( 'name' => $report_name, 'type' => 'mdi-native-shadow-report/v1', 'path' => $report_path, 'required' => true, 'maxBytes' => 1048576 ) ),
+			'resultPaths' => array(
+				array( 'name' => $report_name, 'type' => 'mdi-native-shadow-report/v1', 'path' => $report_path, 'required' => true, 'maxBytes' => 1048576 ),
+			),
 		),
 	) ),
 	'artifacts' => array( 'directory' => $artifacts ),
@@ -128,12 +132,9 @@ if ( ! is_array( $shadow ) || 'mdi-native-shadow-report/v1' !== ( $shadow['schem
 	fwrite( STDERR, "Shadow report was absent or empty. Artifacts: {$root}\n" );
 	exit( 1 );
 }
-$input_tables = $shadow['context']['last_input_state']['tables'] ?? array();
 if ( 'sql_snapshot' !== ( $shadow['context']['input_mode'] ?? null )
 	|| (int) ( $shadow['counts']['compatible'] ?? 0 ) < 1
-	|| ! is_array( $input_tables )
-	|| array() === $input_tables
-	|| array_filter( $input_tables, static fn( mixed $table ): bool => ! is_array( $table ) || ! isset( $table['rows'], $table['sha256'], $table['schema_sha256'] ) )
+	|| (int) ( $shadow['context']['authoritative_snapshot_captures'] ?? 0 ) < 1
 ) {
 	fwrite( STDERR, "Shadow report did not prove a compatible sql_snapshot comparison. Artifacts: {$root}\n" );
 	exit( 1 );

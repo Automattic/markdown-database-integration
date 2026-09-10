@@ -7,6 +7,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/../class-wp-markdown-canonical-option-path.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-contracts.php';
+require_once __DIR__ . '/class-wp-markdown-native-scalar-evaluator.php';
+require_once __DIR__ . '/class-wp-markdown-native-sql-session.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-schema.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-catalog.php';
 require_once __DIR__ . '/class-wp-markdown-native-sql-tokenizer.php';
@@ -23,6 +25,7 @@ require_once __DIR__ . '/class-wp-markdown-native-schema-mutations.php';
 require_once __DIR__ . '/../class-wp-markdown-sql-classifier.php';
 require_once __DIR__ . '/../class-wp-markdown-table-durability-policy.php';
 require_once __DIR__ . '/class-wp-markdown-native-transactions.php';
+require_once __DIR__ . '/class-wp-markdown-native-temporary-tables.php';
 require_once __DIR__ . '/class-wp-markdown-native-advisory-locks.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-executor.php';
 
@@ -106,6 +109,15 @@ final class WP_Markdown_Native_Runtime_Factory {
 					'post_author' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_parent' => array( 'lookup_operators' => array( '=', 'IN' ) ),
 					'post_type' => array( 'lookup_operators' => array( '=', 'IN' ) ),
+					// Duplicate-event discovery uses a title equality candidate set.
+					// MySQL's nonbinary VARCHAR comparisons ignore trailing spaces.
+					// Keep its file-backed scan bounded to ASCII comparisons instead
+					// of assuming MySQL's full Unicode collation.
+					'post_title' => array(
+						'normalizer'       => array( self::class, 'normalize_ascii_ci_padded' ),
+						'lookup_operators' => array( '=', 'IN' ),
+						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
+					),
 					// WordPress resolves a permalink by slug, so post_name is the
 					// lookup every front-end request depends on. Slugs are
 					// sanitized to ASCII, and a non-ASCII slug fails closed
@@ -116,7 +128,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
 				),
-				'order_columns' => array( 'post_date', 'menu_order', 'post_title' ),
+				'order_columns' => array( 'post_date', 'post_date_gmt', 'menu_order', 'post_title' ),
 			)
 		);
 	}
@@ -243,8 +255,10 @@ final class WP_Markdown_Native_Runtime_Factory {
 		?string $global_state_root = null,
 		?string $global_content_root = null,
 		?WP_Markdown_Native_Advisory_Locks $advisory_locks = null,
-		?string $transaction_state_root = null
+		?string $transaction_state_root = null,
+		?WP_Markdown_Native_SQL_Session $session = null
 	): WP_Markdown_Native_Query_Runtime {
+		$session ??= new WP_Markdown_Native_SQL_Session();
 		$state_root = self::materialize_state_root( $state_root );
 		if ( null !== $content_root ) {
 			$content_root = self::materialize_state_root( $content_root );
@@ -260,6 +274,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 			array_filter( array( $state_root, $content_root, $global_state_root, $global_content_root ) )
 		);
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
+		$temporary_tables = new WP_Markdown_Native_Temporary_Tables();
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
 		$resolved_content = $content_root ?? $state_root;
@@ -280,8 +295,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 			$registry,
 			new WP_Markdown_Native_Query_Parser(),
 			new WP_Markdown_Native_Option_Mutation_Runtime( $state_root, new WP_Markdown_Native_Option_Mutation_Parser(), $transactions ),
-			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions, $core_registrar ),
-			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, $parser, $transactions ),
+			new WP_Markdown_Native_Schema_Mutation_Runtime( $state_root, $registry, $transactions, $core_registrar, $temporary_tables ),
+			new WP_Markdown_Native_Table_Mutation_Runtime( $state_root, $registry, $parser, $transactions, $temporary_tables, $session ),
 			$transactions,
 			new WP_Markdown_Native_Post_Mutation_Runtime(
 				$registry,
@@ -289,7 +304,8 @@ final class WP_Markdown_Native_Runtime_Factory {
 				self::shared_storage( $content_root ?? $state_root, $multisite && $prefix === $resolved_base ),
 				$transactions,
 			),
-			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root )
+			advisory_locks: $advisory_locks ?? new WP_Markdown_Native_Advisory_Locks( $state_root ),
+			session: $session
 		);
 	}
 
@@ -636,7 +652,8 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 
 	public function __construct(
 		private string $state_root,
-		private string $content_root
+		private string $content_root,
+		private WP_Markdown_Native_SQL_Session $session = new WP_Markdown_Native_SQL_Session()
 	) {
 		$this->advisory_locks = new WP_Markdown_Native_Advisory_Locks( $state_root );
 	}
@@ -650,7 +667,8 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 				$prefix,
 				false,
 				$this->content_root,
-				advisory_locks: $this->advisory_locks
+				advisory_locks: $this->advisory_locks,
+				session: $this->session
 			);
 		}
 		return $this->runtimes[ $prefix ]->execute( $request );
@@ -658,6 +676,7 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 
 	public function close(): void {
 		$this->advisory_locks->close();
+		$this->session->reset();
 	}
 }
 
@@ -667,9 +686,11 @@ final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Qu
 	private WP_Markdown_Native_Prefix_Query_Runtime $prefix_runtime;
 	/** @var array<string,WP_Markdown_Native_Multisite_Query_Runtime> */
 	private array $multisite_runtimes = array();
+	private WP_Markdown_Native_SQL_Session $session;
 
 	public function __construct( string $state_root, private string $base_prefix, string $content_root ) {
-		$this->prefix_runtime = new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root );
+		$this->session = new WP_Markdown_Native_SQL_Session();
+		$this->prefix_runtime = new WP_Markdown_Native_Prefix_Query_Runtime( $state_root, $content_root, $this->session );
 		$this->state_root = $state_root;
 		$this->content_root = $content_root;
 	}
@@ -686,7 +707,7 @@ final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Qu
 			? $GLOBALS['wpdb']->base_prefix
 			: $this->base_prefix;
 		if ( ! isset( $this->multisite_runtimes[ $base_prefix ] ) ) {
-			$this->multisite_runtimes[ $base_prefix ] = new WP_Markdown_Native_Multisite_Query_Runtime( $this->state_root, $base_prefix, $this->content_root );
+			$this->multisite_runtimes[ $base_prefix ] = new WP_Markdown_Native_Multisite_Query_Runtime( $this->state_root, $base_prefix, $this->content_root, $this->session );
 		}
 		return $this->multisite_runtimes[ $base_prefix ]->execute( $request );
 	}
@@ -711,7 +732,8 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 	public function __construct(
 		string $state_root,
 		private string $base_prefix,
-		string $content_root
+		string $content_root,
+		private WP_Markdown_Native_SQL_Session $session = new WP_Markdown_Native_SQL_Session()
 	) {
 		if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $base_prefix ) ) {
 			throw new InvalidArgumentException( 'The base table prefix contains unsupported characters.' );
@@ -753,7 +775,8 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 					$this->state_root,
 					$this->content_root,
 					$this->advisory_locks,
-					$this->state_root
+					$this->state_root,
+					$this->session
 				);
 			} catch ( Throwable ) {
 				return WP_Markdown_Query_Result::failure(
@@ -770,6 +793,7 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 
 	public function close(): void {
 		$this->advisory_locks->close();
+		$this->session->reset();
 	}
 
 	private function is_scope_prefix( string $prefix ): bool {

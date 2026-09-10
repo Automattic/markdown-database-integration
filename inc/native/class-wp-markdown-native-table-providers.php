@@ -235,6 +235,9 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 }
 
 final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Provider {
+	// Exact title predicates do not have a file-addressable canonical index.
+	private const TITLE_LOOKUP_SOURCE_FILE_BUDGET = 1024;
+
 	private WP_Markdown_Storage $storage;
 	private WP_Markdown_Native_Post_Catalogue $catalogue;
 	/** @var array<string,array<int,array{post:object,row:array<string,mixed>,file:array<string,mixed>,identity:array<string,int>}>> */
@@ -329,6 +332,19 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 			return array() === $types ? null : $types;
 		}
 		return null;
+	}
+
+	/** Whether this read needs the bounded fallback scan for a title lookup. */
+	private function has_title_lookup( array $predicates ): bool {
+		foreach ( $predicates as $predicate ) {
+			if ( 'post_title' === $predicate->column()
+				&& in_array( $predicate->operator(), array( '=', 'IN' ), true )
+				&& $this->schema->allows_lookup( 'post_title', $predicate->operator(), $predicate->values() )
+			) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	/**
@@ -426,6 +442,8 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 					static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => ! in_array( 'post_content', $predicate->columns(), true )
 				)
 			);
+			$title_lookup = $this->has_title_lookup( $predicates );
+			$title_source_files = 0;
 			$scope = $this->post_type_scope( $access );
 			$key = null === $scope ? null : $this->parse_key( $scope );
 			$ordered = false;
@@ -444,6 +462,13 @@ final class WP_Markdown_Native_Post_Provider extends WP_Markdown_Native_File_Pro
 				$scanning = true;
 			}
 			foreach ( $this->storage->get_markdown_file_manifest_iterator( true, $scope ) as $file ) {
+				if ( $title_lookup && ++$title_source_files > self::TITLE_LOOKUP_SOURCE_FILE_BUDGET ) {
+					return $this->failure(
+						'markdown_db_native_source_work_budget',
+						'title_lookup_source_budget',
+						'mdi-native refuses title lookups that require scanning more than 1024 canonical files.'
+					);
+				}
 				// The manifest looked at this file to yield it, so its witness
 				// is the one taken then.
 				$witness = $file['witness'] ?? WP_Markdown_File_Witness::take( $file['absolute'] );
@@ -643,7 +668,29 @@ final class WP_Markdown_Native_JSON_Snapshot_Provider extends WP_Markdown_Native
 		$data = $this->read_json( $path, $root, 'table_file' );
 		return $this->snapshot = $data instanceof WP_Markdown_Query_Result
 			? $data
-			: $this->validate_rows( $data );
+			: $this->validate_rows( $this->materialize_multisite_user_defaults( $data ) );
+	}
+
+	/**
+	 * Older canonical user snapshots predate the two network-only columns.
+	 * MySQL supplies their declared zero defaults when a single-site snapshot is
+	 * opened by a multisite runtime, so preserve that durable representation.
+	 */
+	private function materialize_multisite_user_defaults( mixed $rows ): mixed {
+		if ( 'users.json' !== $this->filename
+			|| ! $this->schema->has_column( 'spam' )
+			|| ! $this->schema->has_column( 'deleted' )
+			|| ! is_array( $rows )
+			|| ! array_is_list( $rows )
+		) {
+			return $rows;
+		}
+		foreach ( $rows as $offset => $row ) {
+			if ( is_array( $row ) ) {
+				$rows[ $offset ] = array_merge( array( 'spam' => '0', 'deleted' => '0' ), $row );
+			}
+		}
+		return $rows;
 	}
 
 	/**

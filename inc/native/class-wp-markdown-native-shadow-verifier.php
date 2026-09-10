@@ -79,6 +79,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	private array $pending_insert_ids = array();
 	/** @var array<string,array{code:string,reason:string}> */
 	private array $pending_input_failures = array();
+	private int $authoritative_snapshot_captures = 0;
 
 	public function __construct(
 		private WP_Markdown_Query_Runtime $runtime,
@@ -106,11 +107,15 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		}
 		try {
 			$this->pending_inputs[ $key ] = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture( $database, $query, $prefix );
+			++$this->authoritative_snapshot_captures;
 			unset( $this->pending_input_failures[ $key ] );
 		} catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
 			// Input capture is observational and must never interrupt wpdb's query.
 			unset( $this->pending_inputs[ $key ] );
-			$this->pending_input_failures[ $key ] = $error->diagnostic();
+			$this->pending_input_failures[ $key ] = array(
+				'code'   => 'markdown_db_native_snapshot_input_unavailable',
+				'reason' => (string) ( $error->diagnostic()['reason'] ?? 'snapshot_capture_failed' ),
+			);
 		} catch ( Throwable $error ) {
 			unset( $this->pending_inputs[ $key ] );
 			$this->pending_input_failures[ $key ] = array( 'code' => 'markdown_db_native_snapshot_input_unavailable', 'reason' => 'snapshot_capture_failed' );
@@ -197,7 +202,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				$expected,
 				$actual
 			);
-			if ( ! $comparison['compatible'] && $this->has_unordered_unbounded_result( $query ) ) {
+			if ( ! $comparison['compatible'] && ( $this->has_unordered_unbounded_result( $query ) || WP_Markdown_Native_Schema_Introspection::is_unordered_unbounded_catalog_read( $query ) ) ) {
 				$comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $this->rows_as_bag( $expected ), $this->rows_as_bag( $actual ) );
 			}
 			if ( $comparison['compatible'] ) {
@@ -217,6 +222,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 				array(
 					'mismatch_paths'     => $paths,
 					'mismatches_truncated' => count( $comparison['mismatches'] ) > count( $paths ),
+					'comparison_receipt' => $this->comparison_receipt( $expected, $actual ),
+					'input_provenance' => $provenance ?? array(),
 				)
 			);
 		} catch ( Throwable $error ) {
@@ -239,7 +246,7 @@ final class WP_Markdown_Native_Shadow_Verifier {
 			'classifications'   => $this->classification_counts,
 			'first_blocker'    => $this->first_blocker,
 			'representatives'  => array_values( $this->representatives ),
-			'context'          => array_merge( $this->context, null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
+			'context'          => array_merge( $this->context, array( 'authoritative_snapshot_captures' => $this->authoritative_snapshot_captures ), null === $this->first_query_context ? array() : array( 'first_query' => $this->first_query_context ), null === $this->last_input_state ? array() : array( 'last_input_state' => $this->last_input_state ) ),
 		);
 	}
 
@@ -334,6 +341,43 @@ final class WP_Markdown_Native_Shadow_Verifier {
 		return '' === $reason ? 'unknown' : substr( $reason, 0, 128 );
 	}
 
+	/** Retain field descriptors and opaque row receipts without publishing query values. */
+	private function comparison_receipt( array $expected, array $actual ): array {
+		$columns = static fn( array $result ): array => array_map(
+			static fn( array $column ): array => array(
+				'name' => (string) ( $column['name'] ?? '' ),
+				'type' => null === ( $column['type'] ?? null ) ? null : (string) $column['type'],
+			),
+			is_array( $result['columns'] ?? null ) ? $result['columns'] : array()
+		);
+		$rows = static fn( array $result ): array => is_array( $result['rows'] ?? null ) ? $result['rows'] : array();
+		$expected_rows = $rows( $expected );
+		$actual_rows = $rows( $actual );
+		return array(
+			'expected_columns' => $columns( $expected ),
+			'actual_columns'   => $columns( $actual ),
+			'expected_rows'    => array( 'count' => count( $expected_rows ), 'sha256' => hash( 'sha256', serialize( $expected_rows ) ) ),
+			'actual_rows'      => array( 'count' => count( $actual_rows ), 'sha256' => hash( 'sha256', serialize( $actual_rows ) ) ),
+			'catalog_schema_rows' => $this->catalog_schema_rows( $expected_rows, $actual_rows ),
+		);
+	}
+
+	/** Retain only public schema facts when a catalog response differs. */
+	private function catalog_schema_rows( array $expected, array $actual ): ?array {
+		$keys = array( 'COLUMN_NAME', 'DATA_TYPE', 'CHARACTER_MAXIMUM_LENGTH', 'IS_NULLABLE' );
+		$sanitize = static function ( array $rows ) use ( $keys ): ?array {
+			foreach ( $rows as $row ) {
+				if ( ! is_array( $row ) || array_diff( array_keys( $row ), $keys ) !== array() ) {
+					return null;
+				}
+			}
+			return array_map( static fn( array $row ): array => array_intersect_key( $row, array_flip( $keys ) ), $rows );
+		};
+		$expected = $sanitize( $expected );
+		$actual = $sanitize( $actual );
+		return null === $expected || null === $actual ? null : array( 'expected' => $expected, 'actual' => $actual );
+	}
+
 	/** Compare all caller-visible error state except server-specific error text. */
 	private function has_matching_missing_table_error_state( array $expected, array $actual ): bool {
 		if ( false !== ( $expected['return']['value'] ?? null ) || 1146 !== (int) ( $expected['error_code'] ?? 0 ) ) {
@@ -425,7 +469,8 @@ final class WP_Markdown_Native_Shadow_Verifier {
 	}
 
 	private function is_stateless_runtime_fast_path( string $query ): bool {
-		return 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $query );
+		return 1 === preg_match( '/^\s*SELECT\s+DATABASE\s*\(\s*\)\s*;?\s*$/i', $query )
+			|| WP_Markdown_Native_Query_Runtime::supports_tableless_scalar_projection( $query );
 	}
 
 	private function has_unordered_unbounded_result( string $query ): bool {

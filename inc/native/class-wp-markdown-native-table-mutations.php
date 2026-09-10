@@ -11,6 +11,8 @@ require_once __DIR__ . '/class-wp-markdown-native-table-insert-parser.php';
 final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private string $state_root;
 	private WP_Markdown_Native_Table_Index $index;
+	/** @var array<string,WP_Markdown_Native_Table_Index> */
+	private array $temporary_indexes = array();
 	/** @var array<string,WP_Markdown_File_Witness> */
 	private array $unique_sets_verified = array();
 
@@ -18,7 +20,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		string $state_root,
 		private WP_Markdown_Native_Table_Registry $registry,
 		private WP_Markdown_Native_Table_Insert_Parser $parser = new WP_Markdown_Native_Table_Insert_Parser(),
-		private ?WP_Markdown_Native_Transaction_Journal $transactions = null
+		private ?WP_Markdown_Native_Transaction_Journal $transactions = null,
+		private ?WP_Markdown_Native_Temporary_Tables $temporary_tables = null,
+		private WP_Markdown_Native_SQL_Session $session = new WP_Markdown_Native_SQL_Session()
 	) {
 		$root = realpath( $state_root );
 		if ( false === $root || ! is_dir( $root ) ) {
@@ -91,12 +95,13 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			|| null === $table
 			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			|| ! is_array( $definition )
-			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix )
+			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix, $insert->table() )
 		) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can insert only into a persisted generic snapshot table.' );
 		}
 
-		$directory = $this->tables_directory();
+		$root = $this->root_for( $insert->table() );
+		$directory = $this->tables_directory( $root );
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
@@ -108,6 +113,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		try {
 			$schema = $table['schema'];
 			$provider = $table['provider'];
+			foreach ( $insert->upsert_assignments() ?? array() as $assignment ) {
+				if ( ! $schema->has_column( $assignment['target'] ) || ( null !== $assignment['source'] && ! $schema->has_column( $assignment['source'] ) ) ) {
+					return $this->failure( 'unsupported_column', 'The duplicate-key assignment references an undeclared column.' );
+				}
+			}
 			if ( ! $this->supports_unique_indexes( $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 			}
@@ -124,9 +134,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 			}
 			$path = $directory . '/' . $suffix . '.json';
-			$index = $insert->is_replace() || null !== $insert->upsert_columns() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
+			$table_index = $this->index_for( $root );
+			$index = $insert->is_replace() || null !== $insert->upsert_assignments() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
 				? null
-				: $this->index->load( $suffix, $path );
+				: $table_index->load( $suffix, $path );
 			if ( null !== $index ) {
 				// The index enforces this candidate's keys, while this witnessed
 				// snapshot proves the pre-existing keys were already unique.
@@ -152,7 +163,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( $appended instanceof WP_Markdown_Query_Result ) {
 					return $appended;
 				}
-				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
+				$table_index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::with_row( $index, $row, $definition, $schema ) );
 				if ( $unique_set_verified ) {
 					$this->remember_verified_unique_set( $suffix, $path );
 				}
@@ -189,36 +200,47 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					}
 					// REPLACE already scans and republishes the snapshot. Leave the
 					// derived insert index for the next operation that needs it.
-					$this->index->forget( $suffix, $this->transactions );
+					$table_index->forget( $suffix, $this->transactions );
 					$provider->replace_rows( $rows );
 					return WP_Markdown_Query_Result::mutated( count( $duplicates ) + 1, $this->auto_increment_value( $row, $definition ) );
 				}
 				if ( $insert->ignores_duplicate() ) {
 					return WP_Markdown_Query_Result::mutated( 0 );
 				}
-				$upsert_columns = $insert->upsert_columns();
-				if ( null === $upsert_columns ) {
+				$upsert_assignments = $insert->upsert_assignments();
+				if ( null === $upsert_assignments ) {
 					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 				}
 				$duplicate = $duplicates[0];
 				$updated = $rows[ $duplicate ];
-				foreach ( $upsert_columns as $column ) {
-					$updated[ $column ] = $row[ $column ];
+				foreach ( $upsert_assignments as $assignment ) {
+					// Existing-column references see earlier assignments; VALUES sees the proposed insert.
+					$updated[ $assignment['target'] ] = match ( $assignment['kind'] ) {
+						'inserted' => $row[ $assignment['source'] ],
+						'column' => $updated[ $assignment['source'] ],
+						default => $assignment['value'],
+					};
 				}
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );
+				}
+				if ( ! $this->unique_values_enforceable( $updated, $definition ) ) {
+					return $this->failure( 'unsupported_unique_collation', 'The duplicate-key assignment requires an unsupported unique-key collation.' );
 				}
 				$others = $rows;
 				unset( $others[ $duplicate ] );
 				if ( $this->duplicate_row_offset( $updated, array_values( $others ), $definition, $schema ) !== null ) {
 					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 				}
+				if ( $updated === $rows[ $duplicate ] ) {
+					return WP_Markdown_Query_Result::mutated( 0 );
+				}
 				$rows[ $duplicate ] = $updated;
 				$written = $this->write( $path, array_values( $rows ) );
 				if ( $written instanceof WP_Markdown_Query_Result ) {
 					return $written;
 				}
-				$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
+				$table_index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( array_values( $rows ), $definition, $schema ), $this->transactions );
 				$provider->replace_rows( array_values( $rows ) );
 				return WP_Markdown_Query_Result::mutated( 2, $this->auto_increment_value( $updated, $definition ) );
 			}
@@ -227,7 +249,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
-			$this->index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
+			$table_index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
 			$provider->replace_rows( $rows );
 			return WP_Markdown_Query_Result::mutated( 1, $this->auto_increment_value( $row, $definition ) );
 		} finally {
@@ -269,7 +291,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'unsafe_table_file', 'The canonical table file is unavailable or unsafe.' );
 		}
 		if ( null !== $this->transactions ) {
-			$recorded = $this->transactions->record( $path );
+			$recorded = $this->is_temporary_path( $path ) ? $this->transactions->record_ephemeral( $path ) : $this->transactions->record( $path );
 			if ( true !== $recorded ) {
 				return $this->failure( 'transaction_journal_failed', $recorded );
 			}
@@ -325,6 +347,18 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( array_diff_key( $provided, $definition['columns'] ) ) {
 			return $this->failure( 'unsupported_column', 'The INSERT references an undeclared column.' );
 		}
+		if ( $this->session->strict() ) {
+			$missing = array();
+			foreach ( $definition['columns'] as $name => $column ) {
+				if ( ! array_key_exists( $name, $provided ) && empty( $column['auto_increment'] ) && empty( $column['nullable'] ) && null === ( $column['default'] ?? null ) ) {
+					$missing[] = $name;
+					$this->session->warn_missing_default( $name, true );
+				}
+			}
+			if ( array() !== $missing ) {
+				return WP_Markdown_Query_Result::failure( array( 'code' => 1364, 'reason' => 'missing_required_column', 'message' => "Field '{$missing[0]}' doesn't have a default value" ) );
+			}
+		}
 		$row = array();
 		foreach ( $definition['columns'] as $name => $column ) {
 			$generate_identity = true === ( $column['auto_increment'] ?? false )
@@ -370,6 +404,22 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( true === ( $column['nullable'] ?? false ) ) {
 				$row[ $name ] = null;
 				continue;
+			}
+			if ( ! $this->session->strict() ) {
+				$type = strtolower( $column['type'] ?? '' );
+				$implicit = match ( $type ) {
+					'tinyint', 'smallint', 'mediumint', 'int', 'integer', 'bigint', 'decimal', 'numeric', 'float', 'double', 'real', 'year' => '0',
+					'char', 'varchar', 'tinytext', 'text', 'mediumtext', 'longtext', 'tinyblob', 'blob', 'mediumblob', 'longblob', 'varbinary' => '',
+					'date' => '0000-00-00',
+					'datetime', 'timestamp' => '0000-00-00 00:00:00',
+					'time' => '00:00:00',
+					default => null,
+				};
+				if ( null !== $implicit ) {
+					$row[ $name ] = $implicit;
+					$this->session->warn_missing_default( $name );
+					continue;
+				}
 			}
 			return $this->failure( 'missing_required_column', 'The INSERT omits a required column without a deterministic default.' );
 		}
@@ -462,7 +512,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			|| null === $table
 			|| ! $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider
 			|| ! is_array( $definition )
-			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix )
+			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix, $write->table() )
 		) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
 		}
@@ -482,12 +532,26 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 			}
 		}
-		foreach ( array_keys( $write->values() ) as $column ) {
+		foreach ( $write->values() as $column => $value ) {
 			if ( ! $schema->has_column( (string) $column ) ) {
 				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the persisted table schema.' );
 			}
+			if ( $value instanceof WP_Markdown_Native_Query_Scalar_Expression ) {
+				foreach ( $value->columns() as $source ) {
+					if ( ! $schema->has_column( $source ) ) {
+						return $this->failure( 'unsupported_mutation_column', 'The expression names a column outside the persisted table schema.' );
+					}
+				}
+				foreach ( $value->predicates() as $predicate ) {
+					if ( ! $schema->supports_predicate( $predicate ) ) {
+						return $this->failure( 'unsupported_predicate', 'The assignment expression uses an unsupported predicate.' );
+					}
+				}
+			}
 		}
-		$directory = $this->tables_directory();
+		$scalar_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, new WP_Markdown_Native_Query_Parser() );
+		$root = $this->root_for( $write->table() );
+		$directory = $this->tables_directory( $root );
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
 		}
@@ -499,7 +563,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		try {
 			$path = $directory . '/' . $suffix . '.json';
 			$provider = $table['provider'];
-			$index = $this->index->load( $suffix, $path );
+			$table_index = $this->index_for( $root );
+			$index = $table_index->load( $suffix, $path );
 			if ( null !== $index && $this->index_excludes( $index, $predicates ) ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
@@ -522,7 +587,13 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( ! $write->is_update() ) {
 					continue;
 				}
-				$updated = array_merge( $row, $write->values() );
+				$updated = $row;
+				foreach ( $write->values() as $column => $value ) {
+					$value = $value instanceof WP_Markdown_Native_Query_Scalar_Expression
+						? $scalar_runtime->evaluate_scalar( $value, $updated, $schema )
+						: $value;
+					$updated[ $column ] = null === $value ? null : (string) $value;
+				}
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_update_row', 'The UPDATE row is outside the persisted table schema.' );
 				}
@@ -533,7 +604,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 
 			if ( 0 === $affected ) {
-				$this->index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
+				$table_index->remember( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ) );
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			$unique_set_verified = $write->is_update()
@@ -552,7 +623,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$this->remember_verified_unique_set( $suffix, $path );
 			// The sidecar is derived state. Keep this runtime's witnessed index
 			// current without republishing it after every canonical table write.
-			$this->index->remember( $suffix, $path, $updated_index ?? WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
+			$table_index->remember( $suffix, $path, $updated_index ?? WP_Markdown_Native_Table_Index::build( $retained, $definition, $schema ) );
 			$provider->replace_rows( $retained );
 			return WP_Markdown_Query_Result::mutated( $affected );
 		} finally {
@@ -576,6 +647,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		$query_parser = new WP_Markdown_Native_Query_Parser();
 		$query_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, $query_parser );
 		foreach ( $predicates as $predicate ) {
+			if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+				$terms = $this->resolve_subquery_predicates( $predicate->any(), $schema, $target_table );
+				if ( $terms instanceof WP_Markdown_Query_Result ) { return $terms; }
+				$resolved[] = new WP_Markdown_Native_Table_Predicate_Group( $terms, $predicate->all() );
+				continue;
+			}
 			if ( ! $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
 				$resolved[] = $predicate;
 				continue;
@@ -646,11 +723,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private function index_predicate_excludes( array $index, mixed $predicate ): bool {
 		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
 			foreach ( $predicate->any() as $alternative ) {
-				if ( ! $this->index_predicate_excludes( $index, $alternative ) ) {
-					return false;
+				$excluded = $this->index_predicate_excludes( $index, $alternative );
+				if ( $excluded === $predicate->all() ) {
+					return $excluded;
 				}
 			}
-			return true;
+			return ! $predicate->all();
 		}
 		if ( ! $predicate instanceof WP_Markdown_Native_Table_Predicate || '=' !== $predicate->operator() ) {
 			return false;
@@ -691,17 +769,22 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private function restricts_predicate( array $row, $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
 		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
 			foreach ( $predicate->any() as $alternative ) {
-				if ( $this->restricts_predicate( $row, $alternative, $schema ) ) {
-					return true;
+				$matches = $this->restricts_predicate( $row, $alternative, $schema );
+				if ( $matches !== $predicate->all() ) {
+					return $matches;
 				}
 			}
-			return array() === $predicate->any();
+			return $predicate->all();
 		}
 		$value = $row[ $predicate->column() ] ?? null;
 		if ( $predicate->matches_null() && null === $value ) {
 			return true;
 		}
 		$operator = $predicate->operator();
+		if ( '<>' === $operator ) {
+			// Like MySQL, comparisons against NULL are unknown rather than true.
+			return null !== $value && ! $schema->values_match( $predicate->column(), $value, $predicate->values()[0] ?? null );
+		}
 		if ( in_array( $operator, array( '<', '<=', '>', '>=' ), true ) ) {
 			// A comparison with NULL is unknown, which never restricts.
 			if ( null === $value ) {
@@ -883,8 +966,8 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 *
 	 * @param array<string,mixed> $definition
 	 */
-	private function is_authoritative_definition( string $suffix, array $definition, string $prefix ): bool {
-		return $this->is_persisted_definition( $suffix, $definition, $prefix )
+	private function is_authoritative_definition( string $suffix, array $definition, string $prefix, string $table ): bool {
+		return $this->is_persisted_definition( $suffix, $definition, $prefix, $this->root_for( $table ) )
 			|| $this->is_generated_core_definition( $suffix, $definition );
 	}
 
@@ -893,10 +976,10 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		return WP_Markdown_Native_Schema_Catalog::is_generated_core_definition( $suffix, $definition );
 	}
 
-	private function is_persisted_definition( string $suffix, array $definition, string $prefix ): bool {
-		$directory = realpath( $this->state_root . '/_schema' );
+	private function is_persisted_definition( string $suffix, array $definition, string $prefix, string $root ): bool {
+		$directory = realpath( $root . '/_schema' );
 		$path = false === $directory ? '' : $directory . '/' . $suffix . '.sql';
-		if ( false === $directory || is_link( $this->state_root . '/_schema' ) || ! is_file( $path ) || is_link( $path ) ) {
+		if ( false === $directory || is_link( $root . '/_schema' ) || ! is_file( $path ) || is_link( $path ) ) {
 			return false;
 		}
 		try {
@@ -907,16 +990,16 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		}
 	}
 
-	private function tables_directory(): string|WP_Markdown_Query_Result {
-		$path = $this->state_root . '/_tables';
+	private function tables_directory( string $root ): string|WP_Markdown_Query_Result {
+		$path = $root . '/_tables';
 		if ( ! file_exists( $path ) && ! @mkdir( $path, 0755 ) && ! is_dir( $path ) ) {
 			return $this->failure( 'tables_directory_failed', 'The canonical tables directory could not be created.' );
 		}
-		$root = realpath( $path );
-		if ( false === $root || ! is_dir( $root ) || is_link( $path ) || dirname( $root ) !== $this->state_root ) {
+		$directory = realpath( $path );
+		if ( false === $directory || ! is_dir( $directory ) || is_link( $path ) || dirname( $directory ) !== $root ) {
 			return $this->failure( 'unsafe_tables_directory', 'The canonical tables directory is unavailable or unsafe.' );
 		}
-		return $root;
+		return $directory;
 	}
 
 	/** Coordinate only writers that publish the same canonical table. */
@@ -938,7 +1021,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'unsafe_table_file', 'The canonical table file is unavailable or unsafe.' );
 		}
 		if ( null !== $this->transactions ) {
-			$recorded = $this->transactions->record( $path );
+			$recorded = $this->is_temporary_path( $path ) ? $this->transactions->record_ephemeral( $path ) : $this->transactions->record( $path );
 			if ( true !== $recorded ) {
 				return $this->failure( 'transaction_journal_failed', $recorded );
 			}
@@ -980,6 +1063,23 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			return $this->failure( 'table_publish_failed', 'The canonical table rows could not be atomically published.' );
 		}
 		return true;
+	}
+
+	private function root_for( string $table ): string {
+		return null !== $this->temporary_tables && $this->temporary_tables->has( $table )
+			? $this->temporary_tables->root()
+			: $this->state_root;
+	}
+
+	private function index_for( string $root ): WP_Markdown_Native_Table_Index {
+		if ( $root === $this->state_root ) {
+			return $this->index;
+		}
+		return $this->temporary_indexes[ $root ] ??= new WP_Markdown_Native_Table_Index( $root . DIRECTORY_SEPARATOR . '_tables' );
+	}
+
+	private function is_temporary_path( string $path ): bool {
+		return null !== $this->temporary_tables && str_starts_with( $path, $this->temporary_tables->root() . DIRECTORY_SEPARATOR );
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

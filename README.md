@@ -849,3 +849,19 @@ Tested on WordPress 6.9 with SQLite-backed local and Playground-style runtimes:
 ## License
 
 GPL v2 or later.
+## Native SQL Mode Defaults
+
+The native WordPress connection starts with an empty SQL mode, matching its
+existing non-strict `SHOW VARIABLES` contract. Generic table inserts use MySQL
+implicit defaults for supported numeric, string and temporal columns when an
+explicit default is absent. Nullable columns remain NULL; explicit defaults
+take precedence. Missing implicit defaults produce bounded `SHOW WARNINGS`
+records and an exact `@@warning_count`.
+
+`SET [SESSION] sql_mode` and `SELECT @@[SESSION.]sql_mode` support the empty
+mode, `STRICT_TRANS_TABLES`, `STRICT_ALL_TABLES` and `NO_ENGINE_SUBSTITUTION`.
+Strict mode rejects an omitted required column with error 1364. Modes whose
+additional semantics are not implemented are rejected without changing the
+session. This is not a claim of complete MySQL coercion or SQL-mode coverage.
+The mode is connection-local, survives blog switches and resets on logical
+close; it is not persisted in canonical storage.

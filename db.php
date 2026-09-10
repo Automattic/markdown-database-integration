@@ -128,6 +128,12 @@ if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH' ) ) {
 		define( 'MARKDOWN_DB_NATIVE_SHADOW_REPORT_PATH', $markdown_db_shadow_report_path );
 	}
 }
+if ( ! defined( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' ) ) {
+	$markdown_db_shadow_trace_path = getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
+	if ( is_string( $markdown_db_shadow_trace_path ) && '' !== $markdown_db_shadow_trace_path ) {
+		define( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH', $markdown_db_shadow_trace_path );
+	}
+}
 
 // Downstream capability resolution, health, and CLI read the same identifier,
 // so the backend is settled before it is published. An operator who named a

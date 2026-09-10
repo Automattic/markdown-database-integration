@@ -109,8 +109,25 @@ $unknown_table = $runtime->execute(
 $unsupported_action = $runtime->execute(
 	new WP_Markdown_Query_Request( 'ALTER TABLE wp_agents ENGINE = InnoDB', 'wp_' )
 );
+$combined = $runtime->execute( new WP_Markdown_Query_Request( "ALTER TABLE wp_agents ADD COLUMN owner_id bigint unsigned DEFAULT NULL, ADD KEY owner_id (owner_id), ADD COLUMN tags varchar(40) DEFAULT 'one,two'" ) );
+$combined_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT owner_id, tags FROM wp_agents WHERE id = 1' ) );
+$combined_index = $runtime->execute( new WP_Markdown_Query_Request( "SHOW INDEX FROM wp_agents WHERE Key_name = 'owner_id'" ) );
+$before_failed_schema = persisted_schema( $root );
+$before_failed_rows = snapshot_rows( $root );
+$failed_combined = $runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_agents ADD COLUMN transient_field int DEFAULT 7, ADD KEY invalid_key (missing_field)' ) );
+$after_failed_schema = persisted_schema( $root );
+$after_failed_rows = snapshot_rows( $root );
+$after_failed_columns = $runtime->execute( new WP_Markdown_Query_Request( 'DESCRIBE wp_agents' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'START TRANSACTION' ) );
+$runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_agents SET label = 'committed-before-ddl' WHERE id = 1" ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'ALTER TABLE wp_agents ADD COLUMN transient_again int, ADD KEY invalid_again (missing_field)' ) );
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
+$committed_before_ddl = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT label FROM wp_agents WHERE id = 1' ) );
 
 $checks = array(
+	'multi-action ALTER adds columns and indexes in one statement' => $combined->succeeded() && array( 'owner_id' => null, 'tags' => 'one,two' ) === $combined_row->corpus_result()['rows'][0] && 1 === $combined_index->return_value(),
+	'a failed later ALTER action restores schema rows and registry' => ! $failed_combined->succeeded() && $before_failed_schema === $after_failed_schema && $before_failed_rows === $after_failed_rows && ! in_array( 'transient_field', array_column( $after_failed_columns->corpus_result()['rows'], 'Field' ), true ),
+	'failed atomic ALTER still preserves the outer implicit commit' => 'committed-before-ddl' === $committed_before_ddl->corpus_result()['rows'][0]['label'],
 	'MODIFY rewrites the persisted column definition' => true === $modified->succeeded()
 		&& str_contains( $after_modify, 'LONGTEXT NOT NULL' )
 		&& ! str_contains( $after_modify, 'instance_key VARCHAR(60) NULL' ),

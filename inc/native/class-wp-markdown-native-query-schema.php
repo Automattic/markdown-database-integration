@@ -710,6 +710,8 @@ final class WP_Markdown_Native_Table_Registry {
 	private array $tables = array();
 	/** @var array<string,array<string,mixed>> */
 	private array $definitions = array();
+	/** @var array<string,array{table:?array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider},definition:?array<string,mixed>}> */
+	private array $shadows = array();
 
 	public function register(
 		string $table,
@@ -746,6 +748,11 @@ final class WP_Markdown_Native_Table_Registry {
 		return $this->definitions[ $table ] ?? null;
 	}
 
+	/** Whether a connection-local temporary table currently hides this identifier. */
+	public function is_shadowed( string $table ): bool {
+		return isset( $this->shadows[ $table ] );
+	}
+
 	/**
 	 * Replace a registered table after its schema is altered.
 	 *
@@ -780,6 +787,34 @@ final class WP_Markdown_Native_Table_Registry {
 	 */
 	public function unregister( string $table ): void {
 		unset( $this->tables[ $table ], $this->definitions[ $table ] );
+	}
+
+	/** Replace a visible table for a connection-local temporary table. */
+	public function shadow( string $table, ?WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Table_Provider $provider, array $definition ): void {
+		if ( isset( $this->shadows[ $table ] ) ) {
+			throw new InvalidArgumentException( 'A temporary table already shadows this identifier.' );
+		}
+		$this->shadows[ $table ] = array( 'table' => $this->tables[ $table ] ?? null, 'definition' => $this->definitions[ $table ] ?? null );
+		unset( $this->tables[ $table ], $this->definitions[ $table ] );
+		$this->register_definition( $table, $definition );
+		if ( null !== $schema && null !== $provider ) {
+			$this->tables[ $table ] = array( 'schema' => $schema, 'provider' => $provider );
+		}
+	}
+
+	/** Restore the permanent table hidden by a dropped temporary table. */
+	public function unshadow( string $table ): void {
+		if ( ! isset( $this->shadows[ $table ] ) ) {
+			return;
+		}
+		$shadow = $this->shadows[ $table ];
+		unset( $this->tables[ $table ], $this->definitions[ $table ], $this->shadows[ $table ] );
+		if ( is_array( $shadow['definition'] ) ) {
+			$this->definitions[ $table ] = $shadow['definition'];
+		}
+		if ( is_array( $shadow['table'] ) ) {
+			$this->tables[ $table ] = $shadow['table'];
+		}
 	}
 
 	/** Forget request-scoped generic snapshots after canonical files are restored. */

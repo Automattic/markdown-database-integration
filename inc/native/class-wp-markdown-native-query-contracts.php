@@ -286,12 +286,16 @@ final class WP_Markdown_Native_Query_Plan {
 		private readonly array $union_order_by = array(),
 		private readonly ?int $union_limit = null,
 		private readonly int $union_limit_offset = 0,
-		private readonly array $group_expressions = array()
+		private readonly array $group_expressions = array(),
+		private readonly array $index_hints = array()
 	) {}
 
 	public function table(): string {
 		return $this->table;
 	}
+
+	/** @return array<int,array{table:string,mode:string,indexes:array<int,string>}> */
+	public function index_hints(): array { return $this->index_hints; }
 
 	/** @return array<int,string> */
 	public function projection(): array {

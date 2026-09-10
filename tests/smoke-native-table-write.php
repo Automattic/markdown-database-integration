@@ -66,6 +66,12 @@ $runtime->execute(
 );
 $runtime->execute(
 	new WP_Markdown_Query_Request(
+		'CREATE TABLE wp_cleanup_agents (id BIGINT NOT NULL AUTO_INCREMENT, label VARCHAR(60) NULL, PRIMARY KEY (id))',
+		'wp_'
+	)
+);
+$runtime->execute(
+	new WP_Markdown_Query_Request(
 		'CREATE TABLE wp_unique_jobs (id BIGINT NOT NULL AUTO_INCREMENT, scope VARCHAR(20) NULL, token VARCHAR(20) NULL, PRIMARY KEY (id), UNIQUE KEY scoped_token (scope, token(3)))',
 		'wp_'
 	)
@@ -102,6 +108,13 @@ foreach ( array(
 	"INSERT INTO wp_agents (instance_key, label) VALUES (NULL, 'first')",
 	"INSERT INTO wp_agents (instance_key, label) VALUES ('', 'second')",
 	"INSERT INTO wp_agents (instance_key, label) VALUES ('keep', 'third')",
+) as $insert ) {
+	$runtime->execute( new WP_Markdown_Query_Request( $insert, 'wp_' ) );
+}
+foreach ( array(
+	"INSERT INTO wp_cleanup_agents (label) VALUES ('first')",
+	"INSERT INTO wp_cleanup_agents (label) VALUES ('admin')",
+	"INSERT INTO wp_cleanup_agents (label) VALUES ('third')",
 ) as $insert ) {
 	$runtime->execute( new WP_Markdown_Query_Request( $insert, 'wp_' ) );
 }
@@ -147,6 +160,12 @@ $deleted = $runtime->execute(
 	new WP_Markdown_Query_Request( "DELETE FROM wp_agents WHERE instance_key = 'keep'", 'wp_' )
 );
 $after_delete = column_values( $root, 'label' );
+
+// WordPress fixture cleanup retains its administrative row with this shape.
+$inequality_delete = $runtime->execute(
+	new WP_Markdown_Query_Request( 'DELETE FROM wp_cleanup_agents WHERE id != 2', 'wp_' )
+);
+$after_inequality_delete = column_values( $root, 'label', 'cleanup_agents' );
 
 // Serialized values carry semicolons, which must not read as a statement separator.
 $serialized = $runtime->execute(
@@ -247,7 +266,39 @@ $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_agents SET label = 
 $runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK', 'wp_' ) );
 $after_rollback = column_values( $root, 'label' );
 
+$runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_claims (id bigint NOT NULL, generation bigint NULL, mirror bigint NULL, state varchar(20) NOT NULL, claimed_at datetime NULL, label varchar(10) NOT NULL, PRIMARY KEY (id))' ) );
+$claim_fixture = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_claims (id, generation, mirror, state, claimed_at, label) VALUES (1,NULL,NULL,'preparing',NULL,'one'),(2,2,NULL,'enqueuing','2026-09-10 23:00:00','1234567890'),(3,2,NULL,'enqueuing','2026-09-10 20:00:00','three'),(4,9,NULL,'enqueuing','2026-09-10 20:00:00','four')" ) );
+if ( ! $claim_fixture->succeeded() ) { throw new RuntimeException( json_encode( $claim_fixture->diagnostic() ) ); }
+$claim_sql = "UPDATE wp_claims SET generation = COALESCE(generation, 0) + 1, mirror = generation, state = 'enqueuing', claimed_at = '2026-09-10 23:00:00' WHERE id < 4 AND (state IN ('preparing', 'enqueue_failed') OR (state = 'enqueuing' AND (claimed_at IS NULL OR claimed_at < '2026-09-10 22:00:00')))";
+$claimed = $runtime->execute( new WP_Markdown_Query_Request( $claim_sql ) );
+$claim_rows = table_rows( $root, 'claims' );
+$claim_replay = $runtime->execute( new WP_Markdown_Query_Request( $claim_sql ) );
+$bad_expression = $runtime->execute( new WP_Markdown_Query_Request( 'UPDATE wp_claims SET generation = COALESCE(missing, 0) + 1 WHERE id = 999' ) );
+$wrong_source = $runtime->execute( new WP_Markdown_Query_Request( 'UPDATE wp_claims SET generation = other.generation WHERE id = 999' ) );
+$repeated_target = $runtime->execute( new WP_Markdown_Query_Request( 'UPDATE wp_claims SET generation = 1, generation = generation + 1' ) );
+$late_failure = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_claims SET label = CONCAT(label, '!') WHERE id IN (1, 2)" ) );
+$after_late_failure = table_rows( $root, 'claims' );
+$unique_failure = $runtime->execute( new WP_Markdown_Query_Request( 'UPDATE wp_claims SET id = COALESCE(mirror, 1) WHERE id IN (1, 2)' ) );
+$after_unique_failure = table_rows( $root, 'claims' );
+$runtime->execute( new WP_Markdown_Query_Request( 'BEGIN' ) );
+$precedence = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_claims SET generation = generation + 10 WHERE id = 1 OR id = 3 AND state = 'never'" ) );
+$precedence_rows = table_rows( $root, 'claims' );
+$nested_delete = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM wp_claims WHERE (id = 1 OR id = 3) AND state = 'enqueuing'" ) );
+$runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_claims SET generation = '9007199254740993' WHERE id = 4" ) );
+$large_increment = $runtime->execute( new WP_Markdown_Query_Request( 'UPDATE wp_claims SET generation = generation + 1 WHERE id = 4' ) );
+$large_rows = table_rows( $root, 'claims' );
+$runtime->execute( new WP_Markdown_Query_Request( 'ROLLBACK' ) );
+$restored_claims = table_rows( $root, 'claims' );
+
 $checks = array(
+	'nested lease predicates claim only eligible rows and assignments observe earlier values' => 2 === $claimed->return_value() && array( '1', '2', '3', '9' ) === array_column( $claim_rows, 'generation' ) && array( '1', null, '3', null ) === array_column( $claim_rows, 'mirror' ),
+	'a repeated claim cannot take an active lease' => 0 === $claim_replay->return_value(),
+	'unknown sources and repeated targets fail before mutation even without matching rows' => ! $bad_expression->succeeded() && ! $wrong_source->succeeded() && ! $repeated_target->succeeded(),
+	'a later invalid row prevents every scalar UPDATE write' => ! $late_failure->succeeded() && $claim_rows === $after_late_failure,
+	'scalar assignments preserve unique-key enforcement atomically' => ! $unique_failure->succeeded() && $claim_rows === $after_unique_failure,
+	'AND binds tighter than OR in write predicates' => 1 === $precedence->return_value() && array( '11', '2', '3', '9' ) === array_column( $precedence_rows, 'generation' ),
+	'rollback restores scalar updates and grouped deletes' => 2 === $nested_delete->return_value() && $claim_rows === $restored_claims,
+	'integer arithmetic preserves values beyond floating-point precision' => 1 === $large_increment->return_value() && '9007199254740994' === $large_rows[1]['generation'],
 	'the fixture table is created' => 0 === $created->return_value() || true === $created->succeeded(),
 	'a disjunctive NULL restriction updates every matching row' => 2 === $backfill->return_value()
 		&& array( 'default', 'default', 'keep' ) === $after_backfill,
@@ -256,6 +307,8 @@ $checks = array(
 		&& 1 === $matches_new_null->return_value(),
 	'DELETE removes only the restricted rows' => 1 === $deleted->return_value()
 		&& array( 'null-target', 'second' ) === $after_delete,
+	'a not-equal DELETE retains only its selected row' => 2 === $inequality_delete->return_value()
+		&& array( 'admin' ) === $after_inequality_delete,
 	'a serialized value is not read as a statement separator' => 1 === $serialized->return_value()
 		&& 'a:1:{s:3:"key";i:42;}' === ( $serialized_rows[ count( $serialized_rows ) - 1 ]['label'] ?? null ),
 	'a semicolon inside a literal survives an update' => 1 === $semicolon_text->return_value(),

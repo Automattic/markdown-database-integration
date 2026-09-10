@@ -20,6 +20,7 @@ $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexabl
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (object_id, object_type) VALUES (8, 'post')", 'wp_' ) );
 $hit = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, object_id FROM wp_yoast_indexable WHERE object_id = 7', 'wp_' ) );
 $miss = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id FROM wp_yoast_indexable WHERE object_id = 404', 'wp_' ) );
+$ordered = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_yoast_indexable WHERE object_type = 'post' ORDER BY id DESC LIMIT 1,1", 'wp_' ) );
 
 $checks = array(
 	'equality on a non-lookup integer column scans matching rows' => array( '7' ) === array_map(
@@ -28,6 +29,10 @@ $checks = array(
 	),
 	'a residual equality miss is an empty success' => array() === $miss->wpdb_state()['last_result']
 		&& false !== $miss->return_value(),
+	'a bounded ordered text residual scan remains a successful native lookup' => array( '1' ) === array_map(
+		static fn( object $row ): string => (string) $row->id,
+		$ordered->wpdb_state()['last_result']
+	),
 );
 
 $failed = false;

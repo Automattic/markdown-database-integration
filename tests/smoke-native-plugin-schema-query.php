@@ -4,6 +4,7 @@
 declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
+define( 'DB_NAME', 'wordpress' );
 
 function apply_filters( string $tag, mixed $value, mixed ...$args ): mixed {
 	if ( 'markdown_db_table_durability_policy' === $tag && 'ephemeral_native' === ( $args[0] ?? null ) ) {
@@ -120,6 +121,15 @@ $show_column = $runtime->execute( new WP_Markdown_Query_Request( "SHOW COLUMNS F
 $show_full_columns = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW FULL COLUMNS FROM wp_plugin_jobs' ) );
 $show_full_missing = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW FULL COLUMNS FROM wp_missing' ) );
 $show_indexes = $runtime->execute( new WP_Markdown_Query_Request( 'SHOW INDEX FROM `wp_plugin_jobs`' ) );
+$information_columns = $runtime->execute( new WP_Markdown_Query_Request( "SELECT TABLE_NAME, COLUMN_NAME, ORDINAL_POSITION, CHARACTER_MAXIMUM_LENGTH, COLUMN_DEFAULT, IS_NULLABLE, DATA_TYPE, COLUMN_TYPE, COLUMN_KEY, EXTRA FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = 'wordpress' AND TABLE_NAME IN ('wp_plugin_jobs', 'wp_inline_items') AND COLUMN_NAME IN ('id', 'owner_id', 'status', 'value')" ) );
+$absent_information_schema = $runtime->execute( new WP_Markdown_Query_Request( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = 'absent_schema' AND TABLE_NAME = 'wp_plugin_jobs'" ) );
+$contradictory_information_tables = $runtime->execute( new WP_Markdown_Query_Request( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs' AND TABLE_NAME = 'wp_inline_items'" ) );
+$contradictory_information_columns = $runtime->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME = 'id' AND COLUMN_NAME = 'status'" ) );
+$information_engine = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ENGINE AS Engine FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs'" ) );
+$unbounded_information = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE()' ) );
+$text_information = $runtime->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME, CHARACTER_MAXIMUM_LENGTH FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME IN ('task_url', 'payload')" ) );
+$overwide_information = $runtime->execute( new WP_Markdown_Query_Request( "SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME IN (" . implode( ',', array_fill( 0, 101, "'wp_plugin_jobs'" ) ) . ')' ) );
+$limited_residual = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_jobs WHERE status = 'queued' LIMIT 1" ) );
 file_put_contents(
 	$root . '/_tables/plugin_jobs.json',
 	json_encode(
@@ -137,7 +147,7 @@ $checks = array(
 		&& 'queued' === ( $exact->wpdb_state()['last_result'][0]->status ?? null )
 		&& '2' === ( $exact->wpdb_state()['last_result'][0]->id ?? null ),
 	'generic table introspection exposes registered tables with MySQL LIKE semantics' => 1 === $show_table->return_value()
-		&& 'wp_plugin_jobs' === ( $show_table->wpdb_state()['last_result'][0]->{'Tables_in_'} ?? null )
+		&& 'wp_plugin_jobs' === ( $show_table->wpdb_state()['last_result'][0]->Tables_in_wordpress ?? null )
 		&& 1 === $show_table_wildcard->return_value()
 		&& 1 === $show_table_escaped->return_value()
 		&& 0 === $show_missing_table->return_value(),
@@ -160,6 +170,24 @@ $checks = array(
 		$show_indexes->wpdb_state()['last_result']
 	)
 		&& array( '0', '1' ) === array_map( static fn( object $row ): string => $row->Non_unique, $show_indexes->wpdb_state()['last_result'] ),
+	'bounded information_schema reads derive column metadata from registered DDL' => array( 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_plugin_jobs', 'wp_inline_items', 'wp_inline_items' ) === array_map( static fn( object $row ): string => $row->TABLE_NAME, $information_columns->wpdb_state()['last_result'] )
+		&& array( 'id', 'owner_id', 'status', 'id', 'value' ) === array_map( static fn( object $row ): string => $row->COLUMN_NAME, $information_columns->wpdb_state()['last_result'] )
+		&& 'PRI' === ( $information_columns->wpdb_state()['last_result'][0]->COLUMN_KEY ?? null )
+		&& '32' === ( $information_columns->wpdb_state()['last_result'][2]->CHARACTER_MAXIMUM_LENGTH ?? null )
+		&& null === ( $information_columns->wpdb_state()['last_result'][0]->CHARACTER_MAXIMUM_LENGTH ?? null )
+		&& array( 253, 253, 8, 8, 253, 253, 251, 253, 253, 253 ) === array_map( static fn( object $column ): int => $column->type, $information_columns->wpdb_state()['col_info'] ),
+	'information_schema predicates preserve schema equality and AND intersections' => 0 === $absent_information_schema->return_value()
+		&& 0 === $contradictory_information_tables->return_value()
+		&& 0 === $contradictory_information_columns->return_value(),
+	'information_schema does not manufacture a transactional storage engine' => false === $information_engine->return_value()
+		&& 'unsupported_column' === ( $information_engine->diagnostic()['reason'] ?? null ),
+	'information_schema catalog scans remain fail-closed without a bounded table name' => false === $unbounded_information->return_value()
+		&& 'unsupported_lookup' === ( $unbounded_information->diagnostic()['reason'] ?? null ),
+	'information_schema reports TEXT character maxima and bounds list cardinality' => array( 'task_url' => '65535', 'payload' => '4294967295' ) === array_reduce( $text_information->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() )
+		&& false === $overwide_information->return_value()
+		&& 'resource_limit' === ( $overwide_information->diagnostic()['reason'] ?? null ),
+	'finite result limits do not authorize unbounded residual source scans' => false === $limited_residual->return_value()
+		&& 'unsupported_lookup' === ( $limited_residual->diagnostic()['reason'] ?? null ),
 	'primary and secondary numeric indexes derive bounded lookup capabilities' => array( '1', '2' ) === array_map(
 		static fn( object $row ): string => $row->id,
 		$secondary->wpdb_state()['last_result']

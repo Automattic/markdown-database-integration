@@ -70,12 +70,12 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				} while ( true );
 				$unless_exists = null;
 			}
-			$upsert_columns = null;
+			$upsert_assignments = null;
 			if ( 0 === strcasecmp( 'ON', (string) $this->current()->value() ) ) {
 				if ( $replace || $ignore_duplicate || null !== $unless_exists ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native cannot combine INSERT IGNORE or INSERT SELECT FROM DUAL with ON DUPLICATE KEY UPDATE.' );
 				}
-				$upsert_columns = $this->upsert_assignments( $columns );
+				$upsert_assignments = $this->upsert_assignments();
 			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
 			$inserts = array();
@@ -87,7 +87,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				if ( false === $row ) {
 					return $this->failure( 'invalid_insert_row', 'mdi-native requires one nonempty INSERT row.' );
 				}
-				$inserts[] = new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_columns, $replace );
+				$inserts[] = new WP_Markdown_Native_Table_Insert( $table, $row, $unless_exists, $ignore_duplicate, $upsert_assignments, $replace );
 			}
 			return $inserts;
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
@@ -125,7 +125,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				$this->word( 'UPDATE' );
 				$table = $this->identifier();
 				$this->word( 'SET' );
-				$values = $this->assignments();
+				$values = $this->assignments( $table );
 			}
 			$predicates = $this->where_predicates();
 			$this->type( WP_Markdown_Native_SQL_Token::END );
@@ -142,13 +142,26 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		}
 	}
 
-	/** @return array<string,int|string|null> */
-	private function assignments(): array {
+	/** @return array<string,int|string|null|WP_Markdown_Native_Query_Scalar_Expression> */
+	private function assignments( string $table ): array {
 		$values = array();
 		do {
 			$column = $this->identifier();
+			if ( array_key_exists( $column, $values ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'duplicate_mutation_column', $this->current()->sql_offset(), 'Repeated UPDATE targets are not supported.' );
+			}
 			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
-			$values[ $column ] = $this->literal();
+			$parser = new WP_Markdown_Native_Select_AST_Parser( $this->tokens, $this->position );
+			$expression = $parser->scalar_value();
+			$this->position = $parser->position();
+			foreach ( $expression->columns() as $source ) {
+				if ( null !== $source->qualifier() && 0 !== strcasecmp( $table, $source->qualifier() ) ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_mutation_column', $source->sql_offset(), 'An UPDATE expression must reference its target table.' );
+				}
+			}
+			$values[ $column ] = 'literal' === $expression->kind()
+				? ( null === $expression->literal() ? null : (string) $expression->literal() )
+				: ( new WP_Markdown_Native_Query_Parser() )->lower_scalar_expression( $expression, null, $table );
 			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
 				break;
 			}
@@ -177,33 +190,51 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		}
 		$this->word( 'WHERE' );
 
-		$predicates = array( $this->where_disjunction() );
-		while ( $this->is_word( 'AND' ) ) {
-			++$this->position;
-			$predicates[] = $this->where_disjunction();
-		}
-		return array_filter( $predicates );
+		$predicate = $this->where_disjunction();
+		return $predicate instanceof WP_Markdown_Native_Table_Predicate_Group && $predicate->all()
+			? $predicate->any()
+			: array( $predicate );
 	}
 
 	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
 	private function where_disjunction() {
-		$alternatives = array( $this->where_factor() );
+		$alternatives = array( $this->where_conjunction() );
 		while ( $this->is_word( 'OR' ) ) {
 			++$this->position;
-			$alternatives[] = $this->where_factor();
+			$alternatives[] = $this->where_conjunction();
 		}
 		$alternatives = array_values( array_filter( $alternatives ) );
 		if ( array() === $alternatives ) {
 			return null;
 		}
 		foreach ( $alternatives as $alternative ) {
-			if ( $alternative instanceof WP_Markdown_Native_Table_Subquery_Predicate && 1 !== count( $alternatives ) ) {
+			if ( 1 !== count( $alternatives ) && $this->has_subquery( $alternative ) ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $this->current()->sql_offset(), 'mdi-native supports IN subqueries only as conjunctive write restrictions.' );
 			}
 		}
 		return 1 === count( $alternatives )
 			? $alternatives[0]
 			: new WP_Markdown_Native_Table_Predicate_Group( $alternatives );
+	}
+
+	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
+	private function where_conjunction() {
+		$terms = array( $this->where_factor() );
+		while ( $this->is_word( 'AND' ) ) {
+			++$this->position;
+			$terms[] = $this->where_factor();
+		}
+		return 1 === count( $terms ) ? $terms[0] : new WP_Markdown_Native_Table_Predicate_Group( $terms, true );
+	}
+
+	private function has_subquery( mixed $predicate ): bool {
+		if ( $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) { return true; }
+		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+			foreach ( $predicate->any() as $term ) {
+				if ( $this->has_subquery( $term ) ) { return true; }
+			}
+		}
+		return false;
 	}
 
 	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
@@ -268,12 +299,13 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		return new WP_Markdown_Native_Table_Predicate( $column, array( $value ), false );
 	}
 
-	/** @return '<'|'<='|'>'|'>='|null */
+	/** @return '<>'|'<'|'<='|'>'|'>='|null */
 	private function comparison_operator(): ?string {
 		$type = $this->current()->type();
-		if ( in_array( $type, array( WP_Markdown_Native_SQL_Token::LESS_THAN, WP_Markdown_Native_SQL_Token::LESS_EQUALS, WP_Markdown_Native_SQL_Token::GREATER_THAN, WP_Markdown_Native_SQL_Token::GREATER_EQUALS ), true ) ) {
+		if ( in_array( $type, array( WP_Markdown_Native_SQL_Token::NOT_EQUALS, WP_Markdown_Native_SQL_Token::LESS_THAN, WP_Markdown_Native_SQL_Token::LESS_EQUALS, WP_Markdown_Native_SQL_Token::GREATER_THAN, WP_Markdown_Native_SQL_Token::GREATER_EQUALS ), true ) ) {
 			++$this->position;
 			return match ( $type ) {
+				WP_Markdown_Native_SQL_Token::NOT_EQUALS => '<>',
 				WP_Markdown_Native_SQL_Token::LESS_THAN => '<',
 				WP_Markdown_Native_SQL_Token::LESS_EQUALS => '<=',
 				WP_Markdown_Native_SQL_Token::GREATER_THAN => '>',
@@ -319,31 +351,38 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		return array_values( $columns );
 	}
 
-	/** @param array<int,string> $columns @return array<int,string> */
-	private function upsert_assignments( array $columns ): array {
+	/** @return array<int,array{target:string,kind:string,source:?string,value:int|string|null}> */
+	private function upsert_assignments(): array {
 		$this->word( 'ON' );
 		$this->word( 'DUPLICATE' );
 		$this->word( 'KEY' );
 		$this->word( 'UPDATE' );
 		$assignments = array();
-		$available = array_fill_keys( $columns, true );
 		do {
 			$target = $this->identifier();
 			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
-			$this->word( 'VALUES' );
-			$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
-			$source = $this->identifier();
-			$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-			if ( $target !== $source || isset( $assignments[ $target ] ) || ! isset( $available[ $target ] ) ) {
-				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native requires deterministic VALUES assignments for ON DUPLICATE KEY UPDATE.' );
+			$source = null;
+			$value = null;
+			if ( $this->is_word( 'VALUES' ) ) {
+				$this->word( 'VALUES' );
+				$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+				$source = $this->identifier();
+				$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+				$kind = 'inserted';
+			} elseif ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true ) ) {
+				$source = $this->identifier();
+				$kind = 'column';
+			} else {
+				$value = $this->literal();
+				$kind = 'literal';
 			}
-			$assignments[ $target ] = $target;
+			$assignments[] = array( 'target' => $target, 'kind' => $kind, 'source' => $source, 'value' => $value );
 			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
 				break;
 			}
 			++$this->position;
 		} while ( true );
-		return array_values( $assignments );
+		return $assignments;
 	}
 
 	/** @return array<int,int|string|null> */

@@ -24,6 +24,8 @@ final class MDI_Snapshot_Connection {
 	public array $global_rows = array( array( 'meta_id' => '1', 'site_id' => '1', 'meta_key' => 'site_name', 'meta_value' => 'Example' ) );
 	/** @var array<int,array<string,mixed>> */
 	public array $plugin_rows = array( array( 'id' => '1', 'name' => 'Agent' ) );
+	public array $catalog_rows = array( array( 'COLUMN_NAME' => 'status', 'DATA_TYPE' => 'varchar', 'CHARACTER_MAXIMUM_LENGTH' => '64', 'IS_NULLABLE' => 'NO' ) );
+	public bool $temporary_permanent_schema_exists = false;
 	public bool $blog_table_absent = true;
 	public int $errno = 0;
 	/** @var array<int,MDI_Snapshot_Result> */
@@ -38,6 +40,10 @@ final class MDI_Snapshot_Connection {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => $table, 'Create Table' => 'CREATE TABLE `' . $table . '` (`meta_id` bigint(20) unsigned NOT NULL, `site_id` bigint(20) unsigned NOT NULL, `meta_key` varchar(255) NOT NULL, `meta_value` longtext NOT NULL, PRIMARY KEY (`meta_id`))' ) ) );
 		} elseif ( 'SHOW CREATE TABLE `agents`' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'agents', 'Create Table' => 'CREATE TABLE `agents` (`id` bigint(20) unsigned NOT NULL, `name` varchar(255) NOT NULL, PRIMARY KEY (`id`))' ) ) );
+		} elseif ( 'SHOW CREATE TABLE `wp_plugin_jobs`' === $sql ) {
+			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_plugin_jobs', 'Create Table' => 'CREATE TABLE `wp_plugin_jobs` (`id` bigint(20) unsigned NOT NULL, `status` varchar(64) NOT NULL, `payload` longtext NOT NULL, PRIMARY KEY (`id`))' ) ) );
+		} elseif ( 'SHOW CREATE TABLE `wp_temporary_jobs`' === $sql ) {
+			$result = new MDI_Snapshot_Result( array( array( 'Table' => 'wp_temporary_jobs', 'Create Table' => 'CREATE TEMPORARY TABLE `wp_temporary_jobs` (`id` bigint(20) unsigned NOT NULL, `status` varchar(64) NOT NULL, PRIMARY KEY (`id`))' ) ) );
 		} elseif ( 'SHOW CREATE TABLE `wp_2_options`' === $sql && $this->blog_table_absent ) {
 			$this->errno = 1146;
 			return false;
@@ -58,8 +64,21 @@ final class MDI_Snapshot_Connection {
 		if ( 'SELECT * FROM `agents` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( $this->plugin_rows );
 		}
+		if ( 'SELECT * FROM `wp_plugin_jobs` LIMIT 10001' === $sql ) {
+			$result = new MDI_Snapshot_Result( array() );
+		}
+		if ( 'SELECT * FROM `wp_temporary_jobs` LIMIT 10001' === $sql ) {
+			$result = new MDI_Snapshot_Result( array() );
+		}
 		if ( 'SELECT * FROM `wp_2_options` LIMIT 10001' === $sql ) {
 			$result = new MDI_Snapshot_Result( array( array( 'ID' => '1', 'option_value' => 'created' ) ) );
+		}
+		if ( str_starts_with( $sql, 'SELECT COLUMN_NAME' ) && str_contains( $sql, 'FROM information_schema.COLUMNS' ) ) {
+			if ( str_contains( $sql, "TABLE_NAME = 'wp_temporary_jobs'" ) && str_contains( $sql, 'COLUMN_TYPE' ) ) {
+				$result = new MDI_Snapshot_Result( $this->temporary_permanent_schema_exists ? array( array( 'COLUMN_NAME' => 'permanent_id', 'COLUMN_TYPE' => 'bigint(20) unsigned', 'IS_NULLABLE' => 'NO', 'COLUMN_KEY' => 'PRI', 'EXTRA' => '', 'COLUMN_DEFAULT' => null ) ) : array() );
+			} else {
+				$result = new MDI_Snapshot_Result( str_contains( $sql, "'wp_temporary_jobs'" ) ? array() : $this->catalog_rows );
+			}
 		}
 		if ( $result instanceof MDI_Snapshot_Result ) {
 			$this->results[] = $result;
@@ -229,8 +248,43 @@ $tableless = new WP_Markdown_Native_Shadow_Verifier(
 	1,
 	array( 'input_mode' => 'sql_snapshot' )
 );
-$tableless->capture_input( 'SELECT 1', $database );
-$tableless->observe( 'SELECT 1', 1, $database );
+$database->result_rows( array( array( 'one' => '1' ) ), array( array( 'name' => 'one', 'type' => 3 ) ) );
+$tableless->capture_input( 'SELECT 1 AS one', $database );
+$tableless->observe( 'SELECT 1 AS one', 1, $database );
+$json_tableless = new WP_Markdown_Native_Shadow_Verifier(
+	WP_Markdown_Native_Runtime_Factory::runtime( sys_get_temp_dir() ),
+	2,
+	array( 'input_mode' => 'sql_snapshot' )
+);
+$database->result_rows( array( array( 'JSON_VALID(\'{"valid":true}\')' => '1' ) ), array( array( 'name' => 'JSON_VALID(\'{"valid":true}\')', 'type' => 8 ) ) );
+$json_tableless->capture_input( "SELECT JSON_VALID('{\"valid\":true}')", $database );
+$json_tableless->observe( "SELECT JSON_VALID('{\"valid\":true}')", 1, $database );
+$database->result_rows( array( array( "JSON_VALID('{invalid}')" => '0' ) ), array( array( 'name' => "JSON_VALID('{invalid}')", 'type' => 8 ) ) );
+$json_tableless->capture_input( "SELECT JSON_VALID('{invalid}')", $database );
+$json_tableless->observe( "SELECT JSON_VALID('{invalid}')", 1, $database );
+$catalog_columns = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	"SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME IN ('status', 'payload')",
+	'wp_'
+);
+$catalog_result = $catalog_columns->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME, DATA_TYPE, CHARACTER_MAXIMUM_LENGTH, IS_NULLABLE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_plugin_jobs' AND COLUMN_NAME IN ('status', 'payload')", 'wp_' ) );
+$catalog_engine = $catalog_columns->execute( new WP_Markdown_Query_Request( "SELECT ENGINE FROM information_schema.TABLES WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_plugin_jobs'", 'wp_' ) );
+$temporary_catalog_reason = null;
+try {
+	WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+		$database,
+		"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_temporary_jobs'",
+		'wp_'
+	);
+} catch ( WP_Markdown_Native_Snapshot_Input_Exception $error ) {
+	$temporary_catalog_reason = $error->diagnostic()['reason'];
+}
+$database->source()->temporary_permanent_schema_exists = true;
+$temporary_shadow_catalog = WP_Markdown_Native_Authoritative_Snapshot_Runtime::capture(
+	$database,
+	"SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_temporary_jobs'",
+	'wp_'
+)->execute( new WP_Markdown_Query_Request( "SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA = '' AND TABLE_NAME = 'wp_temporary_jobs'", 'wp_' ) );
 $capture_count_at_bound = count( $database->source()->results );
 $bounded->capture_input( 'SELECT ID, post_title FROM wp_posts', $database );
 $bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
@@ -238,6 +292,7 @@ $bounded->observe( 'SELECT ID, post_title FROM wp_posts', 1, $database );
 $checks = array(
 	'authoritative snapshots compare with independently evaluated native SQL' => 2 === $second['counts']['compatible'] && 0 === $second['counts']['verifier_failures'],
 	'input provenance records bounded source rows without their values' => 'authoritative_mysql_connection_pre_query' === ( $first['context']['last_input_state']['read_connection'] ?? null )
+		&& 1 === ( $first['context']['authoritative_snapshot_captures'] ?? null )
 		&& 1 === ( $first['context']['last_input_state']['tables'][0]['rows'] ?? 0 )
 		&& 64 === strlen( (string) ( $first['context']['last_input_state']['tables'][0]['schema_sha256'] ?? '' ) )
 		&& 'pre_query_wpdb_insert_id' === ( $first['context']['last_input_state']['facade_state']['native_insert_id'] ?? null )
@@ -266,7 +321,20 @@ $checks = array(
 	'duplicate JOIN aliases cannot count as compatible missing-table errors' => 1 === ( $duplicate_alias_report['counts']['unsupported'] ?? null )
 		&& 0 === ( $duplicate_alias_report['counts']['compatible_missing_table_errors'] ?? null ),
 	'capture does no source work after the observation cap and drops the matching observation' => $capture_count_at_bound === count( $database->source()->results ) && 1 === $bounded->report()['counts']['dropped'],
-	'tableless native SQL retains its parser unsupported diagnostic' => 'markdown_db_native_unsupported_query' === ( $tableless->report()['first_blocker']['native_diagnostic']['code'] ?? null ),
+	'tableless scalar SQL is independently compared through the stateless runtime path' => 1 === $tableless->report()['counts']['compatible']
+		&& 'native_runtime_fast_path' === ( $tableless->report()['context']['last_input_state']['read_connection'] ?? null )
+		&& array() === ( $tableless->report()['context']['last_input_state']['tables'] ?? null ),
+	'unaliased JSON_VALID uses the stateless capture path and independently executes both lifecycle literals' => 2 === $json_tableless->report()['counts']['compatible']
+		&& 0 === $json_tableless->report()['counts']['unsupported']
+		&& 'native_runtime_fast_path' === ( $json_tableless->report()['context']['last_input_state']['read_connection'] ?? null ),
+	'catalog capture snapshots requested physical DDL and independently executes COLUMNS metadata' => array( 'wp_plugin_jobs' ) === array_column( $catalog_columns->provenance()['tables'], 'table' )
+		&& 251 === ( $catalog_result->wpdb_state()['col_info'][1]->type ?? null )
+		&& array( 'status' => '64', 'payload' => '4294967295' ) === array_reduce( $catalog_result->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() ),
+	'catalog capture does not replay the observed metadata SQL for diagnostic receipts' => ! isset( $catalog_columns->provenance()['catalog_observation'] ),
+	'temporary catalog capture is explicitly unavailable when no permanent schema exists' => 'permanent_catalog_schema_unavailable' === $temporary_catalog_reason,
+	'temporary tables use independently captured permanent catalog metadata when names shadow' => array( 'permanent_id' ) === array_map( static fn( object $row ): string => $row->COLUMN_NAME, $temporary_shadow_catalog->wpdb_state()['last_result'] ),
+	'catalog ENGINE remains an explicit unsupported projection after source discovery' => false === $catalog_engine->return_value()
+		&& 'unsupported_column' === ( $catalog_engine->diagnostic()['reason'] ?? null ),
 	'capture results are released after both schema and row reads' => array_reduce( $database->source()->results, static fn( bool $freed, MDI_Snapshot_Result $result ): bool => $freed && $result->freed, true ),
 );
 $failed = 0;

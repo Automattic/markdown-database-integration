@@ -50,6 +50,8 @@ $composite_order_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY wp_
 $composite_order_plan = $composite_order_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $composite_order_ast ) : $composite_order_ast;
 $found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
 $found_rows_query_plan = $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows ? $parser->lower( $found_rows_query_ast ) : $found_rows_query_ast;
+$limit_offset_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY ID LIMIT 10 OFFSET 20' );
+$limit_offset_plan = $limit_offset_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $limit_offset_ast ) : $limit_offset_ast;
 
 $duplicate_sql = 'SELECT first, second, first FROM example';
 $duplicate     = $parser->parse( $duplicate_sql );
@@ -189,6 +191,9 @@ $checks = array(
 		),
 	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
 		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
+	'LIMIT OFFSET lowers to the bounded main-query offset' => $limit_offset_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 10 === $limit_offset_plan->limit()
+		&& 20 === $limit_offset_plan->limit_offset(),
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result
 		&& 'duplicate_projection' === ( $duplicate->diagnostic()['reason'] ?? null )
 		&& strrpos( $duplicate_sql, 'first' ) === ( $duplicate->diagnostic()['sql_offset'] ?? null ),
@@ -208,7 +213,9 @@ $checks = array(
 		&& strpos( $unterminated_sql, "'open" ) === ( $unterminated->diagnostic()['sql_offset'] ?? null )
 		&& $malformed_and instanceof WP_Markdown_Query_Result
 		&& strpos( $malformed_and_sql, 'BY' ) === ( $malformed_and->diagnostic()['sql_offset'] ?? null ),
-	'an aliased column count is an aggregate like any other' => $counted_column instanceof WP_Markdown_Native_Query_Plan
+	'column counts retain typed aggregate plans with or without an alias' => $count_column instanceof WP_Markdown_Native_Query_Plan
+		&& 'COUNT(row_id)' === $count_column->aggregates()[0]['alias']
+		&& $counted_column instanceof WP_Markdown_Native_Query_Plan
 		&& 1 === count( $counted_column->aggregates() )
 		&& 'COUNT' === $counted_column->aggregates()[0]['function']
 		&& 'row_id' === $counted_column->aggregates()[0]['column'],
@@ -216,9 +223,7 @@ $checks = array(
 		&& 'COUNT' === $distinct_count->aggregates()[0]['function']
 		&& 'row_id' === $distinct_count->aggregates()[0]['column']
 		&& true === $distinct_count->aggregates()[0]['distinct'],
-	'unsupported aggregate shapes fail closed at exact source positions' => $count_column instanceof WP_Markdown_Query_Result
-		&& strpos( $count_column_sql, 'FROM' ) === ( $count_column->diagnostic()['sql_offset'] ?? null )
-		&& $mixed_count instanceof WP_Markdown_Query_Result
+	'unsupported aggregate shapes fail closed at exact source positions' => $mixed_count instanceof WP_Markdown_Query_Result
 		&& strpos( $mixed_count_sql, ',' ) === ( $mixed_count->diagnostic()['sql_offset'] ?? null )
 		&& $aliased_count instanceof WP_Markdown_Query_Result
 		&& strpos( $aliased_count_sql, 'AS' ) === ( $aliased_count->diagnostic()['sql_offset'] ?? null )
@@ -227,7 +232,7 @@ $checks = array(
 		&& $unsupported_function instanceof WP_Markdown_Query_Result
 		&& strpos( $unsupported_function_sql, '*' ) === ( $unsupported_function->diagnostic()['sql_offset'] ?? null )
 		&& array_reduce(
-			array( $count_column, $mixed_count, $aliased_count, $grouped_count, $unsupported_function ),
+			array( $mixed_count, $aliased_count, $grouped_count, $unsupported_function ),
 			static fn( bool $valid, WP_Markdown_Query_Result $result ): bool => $valid && 'unsupported_grammar' === ( $result->diagnostic()['reason'] ?? null ),
 			true
 		),

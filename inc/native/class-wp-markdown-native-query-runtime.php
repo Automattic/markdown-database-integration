@@ -272,7 +272,6 @@ final class WP_Markdown_Native_Runtime_Factory {
 		);
 		$registry = self::registry( $state_root, $prefix, $base_prefix, $multisite, $content_root, $global_state_root, $global_content_root );
 		$temporary_tables = $temporary_tables ?? new WP_Markdown_Native_Temporary_Tables();
-		$registry->temporary_tables( $temporary_tables );
 		$parser = new WP_Markdown_Native_Table_Insert_Parser();
 		$resolved_base = $base_prefix ?? $prefix;
 		$resolved_content = $content_root ?? $state_root;

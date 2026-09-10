@@ -284,6 +284,7 @@ final class WP_Markdown_Native_Query_Parser {
 					'source'   => $this->column_source( $aggregate['column'], $base_source, $bindings ),
 					'alias'    => $aggregate['alias'],
 					'distinct' => $aggregate['distinct'] ?? false,
+					'expression' => isset( $aggregate['expression'] ) ? $this->lower_scalar_expression( $aggregate['expression'], $base_source, $flat_source, $bindings ) : null,
 				),
 				$ast->aggregates()
 			),
@@ -459,6 +460,9 @@ final class WP_Markdown_Native_Query_Parser {
 			}
 		}
 		foreach ( $ast->aggregates() as $aggregate ) {
+			if ( isset( $aggregate['expression'] ) ) {
+				$columns = array_merge( $columns, $aggregate['expression']->columns() );
+			}
 			if ( null !== $aggregate['column'] ) {
 				$columns[] = $aggregate['column'];
 			}
@@ -588,7 +592,8 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		// COUNT(*) reports over rows; COUNT(column) counts values, so it is an
 		// aggregate like the others rather than the row-count shortcut.
 		$counts_rows = $this->matches_function( 'COUNT' )
-			&& WP_Markdown_Native_SQL_Token::STAR === ( $this->tokens[ $this->current + 2 ] ?? null )?->type();
+			&& WP_Markdown_Native_SQL_Token::STAR === ( $this->tokens[ $this->current + 2 ] ?? null )?->type()
+			&& 'FROM' === strtoupper( (string) ( $this->tokens[ $this->current + 4 ] ?? null )?->value() );
 		if ( ! $select_all && $counts_rows ) {
 			$count_all = true;
 			$this->identifier();
@@ -1329,7 +1334,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 						'mdi-native supports OR only over uncast equality or LIKE alternatives.'
 					);
 				}
-				if ( ! in_array( $conjunct->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =' ), true ) ) {
+				if ( ! in_array( $conjunct->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =', 'LIKE' ), true ) ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error(
 						'unsupported_or',
 						$sql_offset,
@@ -1344,7 +1349,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				continue;
 			}
 			$predicate = $group[0];
-			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =' ), true ) ) {
+			if ( ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =', 'LIKE' ), true ) ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error(
 					'unsupported_or',
 					$sql_offset,
@@ -1372,7 +1377,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			return array( new WP_Markdown_Native_SQL_Predicate( $identifier, 'OR', array(), $alternatives ) );
 		}
 		foreach ( $alternatives as $alternative ) {
-			if ( 'IS NULL' === $alternative->operator() ) {
+			if ( in_array( $alternative->operator(), array( 'IS NULL', 'LIKE' ), true ) ) {
 				return array( new WP_Markdown_Native_SQL_Predicate( $identifier, 'OR', array(), $alternatives ) );
 			}
 		}
@@ -1447,6 +1452,14 @@ final class WP_Markdown_Native_Select_AST_Parser {
 			$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
 			$argument = $this->current();
 			$distinct = $this->match_keyword( 'DISTINCT' );
+			if ( $this->matches_scalar_expression() ) {
+				if ( $distinct || ! in_array( $function, array( 'SUM', 'AVG' ), true ) ) {
+					$this->unsupported( $argument );
+				}
+				$expression = $this->scalar_value();
+				$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+				return array( 'function' => $function, 'column' => null, 'expression' => $expression, 'alias' => $this->scalar_alias(), 'distinct' => false );
+			}
 			$column = $this->match_type( WP_Markdown_Native_SQL_Token::STAR ) ? null : $this->identifier();
 			if ( $distinct && ( 'COUNT' !== $function || null === $column ) ) {
 				$this->unsupported( $argument );

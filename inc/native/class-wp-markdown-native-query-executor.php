@@ -404,6 +404,25 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $scalar_projection as $scalar ) {
 			$scalar_columns = array_merge( $scalar_columns, $scalar['expression']->columns() );
 		}
+		foreach ( $plan->aggregates() as $aggregate ) {
+			if ( isset( $aggregate['expression'] ) ) {
+				$expression = $aggregate['expression'];
+				$scalar_columns = array_merge( $scalar_columns, $expression->columns() );
+				foreach ( $expression->columns() as $column ) {
+					if ( ! $schema->has_column( $column ) ) {
+						return $this->failure( 'unsupported_column', 'mdi-native cannot query the requested aggregate column.' );
+					}
+				}
+				foreach ( $expression->predicates() as $predicate ) {
+					if ( ! $schema->supports_predicate( $predicate ) ) {
+						return $this->failure( 'unsupported_lookup', 'mdi-native cannot apply the requested aggregate predicate.' );
+					}
+				}
+				if ( ! $this->is_numeric_expression( $expression, $schema ) ) {
+					return $this->failure( 'unsupported_aggregate', 'mdi-native aggregates numeric scalar expressions only.' );
+				}
+			}
+		}
 		$columns = array_merge( $projection, $scalar_columns );
 		foreach ( $scalar_predicates as $predicate ) { $columns = array_merge( $columns, $predicate->columns() ); }
 		if ( null !== $boolean_predicate ) { $columns = array_merge( $columns, $boolean_predicate->columns() ); }
@@ -676,13 +695,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		foreach ( $aggregates as $index => $aggregate ) {
 			$current = $state[ $index ] ?? array( 'count' => 0, 'sum' => null, 'min' => null, 'max' => null, 'values' => array() );
 			$column = $aggregate['column'];
-			if ( null === $column ) {
+			if ( null === $column && ! isset( $aggregate['expression'] ) ) {
 				// COUNT(*) reports over rows, so a NULL column cannot skip one.
 				++$current['count'];
 				$state[ $index ] = $current;
 				continue;
 			}
-			$value = $row[ $column ] ?? null;
+			$value = isset( $aggregate['expression'] ) ? $this->evaluate_scalar( $aggregate['expression'], $row, $schema ) : ( $row[ $column ] ?? null );
 			if ( null === $value ) {
 				// SQL aggregates ignore NULL, and COUNT(column) counts values.
 				$state[ $index ] = $current;
@@ -695,24 +714,39 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( 'GROUP_CONCAT' === $aggregate['function'] ) {
 				$current['values'][] = (string) $value;
 			}
-			if ( null === $current['min'] || 0 > ( $schema->ordered_comparison( $column, $value, $current['min'] ) ?? 0 ) ) {
+			if ( null !== $column && ( null === $current['min'] || 0 > ( $schema->ordered_comparison( $column, $value, $current['min'] ) ?? 0 ) ) ) {
 				$current['min'] = $value;
 			}
-			if ( null === $current['max'] || 0 < ( $schema->ordered_comparison( $column, $value, $current['max'] ) ?? 0 ) ) {
+			if ( null !== $column && ( null === $current['max'] || 0 < ( $schema->ordered_comparison( $column, $value, $current['max'] ) ?? 0 ) ) ) {
 				$current['max'] = $value;
 			}
 			$state[ $index ] = $current;
 		}
 	}
 
-	/**
-	 * Report one row of ungrouped aggregates.
-	 *
-	 * An aggregate over no rows is NULL, except COUNT, which is zero.
-	 *
-	 * @param array<int,array<string,mixed>> $state      Running totals, by aggregate.
-	 * @param array<int,array<string,mixed>> $aggregates Declared aggregates.
-	 */
+	/** Validate numeric expression types before reading rows, including empty sets. */
+	private function is_numeric_expression( WP_Markdown_Native_Query_Scalar_Expression $expression, WP_Markdown_Native_Table_Schema $schema ): bool {
+		if ( 'literal' === $expression->kind() ) {
+			return null === $expression->literal() || is_int( $expression->literal() );
+		}
+		if ( 'column' === $expression->kind() ) {
+			return $schema->is_numeric_column( $expression->column() );
+		}
+		if ( 'CASE' === $expression->kind() ) {
+			foreach ( $expression->branches() as $branch ) {
+				if ( ! $this->is_numeric_expression( $branch['value'], $schema ) ) { return false; }
+			}
+			return null === $expression->else() || $this->is_numeric_expression( $expression->else(), $schema );
+		}
+		if ( in_array( $expression->kind(), array( 'COALESCE', 'IFNULL', 'NULLIF', 'ABS', 'ROUND', 'FLOOR', 'CEIL' ), true ) ) {
+			foreach ( $expression->arguments() as $argument ) {
+				if ( ! $this->is_numeric_expression( $argument, $schema ) ) { return false; }
+			}
+			return true;
+		}
+		return false;
+	}
+
 	private function aggregate_result( array $state, array $aggregates ): WP_Markdown_Query_Result {
 		$row = array();
 		$columns = array();
@@ -1353,6 +1387,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		foreach ( $plan->aggregates() as $aggregate ) {
 			if ( null === $aggregate['column'] ) {
+				if ( isset( $aggregate['expression'] ) ) {
+					return $this->failure( 'unsupported_aggregate', 'mdi-native does not yet aggregate scalar expressions across joins.' );
+				}
 				continue;
 			}
 			$aggregate_source = (string) $aggregate['source'];

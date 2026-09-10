@@ -35,6 +35,14 @@ function mdi_aggregate_row( WP_Markdown_Native_Query_Runtime $runtime, string $s
 }
 
 $totals = mdi_aggregate_row( $runtime, 'SELECT SUM(score) AS total, AVG(score) AS mean, MIN(score) AS lowest, MAX(score) AS highest FROM wp_items' );
+$conditional_sql = "SELECT COUNT(*) AS total, SUM(CASE WHEN kind = 'a' THEN 1 ELSE 0 END) AS completed, SUM(CASE WHEN kind LIKE 'b%' OR kind = 'c' THEN 1 ELSE 0 END) AS skipped FROM wp_items";
+$conditional = mdi_aggregate_row( $runtime, $conditional_sql );
+$conditional_empty = mdi_aggregate_row( $runtime, $conditional_sql . " WHERE kind = 'missing'" );
+$numeric_scalar = mdi_aggregate_row( $runtime, 'SELECT SUM(COALESCE(score, 0)) AS total, AVG(ABS(score)) AS mean FROM wp_items' );
+$scalar_null = mdi_aggregate_row( $runtime, "SELECT SUM(ABS(score)) AS total FROM wp_items WHERE kind = 'c'" );
+$bad_scalar = mdi_aggregate_row( $runtime, 'SELECT SUM(ABS(missing)) AS total FROM wp_items' );
+$bad_type = mdi_aggregate_row( $runtime, "SELECT SUM(COALESCE(kind, 'bad')) AS total FROM wp_items WHERE id = 999" );
+$conditional_groups = $runtime->execute( new WP_Markdown_Query_Request( "SELECT kind, COUNT(*) AS total, SUM(CASE WHEN score > 15 THEN 1 ELSE 0 END) AS high FROM wp_items GROUP BY kind ORDER BY kind" ) );
 $counts = mdi_aggregate_row( $runtime, 'SELECT COUNT(score) AS scored FROM wp_items' );
 $all_rows = mdi_aggregate_row( $runtime, 'SELECT COUNT(*) FROM wp_items' );
 $filtered = mdi_aggregate_row( $runtime, "SELECT SUM(score) AS total FROM wp_items WHERE kind = 'a'" );
@@ -53,6 +61,11 @@ usort( $alias_rows, static fn( array $left, array $right ): int => (int) $left['
 usort( $joined_rows, static fn( array $left, array $right ): int => (int) $left['score'] <=> (int) $right['score'] );
 
 $checks = array(
+	'aliased row counts compose with conditional aggregates' => array( 'total' => '4', 'completed' => '2', 'skipped' => '2' ) === $conditional,
+	'conditional aggregates retain empty-set NULL and count semantics' => array( 'total' => '0', 'completed' => null, 'skipped' => null ) === $conditional_empty,
+	'numeric scalar aggregates reuse row-local evaluation' => array( 'total' => '60', 'mean' => '20' ) === $numeric_scalar && array( 'total' => null ) === $scalar_null,
+	'aggregate expressions validate columns and types even on empty sets' => 'unsupported_column' === ( $bad_scalar['unsupported'] ?? null ) && 'unsupported_aggregate' === ( $bad_type['unsupported'] ?? null ),
+	'conditional aggregates execute independently per group' => $conditional_groups->succeeded() && array( array( 'kind' => 'a', 'total' => '2', 'high' => '1' ), array( 'kind' => 'b', 'total' => '1', 'high' => '1' ), array( 'kind' => 'c', 'total' => '1', 'high' => '0' ) ) === $conditional_groups->corpus_result()['rows'],
 	'multiple explicit grouping columns preserve every projected value' => $grouped->succeeded() && array(
 		array( 'kind' => 'c', 'score' => null, 'n' => '1' ),
 		array( 'kind' => 'a', 'score' => '10', 'n' => '1' ),

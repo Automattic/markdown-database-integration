@@ -819,7 +819,7 @@ class WP_Markdown_Storage {
 
 	/** Remove a cached post path only when it still carries that post's ID. */
 	private function safe_unlink_owned_by( string $path, int $post_id ): bool {
-		return $post_id === $this->extract_id_from_file( $path ) && $this->safe_unlink( $path );
+		return $this->existing_path_is_safe( $path ) && $post_id === $this->extract_id_from_file( $path ) && $this->safe_unlink( $path );
 	}
 
 	/**

@@ -375,9 +375,41 @@ assert_true( file_exists( $tmp_root . '/wiki/original.md' ), 'reused cached path
 assert_eq( $storage->read_file( $tmp_root . '/wiki/original.md', true )->ID ?? null, 20, 'reused path retains its new owner' );
 
 // ---------------------------------------------------------------------------
-// Test 8 — a fresh write still wins over a stale duplicate during first scan
+// Test 8 — an externally removed cached path does not become a read warning
 // ---------------------------------------------------------------------------
-echo "\nTest 8: fresh writes remain canonical during initial duplicate cleanup\n";
+echo "\nTest 8: stale missing cached paths are ignored without parsing them\n";
+
+rm_rf( $tmp_root );
+write_leaf( $tmp_root . '/wiki/original.md', 10, 'original' );
+
+$storage = new WP_Markdown_Storage( $tmp_root, array() );
+assert_true( null !== $storage->read_post( 10 ), 'initial read completes the index for a removable path' );
+unlink( $tmp_root . '/wiki/original.md' );
+
+set_error_handler( static function ( int $severity, string $message ): never {
+	throw new ErrorException( $message, 0, $severity );
+} );
+try {
+	$written_path = $storage->write_post( (object) array(
+		'ID'           => 10,
+		'post_type'    => 'wiki',
+		'post_name'    => 'replacement',
+		'post_parent'  => 0,
+		'post_status'  => 'publish',
+		'post_title'   => 'Replacement',
+		'post_content' => 'replacement body',
+	) );
+	assert_eq( $written_path, $tmp_root . '/wiki/replacement.md', 'write ignores the stale missing path without a warning' );
+} catch ( ErrorException $exception ) {
+	assert_true( false, 'stale missing cached path emitted a warning: ' . $exception->getMessage() );
+} finally {
+	restore_error_handler();
+}
+
+// ---------------------------------------------------------------------------
+// Test 9 — a fresh write still wins over a stale duplicate during first scan
+// ---------------------------------------------------------------------------
+echo "\nTest 9: fresh writes remain canonical during initial duplicate cleanup\n";
 
 rm_rf( $tmp_root );
 write_leaf( $tmp_root . '/wiki/stale/fresh.md', 30, 'fresh' );

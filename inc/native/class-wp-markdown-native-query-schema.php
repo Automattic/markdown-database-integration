@@ -712,6 +712,11 @@ final class WP_Markdown_Native_Table_Registry {
 	private array $definitions = array();
 	/** @var array<string,array{table:?array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider},definition:?array<string,mixed>}> */
 	private array $shadows = array();
+	private ?WP_Markdown_Native_Temporary_Tables $temporary_tables = null;
+
+	public function temporary_tables( WP_Markdown_Native_Temporary_Tables $temporary_tables ): void {
+		$this->temporary_tables = $temporary_tables;
+	}
 
 	public function register(
 		string $table,
@@ -730,6 +735,7 @@ final class WP_Markdown_Native_Table_Registry {
 
 	/** @return array{schema:WP_Markdown_Native_Table_Schema,provider:WP_Markdown_Native_Table_Provider}|null */
 	public function table( string $table ): ?array {
+		$this->synchronize_temporary_table( $table );
 		return $this->tables[ $table ] ?? null;
 	}
 
@@ -745,6 +751,7 @@ final class WP_Markdown_Native_Table_Registry {
 
 	/** @return array<string,mixed>|null */
 	public function definition( string $table ): ?array {
+		$this->synchronize_temporary_table( $table );
 		return $this->definitions[ $table ] ?? null;
 	}
 
@@ -824,5 +831,22 @@ final class WP_Markdown_Native_Table_Registry {
 	/** @return array<int,string> */
 	public function table_names(): array {
 		return array_keys( $this->definitions );
+	}
+
+	/** Project the connection's temporary overlay into this prefix-local registry. */
+	private function synchronize_temporary_table( string $table ): void {
+		if ( null === $this->temporary_tables ) {
+			return;
+		}
+		$temporary = $this->temporary_tables->table( $table );
+		if ( null === $temporary ) {
+			if ( isset( $this->shadows[ $table ] ) ) {
+				$this->unshadow( $table );
+			}
+			return;
+		}
+		if ( ! isset( $this->shadows[ $table ] ) ) {
+			$this->shadow( $table, $temporary['schema'], $temporary['provider'], $temporary['definition'] );
+		}
 	}
 }

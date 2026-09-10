@@ -118,12 +118,13 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				return $this->failure( 'unsupported_schema', 'mdi-native cannot compile the requested table definition.' );
 			}
 			if ( $temporary && null !== $this->temporary_tables ) {
+				$provider = null === $schema ? null : new WP_Markdown_Native_JSON_Snapshot_Provider( $root, $schema, $suffix . '.json' );
 				if ( null === $schema ) {
 					$this->registry->shadow( $table, null, null, $definition );
 				} else {
-					$this->registry->shadow( $table, $schema, new WP_Markdown_Native_JSON_Snapshot_Provider( $root, $schema, $suffix . '.json' ), $definition );
+					$this->registry->shadow( $table, $schema, $provider, $definition );
 				}
-				$this->temporary_tables->add( $table );
+				$this->temporary_tables->add( $table, $schema, $provider, $definition );
 			} elseif ( null === $schema ) {
 				$this->registry->register_definition( $table, $definition );
 			} else {

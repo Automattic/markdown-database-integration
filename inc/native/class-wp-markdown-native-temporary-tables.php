@@ -7,7 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 final class WP_Markdown_Native_Temporary_Tables {
 	private string $root;
-	/** @var array<string,true> */
+	/** @var array<string,array{schema:?WP_Markdown_Native_Table_Schema,provider:?WP_Markdown_Native_Table_Provider,definition:array<string,mixed>}> */
 	private array $tables = array();
 
 	public function __construct() {
@@ -34,8 +34,14 @@ final class WP_Markdown_Native_Temporary_Tables {
 		return isset( $this->tables[ $table ] );
 	}
 
-	public function add( string $table ): void {
-		$this->tables[ $table ] = true;
+	/** @param array<string,mixed> $definition */
+	public function add( string $table, ?WP_Markdown_Native_Table_Schema $schema, ?WP_Markdown_Native_Table_Provider $provider, array $definition ): void {
+		$this->tables[ $table ] = array( 'schema' => $schema, 'provider' => $provider, 'definition' => $definition );
+	}
+
+	/** @return array{schema:?WP_Markdown_Native_Table_Schema,provider:?WP_Markdown_Native_Table_Provider,definition:array<string,mixed>}|null */
+	public function table( string $table ): ?array {
+		return $this->tables[ $table ] ?? null;
 	}
 
 	public function remove( string $table ): void {

@@ -125,7 +125,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				$this->word( 'UPDATE' );
 				$table = $this->identifier();
 				$this->word( 'SET' );
-				$values = $this->assignments();
+				$values = $this->assignments( $table );
 			}
 			$predicates = $this->where_predicates();
 			$this->type( WP_Markdown_Native_SQL_Token::END );
@@ -142,13 +142,26 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		}
 	}
 
-	/** @return array<string,int|string|null> */
-	private function assignments(): array {
+	/** @return array<string,int|string|null|WP_Markdown_Native_Query_Scalar_Expression> */
+	private function assignments( string $table ): array {
 		$values = array();
 		do {
 			$column = $this->identifier();
+			if ( array_key_exists( $column, $values ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'duplicate_mutation_column', $this->current()->sql_offset(), 'Repeated UPDATE targets are not supported.' );
+			}
 			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
-			$values[ $column ] = $this->literal();
+			$parser = new WP_Markdown_Native_Select_AST_Parser( $this->tokens, $this->position );
+			$expression = $parser->scalar_value();
+			$this->position = $parser->position();
+			foreach ( $expression->columns() as $source ) {
+				if ( null !== $source->qualifier() && 0 !== strcasecmp( $table, $source->qualifier() ) ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_mutation_column', $source->sql_offset(), 'An UPDATE expression must reference its target table.' );
+				}
+			}
+			$values[ $column ] = 'literal' === $expression->kind()
+				? ( null === $expression->literal() ? null : (string) $expression->literal() )
+				: ( new WP_Markdown_Native_Query_Parser() )->lower_scalar_expression( $expression, null, $table );
 			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
 				break;
 			}
@@ -177,33 +190,51 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 		}
 		$this->word( 'WHERE' );
 
-		$predicates = array( $this->where_disjunction() );
-		while ( $this->is_word( 'AND' ) ) {
-			++$this->position;
-			$predicates[] = $this->where_disjunction();
-		}
-		return array_filter( $predicates );
+		$predicate = $this->where_disjunction();
+		return $predicate instanceof WP_Markdown_Native_Table_Predicate_Group && $predicate->all()
+			? $predicate->any()
+			: array( $predicate );
 	}
 
 	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
 	private function where_disjunction() {
-		$alternatives = array( $this->where_factor() );
+		$alternatives = array( $this->where_conjunction() );
 		while ( $this->is_word( 'OR' ) ) {
 			++$this->position;
-			$alternatives[] = $this->where_factor();
+			$alternatives[] = $this->where_conjunction();
 		}
 		$alternatives = array_values( array_filter( $alternatives ) );
 		if ( array() === $alternatives ) {
 			return null;
 		}
 		foreach ( $alternatives as $alternative ) {
-			if ( $alternative instanceof WP_Markdown_Native_Table_Subquery_Predicate && 1 !== count( $alternatives ) ) {
+			if ( 1 !== count( $alternatives ) && $this->has_subquery( $alternative ) ) {
 				throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_subquery_shape', $this->current()->sql_offset(), 'mdi-native supports IN subqueries only as conjunctive write restrictions.' );
 			}
 		}
 		return 1 === count( $alternatives )
 			? $alternatives[0]
 			: new WP_Markdown_Native_Table_Predicate_Group( $alternatives );
+	}
+
+	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */
+	private function where_conjunction() {
+		$terms = array( $this->where_factor() );
+		while ( $this->is_word( 'AND' ) ) {
+			++$this->position;
+			$terms[] = $this->where_factor();
+		}
+		return 1 === count( $terms ) ? $terms[0] : new WP_Markdown_Native_Table_Predicate_Group( $terms, true );
+	}
+
+	private function has_subquery( mixed $predicate ): bool {
+		if ( $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) { return true; }
+		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+			foreach ( $predicate->any() as $term ) {
+				if ( $this->has_subquery( $term ) ) { return true; }
+			}
+		}
+		return false;
 	}
 
 	/** @return WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate|null */

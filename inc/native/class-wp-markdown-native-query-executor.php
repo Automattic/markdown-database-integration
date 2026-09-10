@@ -2203,7 +2203,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	/** Evaluate a lowered row-local scalar expression after filtering. */
-	private function evaluate_scalar( WP_Markdown_Native_Query_Scalar_Expression $expression, array $row, WP_Markdown_Native_Table_Schema $schema ): int|string|null {
+	public function evaluate_scalar( WP_Markdown_Native_Query_Scalar_Expression $expression, array $row, WP_Markdown_Native_Table_Schema $schema ): int|string|null {
+		$this->statement_now ??= gmdate( 'Y-m-d H:i:s' );
+		if ( WP_Markdown_Native_Scalar_Evaluator::supports( $expression ) ) {
+			return WP_Markdown_Native_Scalar_Evaluator::evaluate( $expression, $row );
+		}
 		$values = array_map(
 			fn( WP_Markdown_Native_Query_Scalar_Expression $argument ): int|string|null => $this->evaluate_scalar( $argument, $row, $schema ),
 			$expression->arguments()
@@ -2285,6 +2289,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 
 	private function scalar_number( int|float|string|null $value ): int|string|null|float {
 		if ( null === $value ) { return null; }
+		if ( is_int( $value ) || ( is_string( $value ) && (string) (int) $value === $value ) ) {
+			return (int) $value;
+		}
 		$number = (float) $value;
 		return floor( $number ) === $number ? (int) $number : (string) $number;
 	}

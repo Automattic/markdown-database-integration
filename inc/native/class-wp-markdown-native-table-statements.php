@@ -82,17 +82,22 @@ final class WP_Markdown_Native_Table_Predicate {
 	}
 }
 
-/** One OR group of restrictions, evaluated as a disjunction per row. */
+/** A nested group of restrictions, using AND when all is true and OR otherwise. */
 final class WP_Markdown_Native_Table_Predicate_Group {
 
 	/** @param array<int,WP_Markdown_Native_Table_Predicate|self> $any */
 	public function __construct(
-		private readonly array $any
+		private readonly array $any,
+		private readonly bool $all = false
 	) {}
 
 	/** @return array<int,WP_Markdown_Native_Table_Predicate|self> */
 	public function any(): array {
 		return $this->any;
+	}
+
+	public function all(): bool {
+		return $this->all;
 	}
 }
 
@@ -116,7 +121,7 @@ final class WP_Markdown_Native_Table_Subquery_Predicate {
 final class WP_Markdown_Native_Table_Write {
 
 	/**
-	 * @param array<string,int|string|null>              $values     Assignments for an UPDATE.
+	 * @param array<string,int|string|null|WP_Markdown_Native_Query_Scalar_Expression> $values Assignments for an UPDATE, in evaluation order.
 	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate> $predicates Conjunctive restrictions.
 	 */
 	public function __construct(
@@ -134,7 +139,7 @@ final class WP_Markdown_Native_Table_Write {
 		return $this->table;
 	}
 
-	/** @return array<string,int|string|null> */
+	/** @return array<string,int|string|null|WP_Markdown_Native_Query_Scalar_Expression> */
 	public function values(): array {
 		return $this->values;
 	}

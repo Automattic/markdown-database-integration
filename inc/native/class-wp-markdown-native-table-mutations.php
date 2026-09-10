@@ -532,11 +532,24 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				}
 			}
 		}
-		foreach ( array_keys( $write->values() ) as $column ) {
+		foreach ( $write->values() as $column => $value ) {
 			if ( ! $schema->has_column( (string) $column ) ) {
 				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the persisted table schema.' );
 			}
+			if ( $value instanceof WP_Markdown_Native_Query_Scalar_Expression ) {
+				foreach ( $value->columns() as $source ) {
+					if ( ! $schema->has_column( $source ) ) {
+						return $this->failure( 'unsupported_mutation_column', 'The expression names a column outside the persisted table schema.' );
+					}
+				}
+				foreach ( $value->predicates() as $predicate ) {
+					if ( ! $schema->supports_predicate( $predicate ) ) {
+						return $this->failure( 'unsupported_predicate', 'The assignment expression uses an unsupported predicate.' );
+					}
+				}
+			}
 		}
+		$scalar_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, new WP_Markdown_Native_Query_Parser() );
 		$root = $this->root_for( $write->table() );
 		$directory = $this->tables_directory( $root );
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
@@ -574,7 +587,13 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( ! $write->is_update() ) {
 					continue;
 				}
-				$updated = array_merge( $row, $write->values() );
+				$updated = $row;
+				foreach ( $write->values() as $column => $value ) {
+					$value = $value instanceof WP_Markdown_Native_Query_Scalar_Expression
+						? $scalar_runtime->evaluate_scalar( $value, $updated, $schema )
+						: $value;
+					$updated[ $column ] = null === $value ? null : (string) $value;
+				}
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_update_row', 'The UPDATE row is outside the persisted table schema.' );
 				}
@@ -628,6 +647,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		$query_parser = new WP_Markdown_Native_Query_Parser();
 		$query_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, $query_parser );
 		foreach ( $predicates as $predicate ) {
+			if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+				$terms = $this->resolve_subquery_predicates( $predicate->any(), $schema, $target_table );
+				if ( $terms instanceof WP_Markdown_Query_Result ) { return $terms; }
+				$resolved[] = new WP_Markdown_Native_Table_Predicate_Group( $terms, $predicate->all() );
+				continue;
+			}
 			if ( ! $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
 				$resolved[] = $predicate;
 				continue;
@@ -698,11 +723,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private function index_predicate_excludes( array $index, mixed $predicate ): bool {
 		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
 			foreach ( $predicate->any() as $alternative ) {
-				if ( ! $this->index_predicate_excludes( $index, $alternative ) ) {
-					return false;
+				$excluded = $this->index_predicate_excludes( $index, $alternative );
+				if ( $excluded === $predicate->all() ) {
+					return $excluded;
 				}
 			}
-			return true;
+			return ! $predicate->all();
 		}
 		if ( ! $predicate instanceof WP_Markdown_Native_Table_Predicate || '=' !== $predicate->operator() ) {
 			return false;
@@ -743,11 +769,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	private function restricts_predicate( array $row, $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
 		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
 			foreach ( $predicate->any() as $alternative ) {
-				if ( $this->restricts_predicate( $row, $alternative, $schema ) ) {
-					return true;
+				$matches = $this->restricts_predicate( $row, $alternative, $schema );
+				if ( $matches !== $predicate->all() ) {
+					return $matches;
 				}
 			}
-			return array() === $predicate->any();
+			return $predicate->all();
 		}
 		$value = $row[ $predicate->column() ] ?? null;
 		if ( $predicate->matches_null() && null === $value ) {

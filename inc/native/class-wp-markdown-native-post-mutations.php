@@ -75,6 +75,9 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 			return $write;
 		}
 		foreach ( $write->predicates() as $predicate ) {
+			if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+				return $this->failure( 'unsupported_predicate', 'mdi-native post mutations require simple conjunctive restrictions.' );
+			}
 			if ( $predicate instanceof WP_Markdown_Native_Table_Subquery_Predicate ) {
 				return $this->failure( 'unsupported_subquery_shape', 'mdi-native post mutations do not support IN subqueries.' );
 			}
@@ -89,7 +92,10 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 				return $this->failure( 'unsupported_mutation_column', 'The WHERE restriction names a column outside the wp_posts schema.' );
 			}
 		}
-		foreach ( array_keys( $write->values() ) as $column ) {
+		foreach ( $write->values() as $column => $value ) {
+			if ( $value instanceof WP_Markdown_Native_Query_Scalar_Expression ) {
+				return $this->failure( 'unsupported_assignment', 'mdi-native post mutations do not yet evaluate scalar assignments.' );
+			}
 			if ( ! $schema->has_column( (string) $column ) ) {
 				return $this->failure( 'unsupported_mutation_column', 'The assignment names a column outside the wp_posts schema.' );
 			}

@@ -7,6 +7,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 
 require_once __DIR__ . '/../class-wp-markdown-canonical-option-path.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-contracts.php';
+require_once __DIR__ . '/class-wp-markdown-native-scalar-evaluator.php';
 require_once __DIR__ . '/class-wp-markdown-native-sql-session.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-schema.php';
 require_once __DIR__ . '/class-wp-markdown-native-schema-catalog.php';

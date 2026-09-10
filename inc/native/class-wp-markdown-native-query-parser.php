@@ -394,7 +394,7 @@ final class WP_Markdown_Native_Query_Parser {
 		);
 	}
 
-	private function lower_scalar_expression( WP_Markdown_Native_SQL_Scalar_Expression $expression, ?string $base_source, ?string $flat_source = null, array $bindings = array() ): WP_Markdown_Native_Query_Scalar_Expression {
+	public function lower_scalar_expression( WP_Markdown_Native_SQL_Scalar_Expression $expression, ?string $base_source, ?string $flat_source = null, array $bindings = array() ): WP_Markdown_Native_Query_Scalar_Expression {
 		$source = $this->column_source( $expression->identifier(), $base_source, $bindings );
 		return new WP_Markdown_Native_Query_Scalar_Expression(
 			$expression->kind(),
@@ -1061,7 +1061,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		return new WP_Markdown_Native_SQL_Scalar_Expression( $function, null, null, $arguments );
 	}
 
-	private function scalar_value(): WP_Markdown_Native_SQL_Scalar_Expression {
+	public function scalar_value(): WP_Markdown_Native_SQL_Scalar_Expression {
 		$value = $this->scalar_term();
 		while ( in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::PLUS, WP_Markdown_Native_SQL_Token::MINUS ), true ) ) {
 			$operator = $this->current()->type(); ++$this->current;

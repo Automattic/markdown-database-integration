@@ -30,7 +30,7 @@ final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Nat
 	}
 }
 
-final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
+final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
 	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
 	private const MAX_CORRELATED_SUBQUERY_EVALUATIONS = 10000;
 	/** The largest SQL request accepted by the native request boundary. */
@@ -88,6 +88,27 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}
 			}
 		}
+	}
+
+	/**
+	 * Confirm that every exact table is backed by this runtime's journaled,
+	 * permanent canonical providers. This is an atomic-write guarantee, not an
+	 * InnoDB or independent mysqli-session claim.
+	 *
+	 * @param string[] $tables
+	 */
+	public function supports_transactional_tables( array $tables ): bool {
+		if ( null === $this->transactions || array() === $tables ) {
+			return false;
+		}
+
+		foreach ( $tables as $table_name ) {
+			if ( ! is_string( $table_name ) || 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table_name ) || $this->registry->is_shadowed( $table_name ) || null === $this->registry->table( $table_name ) ) {
+				return false;
+			}
+		}
+
+		return true;
 	}
 
 	private function execute_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {

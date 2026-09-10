@@ -65,6 +65,9 @@ $root = sys_get_temp_dir() . '/mdi-native-wpdb-lifecycle-' . bin2hex( random_byt
 mkdir( $root . '/_options', 0777, true );
 mkdir( $root . '/_tables', 0777, true );
 $database = new WP_Markdown_Native_WPDB( WP_Markdown_Native_Runtime_Factory::runtime( $root ) );
+$database->query( 'CREATE TABLE wp_reservations (identity_hash char(64) NOT NULL, PRIMARY KEY (identity_hash))' );
+$transactional_tables = $database->supports_transactional_tables( array( 'wp_posts', 'wp_reservations' ) );
+$unknown_table = $database->supports_transactional_tables( array( 'wp_posts', 'wp_missing' ) );
 
 $selection = $database->select( DB_NAME );
 $closed = $database->close();
@@ -93,6 +96,7 @@ $after_replace = $insert_lifecycle->insert_id;
 $checks = array(
 	'database selection succeeds without mysqli, keeps wpdb return semantics, and preserves the canonical prefix' => null === $selection && 'wp_' === $database->prefix,
 	'native wpdb advertises the MySQL dialect without creating a mysqli connection' => true === $database->is_mysql,
+	'native wpdb proves only registered tables share its journaled transaction boundary' => $transactional_tables && ! $unknown_table,
 	'logical close and reconnect report wpdb lifecycle state' => true === $closed && true === $reconnected && true === $database->ready,
 	'invalid selection exposes a normal database error state' => false === $invalid_selection && 1049 === $invalid_errno && 'Unknown database' === $invalid_error,
 	'connection checks restore the ready state without a reconnect loop' => true === $reconnected_after_error && true === $database->ready && 0 === $database->last_errno,

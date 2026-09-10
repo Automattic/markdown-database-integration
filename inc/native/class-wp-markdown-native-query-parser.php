@@ -794,6 +794,8 @@ final class WP_Markdown_Native_Select_AST_Parser {
 				if ( $limit_offset > PHP_INT_MAX - $limit ) {
 					throw new WP_Markdown_Native_SQL_Parse_Error( 'overflow_limit', $this->current()->sql_offset(), 'mdi-native cannot apply the requested LIMIT.' );
 				}
+			} elseif ( $this->match_keyword( 'OFFSET' ) ) {
+				$limit_offset = $this->integer( 'overflow_limit', 'mdi-native cannot apply the requested LIMIT.' );
 			}
 		}
 		$union = null;

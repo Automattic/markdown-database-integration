@@ -50,6 +50,8 @@ $composite_order_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY wp_
 $composite_order_plan = $composite_order_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $composite_order_ast ) : $composite_order_ast;
 $found_rows_query_ast = $parser->parse_ast( 'SELECT FOUND_ROWS()' );
 $found_rows_query_plan = $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows ? $parser->lower( $found_rows_query_ast ) : $found_rows_query_ast;
+$limit_offset_ast = $parser->parse_ast( 'SELECT ID FROM wp_posts ORDER BY ID LIMIT 10 OFFSET 20' );
+$limit_offset_plan = $limit_offset_ast instanceof WP_Markdown_Native_SQL_Select ? $parser->lower( $limit_offset_ast ) : $limit_offset_ast;
 
 $duplicate_sql = 'SELECT first, second, first FROM example';
 $duplicate     = $parser->parse( $duplicate_sql );
@@ -189,6 +191,9 @@ $checks = array(
 		),
 	'FOUND_ROWS lowers to explicit runtime state retrieval intent' => $found_rows_query_ast instanceof WP_Markdown_Native_SQL_Found_Rows
 		&& $found_rows_query_plan instanceof WP_Markdown_Native_Found_Rows_Plan,
+	'LIMIT OFFSET lowers to the bounded main-query offset' => $limit_offset_plan instanceof WP_Markdown_Native_Query_Plan
+		&& 10 === $limit_offset_plan->limit()
+		&& 20 === $limit_offset_plan->limit_offset(),
 	'duplicate projections report the duplicate source position' => $duplicate instanceof WP_Markdown_Query_Result
 		&& 'duplicate_projection' === ( $duplicate->diagnostic()['reason'] ?? null )
 		&& strrpos( $duplicate_sql, 'first' ) === ( $duplicate->diagnostic()['sql_offset'] ?? null ),

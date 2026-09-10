@@ -1173,18 +1173,26 @@ final class WP_Markdown_Native_Select_AST_Parser {
 	private function requires_boolean_plan( array $groups ): bool {
 		$has_composite_group = false;
 		$has_non_coalescible = false;
+		$has_like = false;
+		$only_single_likes = true;
 		foreach ( $groups as $group ) {
 			$has_composite_group = $has_composite_group || 1 < count( $group );
+			$only_single_likes = $only_single_likes && 1 === count( $group );
 			foreach ( $group as $predicate ) {
 				if ( $predicate instanceof WP_Markdown_Native_SQL_Scalar_Predicate
 					|| $predicate instanceof WP_Markdown_Native_SQL_Subquery_Predicate
 				) {
 					return true;
 				}
+				$has_like = $has_like || 'LIKE' === $predicate->operator();
+				$only_single_likes = $only_single_likes && 'LIKE' === $predicate->operator();
 				$has_non_coalescible = $has_non_coalescible
 					|| null !== $predicate->cast()
 					|| ! in_array( $predicate->operator(), array( '=', 'IN', 'IS NULL', 'LOWER =', 'LIKE' ), true );
 			}
+		}
+		if ( 1 < count( $groups ) && $has_like && ! $only_single_likes ) {
+			return true;
 		}
 		if ( 1 < count( $groups ) && $has_composite_group && $has_non_coalescible ) {
 			return true;

@@ -113,6 +113,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		try {
 			$schema = $table['schema'];
 			$provider = $table['provider'];
+			foreach ( $insert->upsert_assignments() ?? array() as $assignment ) {
+				if ( ! $schema->has_column( $assignment['target'] ) || ( null !== $assignment['source'] && ! $schema->has_column( $assignment['source'] ) ) ) {
+					return $this->failure( 'unsupported_column', 'The duplicate-key assignment references an undeclared column.' );
+				}
+			}
 			if ( ! $this->supports_unique_indexes( $definition ) ) {
 				return $this->failure( 'unsupported_unique_collation', 'mdi-native cannot enforce a persisted string or prefix unique key without its exact collation.' );
 			}
@@ -130,7 +135,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 			$path = $directory . '/' . $suffix . '.json';
 			$table_index = $this->index_for( $root );
-			$index = $insert->is_replace() || null !== $insert->upsert_columns() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
+			$index = $insert->is_replace() || null !== $insert->upsert_assignments() || WP_Markdown_Native_Table_Index::supplies_identity( $insert->values(), $definition )
 				? null
 				: $table_index->load( $suffix, $path );
 			if ( null !== $index ) {
@@ -202,22 +207,33 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				if ( $insert->ignores_duplicate() ) {
 					return WP_Markdown_Query_Result::mutated( 0 );
 				}
-				$upsert_columns = $insert->upsert_columns();
-				if ( null === $upsert_columns ) {
+				$upsert_assignments = $insert->upsert_assignments();
+				if ( null === $upsert_assignments ) {
 					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
 				}
 				$duplicate = $duplicates[0];
 				$updated = $rows[ $duplicate ];
-				foreach ( $upsert_columns as $column ) {
-					$updated[ $column ] = $row[ $column ];
+				foreach ( $upsert_assignments as $assignment ) {
+					// Existing-column references see earlier assignments; VALUES sees the proposed insert.
+					$updated[ $assignment['target'] ] = match ( $assignment['kind'] ) {
+						'inserted' => $row[ $assignment['source'] ],
+						'column' => $updated[ $assignment['source'] ],
+						default => $assignment['value'],
+					};
 				}
 				if ( true !== $schema->validate_row( $updated ) ) {
 					return $this->failure( 'invalid_insert_row', 'The INSERT row is outside the persisted table schema.' );
+				}
+				if ( ! $this->unique_values_enforceable( $updated, $definition ) ) {
+					return $this->failure( 'unsupported_unique_collation', 'The duplicate-key assignment requires an unsupported unique-key collation.' );
 				}
 				$others = $rows;
 				unset( $others[ $duplicate ] );
 				if ( $this->duplicate_row_offset( $updated, array_values( $others ), $definition, $schema ) !== null ) {
 					return $this->failure( 'duplicate_key', 'The INSERT row duplicates a persisted unique key.' );
+				}
+				if ( $updated === $rows[ $duplicate ] ) {
+					return WP_Markdown_Query_Result::mutated( 0 );
 				}
 				$rows[ $duplicate ] = $updated;
 				$written = $this->write( $path, array_values( $rows ) );

@@ -9,13 +9,14 @@ final class WP_Markdown_Native_Table_Insert {
 	/**
 	 * @param array<string,int|string|null> $values
 	 * @param array<int,WP_Markdown_Native_Table_Predicate>|null $unless_exists
+	 * @param array<int,array{target:string,kind:string,source:?string,value:int|string|null}>|null $upsert_assignments
 	 */
 	public function __construct(
 		private readonly string $table,
 		private readonly array $values,
 		private readonly ?array $unless_exists = null,
 		private readonly bool $ignore_duplicate = false,
-		private readonly ?array $upsert_columns = null,
+		private readonly ?array $upsert_assignments = null,
 		private readonly bool $replace = false
 	) {}
 
@@ -37,9 +38,9 @@ final class WP_Markdown_Native_Table_Insert {
 		return $this->ignore_duplicate;
 	}
 
-	/** @return array<int,string>|null */
-	public function upsert_columns(): ?array {
-		return $this->upsert_columns;
+	/** @return array<int,array{target:string,kind:string,source:?string,value:int|string|null}>|null */
+	public function upsert_assignments(): ?array {
+		return $this->upsert_assignments;
 	}
 
 	public function is_replace(): bool {

@@ -22,6 +22,8 @@ try {
 	$variables = $run( "SHOW VARIABLES LIKE 'sql_mode'" );
 	$checks['session and SHOW introspection agree on supported mode'] = $set->succeeded() && 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION' === $mode->corpus_result()['rows'][0]['@@SESSION.sql_mode'] && 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION' === $variables->corpus_result()['rows'][0]['Value'];
 	$rejected = $run( 'INSERT INTO wp_defaults (id) VALUES (2)' );
+	$errors = $run( 'SHOW WARNINGS' );
+	$checks['strict omissions retain every missing-default error'] = 2 === $errors->return_value() && 'Error' === $errors->corpus_result()['rows'][0]['Level'] && '1364' === $errors->corpus_result()['rows'][1]['Code'];
 	$checks['strict omission fails with MySQL errno and no row'] = false === $rejected->return_value() && 1364 === $rejected->diagnostic()['code'] && 0 === $run( 'SELECT * FROM wp_defaults WHERE id = 2' )->return_value();
 	$invalid = $run( "SET sql_mode = 'ANSI_QUOTES'" );
 	$checks['unsupported mode fails without changing existing mode'] = ! $invalid->succeeded() && 'STRICT_TRANS_TABLES,NO_ENGINE_SUBSTITUTION' === $run( 'SELECT @@sql_mode' )->corpus_result()['rows'][0]['@@sql_mode'];

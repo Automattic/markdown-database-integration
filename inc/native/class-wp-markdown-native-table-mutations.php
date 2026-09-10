@@ -331,6 +331,18 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		if ( array_diff_key( $provided, $definition['columns'] ) ) {
 			return $this->failure( 'unsupported_column', 'The INSERT references an undeclared column.' );
 		}
+		if ( $this->session->strict() ) {
+			$missing = array();
+			foreach ( $definition['columns'] as $name => $column ) {
+				if ( ! array_key_exists( $name, $provided ) && empty( $column['auto_increment'] ) && empty( $column['nullable'] ) && null === ( $column['default'] ?? null ) ) {
+					$missing[] = $name;
+					$this->session->warn_missing_default( $name, true );
+				}
+			}
+			if ( array() !== $missing ) {
+				return WP_Markdown_Query_Result::failure( array( 'code' => 1364, 'reason' => 'missing_required_column', 'message' => "Field '{$missing[0]}' doesn't have a default value" ) );
+			}
+		}
 		$row = array();
 		foreach ( $definition['columns'] as $name => $column ) {
 			$generate_identity = true === ( $column['auto_increment'] ?? false )
@@ -392,9 +404,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					$this->session->warn_missing_default( $name );
 					continue;
 				}
-			}
-			if ( $this->session->strict() ) {
-				return WP_Markdown_Query_Result::failure( array( 'code' => 1364, 'reason' => 'missing_required_column', 'message' => "Field '{$name}' doesn't have a default value" ) );
 			}
 			return $this->failure( 'missing_required_column', 'The INSERT omits a required column without a deterministic default.' );
 		}

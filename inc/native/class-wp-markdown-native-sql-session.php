@@ -22,10 +22,10 @@ final class WP_Markdown_Native_SQL_Session {
 		$this->warning_count = 0;
 	}
 
-	public function warn_missing_default( string $column ): void {
+	public function warn_missing_default( string $column, bool $error = false ): void {
 		++$this->warning_count;
 		if ( count( $this->warnings ) < 64 ) {
-			$this->warnings[] = array( 'Level' => 'Warning', 'Code' => '1364', 'Message' => "Field '{$column}' doesn't have a default value" );
+			$this->warnings[] = array( 'Level' => $error ? 'Error' : 'Warning', 'Code' => '1364', 'Message' => "Field '{$column}' doesn't have a default value" );
 		}
 	}
 

@@ -459,7 +459,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( array() !== $predicates
 			&& null === $pushdown
 			&& ! $table['provider'] instanceof WP_Markdown_Native_JSON_Partition_Provider
-			&& ! $this->allows_residual_scan( $predicates, $schema )
+			&& ! $this->allows_residual_scan( $predicates, $schema, $table['provider'] instanceof WP_Markdown_Native_JSON_Snapshot_Provider )
 		) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
@@ -1885,7 +1885,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 	}
 
 	/** @param array<int,WP_Markdown_Native_Query_Predicate> $predicates */
-	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
+	private function allows_residual_scan( array $predicates, WP_Markdown_Native_Table_Schema $schema, bool $snapshot = false ): bool {
 		$indexed = $this->indexed_columns( $schema );
 		foreach ( $predicates as $predicate ) {
 			if ( null !== $predicate->cast() ) {
@@ -1916,7 +1916,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( in_array( $type, array( 1, 2, 3, 4, 5, 8, 9, 246 ), true ) ) {
 				continue;
 			}
-			if ( isset( $indexed[ $column ] )
+			// Snapshots already materialize rows; retain lookup validators even on scans.
+			if ( ( $snapshot || isset( $indexed[ $column ] ) )
 				&& ! $schema->is_lookup( $column )
 				&& $schema->allows_filter( $column, $predicate->operator(), $predicate->values() ) ) {
 				continue;

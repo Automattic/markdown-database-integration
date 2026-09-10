@@ -26,6 +26,8 @@ $upsert = $runtime->execute(
 );
 $read = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT id, object_id, title FROM wp_yoast_indexable WHERE object_id = 7', 'wp_' ) );
 $fresh = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (object_id, title) VALUES (8, 'eight') ON DUPLICATE KEY UPDATE title = VALUES(title)", 'wp_' ) );
+$unindexed_read = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_yoast_indexable WHERE title = 'two'" ) );
+$unindexed_membership = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_yoast_indexable WHERE title IN ('two', 'eight') ORDER BY id" ) );
 $cleared = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 7, 'ignored') ON DUPLICATE KEY UPDATE title = NULL" ) );
 $cleared_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT title FROM wp_yoast_indexable WHERE id = 1' ) );
 $noop = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 7, 'ignored') ON DUPLICATE KEY UPDATE object_id = object_id, title = NULL" ) );
@@ -40,6 +42,7 @@ $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_unique_labels 
 $unsupported_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_unique_labels (id,label) VALUES (1,'original') ON DUPLICATE KEY UPDATE label='caf\xC3\xA9'" ) );
 
 $checks = array(
+	'validated snapshots filter non-indexed equality and membership columns' => $unindexed_read->succeeded() && array( array( 'id' => '1' ) ) === $unindexed_read->corpus_result()['rows'] && $unindexed_membership->succeeded() && array( array( 'id' => '1' ), array( 'id' => '2' ) ) === $unindexed_membership->corpus_result()['rows'],
 	'literal assignments preserve fail-closed unique-key enforcement' => ! $unsupported_unique->succeeded() && 'unsupported_unique_collation' === $unsupported_unique->diagnostic()['reason'],
 	'literal NULL assignments clear only a conflicting row' => 2 === $cleared->return_value() && null === $cleared_row->corpus_result()['rows'][0]['title'],
 	'unchanged duplicate assignments report zero affected rows' => 0 === $noop->return_value() && 0 === $noop->wpdb_state()['insert_id'],

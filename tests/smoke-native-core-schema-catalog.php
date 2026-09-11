@@ -54,6 +54,12 @@ $checks = array(
 	// WP_Query orders by post_modified for orderby=modified, the default for admin
 	// lists and every "recently updated" view. Without it in the allowlist the
 	// native executor fails the query and callers see an empty result, not an error.
+	// A canonical body carries em dashes and curly quotes. Rejecting every value
+	// with a non-ASCII byte made LIKE return nothing for those rows, including a
+	// pure-ASCII pattern that appears in the body verbatim.
+	'LIKE matches a pure-ASCII pattern inside a non-ASCII body' => $posts_schema->value_matches_like( 'post_content', "an em dash \xE2\x80\x94 and HyperDB here", '%HyperDB%' ),
+	'LIKE still rejects a pattern the body does not contain' => ! $posts_schema->value_matches_like( 'post_content', "an em dash \xE2\x80\x94 and HyperDB here", '%NoSuchToken%' ),
+	'LIKE remains case-insensitive for ASCII' => $posts_schema->value_matches_like( 'post_content', "an em dash \xE2\x80\x94 and hyperdb here", '%HyperDB%' ),
 	'posts order by every core datetime column WP_Query emits' => $posts_schema->allows_order( 'post_date' )
 		&& $posts_schema->allows_order( 'post_date_gmt' )
 		&& $posts_schema->allows_order( 'post_modified' )

@@ -30,7 +30,7 @@ final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Nat
 	}
 }
 
-final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
+final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
 	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
 	private const MAX_CORRELATED_SUBQUERY_EVALUATIONS = 10000;
 	/** The largest SQL request accepted by the native request boundary. */
@@ -88,6 +88,40 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 				}
 			}
 		}
+	}
+
+	/**
+	 * Confirm that every exact table has a recognized canonical provider, its
+	 * matching configured mutation runtime, and a factory-admitted journal root.
+	 * This is an atomic-write guarantee, not an InnoDB or mysqli-session claim.
+	 *
+	 * @param string[] $tables
+	 */
+	public function supports_transactional_tables( array $tables ): bool {
+		if ( null === $this->transactions || array() === $tables ) {
+			return false;
+		}
+
+		foreach ( $tables as $table_name ) {
+			if ( ! is_string( $table_name ) || 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table_name ) || $this->registry->is_shadowed( $table_name ) ) {
+				return false;
+			}
+			$table = $this->registry->table( $table_name );
+			if ( null === $table || ! $this->supports_transactional_provider( $table['provider'] ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private function supports_transactional_provider( WP_Markdown_Native_Table_Provider $provider ): bool {
+		if ( ! $provider instanceof WP_Markdown_Native_Canonical_Table_Provider || ! $this->transactions->covers_root( $provider->canonical_root() ) ) {
+			return false;
+		}
+		return ( $provider instanceof WP_Markdown_Native_Post_Provider && null !== $this->post_mutations )
+			|| ( $provider instanceof WP_Markdown_Native_Option_Provider && null !== $this->option_mutations )
+			|| ( $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider && null !== $this->table_mutations );
 	}
 
 	private function execute_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {

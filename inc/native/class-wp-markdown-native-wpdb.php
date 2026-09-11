@@ -81,6 +81,24 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		return $this->ready || $this->db_connect( $allow_bail );
 	}
 
+	/**
+	 * Report whether every requested exact table shares native's journaled
+	 * canonical transaction boundary. Unsupported runtimes and unsafe roots fail
+	 * closed; this does not claim InnoDB, MVCC, or a mysqli connection.
+	 *
+	 * @param string[] $tables
+	 */
+	public function supports_transactional_tables( array $tables ): bool {
+		if ( ! $this->native_runtime instanceof WP_Markdown_Native_Transactional_Table_Support ) {
+			return false;
+		}
+		try {
+			return true === $this->native_runtime->supports_transactional_tables( $tables );
+		} catch ( Throwable ) {
+			return false;
+		}
+	}
+
 	/** Close the logical native connection while leaving its configured root intact. */
 	public function close() {
 		if ( ! $this->ready ) {

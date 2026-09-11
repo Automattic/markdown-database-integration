@@ -571,8 +571,19 @@ interface WP_Markdown_Query_Runtime {
 	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result;
 }
 
+/** Optional proof surface for callers that require atomic canonical table writes. */
+interface WP_Markdown_Native_Transactional_Table_Support {
+	/** @param string[] $tables */
+	public function supports_transactional_tables( array $tables ): bool;
+}
+
 /** Providers supply validated rows without exposing storage to the executor. */
 interface WP_Markdown_Native_Table_Provider {
 	/** @return iterable<int,array<string,mixed>>|WP_Markdown_Query_Result */
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result;
+}
+
+/** A canonical provider exposes the factory-validated root it reads and writes. */
+interface WP_Markdown_Native_Canonical_Table_Provider extends WP_Markdown_Native_Table_Provider {
+	public function canonical_root(): string;
 }

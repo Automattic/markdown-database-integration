@@ -618,7 +618,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 	}
 }
 
-final class WP_Markdown_Native_Option_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
+final class WP_Markdown_Native_Option_Query_Runtime implements WP_Markdown_Query_Runtime {
 
 	private WP_Markdown_Native_Query_Runtime $runtime;
 
@@ -641,14 +641,10 @@ final class WP_Markdown_Native_Option_Query_Runtime implements WP_Markdown_Query
 		}
 		return $this->runtime->execute( $request );
 	}
-
-	public function supports_transactional_tables( array $tables ): bool {
-		return $this->runtime->supports_transactional_tables( $tables );
-	}
 }
 
 /** Lazily construct a single-root runtime for the prefix selected by wpdb. */
-final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
+final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query_Runtime {
 
 	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
 	private array $runtimes = array();
@@ -678,22 +674,6 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 		return $this->runtimes[ $prefix ]->execute( $request );
 	}
 
-	public function supports_transactional_tables( array $tables ): bool {
-		$prefix = isset( $GLOBALS['wpdb']->prefix ) && is_string( $GLOBALS['wpdb']->prefix ) ? $GLOBALS['wpdb']->prefix : 'wp_';
-		if ( ! isset( $this->runtimes[ $prefix ] ) ) {
-			$this->runtimes[ $prefix ] = WP_Markdown_Native_Runtime_Factory::runtime(
-				$this->state_root,
-				$prefix,
-				$prefix,
-				false,
-				$this->content_root,
-				advisory_locks: $this->advisory_locks,
-				session: $this->session
-			);
-		}
-		return $this->runtimes[ $prefix ]->supports_transactional_tables( $tables );
-	}
-
 	public function close(): void {
 		$this->advisory_locks->close();
 		$this->session->reset();
@@ -701,7 +681,7 @@ final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query
 }
 
 /** Defer WordPress topology detection because db.php precedes multisite bootstrap. */
-final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
+final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Query_Runtime {
 
 	private WP_Markdown_Native_Prefix_Query_Runtime $prefix_runtime;
 	/** @var array<string,WP_Markdown_Native_Multisite_Query_Runtime> */
@@ -738,22 +718,10 @@ final class WP_Markdown_Native_WordPress_Query_Runtime implements WP_Markdown_Qu
 			$runtime->close();
 		}
 	}
-
-	public function supports_transactional_tables( array $tables ): bool {
-		$multisite = ( defined( 'WP_INSTALLING_NETWORK' ) && WP_INSTALLING_NETWORK ) || ( defined( 'MULTISITE' ) && MULTISITE ) || ( function_exists( 'is_multisite' ) && is_multisite() );
-		if ( ! $multisite ) {
-			return $this->prefix_runtime->supports_transactional_tables( $tables );
-		}
-		$base_prefix = isset( $GLOBALS['wpdb']->base_prefix ) && is_string( $GLOBALS['wpdb']->base_prefix ) ? $GLOBALS['wpdb']->base_prefix : $this->base_prefix;
-		if ( ! isset( $this->multisite_runtimes[ $base_prefix ] ) ) {
-			$this->multisite_runtimes[ $base_prefix ] = new WP_Markdown_Native_Multisite_Query_Runtime( $this->state_root, $base_prefix, $this->content_root, $this->session );
-		}
-		return $this->multisite_runtimes[ $base_prefix ]->supports_transactional_tables( $tables );
-	}
 }
 
 /** Lazily compose a native runtime for each WordPress multisite table scope. */
-final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
+final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Query_Runtime {
 
 	/** @var array<string,WP_Markdown_Native_Query_Runtime> */
 	private array $runtimes = array();
@@ -821,27 +789,6 @@ final class WP_Markdown_Native_Multisite_Query_Runtime implements WP_Markdown_Qu
 			}
 		}
 		return $this->runtimes[ $prefix ]->execute( $request );
-	}
-
-	public function supports_transactional_tables( array $tables ): bool {
-		$prefix = isset( $GLOBALS['wpdb']->prefix ) && is_string( $GLOBALS['wpdb']->prefix ) ? $GLOBALS['wpdb']->prefix : $this->base_prefix;
-		if ( ! $this->is_scope_prefix( $prefix ) ) {
-			return false;
-		}
-		if ( ! isset( $this->runtimes[ $prefix ] ) ) {
-			$roots = $this->roots( $prefix );
-			if ( null === $roots ) {
-				return false;
-			}
-			try {
-				$this->runtimes[ $prefix ] = WP_Markdown_Native_Runtime_Factory::runtime(
-					$roots['state'], $prefix, $this->base_prefix, true, $roots['content'], $this->state_root, $this->content_root, $this->advisory_locks, $this->state_root, $this->session
-				);
-			} catch ( Throwable ) {
-				return false;
-			}
-		}
-		return $this->runtimes[ $prefix ]->supports_transactional_tables( $tables );
 	}
 
 	public function close(): void {

@@ -66,15 +66,6 @@ final class WP_Markdown_Native_Transaction_Journal {
 		$this->admitted_roots = array_values( array_unique( $this->admitted_roots ) );
 	}
 
-	/** Whether a provider's exact canonical root was admitted by the runtime factory. */
-	public function covers_root( string $root ): bool {
-		$resolved = realpath( $root );
-		return false !== $resolved
-			&& is_dir( $resolved )
-			&& ! is_link( $root )
-			&& in_array( rtrim( $resolved, DIRECTORY_SEPARATOR ), $this->admitted_roots, true );
-	}
-
 	public function is_active(): bool {
 		return $this->active;
 	}

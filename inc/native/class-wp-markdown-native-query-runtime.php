@@ -128,7 +128,7 @@ final class WP_Markdown_Native_Runtime_Factory {
 						'lookup_validator' => static fn( array $values ): bool => self::all_ascii_strings( $values ),
 					),
 				),
-				'order_columns' => array( 'post_date', 'post_date_gmt', 'menu_order', 'post_title' ),
+				'order_columns' => array( 'post_date', 'post_date_gmt', 'post_modified', 'post_modified_gmt', 'menu_order', 'post_title' ),
 			)
 		);
 	}

@@ -286,7 +286,7 @@ final class WP_Markdown_Native_Table_Schema {
 	}
 
 	public function value_matches_like( string $column, mixed $value, string $pattern ): bool {
-		if ( ! is_string( $value ) || 1 === preg_match( '/[^\x00-\x7F]/', $value ) ) {
+		if ( ! is_string( $value ) ) {
 			return false;
 		}
 		$regex = '';
@@ -307,6 +307,13 @@ final class WP_Markdown_Native_Table_Schema {
 			}
 			$regex .= preg_quote( $character, '/' );
 		}
+		// Byte-oriented, with the `i` flag folding ASCII only because the pattern
+		// has no declared collation. MySQL's utf8mb4 collations also fold
+		// non-ASCII case, so a non-ASCII pattern can match there and not here.
+		// That direction only ever returns fewer rows than the database would.
+		// Rejecting every non-ASCII value instead, as this did, returned none of
+		// them: a row whose body carries one em dash matched no pattern at all,
+		// including a pure-ASCII one that appears in it verbatim.
 		return 1 === preg_match( '/^' . $regex . '$/is', $value );
 	}
 

@@ -10,7 +10,7 @@ require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
 require_once __DIR__ . '/class-wp-markdown-native-post-catalogue.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-catalogue.php';
 
-abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Table_Provider {
+abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Canonical_Table_Provider {
 
 	protected string $state_root;
 
@@ -23,6 +23,10 @@ abstract class WP_Markdown_Native_File_Provider implements WP_Markdown_Native_Ta
 			throw new InvalidArgumentException( 'The canonical state root must be an existing directory.' );
 		}
 		$this->state_root = rtrim( $root, DIRECTORY_SEPARATOR );
+	}
+
+	public function canonical_root(): string {
+		return $this->state_root;
 	}
 
 	protected function failure( string $code, string $reason, string $message ): WP_Markdown_Query_Result {

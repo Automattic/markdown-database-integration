@@ -39,6 +39,8 @@ $new_literal = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp
 $new_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT title FROM wp_yoast_indexable WHERE id = 3' ) );
 $increment = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 9, 'ignored') ON DUPLICATE KEY UPDATE object_id = object_id + 1" ) );
 $incremented_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT object_id FROM wp_yoast_indexable WHERE id = 1' ) );
+$unknown_expression_column = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 10, 'ignored') ON DUPLICATE KEY UPDATE title = missing_column + 1" ) );
+$nondeterministic_expression = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_yoast_indexable (id, object_id, title) VALUES (1, 10, 'ignored') ON DUPLICATE KEY UPDATE object_id = RAND()" ) );
 $runtime->execute( new WP_Markdown_Query_Request( 'CREATE TABLE wp_unique_labels (id int NOT NULL, label varchar(20) NOT NULL, PRIMARY KEY(id), UNIQUE KEY label(label))' ) );
 $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_unique_labels (id,label) VALUES (1,'original')" ) );
 $unsupported_unique = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_unique_labels (id,label) VALUES (1,'original') ON DUPLICATE KEY UPDATE label='caf\xC3\xA9'" ) );
@@ -53,6 +55,8 @@ $checks = array(
 	'unknown duplicate target fails even on the insert branch' => ! $bad_target->succeeded() && 'unsupported_column' === $bad_target->diagnostic()['reason'],
 	'duplicate literals are not applied to a newly inserted row' => 1 === $new_literal->return_value() && 'new' === $new_row->corpus_result()['rows'][0]['title'],
 	'duplicate assignments support bounded row-local arithmetic' => 2 === $increment->return_value() && '10' === $incremented_row->corpus_result()['rows'][0]['object_id'],
+	'duplicate expressions reject unknown referenced columns' => ! $unknown_expression_column->succeeded() && 'unsupported_column' === $unknown_expression_column->diagnostic()['reason'],
+	'duplicate expressions reject nondeterministic scalar functions' => ! $nondeterministic_expression->succeeded() && 'unsupported_mutation_expression' === $nondeterministic_expression->diagnostic()['reason'],
 	'the first insert persists' => 1 === $insert->return_value() && 1 === $insert->wpdb_state()['insert_id'],
 	'ON DUPLICATE KEY UPDATE rewrites the conflicting row' => 2 === $upsert->return_value()
 		&& 1 === $upsert->wpdb_state()['insert_id']

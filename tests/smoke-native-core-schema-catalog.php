@@ -24,6 +24,7 @@ $multisite = $artifact['multisite'];
 $expected_single = array( 'users', 'usermeta', 'termmeta', 'terms', 'term_taxonomy', 'term_relationships', 'commentmeta', 'comments', 'links', 'options', 'postmeta', 'posts' );
 $expected_multisite = array_merge( $expected_single, array( 'blogs', 'blogmeta', 'registration_log', 'site', 'sitemeta', 'signups' ) );
 $comments_schema = WP_Markdown_Native_Runtime_Factory::comments_schema();
+$posts_schema    = WP_Markdown_Native_Runtime_Factory::posts_schema();
 $multisite_users_schema = WP_Markdown_Native_Runtime_Factory::users_schema( true );
 
 $checks = array(
@@ -50,6 +51,13 @@ $checks = array(
 	'runtime capabilities remain explicit overlays' => $comments_schema->allows_lookup( 'comment_author_email', '=', array( 'USER@EXAMPLE.TEST' ) )
 		&& ! $comments_schema->allows_lookup( 'comment_content', '=', array( 'content' ) )
 		&& $comments_schema->allows_order( 'comment_date_gmt' ),
+	// WP_Query orders by post_modified for orderby=modified, the default for admin
+	// lists and every "recently updated" view. Without it in the allowlist the
+	// native executor fails the query and callers see an empty result, not an error.
+	'posts order by every core datetime column WP_Query emits' => $posts_schema->allows_order( 'post_date' )
+		&& $posts_schema->allows_order( 'post_date_gmt' )
+		&& $posts_schema->allows_order( 'post_modified' )
+		&& $posts_schema->allows_order( 'post_modified_gmt' ),
 );
 
 $failed = false;

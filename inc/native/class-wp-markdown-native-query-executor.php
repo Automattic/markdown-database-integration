@@ -564,6 +564,11 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			? array()
 			: array_values( array_filter( $predicates, static fn( WP_Markdown_Native_Query_Predicate $predicate ): bool => $predicate !== $pushdown ) );
 		$provider_projection = $plan->counts_all() ? array() : array_merge( $projection, $scalar_columns );
+		// A residual predicate is matched here, after the provider read, so the
+		// provider has to return the columns it reads. A provider that resolves
+		// a column lazily returns it empty when it is absent from the
+		// projection, and the residual then matches against that empty value.
+		foreach ( $residual as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); }
 		foreach ( $scalar_predicates as $predicate ) { $provider_projection = array_merge( $provider_projection, $predicate->columns() ); }
 		if ( null !== $boolean_predicate ) { $provider_projection = array_merge( $provider_projection, $boolean_predicate->columns() ); }
 		foreach ( array_merge( $plan->subqueries(), $this->boolean_subqueries( $boolean_predicate ) ) as $subquery ) {

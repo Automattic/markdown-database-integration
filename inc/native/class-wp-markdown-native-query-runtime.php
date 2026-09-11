@@ -408,7 +408,14 @@ final class WP_Markdown_Native_Runtime_Factory {
 		$key = ( $network_root ? 'network:' : 'site:' ) . rtrim( $content_root, '/\\' );
 		if ( ! isset( self::$storages[ $key ] ) ) {
 			// The network root owns sites/{blog_id}; it is not a post-type tree.
-			self::$storages[ $key ] = new WP_Markdown_Storage( $content_root, $network_root ? array( 'sites' ) : array() );
+			$storage = new WP_Markdown_Storage( $content_root, $network_root ? array( 'sites' ) : array() );
+			// A post with a parent belongs inside its parent's directory, and
+			// the writer walks the ancestor chain to find that directory. Without
+			// a resolver it cannot read an ancestor, so it writes the child flat
+			// at the post-type root while the row still records the parent. The
+			// path then disagrees with the hierarchy the row declares.
+			$storage->set_post_resolver( static fn( int $post_id ): ?object => $storage->read_post( $post_id ) );
+			self::$storages[ $key ] = $storage;
 		}
 		return self::$storages[ $key ];
 	}

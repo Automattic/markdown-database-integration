@@ -32,6 +32,7 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private bool $autocommit = true;
 	private bool $in_transaction = false;
 	private bool $recovery_required = false;
+	private bool $waited_for_write_lock = false;
 
 	/** @var list<array{path:string,existed:bool,contents:?string}> */
 	private array $entries = array();
@@ -63,6 +64,15 @@ final class WP_Markdown_Native_Transaction_Journal {
 			$this->admitted_roots[] = rtrim( $resolved, DIRECTORY_SEPARATOR );
 		}
 		$this->admitted_roots = array_values( array_unique( $this->admitted_roots ) );
+	}
+
+	/** Whether a provider's exact canonical root was admitted by the runtime factory. */
+	public function covers_root( string $root ): bool {
+		$resolved = realpath( $root );
+		return false !== $resolved
+			&& is_dir( $resolved )
+			&& ! is_link( $root )
+			&& in_array( rtrim( $resolved, DIRECTORY_SEPARATOR ), $this->admitted_roots, true );
 	}
 
 	public function is_active(): bool {
@@ -130,6 +140,11 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return $recovered;
 	}
 
+	/** Whether the most recent root-lock acquisition had to wait for another process. */
+	public function waited_for_write_lock(): bool {
+		return $this->waited_for_write_lock;
+	}
+
 	/** Acquire the stable root lock without attempting recovery recursively. */
 	private function acquire_write_lock(): true|string {
 		$directory = $this->journal_directory();
@@ -145,11 +160,13 @@ final class WP_Markdown_Native_Transaction_Journal {
 			return 'The canonical transaction write lock could not be opened.';
 		}
 		$deadline = hrtime( true ) + ( self::WRITE_LOCK_WAIT_US * 1000 );
+		$this->waited_for_write_lock = false;
 		do {
 			if ( flock( $handle, LOCK_EX | LOCK_NB ) ) {
 				$this->write_lock = $handle;
 				return true;
 			}
+			$this->waited_for_write_lock = true;
 			usleep( 10000 );
 		} while ( hrtime( true ) < $deadline );
 		fclose( $handle );
@@ -294,12 +311,27 @@ final class WP_Markdown_Native_Transaction_Journal {
 				return $commit;
 			}
 		}
+		$locked = $this->begin_write();
+		if ( true !== $locked ) {
+			return $locked;
+		}
 		$this->active     = true;
 		$this->in_transaction = true;
 		$this->entries    = array();
 		$this->savepoints = array();
 		$this->restore_observers = array();
-		return $this->persist();
+		$persisted = $this->persist();
+		if ( true === $persisted ) {
+			// A foreign abandoned journal can appear after this transaction begins.
+			// Its next canonical admission must scan before reading or mutating.
+			$this->recovery_required = true;
+			return true;
+		}
+		$this->active = false;
+		$this->in_transaction = false;
+		$this->release();
+		$this->finish_write();
+		return $persisted;
 	}
 
 	/** Capture the current state of a canonical path before it is mutated. */
@@ -461,13 +493,21 @@ final class WP_Markdown_Native_Transaction_Journal {
 		return true;
 	}
 
-	/** Disabling autocommit defers the implicit transaction until a write. */
+	/** Disabling autocommit starts the lock-protected implicit transaction. */
 	public function set_autocommit( bool $enabled ): true|string {
-		$this->autocommit = $enabled;
 		if ( $enabled ) {
+			$this->autocommit = true;
 			return $this->commit();
 		}
-		return true;
+		$this->autocommit = false;
+		if ( $this->active ) {
+			return true;
+		}
+		$begun = $this->begin();
+		if ( true !== $begun ) {
+			$this->autocommit = true;
+		}
+		return $begun;
 	}
 
 	/**

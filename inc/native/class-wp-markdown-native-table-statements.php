@@ -9,7 +9,7 @@ final class WP_Markdown_Native_Table_Insert {
 	/**
 	 * @param array<string,int|string|null> $values
 	 * @param array<int,WP_Markdown_Native_Table_Predicate>|null $unless_exists
-	 * @param array<int,array{target:string,kind:string,source:?string,value:int|string|null}>|null $upsert_assignments
+	 * @param array<int,array{target:string,kind:string,source:?string,value:int|string|null|WP_Markdown_Native_Query_Scalar_Expression}>|null $upsert_assignments
 	 */
 	public function __construct(
 		private readonly string $table,
@@ -38,7 +38,7 @@ final class WP_Markdown_Native_Table_Insert {
 		return $this->ignore_duplicate;
 	}
 
-	/** @return array<int,array{target:string,kind:string,source:?string,value:int|string|null}>|null */
+	/** @return array<int,array{target:string,kind:string,source:?string,value:int|string|null|WP_Markdown_Native_Query_Scalar_Expression}>|null */
 	public function upsert_assignments(): ?array {
 		return $this->upsert_assignments;
 	}

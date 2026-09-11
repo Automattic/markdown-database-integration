@@ -30,7 +30,7 @@ final class WP_Markdown_Native_Derived_Table_Provider implements WP_Markdown_Nat
 	}
 }
 
-final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime {
+final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
 	private const MAX_JOIN_CANDIDATE_PAIRS = 100000;
 	private const MAX_CORRELATED_SUBQUERY_EVALUATIONS = 10000;
 	/** The largest SQL request accepted by the native request boundary. */
@@ -90,6 +90,40 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 	}
 
+	/**
+	 * Confirm that every exact table has a recognized canonical provider, its
+	 * matching configured mutation runtime, and a factory-admitted journal root.
+	 * This is an atomic-write guarantee, not an InnoDB or mysqli-session claim.
+	 *
+	 * @param string[] $tables
+	 */
+	public function supports_transactional_tables( array $tables ): bool {
+		if ( null === $this->transactions || array() === $tables ) {
+			return false;
+		}
+
+		foreach ( $tables as $table_name ) {
+			if ( ! is_string( $table_name ) || 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table_name ) || $this->registry->is_shadowed( $table_name ) ) {
+				return false;
+			}
+			$table = $this->registry->table( $table_name );
+			if ( null === $table || ! $this->supports_transactional_provider( $table['provider'] ) ) {
+				return false;
+			}
+		}
+
+		return true;
+	}
+
+	private function supports_transactional_provider( WP_Markdown_Native_Table_Provider $provider ): bool {
+		if ( ! $provider instanceof WP_Markdown_Native_Canonical_Table_Provider || ! $this->transactions->covers_root( $provider->canonical_root() ) ) {
+			return false;
+		}
+		return ( $provider instanceof WP_Markdown_Native_Post_Provider && null !== $this->post_mutations )
+			|| ( $provider instanceof WP_Markdown_Native_Option_Provider && null !== $this->option_mutations )
+			|| ( $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider && null !== $this->table_mutations );
+	}
+
 	private function execute_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
 		self::trace_runtime_phase( 'executor', $request->sql() );
 		if ( strlen( $request->sql() ) > self::MAX_SQL_BYTES ) {
@@ -108,17 +142,26 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		if ( null !== $transaction_control ) {
 			return $this->execute_transaction_control( $transaction_control );
 		}
-		$write_admitted = null !== $this->transactions && null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
-		if ( $write_admitted ) {
+		// Advisory locks have their own root-scoped lock files. Holding the
+		// transaction lock while waiting for one would invert their release order.
+		$mutation = null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
+		$canonical_admitted = null !== $this->transactions && ! $this->is_advisory_lock_statement( $request->sql() );
+		if ( $canonical_admitted ) {
+			$transactional_view = $this->transactions->is_in_transaction();
 			$locked = $this->transactions->begin_write();
 			if ( true !== $locked ) {
-				return $this->failure( 'transaction_write_lock_failed', $locked );
+				return $this->failure( $mutation ? 'transaction_write_lock_failed' : 'transaction_read_lock_failed', $locked );
+			}
+			if ( ! $transactional_view || $this->transactions->waited_for_write_lock() ) {
+				// Autocommit requests start a fresh canonical view. A transaction that
+				// waited also cannot retain snapshots from before the prior commit.
+				$this->registry->forget_snapshots();
 			}
 		}
 		try {
 			return $this->execute_unlocked_request( $request );
 		} finally {
-			if ( $write_admitted ) {
+			if ( $canonical_admitted ) {
 				$this->transactions->finish_write();
 			}
 		}
@@ -352,6 +395,10 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			array( array( $column => null === $value ? null : (string) $value ) ),
 			array( array( 'name' => $column, 'table' => '', 'type' => 8 ) )
 		);
+	}
+
+	private function is_advisory_lock_statement( string $sql ): bool {
+		return 1 === preg_match( '/^\s*SELECT\s+(?:GET_LOCK|RELEASE_LOCK)\s*\(/i', $sql );
 	}
 
 	private function execute_query_plan( WP_Markdown_Native_Query_Plan $plan, bool $allow_union = true ): WP_Markdown_Query_Result {
@@ -2582,6 +2629,9 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		}
 		if ( true !== $outcome ) {
 			return $this->failure( 'transaction_control_failed', $outcome );
+		}
+		if ( $this->transactions->waited_for_write_lock() || in_array( $control['action'], array( 'begin', 'autocommit_0' ), true ) ) {
+			$this->registry->forget_snapshots();
 		}
 		if ( 'commit_chain' === $control['action'] || 'rollback_chain' === $control['action'] ) {
 			$chained = $this->transactions->begin();

@@ -61,10 +61,41 @@ final class MDI_Insert_ID_Lifecycle_Runtime implements WP_Markdown_Query_Runtime
 	}
 }
 
+final class MDI_Untrusted_Transactional_Provider implements WP_Markdown_Native_Table_Provider {
+	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
+		unset( $access );
+		return array();
+	}
+}
+
 $root = sys_get_temp_dir() . '/mdi-native-wpdb-lifecycle-' . bin2hex( random_bytes( 6 ) );
 mkdir( $root . '/_options', 0777, true );
 mkdir( $root . '/_tables', 0777, true );
 $database = new WP_Markdown_Native_WPDB( WP_Markdown_Native_Runtime_Factory::runtime( $root ) );
+$database->query( 'CREATE TABLE wp_reservations (identity_hash char(64) NOT NULL, PRIMARY KEY (identity_hash))' );
+$transactional_tables = $database->supports_transactional_tables( array( 'wp_posts', 'wp_reservations' ) );
+$unknown_table = $database->supports_transactional_tables( array( 'wp_posts', 'wp_missing' ) );
+$empty_table_set = $database->supports_transactional_tables( array() );
+$runtime = Closure::bind( fn(): WP_Markdown_Native_Query_Runtime => $this->native_runtime, $database, WP_Markdown_Native_WPDB::class )();
+$registry = Closure::bind( fn(): WP_Markdown_Native_Table_Registry => $this->registry, $runtime, WP_Markdown_Native_Query_Runtime::class )();
+$journal = Closure::bind( fn(): WP_Markdown_Native_Transaction_Journal => $this->transactions, $runtime, WP_Markdown_Native_Query_Runtime::class )();
+$reservation = $registry->table( 'wp_reservations' );
+$posts = $registry->table( 'wp_posts' );
+$reservation_definition = $registry->definition( 'wp_reservations' );
+$posts_definition = $registry->definition( 'wp_posts' );
+$registry->reregister( 'wp_reservations', $reservation['schema'], new MDI_Untrusted_Transactional_Provider(), $reservation_definition );
+$untrusted_provider = $database->supports_transactional_tables( array( 'wp_posts', 'wp_reservations' ) );
+$registry->reregister( 'wp_reservations', $reservation['schema'], $reservation['provider'], $reservation_definition );
+$outside_root = sys_get_temp_dir() . '/mdi-native-outside-root-' . bin2hex( random_bytes( 6 ) );
+mkdir( $outside_root, 0777, true );
+$registry->reregister( 'wp_reservations', $reservation['schema'], new WP_Markdown_Native_JSON_Snapshot_Provider( $outside_root, $reservation['schema'], 'reservations.json' ), $reservation_definition );
+$outside_root_provider = $database->supports_transactional_tables( array( 'wp_posts', 'wp_reservations' ) );
+$registry->reregister( 'wp_reservations', $reservation['schema'], $reservation['provider'], $reservation_definition );
+$read_only_runtime = new WP_Markdown_Native_Query_Runtime( $registry, transactions: $journal );
+$read_only_runtime_with_journal = $read_only_runtime->supports_transactional_tables( array( 'wp_posts', 'wp_reservations' ) );
+$registry->shadow( 'wp_posts', $posts['schema'], $posts['provider'], $posts_definition );
+$shadowed_table = $database->supports_transactional_tables( array( 'wp_posts', 'wp_reservations' ) );
+$registry->unshadow( 'wp_posts' );
 
 $selection = $database->select( DB_NAME );
 $closed = $database->close();
@@ -93,6 +124,12 @@ $after_replace = $insert_lifecycle->insert_id;
 $checks = array(
 	'database selection succeeds without mysqli, keeps wpdb return semantics, and preserves the canonical prefix' => null === $selection && 'wp_' === $database->prefix,
 	'native wpdb advertises the MySQL dialect without creating a mysqli connection' => true === $database->is_mysql,
+	'native wpdb proves only configured canonical providers share its journaled transaction boundary' => $transactional_tables,
+	'native wpdb rejects unknown and empty table sets' => ! $unknown_table && ! $empty_table_set,
+	'native wpdb rejects arbitrary registered providers' => ! $untrusted_provider,
+	'native wpdb rejects a canonical provider outside its journal roots' => ! $outside_root_provider,
+	'native wpdb rejects a read-only runtime even when it has a journal' => ! $read_only_runtime_with_journal,
+	'native wpdb rejects a temporary shadow of a canonical table' => ! $shadowed_table,
 	'logical close and reconnect report wpdb lifecycle state' => true === $closed && true === $reconnected && true === $database->ready,
 	'invalid selection exposes a normal database error state' => false === $invalid_selection && 1049 === $invalid_errno && 'Unknown database' === $invalid_error,
 	'connection checks restore the ready state without a reconnect loop' => true === $reconnected_after_error && true === $database->ready && 0 === $database->last_errno,
@@ -114,4 +151,5 @@ foreach ( $checks as $label => $passed ) {
 @rmdir( $root . '/_tables' );
 @rmdir( $root . '/_options' );
 @rmdir( $root );
+@rmdir( $outside_root );
 exit( $failed ? 1 : 0 );

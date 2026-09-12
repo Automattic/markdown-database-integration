@@ -1,8 +1,8 @@
 <?php
 /**
  * Plugin Name: Markdown Database Integration
- * Plugin URI: https://github.com/chubes4/markdown-database-integration
- * Description: File-backed WordPress database with Markdown content, JSON state, and plugin schemas served directly from canonical files.
+ * Plugin URI: https://github.com/Automattic/markdown-database-integration
+ * Description: Native pure-PHP WordPress SQL engine backed by canonical Markdown content, JSON state, and plugin schemas.
  * Version: 0.13.0
  * Author: Chris Huber
  * License: GPL v2 or later
@@ -18,7 +18,7 @@
  *                             Database Integration plugin and honours MARKDOWN_DB_MODE.
  *   - 'mysql-content' / 'mysql-full': MySQL runtimes.
  *
- * SQLite modes (MARKDOWN_DB_MODE, 'sqlite' backend only):
+ * SQLite modes (MARKDOWN_DB_MODE, explicit 'sqlite' backend only):
  *   - 'mirror'  (Phase 1): SQLite is primary. Markdown files are mirrored on every write.
  *                           WordPress reads from SQLite. AI agents read from markdown.
  *   - 'primary' (Phase 2): Markdown is primary. SQLite is an index rebuilt from .md files.

@@ -1,20 +1,33 @@
 # Markdown Database Integration
 
-File-backed, reconstructable WordPress database state: Markdown for content,
-JSON for WordPress and plugin table rows, SQL for plugin schemas, and SQLite
-as a rebuildable query engine and index.
+MDI is a native, pure-PHP SQL engine for WordPress backed by canonical files:
+Markdown for content, JSON for WordPress and plugin-table rows, and SQL for
+plugin schemas. Its native `wpdb` implementation serves those files directly;
+no SQLite extension, SQLite Database Integration install, or MySQL server is
+required for the default runtime.
+
+The priorities are **full MySQL-visible SQL and `wpdb` parity for arbitrary
+WordPress plugins and workloads first**, then **performance and scalability
+beyond SQLite and MySQL**, with real WP-CLI workflows as the primary measurement
+path. Both are goals still under development. See [current evidence](#native-goals-and-current-evidence)
+and the [CLI-first benchmark requirements](tests/bench/README.md#priorities-and-cli-acceptance).
 
 ## What This Does
 
-MDI has two SQLite-backed operating modes:
+MDI selects its backend in `wp-content/db.php` before plugins load:
 
-- **`mirror`** (the default) keeps the SQLite database authoritative and mirrors
-  Markdown-backed post writes to files.
-- **`primary`** persists the state needed to reconstruct WordPress to ordinary
-  files. SQLite remains the runtime query engine and index, but a cold boot can
-  recreate it from the content and state trees.
+- An explicit `MARKDOWN_DB_BACKEND` configuration always wins.
+- Without one, an existing SQLite database (`FQDB`, when it names a file, or
+  `wp-content/database/.ht.sqlite`) keeps the SQLite backend so an upgrade does
+  not change an operating site's query engine.
+- Otherwise, MDI selects **`mdi-native`**, where canonical Markdown and JSON
+  files are the database.
 
-## SQLite Integration API
+`sqlite`, `mysql-content`, and `mysql-full` remain supported explicit
+operational backends. Their constraints and setup are documented below; they
+are not the default architecture.
+
+## SQLite Integration API (Explicit `sqlite` Backend)
 
 SQLite Database Integration is optional. It is required only by the `sqlite`
 backend; the default `mdi-native` backend serves WordPress directly from the
@@ -28,7 +41,10 @@ WordPress/sqlite-database-integration#449. MDI no longer uses the deprecated
 driver with its `mysql-on-sqlite:` DSN and consumes query results as
 `PDOStatement` objects.
 
-In primary mode, a typical single-root store looks like this:
+## Canonical Storage
+
+The native runtime and SQLite `primary` mode share canonical storage layouts.
+A typical single-root store looks like this:
 
 ```
 wp-content/db/
@@ -87,7 +103,7 @@ stores whatever the caller or content-format layer writes to `post_content`.
 
 MDI manages the frontmatter shape automatically. Markdown files use portable, WordPress-compatible metadata: broadly useful concept fields stay at the top level, while WordPress round-trip fields live under `wordpress`. Existing MDI files are rewritten to the current shape by the one-time frontmatter migration during upgrade.
 
-### Primary-Mode Persistence
+### SQLite Primary-Mode Persistence
 
 Primary mode persists the following state so SQLite can be reconstructed:
 
@@ -154,8 +170,9 @@ choose block markup, HTML, Markdown, or another format for `post_content`; MDI
 persists those bytes and database state without interpreting them.
 
 Import/export is the explicit content-format boundary. The `markdown-db import`
-and `markdown-db export` commands and abilities use Block Format Bridge to
-round-trip between markdown files and serialized block content by default:
+and `markdown-db export` commands and abilities use the configured Blocks Engine
+PHP Transformer conversion path to round-trip between Markdown files and
+serialized block content by default:
 
 - Import: `markdown` → `blocks`
 - Export: `blocks` → `markdown`
@@ -177,7 +194,7 @@ attacker to replace directories between the final identity check and `rename()`
 must protect the content root with filesystem ownership and permissions.
 
 ```
-WRITE:
+SQLITE BACKEND WRITE (native writes canonical files directly):
 
   WordPress caller writes post_content
        │
@@ -188,7 +205,7 @@ WRITE:
   .md file stores the same bytes
 
 
-READ (site boots):
+SQLITE PRIMARY READ (native queries canonical files directly):
 
   .md file body
        │
@@ -200,7 +217,7 @@ IMPORT / EXPORT:
 
   .md file body or post_content
        │
-       ▼  BFB conversion, unless disabled
+       ▼  explicit import/export conversion, unless disabled
   target file body or post_content
 
 
@@ -211,8 +228,9 @@ RENDER / EDITOR / API:
 
 ### Dependencies
 
-MDI requires Block Format Bridge for self-contained import/export conversion.
-The drop-in and live write engine remain byte-preserving; BFB is not used by
+MDI requires its Blocks Engine PHP Transformer dependency for default
+import/export conversion. The drop-in and live write engine remain byte-preserving;
+the transformer is not used by
 the runtime render, REST, editor, or DB write paths.
 
 ## Why
@@ -229,25 +247,30 @@ depending solely on one SQLite file. That supports:
   persisted files.
 - Disposable local or test runtimes that can be recreated from the same trees.
 
-## Architecture
+## Native Architecture
 
 ```
 WordPress Core ($wpdb)
         │
         v
-WP_Markdown_Driver -------------------- runtime queries ----> SQLite index
-        │                                                        ^
-        │ successful writes                                      │ rebuild/sync
-        v                                                        │
-Persisted files ---------------------- cold/warm boot --> MDI loader
+WP_Markdown_Native_WPDB
+        │
+        v
+Native PHP SQL parser, planner, and executor
+        │
+        v
+Canonical files
         │
         ├── MARKDOWN_DB_CONTENT_DIR
         │     post/*.md, page/*.md, {type}/*.md
         │
         └── MARKDOWN_DB_STATE_DIR
-              _options/*.json, _tables/*.json, _schema/*.sql,
-              markdown-index.sqlite
+               _options/*.json, _tables/*.json, _schema/*.sql
 ```
+
+The native runtime reads and writes the canonical store directly. SQLite's
+rebuildable index is specific to the explicit `sqlite` backend and its
+`primary` mode.
 
 ### Durable Reconciliation Operations
 
@@ -337,9 +360,14 @@ boundary.
 ## Requirements
 
 - WordPress 6.9+
-- A normal WordPress database. MySQL/MariaDB works for import/export commands; the bundled `db.php` drop-in additionally supports SQLite-backed mirror/primary modes.
 - PHP 8.1+
 - Composer
+
+The default `mdi-native` runtime uses the bundled `db.php` drop-in and the
+canonical filesystem store. MySQL/MariaDB is required only for the explicit
+MySQL backends or for import/export against a normal MySQL/MariaDB WordPress
+installation. SQLite Database Integration is required only for the explicit
+`sqlite` backend.
 
 ## Installation
 
@@ -355,7 +383,8 @@ composer install --no-dev
 # Activate the plugin. A MARKDOWN_DB_MODE constant alone does not activate MDI.
 wp plugin activate markdown-database-integration
 
-# For SQLite-backed mirror or primary mode, inspect and install the MDI drop-in.
+# Install the MDI db.php drop-in for the native default runtime, or for an
+# explicit sqlite or mysql-full backend.
 wp markdown-db doctor
 wp markdown-db doctor --repair
 ```
@@ -368,8 +397,8 @@ replace it. Inspect that integration first; only use `--repair --force` when
 you approve a deterministic backup at `wp-content/db.php.markdown-db-backup`.
 Restart PHP or WordPress after an install or repair because WordPress loads
 `db.php` before regular plugins. A healthy install reports `healthy`; a fresh
-primary install can report `install_fallback` while WordPress completes its
-first installation.
+SQLite `primary` install can report `install_fallback` while WordPress
+completes its first installation.
 
 This order also applies to WP-CLI: an installed MDI `db.php` runtime is active
 before normal plugin activation and is not removed by
@@ -381,8 +410,9 @@ bounded dirty subset atomically before exit. Subscribe to
 to its tables, post IDs, partition resources, and canonical paths.
 
 On a normal MySQL/MariaDB WordPress site, activate the plugin without copying
-the `db.php` drop-in. Use the import/export commands or abilities to move
-content between the active database and `MARKDOWN_DB_CONTENT_DIR`.
+the `db.php` drop-in when using only import/export or `mysql-content`. Install
+the drop-in for `mysql-full`. Use the import/export commands or abilities to
+move content between the active database and `MARKDOWN_DB_CONTENT_DIR`.
 
 ## Configuration
 
@@ -401,33 +431,36 @@ define( 'MARKDOWN_DB_CONTENT_DIR', WP_CONTENT_DIR . '/plugins/my-world/content' 
 // to MARKDOWN_DB_CONTENT_DIR and preserves the existing single-root layout.
 define( 'MARKDOWN_DB_STATE_DIR', WP_CONTENT_DIR . '/markdown-state' );
 
-// Post types to exclude from markdown storage (comma-separated).
-// Default: all types stored as markdown. Override if you want certain
-// types (e.g. attachments) to live only in SQLite.
+// Post types to exclude from Markdown storage (comma-separated). The default
+// excludes revision, auto-draft, nav_menu_item, customize_changeset,
+// oembed_cache, wp_navigation, wp_global_styles, wp_template, and
+// wp_template_part.
 define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'attachment,nav_menu_item' );
 
 // Tables to exclude from file persistence (comma-separated table suffixes).
 // No tables are excluded by default.
 define( 'MARKDOWN_DB_EPHEMERAL_TABLES', 'my_session_table' );
 
-// Operating mode. 'mirror' (default) or 'primary' — see Modes below.
-define( 'MARKDOWN_DB_MODE', 'mirror' );
+// Select an operational backend only when overriding automatic selection.
+// Unconfigured installs use mdi-native unless an existing SQLite database is
+// detected. Valid values: mdi-native, sqlite, mysql-content, mysql-full.
+define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
 ```
 
-### Modes
+### SQLite Modes (Explicit `sqlite` Backend)
 
-- **`mirror`** (default): SQLite on disk is authoritative. MDI mirrors
+- **`mirror`** (the SQLite-mode default): SQLite on disk is authoritative. MDI mirrors
   Markdown-backed posts to files, and WordPress reads from SQLite.
 - **`primary`**: MDI persists reconstructable WordPress state to Markdown,
   JSON, and plugin-schema SQL. SQLite is a runtime index and query engine,
   rebuilt on cold boot and incrementally synchronized on warm boot. The default
   index path is `wp-content/markdown-index.sqlite`.
 
-Primary mode trades cold-boot work for reconstructable persisted state. To
+SQLite primary mode trades cold-boot work for reconstructable persisted state. To
 reconstruct the complete configured state, retain both the content tree and the
 state tree when they are split.
 
-### Native MySQL/MariaDB Backends
+### MySQL/MariaDB Operational Backends
 
 MDI also has two explicit native-database backends:
 
@@ -468,13 +501,14 @@ boundary and are reported by diagnostics.
 
 ### Query Compatibility Corpus
 
-Native transaction writes take one bounded, canonical-root lock across processes
-from the first journaled mutation through commit or rollback. This prevents a
-rollback from restoring over another writer's committed post, option, or JSON
-table change; it is write serialization, not MVCC read isolation. Runtime
-instances for the same root in one PHP process deliberately share one logical
-transaction owner, so independent same-process connection isolation is not
-currently supported.
+Native SQL reads and writes acquire canonical-root admission across processes;
+explicit transactions retain it through commit or rollback. Independent SQL
+readers cannot observe uncommitted canonical changes, and subsequent admission
+refreshes stale snapshots. This is bounded coarse serialization, not MVCC.
+Five-second lock waits can return contention failures, and direct filesystem
+writers bypassing the protocol are outside this contract. Runtime instances
+for the same root in one PHP process share one logical transaction owner;
+independent same-process connection isolation is not supported.
 
 The `mdi-native` query-runtime program uses a versioned, backend-neutral corpus
 to preserve caller-visible `wpdb` behavior without making MySQL part of the
@@ -533,20 +567,57 @@ authoritative backend remains the sole source of caller-visible behavior, and
 shadow failures do not fail the query. The SHA-256 identity covers the sanitized
 template, not the literal-bearing source query.
 
-### Native Cutover Boundary
+### Native Goals and Current Evidence
 
-SQLite remains MDI's supported default runtime while `mdi-native` expands behind
-explicit configuration and shadow verification. Native becomes eligible to
-replace SQLite only after generic SQL and `wpdb` contracts pass installation,
-activation, schema migration, CRUD, transaction, cron, REST, WP-CLI, admin, and
-front-end workflows across representative arbitrary WordPress plugins.
+Status reviewed September 12, 2026. `mdi-native` is the default for installations
+without an existing SQLite database; removing shipped SQLite support remains
+subject to explicit acceptance gates. Its first goal is
+full MySQL-visible SQL and `wpdb` parity for arbitrary WordPress plugins and
+workloads through generic engine primitives. Representative corpora, including
+Data Machine and WooCommerce, are evidence rather than product scope; plugin
+names, table names, and plugin-specific query branches do not belong in the
+engine.
 
-Data Machine and WooCommerce are compatibility evidence, not implementation
-targets. Compatibility belongs in reusable grammar, typed AST, planning, schema,
-storage, transaction, and result-state primitives. Plugin names, plugin table
-names, and plugin-specific query branches are outside the native engine contract.
+The second goal, after parity, is to be faster and more scalable than both
+SQLite and MySQL. That requires real end-to-end WP-CLI measurements of cold
+process/bootstrap/query/persistence shutdown, warm filesystem versus warm
+process behavior, growth, memory, concurrency, and tail latency. Profiling can
+guide parity work, but compatibility is not traded for benchmark results.
 
-With only `MARKDOWN_DB_CONTENT_DIR` configured, primary mode keeps the existing
+Neither goal is achieved by this documentation or the currently cited tests.
+The historical benchmark at `21267e1` is not current evidence and does not
+establish a performance gate.
+
+Current merged evidence includes:
+
+- [#384](https://github.com/Automattic/markdown-database-integration/pull/384):
+  45 SQL and 26 WordPress operations, plus WooCommerce lifecycle, multisite,
+  and `dbDelta` coverage.
+- [#399](https://github.com/Automattic/markdown-database-integration/pull/399)
+  and [#400](https://github.com/Automattic/markdown-database-integration/pull/400):
+  journaled post writes and multisite journals.
+- [#403](https://github.com/Automattic/markdown-database-integration/pull/403):
+  cross-process read/write admission and bounded write serialization. This is
+  not MVCC: waits are bounded at five seconds, and direct filesystem writers
+  remain outside the protocol.
+- [#404](https://github.com/Automattic/markdown-database-integration/pull/404),
+  [#405](https://github.com/Automattic/markdown-database-integration/pull/405),
+  and [#406](https://github.com/Automattic/markdown-database-integration/pull/406):
+  modification ordering, hierarchical canonical paths, and non-ASCII body
+  `LIKE` matching. The latter is not full Unicode collation support.
+- The paired DME 1053 run and companion Data Machine adapter recorded native
+  `1040 passed, 4 failed, 9 skipped`; the MySQL control recorded
+  `1046 passed, 0 failed, 7 skipped`. Four tests still require a physical
+  `mysqli` connection, and two known table-`REPLACE` smoke failures remain.
+
+The active native work trackers are [#232](https://github.com/Automattic/markdown-database-integration/issues/232)
+and [#377](https://github.com/Automattic/markdown-database-integration/issues/377).
+The former optimization draft #370 is merged. SQLite removal still requires
+verified native-only install, site workflows, backup restoration, cold restart,
+and a supported transition for existing SQLite-backed installations. Keep
+development differential references separate from shipped runtime dependencies.
+
+With only `MARKDOWN_DB_CONTENT_DIR` configured, SQLite `primary` mode keeps the existing
 single-root layout:
 
 ```
@@ -560,7 +631,7 @@ wp-content/
     _schema/*.sql
 ```
 
-### Storage-Only Primary Runtime
+### Storage-Only SQLite Primary Runtime
 
 Constrained callers can bootstrap MDI's primary loader, driver, and write engine
 around a caller-owned disposable SQLite cache. The cache is a query index only:
@@ -750,14 +821,16 @@ The import path upserts posts instead of duplicating them. It records
 can update the same database rows even when the runtime is not using the SQLite
 drop-in. MDI imports the fields already represented by its storage parser:
 post hierarchy, slugs, post type, status, dates, content bytes, frontmatter
-meta, and frontmatter terms. It does not convert markdown, block markup, or
-HTML between formats.
+meta, and frontmatter terms. By default, import converts Markdown to blocks and
+export converts blocks to Markdown through the explicit conversion boundary;
+pass `--no-convert` to preserve raw body bytes.
 
 ### Import/export content transforms
 
-MDI stays storage-only, but import/export exposes filter seams so downstream
-plugins can decide how file bodies map to WordPress `post_content` and back.
-When no filters are registered, content is imported and exported unchanged.
+MDI stays storage-only in its runtime paths, but import/export exposes filter
+seams before its explicit default conversion. Filters can customize how file
+bodies map to WordPress `post_content` and back; `--no-convert` disables the
+default conversion and preserves raw body bytes.
 
 Available filters:
 
@@ -826,9 +899,10 @@ add_filter( 'markdown_db_frontmatter', function ( array $fm, $post ) {
 
 MDI's own fields (`id`, `title`, `status`, `type`, `slug`, `parent`, etc.) are required for round-trip read/write — removing or mutating them is unsupported and will corrupt the files.
 
-## What Works
+## SQLite Primary Operational Coverage
 
-Tested on WordPress 6.9 with SQLite-backed local and Playground-style runtimes:
+The following SQLite `primary`-mode behavior is separately covered on
+WordPress 6.9 with local and Playground-style runtimes:
 
 - **Primary reconstruction** → cold boot creates core tables and reloads
   Markdown content, frontmatter meta and terms, JSON-backed core state, plugin

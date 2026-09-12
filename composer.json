@@ -1,6 +1,6 @@
 {
     "name": "chubes4/markdown-database-integration",
-    "description": "WordPress database integration that stores content as markdown files.",
+    "description": "Native pure-PHP WordPress SQL engine backed by canonical Markdown and JSON files.",
     "type": "wordpress-plugin",
     "license": "GPL-2.0-or-later",
     "require": {

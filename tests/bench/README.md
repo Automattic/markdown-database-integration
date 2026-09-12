@@ -1,13 +1,44 @@
 # MDI Stress Bench
 
-Compare three WordPress DB substrates on identical workloads at realistic
-Obsidian-vault scale: stock SDI (control), MDI mirror, MDI primary.
+Measure WordPress database workloads with reproducible runtime and corpus
+identities. This directory includes the native/SQLite decision rigs and older
+stock SDI, MDI mirror, and MDI primary stress harnesses.
 
 The goal is numbers, not vibes. Every cell produces a `BenchResults` JSON
 envelope with p50/p95/p99 timings per workload, peak memory, and the
 substrate context that produced it.
 
-## TL;DR — run the smoke matrix
+## Priorities And CLI Acceptance
+
+Updated September 12, 2026. The order is **full MySQL-visible SQL and `wpdb`
+parity for arbitrary WordPress plugins and workloads first**, then **faster and
+more scalable than SQLite and MySQL**. Profiling can inform parity work, while
+optimizations must preserve its semantics. The accepted corpus measures progress
+toward general compatibility rather than defining a plugin allowlist.
+
+WP-CLI is the primary entry point. The next acceptance matrix must measure
+complete fresh-process invocations, including PHP/WP-CLI startup, WordPress and
+plugin bootstrap, SQL execution, canonical reads/writes, and durable shutdown.
+Record end-to-end latency alongside phase timings; a fast in-process query loop
+does not establish fast CLI commands. Separate cold filesystem state, warm
+filesystem caches in a fresh PHP process, and warm-process query measurements.
+
+Use representative read, search, hierarchy, import/export, mutation, schema,
+and background-job commands with verified outputs and persisted state. Measure
+corpus growth, peak memory, concurrent command/job contention, throughput, and
+p50/p95/p99 latency. Compare native, SQLite, and MySQL with equivalent data,
+durability guarantees, operation counts, runtime configuration, warmups, and
+iterations. Declare per-workload regression budgets before accepting aggregate
+wins. Keep orchestration/network timing separate and specify deployment topology.
+
+These are acceptance requirements, not coverage already supplied by the legacy
+matrix below. Current-head CLI-first and MySQL performance evidence is still
+needed. Link each run, recipe, candidate identity, and retained artifacts to
+[#232](https://github.com/Automattic/markdown-database-integration/issues/232)
+or its implementing PR. See [remaining consumer evidence](../../REMAINING_102_GAPS.md)
+for the newer correctness results.
+
+## Historical SQLite Stress Matrix
 
 ```bash
 # Quick smoke (corpus 100 posts, 5 iterations per workload)
@@ -34,11 +65,12 @@ Results land at `tests/bench/results/<YYYY-MM-DD>/<substrate>.json`.
 
 ## SQLite vs native decision rigs
 
-### Native cutover evidence
+### Historical Native Cutover Evidence
 
-The native-only target is tracked in #232; the current optimization candidate
-is draft PR #370. SQLite remains the comparison reference. The final source
-revision is `21267e1` (`b2cafd2` is the runtime change under review): it
+The native-only target is tracked in #232. PR #370 merged on September 9, 2026;
+the following is its historical evidence, not current-head acceptance. SQLite
+was the comparison reference. The recorded source revision is `21267e1`
+(`b2cafd2` was the runtime change under review): it
 removes retain-first branches while preserving `requires_complete_scope`
 full-freshness traversal.
 

@@ -608,7 +608,9 @@ Current merged evidence includes:
 - The paired DME 1053 run and companion Data Machine adapter recorded native
   `1040 passed, 4 failed, 9 skipped`; the MySQL control recorded
   `1046 passed, 0 failed, 7 skipped`. Four tests still require a physical
-  `mysqli` connection, and two known table-`REPLACE` smoke failures remain.
+  `mysqli` connection. The two table-`REPLACE` assertions reported there were
+  subsequently corrected against a [30-statement MariaDB comparison](tests/REPLACE_PARITY.md),
+  which also exposed and verified native session-variable alias support.
 
 The active native work trackers are [#232](https://github.com/Automattic/markdown-database-integration/issues/232)
 and [#377](https://github.com/Automattic/markdown-database-integration/issues/377).

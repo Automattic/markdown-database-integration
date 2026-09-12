@@ -5,6 +5,8 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
+require_once __DIR__ . '/class-wp-markdown-native-sql-tokenizer.php';
+
 final class WP_Markdown_Native_SQL_Session {
 	private string $sql_mode = '';
 	private array $warnings = array();
@@ -38,13 +40,15 @@ final class WP_Markdown_Native_SQL_Session {
 				array( 'name' => 'Message', 'table' => '', 'type' => 253 ),
 			) );
 		}
-		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?warning_count)\s*;?\s*$/i', $sql, $match ) ) {
-			return WP_Markdown_Query_Result::selected( array( array( $match[1] => (string) $this->warning_count ) ), array( array( 'name' => $match[1], 'table' => '', 'type' => 8 ) ) );
+		$column = $this->session_variable_select( $sql, 'warning_count' );
+		if ( null !== $column ) {
+			return WP_Markdown_Query_Result::selected( array( array( $column => (string) $this->warning_count ) ), array( array( 'name' => $column, 'table' => '', 'type' => 8 ) ) );
 		}
 		$this->warnings = array();
 		$this->warning_count = 0;
-		if ( 1 === preg_match( '/^\s*SELECT\s+(@@(?:SESSION\.)?sql_mode)\s*;?\s*$/i', $sql, $match ) ) {
-			return WP_Markdown_Query_Result::selected( array( array( $match[1] => $this->sql_mode ) ), array( array( 'name' => $match[1], 'table' => '', 'type' => 253 ) ) );
+		$column = $this->session_variable_select( $sql, 'sql_mode' );
+		if ( null !== $column ) {
+			return WP_Markdown_Query_Result::selected( array( array( $column => $this->sql_mode ) ), array( array( 'name' => $column, 'table' => '', 'type' => 253 ) ) );
 		}
 		if ( 1 !== preg_match( "/^\\s*SET\\s+(?:SESSION\\s+|@@(?:SESSION\\.)?)?sql_mode\\s*=\\s*'([A-Za-z_, ]*)'\\s*;?\\s*$/i", $sql, $match ) ) {
 			return null;
@@ -56,5 +60,29 @@ final class WP_Markdown_Native_SQL_Session {
 		}
 		$this->sql_mode = implode( ',', array_values( array_intersect( $supported, $modes ) ) );
 		return WP_Markdown_Query_Result::mutated( 0 );
+	}
+
+	/** Return the projected column name for one supported system-variable SELECT. */
+	private function session_variable_select( string $sql, string $variable ): ?string {
+		$pattern = '/^\s*SELECT\s+(@@(?:SESSION\.)?' . preg_quote( $variable, '/' ) . ')(?=\s|;|$)(.*)$/is';
+		if ( 1 !== preg_match( $pattern, $sql, $match ) ) {
+			return null;
+		}
+		try {
+			$suffix = rtrim( $match[2] );
+			$tokens = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( str_ends_with( $suffix, ';' ) ? substr( $suffix, 0, -1 ) : $suffix );
+		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
+			return null;
+		}
+		if ( 1 === count( $tokens ) ) {
+			return $match[1];
+		}
+		if ( WP_Markdown_Native_SQL_Token::KEYWORD === $tokens[0]->type() && 'AS' === strtoupper( (string) $tokens[0]->value() ) ) {
+			array_shift( $tokens );
+		}
+		if ( 2 !== count( $tokens ) || ! in_array( $tokens[0]->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER, WP_Markdown_Native_SQL_Token::STRING ), true ) ) {
+			return null;
+		}
+		return (string) $tokens[0]->value();
 	}
 }

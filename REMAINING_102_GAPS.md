@@ -26,9 +26,11 @@ consumer adapter on both backends:
 The four remaining failures require physical `mysqli` connections or handles.
 They need explicit consumer/harness ownership; the native engine does not
 provide a physical MySQL connection. The different skips still require
-classification. #403 also records two pre-existing failures in
-`tests/smoke-native-table-replace.php`. These are recorded PR results, not a
-fresh execution at the current checkout.
+classification. #403 also recorded two failures in
+`tests/smoke-native-table-replace.php`. A later [REPLACE reference comparison](tests/REPLACE_PARITY.md)
+proved those expectations stale under non-strict SQL mode; the corrected test
+also verifies strict rejection and separate-process persistence. The consumer
+suite counts above remain recorded PR results, not a fresh paired execution.
 
 Full Unicode collation semantics and uncached title lookups beyond the
 1,024-source-file budget remain limitations. [#406](https://github.com/Automattic/markdown-database-integration/pull/406)

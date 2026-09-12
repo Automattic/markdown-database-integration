@@ -267,24 +267,31 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 	private function quoted_identifier( string $sql, int &$offset ): WP_Markdown_Native_SQL_Token {
 		$start  = $offset++;
 		$length = strlen( $sql );
-		if ( $offset >= $length || ! $this->is_identifier_start( $sql[ $offset ] ) ) {
-			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $start, 'mdi-native supports bounded single-table SELECT queries only.' );
+		$identifier = '';
+		while ( $offset < $length ) {
+			$character = $sql[ $offset++ ];
+			if ( "\0" === $character ) {
+				break;
+			}
+			if ( '`' === $character ) {
+				if ( $offset < $length && '`' === $sql[ $offset ] ) {
+					$identifier .= '`';
+					++$offset;
+					continue;
+				}
+				if ( '' === $identifier ) {
+					break;
+				}
+				return new WP_Markdown_Native_SQL_Token(
+					WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER,
+					substr( $sql, $start, $offset - $start ),
+					$identifier,
+					$start
+				);
+			}
+			$identifier .= $character;
 		}
-		$identifier_start = $offset++;
-		while ( $offset < $length && $this->is_identifier_part( $sql[ $offset ] ) ) {
-			++$offset;
-		}
-		if ( $offset >= $length || '`' !== $sql[ $offset ] ) {
-			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $start, 'mdi-native supports bounded single-table SELECT queries only.' );
-		}
-		$identifier = substr( $sql, $identifier_start, $offset - $identifier_start );
-		++$offset;
-		return new WP_Markdown_Native_SQL_Token(
-			WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER,
-			substr( $sql, $start, $offset - $start ),
-			$identifier,
-			$start
-		);
+		throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $start, 'mdi-native requires a nonempty, terminated quoted identifier without NUL bytes.' );
 	}
 
 	private function is_identifier_start( string $character ): bool {

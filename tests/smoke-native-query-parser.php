@@ -9,6 +9,7 @@ require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.ph
 $tokenizer = new WP_Markdown_Native_SQL_Tokenizer();
 $token_sql = "SELECT `option_name`, option_value FROM wp_options WHERE option_name = 'tab\\tback\\\\slash' LIMIT 1";
 $tokens    = $tokenizer->tokenize( $token_sql );
+$escaped_identifier = $tokenizer->tokenize( 'SELECT `count`` value` FROM wp_options' );
 $parser    = new WP_Markdown_Native_Query_Parser( $tokenizer );
 
 $ast_sql = "\nseLEct `option_name`, option_value FROM `wp_options` WHERE option_name IN ('siteurl', 'tab\\tback\\\\slash', 'siteurl') AND autoload = 'on' ORDER BY option_id aSc LIMIT 2\t";
@@ -83,6 +84,7 @@ $unsupported_function_sql = 'SELECT SUM(*) FROM wp_rows';
 $unsupported_function     = $parser->parse( $unsupported_function_sql );
 
 $checks = array(
+	'quoted identifiers retain escaped backticks, spaces, lexemes, and offsets' => 'count` value' === $escaped_identifier[1]->value() && '`count`` value`' === $escaped_identifier[1]->lexeme() && 7 === $escaped_identifier[1]->sql_offset(),
 	'tokenizer emits typed tokens with exact source offsets and decoded values' => array(
 		WP_Markdown_Native_SQL_Token::KEYWORD,
 		WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER,

@@ -1,0 +1,86 @@
+{
+  "recipe": {
+    "schema": "wp-codebox/workspace-recipe/v1",
+    "runtime": {
+      "backend": "wordpress",
+      "wp": "7.1",
+      "phpVersion": "8.3"
+    },
+    "inputs": {
+      "runtimeEnv": {
+        "MDI_REPLACE_PARITY_STATE": "/tmp/mdi-377-replace-parity",
+        "MDI_REPLACE_PARITY_SOURCE": "/workspace/mdi"
+      },
+      "services": [
+        {
+          "id": "reference-mariadb",
+          "kind": "mysql",
+          "configuration": {
+            "provider": "docker",
+            "engine": "mariadb"
+          },
+          "outputs": {
+            "host": "DB_HOST",
+            "port": "DB_PORT",
+            "username": "DB_USER",
+            "password": "DB_PASSWORD",
+            "database": "DB_NAME"
+          }
+        }
+      ]
+    },
+    "workflow": {
+      "steps": [
+        {
+          "command": "wordpress.run-php",
+          "args": [
+            "code=require '/workspace/mdi/tests/probe-native-mariadb-replace-differential.php';"
+          ]
+        },
+        {
+          "command": "wordpress.run-php",
+          "args": [
+            "code=require '/workspace/mdi/tests/probe-native-mariadb-replace-differential.php';"
+          ]
+        }
+      ]
+    },
+    "artifacts": {
+      "typed": [
+        {
+          "name": "replace-parity-observations",
+          "type": "mdi-native/replace-parity-observations",
+          "path": "/tmp/mdi-377-replace-parity/phase.json",
+          "required": false,
+          "contentType": "application/json",
+          "parseJson": true,
+          "payloadSchema": "mdi-native-replace-parity-phase/v1"
+        },
+        {
+          "name": "replace-parity-report",
+          "type": "mdi-native/replace-parity-report",
+          "path": "/tmp/mdi-377-replace-parity/report.json",
+          "required": true,
+          "contentType": "application/json",
+          "parseJson": true,
+          "payloadSchema": "mdi-native-replace-parity/v1"
+        }
+      ]
+    },
+    "metadata": {
+      "purpose": "MDI#377 REPLACE parity against a disposable Docker MariaDB reference"
+    }
+  },
+  "sourcePackages": [
+    {
+      "name": "markdown-database-integration",
+      "source": ".",
+      "target": "mdi",
+      "allow": [
+        "inc*",
+        "tests/probe-native-mariadb-replace-differential.php"
+      ],
+      "artifact": true
+    }
+  ]
+}

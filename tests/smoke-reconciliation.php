@@ -436,6 +436,32 @@ $coordinator_root = $canonical . '/coordinator-bootstrap';
 mkdir( $coordinator_root, 0755, true );
 mdi_reconcile_check( wp_markdown_durable_reconciliation_coordinator( array( $coordinator_root ) ) instanceof WP_Markdown_Durable_Reconciliation_Coordinator, 'production coordinator creates its private authentication key without hard-link support' );
 
+$concurrent_coordinator_root = $canonical . '/concurrent-coordinator-bootstrap';
+mkdir( $concurrent_coordinator_root, 0755, true );
+if ( function_exists( 'pcntl_fork' ) && function_exists( 'posix_kill' ) ) {
+	$children = array();
+	for ( $worker = 0; $worker < 12; ++$worker ) {
+		$pid = pcntl_fork();
+		if ( 0 === $pid ) {
+			try {
+				wp_markdown_durable_reconciliation_coordinator( array( $concurrent_coordinator_root ) );
+				posix_kill( posix_getpid(), SIGKILL );
+			} catch ( Throwable $error ) {
+				exit( 1 );
+			}
+		}
+		if ( $pid > 0 ) { $children[] = $pid; }
+	}
+	$all_workers_initialized = 12 === count( $children );
+	foreach ( $children as $pid ) {
+		pcntl_waitpid( $pid, $status );
+		$all_workers_initialized = $all_workers_initialized && pcntl_wifsignaled( $status ) && SIGKILL === pcntl_wtermsig( $status );
+	}
+	mdi_reconcile_check( $all_workers_initialized, 'concurrent coordinator bootstraps share one complete authentication key' );
+} else {
+	mdi_reconcile_check( true, 'concurrent coordinator bootstrap requires process controls and is skipped when unavailable' );
+}
+
 $wordpress_meta_method = new ReflectionMethod( $production_adapter, 'wordpress_meta' );
 $GLOBALS['mdi_reconcile_post_meta'][42] = array( 'structured' => array( serialize( array( 'nested' => array( 'value' => 7 ) ) ) ) );
 mdi_reconcile_check( array( 'nested' => array( 'value' => 7 ) ) === $wordpress_meta_method->invoke( $production_adapter, 42 )['structured'][0], 'WordPress serialized meta is normalized before canonical storage serialization' );

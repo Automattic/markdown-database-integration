@@ -577,14 +577,20 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$provider = $table['provider'];
 			$table_index = $this->index_for( $root );
 			$index = $table_index->load( $suffix, $path );
-			if ( null !== $index && $this->index_excludes( $index, $predicates ) ) {
-				return WP_Markdown_Query_Result::mutated( 0 );
-			}
 			$rows = $provider->rows();
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
 			}
 			$rows = is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
+			if ( null !== $write->derived_selection() ) {
+				$predicates = $this->materialize_derived_selection( $write->derived_selection(), $schema, $write->table(), $rows );
+				if ( $predicates instanceof WP_Markdown_Query_Result ) {
+					return $predicates;
+				}
+			}
+			if ( null !== $index && $this->index_excludes( $index, $predicates ) ) {
+				return WP_Markdown_Query_Result::mutated( 0 );
+			}
 
 			$retained = array();
 			$affected = 0;
@@ -642,6 +648,113 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
+	}
+
+	/**
+	 * Materialize the bounded derived side only after the target lock is held.
+	 * This is the generic lock-select-update primitive used by claim queues.
+	 *
+	 * @return array<int,WP_Markdown_Native_Table_Predicate>|WP_Markdown_Query_Result
+	 */
+	private function materialize_derived_selection( WP_Markdown_Native_Table_Derived_Selection $selection, WP_Markdown_Native_Table_Schema $schema, string $target_table, array $rows ): array|WP_Markdown_Query_Result {
+		$primary_key = $selection->primary_key();
+		if ( array( $primary_key ) !== $schema->identity_columns() ) {
+			return $this->failure( 'unsupported_derived_selection', 'mdi-native requires a single-column primary-key join.' );
+		}
+		$plan = ( new WP_Markdown_Native_Query_Parser() )->lower( $selection->query() );
+		if ( ! $plan instanceof WP_Markdown_Native_Query_Plan ) {
+			return $plan;
+		}
+		if ( 0 !== strcasecmp( $target_table, $plan->table() )
+			|| array( $primary_key ) !== $plan->projection()
+			|| array() === $plan->order_by()
+			|| PHP_INT_MAX === $plan->limit()
+			|| 0 !== $plan->limit_offset()
+			|| $plan->counts_all()
+			|| $plan->calculates_found_rows()
+			|| $plan->is_distinct()
+			|| null !== $plan->group_by()
+			|| array() !== $plan->aggregates()
+			|| array() !== $plan->scalar_projection()
+			|| array() !== $plan->having()
+			|| array() !== $plan->scalar_predicates()
+			|| array() !== $plan->scalar_having()
+			|| array() !== $plan->subqueries()
+			|| null !== $plan->union()
+			|| $plan->union_all()
+			|| array() !== $plan->union_order_by()
+			|| null !== $plan->union_limit()
+			|| 0 !== $plan->union_limit_offset()
+			|| array() !== $plan->joins()
+			|| null !== $plan->boolean_predicate()
+			|| null !== $plan->derived()
+			|| array() !== $plan->index_hints()
+		) {
+			return $this->failure( 'unsupported_derived_selection', 'mdi-native requires one bounded ordered same-table primary-key selection.' );
+		}
+		foreach ( $plan->projection_sources() as $source ) {
+			if ( ! in_array( $source, array( null, $target_table, $plan->table_alias() ), true ) ) {
+				return $this->failure( 'unsupported_derived_selection', 'mdi-native requires a same-table primary-key projection.' );
+			}
+		}
+		$predicates = array();
+		foreach ( $plan->predicates() as $predicate ) {
+			$predicate = $this->derived_selection_predicate( $predicate, $schema, $target_table );
+			if ( $predicate instanceof WP_Markdown_Query_Result ) {
+				return $predicate;
+			}
+			$predicates[] = $predicate;
+		}
+		foreach ( $plan->order_by() as $order ) {
+			if ( ! in_array( $order['source'], array( null, $target_table, $plan->table_alias() ), true )
+				|| ! $schema->has_column( $order['column'] )
+				|| ! $schema->allows_order( $order['column'] )
+				|| null !== ( $order['expression'] ?? null )
+				|| null !== ( $order['field'] ?? null )
+				|| null !== ( $order['case'] ?? null )
+				|| true === ( $order['numeric'] ?? false )
+			) {
+				return $this->failure( 'unsupported_derived_selection', 'mdi-native requires simple same-table ordering for a derived selection.' );
+			}
+		}
+		if ( $plan->is_unsatisfiable() ) {
+			return array( new WP_Markdown_Native_Table_Predicate( $primary_key, array(), false ) );
+		}
+		$selected = array_values( array_filter( $rows, fn( array $row ): bool => $this->restricts( $row, $predicates, $schema ) ) );
+		$selected = $schema->ordered_rows( $selected, $plan->order_by() );
+		if ( null === $selected ) {
+			return $this->failure( 'unsupported_derived_selection', 'mdi-native cannot apply the requested derived selection ordering.' );
+		}
+		$values = array();
+		foreach ( array_slice( $selected, 0, $plan->limit() ) as $row ) {
+			$value = $row[ $primary_key ] ?? null;
+			if ( null === $value ) {
+				return $this->failure( 'unsupported_derived_selection', 'mdi-native requires a non-null selected primary key.' );
+			}
+			$values[] = (string) $value;
+		}
+		return array( new WP_Markdown_Native_Table_Predicate( $primary_key, $values, false ) );
+	}
+
+	private function derived_selection_predicate( WP_Markdown_Native_Query_Predicate $predicate, WP_Markdown_Native_Table_Schema $schema, string $target_table ): WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Query_Result {
+		if ( ! in_array( $predicate->operator(), array( '=', 'IN', '<>', '<', '<=', '>', '>=' ), true )
+			|| ! in_array( $predicate->source(), array( null, $target_table ), true )
+			|| null !== $predicate->comparison_column()
+			|| null !== $predicate->cast()
+			|| ! $schema->supports_predicate( $predicate )
+		) {
+			return $this->failure( 'unsupported_derived_selection', 'mdi-native requires simple same-table derived selection predicates.' );
+		}
+		$alternatives = array();
+		foreach ( $predicate->any() as $alternative ) {
+			$alternative = $this->derived_selection_predicate( $alternative, $schema, $target_table );
+			if ( $alternative instanceof WP_Markdown_Query_Result || $alternative instanceof WP_Markdown_Native_Table_Predicate_Group ) {
+				return $alternative instanceof WP_Markdown_Query_Result ? $alternative : $this->failure( 'unsupported_derived_selection', 'mdi-native requires flat derived selection alternatives.' );
+			}
+			$alternatives[] = $alternative;
+		}
+		$restriction = new WP_Markdown_Native_Table_Predicate( $predicate->column(), $predicate->values(), false, '=' === $predicate->operator() || 'IN' === $predicate->operator() ? '=' : $predicate->operator() );
+		return array() === $alternatives ? $restriction : new WP_Markdown_Native_Table_Predicate_Group( array_merge( array( $restriction ), $alternatives ) );
 	}
 
 	/**

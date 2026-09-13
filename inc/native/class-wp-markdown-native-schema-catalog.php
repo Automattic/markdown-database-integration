@@ -308,9 +308,18 @@ final class WP_Markdown_Native_Schema_Catalog {
 			}
 		}
 
-		// An index exists to order and seek on its columns, so every indexed
-		// column is orderable. Textual ordering still validates ASCII at read
-		// time, so an unexpected collation fails closed rather than guessing.
+		// Numeric and temporal SQL types have an unambiguous native order even
+		// without an index. Textual ordering still requires the conservative
+		// indexed/ASCII path below because its collation is not generic.
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( ( self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] ) || in_array( $column['type'], array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) )
+				&& ! in_array( $name, $order_columns, true )
+			) {
+				$order_columns[] = $name;
+			}
+		}
+		// Indexed textual columns remain orderable only when their values are
+		// ASCII, which is checked by the schema at read time.
 		foreach ( $definition['indexes'] as $index ) {
 			foreach ( $index['columns'] as $index_column ) {
 				$name = $index_column['name'] ?? '';

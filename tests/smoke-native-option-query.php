@@ -184,12 +184,18 @@ $read_direct_updated_cron = $runtime->execute( new WP_Markdown_Query_Request( "S
 $reopened_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $read_persisted_cron = $reopened_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'cron' LIMIT 1" ) );
 $missing_direct_update = $runtime->execute( new WP_Markdown_Query_Request( "UPDATE wp_options SET option_value = 'missing' WHERE option_name = 'not_present'" ) );
-$delete_cron = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM `wp_options` WHERE `option_name` = 'cron'" ) );
+$stale_delete_cron = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM `wp_options` WHERE `option_name` = 'cron' AND `option_value` = 'not-the-owner'" ) );
+$delete_cron = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM `wp_options` WHERE `option_name` = 'cron' AND `option_value` = 'binary-fourth'" ) );
 $delete_missing = $runtime->execute( new WP_Markdown_Query_Request( "DELETE FROM wp_options WHERE option_name = 'not_present'" ) );
-$unsupported_upsert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('invalid', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value)" ) );
+$partial_upsert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('partial', 'first', 'on') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value)" ) );
+$partial_upsert_update = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('partial', 'second', 'off') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value)" ) );
+$read_partial_preserved = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value, autoload FROM wp_options WHERE option_name = 'partial' LIMIT 1" ) );
+$run_control_upsert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('partial', 'third', 'on') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value), autoload = 'no'" ) );
+$read_partial_upsert = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_id, option_value, autoload FROM wp_options WHERE option_name = 'partial' LIMIT 1" ) );
+$unsupported_upsert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('invalid', 'value', 'on') ON DUPLICATE KEY UPDATE autoload = VALUES(option_value)" ) );
 $cron_path = $root . '/_options/cron.json';
 $cron_temp_files = glob( $cron_path . '.tmp-*' ) ?: array();
-$wpdb_upsert = $database->query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('wpdb_native', 'value', 'on') ON DUPLICATE KEY UPDATE option_name = VALUES(option_name), option_value = VALUES(option_value), autoload = VALUES(autoload)" );
+$wpdb_upsert = $database->query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('wpdb_native', 'value', 'on') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value), autoload = 'no'" );
 $wpdb_upsert_state = array( 'rows_affected' => $database->rows_affected, 'insert_id' => $database->insert_id );
 unlink( $root . '/_options/wpdb_native.json' );
 $plain_insert = $runtime->execute( new WP_Markdown_Query_Request( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('installing_lock', 123456, 'no')" ) );
@@ -205,7 +211,7 @@ $wpdb_columns = $database->get_col_info( 'name' );
 $wpdb_alloptions = $database->get_results( $autoload_query );
 $wpdb_alloptions_fallback = $database->get_results( $alloptions_query );
 $wpdb_primed = $database->get_results( $prime_query );
-$wpdb_unsupported = $database->query( 'SELECT COUNT(option_id) FROM wp_options' );
+$wpdb_unsupported = $database->query( 'SELECT MDI_UNSUPPORTED_FUNCTION(option_value) FROM wp_options' );
 $wpdb_unsupported_diagnostic = $database->last_runtime_diagnostic;
 $GLOBALS['mdi_native_query_filter'] = static fn( string $sql ): string => str_replace( "'siteurl'", "'missing'", $sql );
 $wpdb_filtered = $database->query( $prepared_query );
@@ -239,6 +245,59 @@ foreach ( $cas_workers as $index => $worker ) {
 	$cas_results[] = 0 === proc_close( $worker );
 }
 $cas_race = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'cas-race'" ) );
+
+$insert_ignore_workers = array();
+$insert_ignore_pipes = array();
+foreach ( array( 'winner-one', 'winner-two' ) as $value ) {
+	$worker_pipes = array();
+	$insert_ignore_workers[] = proc_open(
+		escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __DIR__ . '/native-option-cas-worker.php' ) . ' ' . escapeshellarg( $root ) . ' ' . escapeshellarg( $value ) . ' insert-ignore',
+		array( 0 => array( 'pipe', 'r' ), 1 => array( 'pipe', 'w' ), 2 => array( 'pipe', 'w' ) ),
+		$worker_pipes
+	);
+	$insert_ignore_pipes[] = $worker_pipes;
+}
+$insert_ignore_outputs = array();
+$insert_ignore_results = array();
+foreach ( $insert_ignore_workers as $index => $worker ) {
+	$worker_pipes = $insert_ignore_pipes[ $index ];
+	fclose( $worker_pipes[0] );
+	$insert_ignore_outputs[] = rtrim( (string) stream_get_contents( $worker_pipes[1] ) );
+	stream_get_contents( $worker_pipes[2] );
+	fclose( $worker_pipes[1] );
+	fclose( $worker_pipes[2] );
+	$insert_ignore_results[] = 0 === proc_close( $worker );
+}
+$insert_ignore_race = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value, autoload FROM wp_options WHERE option_name = 'insert-ignore-race'" ) );
+
+$run_control_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root );
+$run_control_query = static fn( string $sql ): WP_Markdown_Query_Result => $run_control_runtime->execute( new WP_Markdown_Query_Request( $sql ) );
+$commit_lock_name = '_agents_api_run_lock_commit';
+$commit_lock_token = '{"token":"commit-token","expires_at":9999999999}';
+$commit_refreshed_token = '{"token":"commit-token","expires_at":9999999999.5}';
+$commit_insert = $run_control_query( "INSERT IGNORE INTO wp_options (option_name, option_value, autoload) VALUES ('{$commit_lock_name}', '{$commit_lock_token}', 'no')" );
+$commit_begin = $run_control_query( 'START TRANSACTION' );
+$commit_locked = $run_control_query( "SELECT option_value FROM wp_options WHERE option_name = '{$commit_lock_name}' FOR UPDATE" );
+$commit_refresh = $run_control_query( "UPDATE wp_options SET option_value = '{$commit_refreshed_token}', autoload = 'no' WHERE option_name = '{$commit_lock_name}' AND option_value = '{$commit_lock_token}'" );
+$commit_state_write = $run_control_query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('agents_api_run_state_commit', 'committed-state', 'no') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value), autoload = 'no'" );
+$commit = $run_control_query( 'COMMIT' );
+$committed_state = $run_control_query( "SELECT option_value FROM wp_options WHERE option_name = 'agents_api_run_state_commit'" );
+$commit_release = $run_control_query( "DELETE FROM wp_options WHERE option_name = '{$commit_lock_name}' AND option_value = '{$commit_refreshed_token}'" );
+$committed_lock = $run_control_query( "SELECT option_value FROM wp_options WHERE option_name = '{$commit_lock_name}'" );
+
+$rollback_lock_name = '_agents_api_run_lock_rollback';
+$rollback_lock_token = '{"token":"rollback-token","expires_at":9999999999}';
+$rollback_refreshed_token = '{"token":"rollback-token","expires_at":9999999999.5}';
+$rollback_insert = $run_control_query( "INSERT IGNORE INTO wp_options (option_name, option_value, autoload) VALUES ('{$rollback_lock_name}', '{$rollback_lock_token}', 'no')" );
+$rollback_begin = $run_control_query( 'START TRANSACTION' );
+$rollback_locked = $run_control_query( "SELECT option_value FROM wp_options WHERE option_name = '{$rollback_lock_name}' FOR UPDATE" );
+$rollback_refresh = $run_control_query( "UPDATE wp_options SET option_value = '{$rollback_refreshed_token}', autoload = 'no' WHERE option_name = '{$rollback_lock_name}' AND option_value = '{$rollback_lock_token}'" );
+$rollback_state_write = $run_control_query( "INSERT INTO wp_options (option_name, option_value, autoload) VALUES ('agents_api_run_state_rollback', 'rolled-back-state', 'no') ON DUPLICATE KEY UPDATE option_value = VALUES(option_value), autoload = 'no'" );
+$rollback = $run_control_query( 'ROLLBACK' );
+$restored_lock = $run_control_query( "SELECT option_value FROM wp_options WHERE option_name = '{$rollback_lock_name}'" );
+$rolled_back_state = $run_control_query( "SELECT option_value FROM wp_options WHERE option_name = 'agents_api_run_state_rollback'" );
+$stale_rollback_release = $run_control_query( "DELETE FROM wp_options WHERE option_name = '{$rollback_lock_name}' AND option_value = '{$rollback_refreshed_token}'" );
+$rollback_release = $run_control_query( "DELETE FROM wp_options WHERE option_name = '{$rollback_lock_name}' AND option_value = '{$rollback_lock_token}'" );
 
 $write_option( 'spaced option', array( 'option_id' => 7, 'option_name' => 'spaced option', 'option_value' => 'spaced', 'autoload' => 'off' ) );
 $case_insensitive_hashed_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'SPACED OPTION'" ) );
@@ -315,25 +374,57 @@ $checks = array(
 	'independent CAS contenders serialize to one affected row and one winner' => array( '0', '1' ) === ( sort( $cas_outputs, SORT_STRING ) ? $cas_outputs : array() )
 		&& array( true, true ) === $cas_results
 		&& in_array( $cas_race->wpdb_state()['last_result'][0]->option_value ?? null, array( 'winner-one', 'winner-two' ), true ),
+	'INSERT IGNORE contenders serialize, retain one row, and suppress duplicate errors' => array( '0', '1' ) === ( sort( $insert_ignore_outputs, SORT_STRING ) ? $insert_ignore_outputs : array() )
+		&& array( true, true ) === $insert_ignore_results
+		&& in_array( $insert_ignore_race->wpdb_state()['last_result'][0]->option_value ?? null, array( 'winner-one', 'winner-two' ), true )
+		&& 'no' === ( $insert_ignore_race->wpdb_state()['last_result'][0]->autoload ?? null ),
+	'AgentsAPI option run-control commit sequence preserves lock fencing and state' => 1 === $commit_insert->return_value()
+		&& 0 === $commit_begin->return_value()
+		&& $commit_lock_token === ( $commit_locked->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 1 === $commit_refresh->return_value()
+		&& 1 === $commit_state_write->return_value()
+		&& 0 === $commit->return_value()
+		&& 'committed-state' === ( $committed_state->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 1 === $commit_release->return_value()
+		&& 0 === $committed_lock->return_value(),
+	'AgentsAPI option run-control rollback restores state and the original release fence' => 1 === $rollback_insert->return_value()
+		&& 0 === $rollback_begin->return_value()
+		&& $rollback_lock_token === ( $rollback_locked->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 1 === $rollback_refresh->return_value()
+		&& 1 === $rollback_state_write->return_value()
+		&& 0 === $rollback->return_value()
+		&& $rollback_lock_token === ( $restored_lock->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 0 === $rolled_back_state->return_value()
+		&& 0 === $stale_rollback_release->return_value()
+		&& 1 === $rollback_release->return_value(),
 	'exact option deletes remove canonical rows and preserve missing-row semantics' => 1 === $delete_cron->return_value()
 		&& 1 === $delete_cron->wpdb_state()['rows_affected']
+		&& 0 === $stale_delete_cron->return_value()
 		&& 0 === $delete_missing->return_value()
 		&& ! file_exists( $cron_path ),
-	'option mutations fail closed unless duplicate assignments preserve the complete row' => false === $unsupported_upsert->return_value()
+	'partial option upserts preserve unassigned existing fields and identities' => 1 === $partial_upsert->return_value()
+		&& 2 === $partial_upsert_update->return_value()
+		&& 'second' === ( $read_partial_preserved->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'on' === ( $read_partial_preserved->wpdb_state()['last_result'][0]->autoload ?? null )
+		&& 2 === $run_control_upsert->return_value()
+		&& '7' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->option_id ?? null )
+		&& 'third' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->option_value ?? null )
+		&& 'no' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->autoload ?? null ),
+	'option mutations fail closed for non-deterministic duplicate assignments' => false === $unsupported_upsert->return_value()
 		&& 'unsupported_option_upsert' === ( $unsupported_upsert->diagnostic()['reason'] ?? null )
 		&& ! file_exists( $root . '/_options/invalid.json' ),
 	'plain canonical option inserts preserve integer values and reject duplicate collated identities' => 1 === $plain_insert->return_value()
 		&& 1 === $plain_insert_state['rows_affected']
-		&& 7 === $plain_insert_state['insert_id']
+		&& 8 === $plain_insert_state['insert_id']
 		&& '123456' === ( $read_plain_insert->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'no' === ( $read_plain_insert->wpdb_state()['last_result'][0]->autoload ?? null )
 		&& false === $duplicate_plain_insert->return_value()
 		&& 'duplicate_key' === ( $duplicate_plain_insert->diagnostic()['reason'] ?? null ),
 	'wpdb exposes native mutation affected rows and insert identity' => 1 === $wpdb_upsert
 		&& 1 === $wpdb_upsert_state['rows_affected']
-		&& 7 === $wpdb_upsert_state['insert_id'],
+		&& 8 === $wpdb_upsert_state['insert_id'],
 	'wpdb get_results consumes the core alloptions query' => 4 === count( $wpdb_alloptions ) && 'legacy' === ( $wpdb_alloptions[3]->option_name ?? null ),
-	'wpdb get_results consumes the core alloptions fallback' => 6 === count( $wpdb_alloptions_fallback ) && 'disabled' === ( $wpdb_alloptions_fallback[5]->option_name ?? null ),
+	'wpdb get_results consumes the core alloptions fallback' => 7 === count( $wpdb_alloptions_fallback ) && 'disabled' === ( $wpdb_alloptions_fallback[5]->option_name ?? null ),
 	'wpdb get_results consumes option cache priming queries' => 2 === count( $wpdb_primed ) && 'siteurl' === ( $wpdb_primed[0]->option_name ?? null ),
 	'wpdb facade exposes structured unsupported-query failures' => false === $wpdb_unsupported && 'markdown_db_native_unsupported_query' === ( $wpdb_unsupported_diagnostic['code'] ?? null ),
 	'wpdb query filters run before execution and last_query capture' => 0 === $wpdb_filtered && str_contains( (string) $database->last_query, "'missing'" ),
@@ -357,7 +448,7 @@ foreach ( $checks as $label => $passed ) {
 
 @unlink( $root . '/_options/siteurl.json' );
 @unlink( $root . '/_options/' . WP_Markdown_Canonical_Option_Path::filename( $escaped_name ) );
-foreach ( array( 'blogname', 'automatic', 'legacy', 'disabled', 'spaced option', 'SPACED OPTION', 'other option', 'cas-race' ) as $option_name ) {
+foreach ( array( 'blogname', 'automatic', 'legacy', 'disabled', 'spaced option', 'SPACED OPTION', 'other option', 'cas-race', 'insert-ignore-race', 'partial', 'agents_api_run_state_commit' ) as $option_name ) {
 	@unlink( $root . '/_options/' . WP_Markdown_Canonical_Option_Path::filename( $option_name ) );
 }
 @unlink( $root . '/_options/broken.json' );

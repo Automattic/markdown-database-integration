@@ -39,7 +39,7 @@ $checks = array(
 		&& str_contains( $persisted, 'UNIQUE KEY `object_id_and_type`' ),
 	'CREATE INDEX persists a non-unique key' => false !== $plain->return_value()
 		&& str_contains( $persisted, 'KEY `object_type`' ),
-	'a unique CREATE INDEX makes ON DUPLICATE KEY UPDATE match' => 2 === $upsert->return_value()
+	'a unique CREATE INDEX makes a no-op ON DUPLICATE KEY UPDATE match' => 0 === $upsert->return_value()
 		&& 1 === count( $read->wpdb_state()['last_result'] ),
 	'SHOW INDEX sees the created unique key' => array( 'object_id', 'object_type' ) === array_map(
 		static fn( object $row ): string => (string) $row->Column_name,

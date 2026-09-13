@@ -109,10 +109,27 @@ function wp_markdown_durable_reconciliation_coordinator( array $canonical_roots 
 	) {
 		throw new RuntimeException( 'The durable reconciliation runtime directory must be server-owned and private.' );
 	}
-	$key_path = $base . '/' . $site . '.key';
-	if ( ! is_file( $key_path ) ) {
-		$key_handle = @fopen( $key_path, 'x' );
-		if ( false !== $key_handle ) {
+	$key_path      = $base . '/' . $site . '.key';
+	$key_lock_path = $key_path . '.lock';
+	$key_lock_stat = @lstat( $key_lock_path );
+	if ( false !== $key_lock_stat && ( ( $key_lock_stat['mode'] & 0170000 ) !== 0100000 || is_link( $key_lock_path ) ) ) {
+		throw new RuntimeException( 'The durable reconciliation authentication-key lock must be a regular file.' );
+	}
+	$key_lock = @fopen( $key_lock_path, 'c+b' );
+	if ( false === $key_lock || ! chmod( $key_lock_path, 0600 ) || ! flock( $key_lock, LOCK_EX ) ) {
+		if ( false !== $key_lock ) { fclose( $key_lock ); }
+		throw new RuntimeException( 'Unable to lock durable reconciliation authentication-key initialization.' );
+	}
+	try {
+		$key_stat = @lstat( $key_path );
+		if ( false !== $key_stat && ( ( $key_stat['mode'] & 0170000 ) !== 0100000 || is_link( $key_path ) ) ) {
+			throw new RuntimeException( 'The durable reconciliation authentication key must be a regular file.' );
+		}
+		if ( false === $key_stat ) {
+			$key_handle = @fopen( $key_path, 'x' );
+			if ( false === $key_handle ) {
+				throw new RuntimeException( 'Unable to create the durable reconciliation authentication key.' );
+			}
 			$key_material = bin2hex( random_bytes( 32 ) );
 			$key_written  = fwrite( $key_handle, $key_material );
 			$key_synced   = ! function_exists( 'fsync' ) || fsync( $key_handle );
@@ -121,12 +138,13 @@ function wp_markdown_durable_reconciliation_coordinator( array $canonical_roots 
 				@unlink( $key_path );
 				throw new RuntimeException( 'Unable to create the durable reconciliation authentication key.' );
 			}
-		} elseif ( ! is_file( $key_path ) ) {
-			throw new RuntimeException( 'Unable to create the durable reconciliation authentication key.' );
 		}
+		$key_material = (string) file_get_contents( $key_path );
+		if ( strlen( $key_material ) < 32 ) { throw new RuntimeException( 'The durable reconciliation authentication key is invalid.' ); }
+	} finally {
+		flock( $key_lock, LOCK_UN );
+		fclose( $key_lock );
 	}
-	$key_material = (string) file_get_contents( $key_path );
-	if ( strlen( $key_material ) < 32 ) { throw new RuntimeException( 'The durable reconciliation authentication key is invalid.' ); }
 	$store = new WP_Markdown_Filesystem_Reconciliation_Operation_Store( $base . '/' . $site, $key_material, $roots );
 	return new WP_Markdown_Durable_Reconciliation_Coordinator( $store );
 }

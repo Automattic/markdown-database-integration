@@ -186,8 +186,8 @@ $checks = array(
 	'information_schema reports TEXT character maxima and bounds list cardinality' => array( 'task_url' => '65535', 'payload' => '4294967295' ) === array_reduce( $text_information->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() )
 		&& false === $overwide_information->return_value()
 		&& 'resource_limit' === ( $overwide_information->diagnostic()['reason'] ?? null ),
-	'finite result limits do not authorize unbounded residual source scans' => false === $limited_residual->return_value()
-		&& 'unsupported_lookup' === ( $limited_residual->diagnostic()['reason'] ?? null ),
+	'a materialized snapshot scans a bounded unindexed text equality' => 1 === $limited_residual->return_value()
+		&& '2' === (string) ( $limited_residual->wpdb_state()['last_result'][0]->id ?? '' ),
 	'primary and secondary numeric indexes derive bounded lookup capabilities' => array( '1', '2' ) === array_map(
 		static fn( object $row ): string => $row->id,
 		$secondary->wpdb_state()['last_result']
@@ -200,9 +200,9 @@ $checks = array(
 		static fn( object $column ): int => $column->type,
 		$exact->wpdb_state()['col_info']
 	),
-	'unknown string collation predicates and ordering fail closed' => false === $string_filter->return_value()
-		&& 'unsupported_lookup' === ( $string_filter->diagnostic()['reason'] ?? null )
-		&& false === $string_order->return_value()
+	'ASCII text equality scans a materialized snapshot with its declared collation' => 0 === $string_filter->return_value()
+		&& array() === $string_filter->wpdb_state()['last_result'],
+	'unknown string collation ordering fails closed' => false === $string_order->return_value()
 		&& 'unsupported_order' === ( $string_order->diagnostic()['reason'] ?? null ),
 	'ASCII text equality composes with explicit LOWER equality across columns' => array( '2', '10' ) === array_map(
 		static fn( object $row ): string => $row->id,

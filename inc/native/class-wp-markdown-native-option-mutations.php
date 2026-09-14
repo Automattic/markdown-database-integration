@@ -6,13 +6,18 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 final class WP_Markdown_Native_Option_Mutation {
-	/** @param array{option_value?:string,autoload?:string} $values */
+	/**
+	 * @param array{option_value?:string,autoload?:string} $values
+	 * @param array{option_value?:string,autoload?:string} $upsert_values
+	 */
 	public function __construct(
 		private readonly string $operation,
 		private readonly string $option_name,
 		private readonly array $values,
 		private readonly ?string $expected_option_value = null,
-		private readonly bool $expected_option_value_is_binary = false
+		private readonly bool $expected_option_value_is_binary = false,
+		private readonly array $upsert_values = array(),
+		private readonly bool $ignore_duplicate = false
 	) {
 		if ( ! in_array( $operation, array( 'insert', 'upsert', 'update', 'delete' ), true ) ) {
 			throw new InvalidArgumentException( 'Unsupported option mutation operation.' );
@@ -31,6 +36,10 @@ final class WP_Markdown_Native_Option_Mutation {
 		return 'delete' === $this->operation;
 	}
 
+	public function ignores_duplicate(): bool {
+		return $this->ignore_duplicate;
+	}
+
 	public function option_name(): string {
 		return $this->option_name;
 	}
@@ -46,6 +55,11 @@ final class WP_Markdown_Native_Option_Mutation {
 
 	public function expected_option_value_is_binary(): bool {
 		return $this->expected_option_value_is_binary;
+	}
+
+	/** @return array{option_value?:string,autoload?:string} */
+	public function upsert_values(): array {
+		return $this->upsert_values;
 	}
 }
 
@@ -68,6 +82,11 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 				return $delete instanceof WP_Markdown_Query_Result ? $delete : array( $delete );
 			}
 			$this->word( 'INSERT' );
+			$ignore_duplicate = false;
+			if ( 0 === strcasecmp( 'IGNORE', (string) $this->current()->value() ) ) {
+				$ignore_duplicate = true;
+				++$this->position;
+			}
 			$this->word( 'INTO' );
 			$table = $this->identifier();
 			if ( $request->table_prefix() . 'options' !== $table ) {
@@ -96,11 +115,11 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 			if ( WP_Markdown_Native_SQL_Token::END === $this->current()->type() ) {
 				++$this->position;
 				return array_map(
-					static function ( array $row ): WP_Markdown_Native_Option_Mutation {
+					static function ( array $row ) use ( $ignore_duplicate ): WP_Markdown_Native_Option_Mutation {
 						$option_name = (string) $row['option_name'];
 						unset( $row['option_name'] );
 						/** @var array<string,string> $row */
-						return new WP_Markdown_Native_Option_Mutation( 'insert', $option_name, $row );
+						return new WP_Markdown_Native_Option_Mutation( 'insert', $option_name, $row, null, false, array(), $ignore_duplicate );
 					},
 					$rows
 				);
@@ -118,28 +137,38 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 			$this->word( 'KEY' );
 			$this->word( 'UPDATE' );
 			$assignments = array();
+			$assigned = array();
 			do {
 				$target = $this->identifier();
-				$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
-				$this->word( 'VALUES' );
-				$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
-				$source = $this->identifier();
-				$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-				if ( $target !== $source || isset( $assignments[ $target ] ) ) {
-					return $this->failure( 'unsupported_option_upsert', 'mdi-native requires deterministic VALUES assignments for an option upsert.' );
+				if ( ! in_array( $target, array( 'option_name', 'option_value', 'autoload' ), true ) || isset( $assigned[ $target ] ) ) {
+					return $this->failure( 'unsupported_option_upsert', 'mdi-native supports deterministic canonical option upsert assignments.' );
 				}
-				$assignments[ $target ] = true;
+				$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+				if ( 0 === strcasecmp( 'VALUES', (string) $this->current()->value() ) ) {
+					$this->word( 'VALUES' );
+					$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+					$source = $this->identifier();
+					$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+					if ( $target !== $source ) {
+						return $this->failure( 'unsupported_option_upsert', 'mdi-native requires deterministic VALUES assignments for an option upsert.' );
+					}
+					if ( 'option_name' !== $target ) {
+						$assignments[ $target ] = $row[ $target ];
+					}
+				} elseif ( 'autoload' === $target && WP_Markdown_Native_SQL_Token::STRING === $this->current()->type() ) {
+					$assignments[ $target ] = (string) $this->current()->value();
+					++$this->position;
+				} else {
+					return $this->failure( 'unsupported_option_upsert', 'mdi-native requires deterministic option upsert assignments.' );
+				}
+				$assigned[ $target ] = true;
 				if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
 					break;
 				}
 				++$this->position;
 			} while ( true );
 			$this->type( WP_Markdown_Native_SQL_Token::END );
-			if ( array( 'autoload', 'option_name', 'option_value' ) !== $this->set( array_keys( $assignments ) ) ) {
-				return $this->failure( 'unsupported_option_upsert', 'mdi-native requires deterministic VALUES assignments for an option upsert.' );
-			}
-
-			return array( new WP_Markdown_Native_Option_Mutation( 'upsert', $option_name, $row ) );
+			return array( new WP_Markdown_Native_Option_Mutation( 'upsert', $option_name, $row, null, false, $assignments ) );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -208,8 +237,17 @@ final class WP_Markdown_Native_Option_Mutation_Parser {
 		}
 		$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
 		$option_name = (string) $this->type( WP_Markdown_Native_SQL_Token::STRING )->value();
+		$expected_option_value = null;
+		if ( 0 === strcasecmp( 'AND', (string) $this->current()->value() ) ) {
+			++$this->position;
+			if ( 'option_value' !== $this->identifier() ) {
+				return $this->failure( 'unsupported_option_delete', 'mdi-native option deletes may condition only on the current option value.' );
+			}
+			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+			$expected_option_value = (string) $this->type( WP_Markdown_Native_SQL_Token::STRING )->value();
+		}
 		$this->type( WP_Markdown_Native_SQL_Token::END );
-		return new WP_Markdown_Native_Option_Mutation( 'delete', $option_name, array() );
+		return new WP_Markdown_Native_Option_Mutation( 'delete', $option_name, array(), $expected_option_value );
 	}
 
 	/** @return array<int,string> */
@@ -410,6 +448,9 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 			if ( $mutation->is_insert() && null !== $existing ) {
+				if ( $mutation->ignores_duplicate() ) {
+					return WP_Markdown_Query_Result::mutated( 0 );
+				}
 				return $this->failure( 'duplicate_key', 'The canonical option identity already exists.' );
 			}
 			if ( null !== $mutation->expected_option_value() ) {
@@ -441,12 +482,14 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			$values = $mutation->values();
 			$row = ! $mutation->is_insert() && ! $mutation->is_upsert()
 				? array_merge( $existing['row'], $values )
-				: array(
+				: ( $mutation->is_upsert() && null !== $existing
+					? array_merge( $existing['row'], $mutation->upsert_values() )
+					: array(
 					'option_id'    => $option_id,
 					'option_name'  => $mutation->option_name(),
 					'option_value' => $values['option_value'],
 					'autoload'     => $values['autoload'],
-				);
+					) );
 			if ( ! $this->schema->validate_row( $row ) ) {
 				return $this->failure( 'invalid_option_row', 'The option mutation is outside the canonical WordPress schema.' );
 			}

@@ -74,7 +74,7 @@ $counted_column_sql = 'SELECT COUNT(row_id) AS total FROM wp_rows';
 $counted_column     = $parser->parse( $counted_column_sql );
 $mixed_count_sql  = 'SELECT COUNT(*), row_id FROM wp_rows';
 $mixed_count      = $parser->parse( $mixed_count_sql );
-$aliased_count_sql = 'SELECT COUNT(*) AS total FROM wp_rows';
+$aliased_count_sql = 'SELECT MDI_UNSUPPORTED_FUNCTION(row_id) AS total FROM wp_rows';
 $aliased_count     = $parser->parse( $aliased_count_sql );
 $grouped_count_sql = 'SELECT COUNT(*) FROM wp_rows GROUP BY row_id';
 $grouped_count     = $parser->parse( $grouped_count_sql );
@@ -226,9 +226,9 @@ $checks = array(
 		&& 'row_id' === $distinct_count->aggregates()[0]['column']
 		&& true === $distinct_count->aggregates()[0]['distinct'],
 	'unsupported aggregate shapes fail closed at exact source positions' => $mixed_count instanceof WP_Markdown_Query_Result
-		&& strpos( $mixed_count_sql, ',' ) === ( $mixed_count->diagnostic()['sql_offset'] ?? null )
+		&& strlen( $mixed_count_sql ) === ( $mixed_count->diagnostic()['sql_offset'] ?? null )
 		&& $aliased_count instanceof WP_Markdown_Query_Result
-		&& strpos( $aliased_count_sql, 'AS' ) === ( $aliased_count->diagnostic()['sql_offset'] ?? null )
+		&& strpos( $aliased_count_sql, '(' ) === ( $aliased_count->diagnostic()['sql_offset'] ?? null )
 		&& $grouped_count instanceof WP_Markdown_Query_Result
 		&& strpos( $grouped_count_sql, 'GROUP' ) === ( $grouped_count->diagnostic()['sql_offset'] ?? null )
 		&& $unsupported_function instanceof WP_Markdown_Query_Result

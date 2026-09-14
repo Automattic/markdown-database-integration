@@ -900,7 +900,7 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		// The native backend has one writer, so row locks have no additional
 		// effect. Accept this common lock-then-write hint without weakening the
 		// grammar for other trailing clauses.
-		if ( ! $nested && $this->match_keyword( 'FOR' ) ) {
+		if ( $this->match_keyword( 'FOR' ) ) {
 			$this->expect_keyword( 'UPDATE' );
 		}
 		return new WP_Markdown_Native_SQL_Select( $select_all, $count_all, $projection, $table, $predicates, $orders, $limit, $alias, $joins, $calculate_found_rows, $limit_offset, $distinct, $this->contradiction, $group, $aggregates, $scalar_projection, $having, $subqueries, $union, $scalar_predicates, $scalar_having, $grouped ? $group_expression : null, $boolean_predicate, $derived, $union_all, $union_orders, $union_limit, $union_limit_offset, $grouped ? $group_expressions : array(), $index_hints );

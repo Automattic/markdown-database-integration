@@ -117,6 +117,22 @@ final class WP_Markdown_Native_Table_Subquery_Predicate {
 	}
 }
 
+/** A bounded, same-table derived selection used by an alias JOIN UPDATE. */
+final class WP_Markdown_Native_Table_Derived_Selection {
+	public function __construct(
+		private readonly string $primary_key,
+		private readonly WP_Markdown_Native_SQL_Select $query
+	) {}
+
+	public function primary_key(): string {
+		return $this->primary_key;
+	}
+
+	public function query(): WP_Markdown_Native_SQL_Select {
+		return $this->query;
+	}
+}
+
 /** One generic UPDATE or DELETE against a persisted snapshot table. */
 final class WP_Markdown_Native_Table_Write {
 
@@ -128,7 +144,8 @@ final class WP_Markdown_Native_Table_Write {
 		private string $kind,
 		private string $table,
 		private array $values,
-		private array $predicates
+		private array $predicates,
+		private ?WP_Markdown_Native_Table_Derived_Selection $derived_selection = null
 	) {}
 
 	public function is_update(): bool {
@@ -147,5 +164,9 @@ final class WP_Markdown_Native_Table_Write {
 	/** @return array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group|WP_Markdown_Native_Table_Subquery_Predicate> */
 	public function predicates(): array {
 		return $this->predicates;
+	}
+
+	public function derived_selection(): ?WP_Markdown_Native_Table_Derived_Selection {
+		return $this->derived_selection;
 	}
 }

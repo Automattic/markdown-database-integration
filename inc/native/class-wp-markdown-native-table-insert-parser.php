@@ -124,12 +124,18 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			} else {
 				$this->word( 'UPDATE' );
 				$table = $this->identifier();
-				$this->word( 'SET' );
-				$values = $this->assignments( $table );
+				if ( $this->is_word( 'SET' ) ) {
+					$this->word( 'SET' );
+					$values = $this->assignments( $table );
+					$derived_selection = null;
+				} else {
+					$derived_selection = $this->derived_selection( $table );
+					$values = $this->literal_assignments();
+				}
 			}
-			$predicates = $this->where_predicates();
+			$predicates = isset( $derived_selection ) && null !== $derived_selection ? array() : $this->where_predicates();
 			$this->type( WP_Markdown_Native_SQL_Token::END );
-			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates );
+			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates, $derived_selection ?? null );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -140,6 +146,65 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				)
 			);
 		}
+	}
+
+	/** Parse UPDATE target alias JOIN (same-table SELECT pk ... FOR UPDATE) alias ON pk equality SET literals. */
+	private function derived_selection( string $table ): WP_Markdown_Native_Table_Derived_Selection {
+		$target_alias = $this->identifier();
+		$this->word( 'JOIN' );
+		$this->type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
+		$parser = new WP_Markdown_Native_Select_AST_Parser( $this->tokens, $this->position );
+		$query = $parser->parse_nested();
+		if ( ! $query instanceof WP_Markdown_Native_SQL_Select ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_derived_selection', $this->current()->sql_offset(), 'mdi-native requires a typed derived SELECT.' );
+		}
+		$this->position = $parser->position();
+		if ( 2 > $this->position
+			|| ! isset( $this->tokens[ $this->position - 2 ], $this->tokens[ $this->position - 1 ] )
+			|| 0 !== strcasecmp( 'FOR', (string) $this->tokens[ $this->position - 2 ]->value() )
+			|| 0 !== strcasecmp( 'UPDATE', (string) $this->tokens[ $this->position - 1 ]->value() )
+		) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_derived_selection', $this->current()->sql_offset(), 'mdi-native requires the derived selection to lock rows with FOR UPDATE.' );
+		}
+		$this->type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
+		$derived_alias = $this->identifier();
+		if ( 0 === strcasecmp( $target_alias, $derived_alias ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_derived_selection', $this->current()->sql_offset(), 'mdi-native requires distinct target and derived aliases.' );
+		}
+		$this->word( 'ON' );
+		list( $left_alias, $left_column ) = $this->qualified_identifier();
+		$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+		list( $right_alias, $right_column ) = $this->qualified_identifier();
+		if ( 0 !== strcasecmp( $target_alias, $left_alias ) || 0 !== strcasecmp( $derived_alias, $right_alias ) || 0 !== strcasecmp( $left_column, $right_column ) ) {
+			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_derived_selection', $this->current()->sql_offset(), 'mdi-native requires target and derived aliases to join on the same primary key.' );
+		}
+		$this->word( 'SET' );
+		return new WP_Markdown_Native_Table_Derived_Selection( $left_column, $query );
+	}
+
+	/** @return array{string,string} */
+	private function qualified_identifier(): array {
+		$alias = $this->identifier();
+		$this->type( WP_Markdown_Native_SQL_Token::DOT );
+		return array( $alias, $this->identifier() );
+	}
+
+	/** @return array<string,int|string|null> */
+	private function literal_assignments(): array {
+		$values = array();
+		do {
+			$column = $this->identifier();
+			if ( array_key_exists( $column, $values ) ) {
+				throw new WP_Markdown_Native_SQL_Parse_Error( 'duplicate_mutation_column', $this->current()->sql_offset(), 'Repeated UPDATE targets are not supported.' );
+			}
+			$this->type( WP_Markdown_Native_SQL_Token::EQUALS );
+			$values[ $column ] = $this->literal();
+			if ( WP_Markdown_Native_SQL_Token::COMMA !== $this->current()->type() ) {
+				break;
+			}
+			++$this->position;
+		} while ( true );
+		return $values;
 	}
 
 	/** @return array<string,int|string|null|WP_Markdown_Native_Query_Scalar_Expression> */

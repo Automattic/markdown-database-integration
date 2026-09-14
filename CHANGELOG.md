@@ -1,5 +1,47 @@
 # Changelog
 
+## [0.13.1] - 2026-09-13
+
+### Changed
+- correct materialized snapshot scan expectations
+- Prove native transactional table capabilities
+- Improve native SQL and WordPress workload compatibility
+- Integrate native multisite repair stack
+- support measured calendar query forms
+- bootstrap fresh multisite state
+- compose correlated subqueries and grouped UNIONs
+- integrate WordPress query pipeline repairs
+- cache normalized native predicate values
+- avoid redundant post scan allocations
+- harden obsidian bursty benchmark
+- reuse witnessed indexes for non-key updates
+- reuse manifest observations and bypass disabled profiling
+- index equality candidates in native request snapshots
+- filter native post candidates and expose verified workload costs
+- skip catalogue publication during post allocation
+- rescan the corpus only when the index cannot prove absence
+- bound native post work to what each statement needs
+
+### Fixed
+- Fix native option and atomic claim mutations
+- serialize reconciliation key bootstrap
+- support native session aliases and verify REPLACE parity
+- match LIKE against bodies that contain non-ASCII bytes
+- write child posts to their canonical hierarchical path
+- order posts by their modification columns
+- share multisite transaction journals
+- journal native post mutations
+- compare missing-table outcomes
+- preserve native transaction and lock semantics
+- qualify snapshot schemas
+- wire SQL snapshot input mode
+- reject compound write subqueries
+- require complete scoped post reads
+- retain unique proof after indexed append
+- serialize native post mutations
+- verify post ownership before removing cached paths
+- avoid WP-CLI path collision
+
 ## [0.13.0] - 2026-09-02
 
 ### Added

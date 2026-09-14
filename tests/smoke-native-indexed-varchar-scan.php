@@ -28,6 +28,7 @@ $not_null = $runtime->execute(
 );
 $is_null = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_records WHERE object_type = 'home-page' AND object_sub_type IS NULL", 'wp_' ) );
 $unindexed = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_records WHERE label = 'archive'", 'wp_' ) );
+$unindexed_miss = $runtime->execute( new WP_Markdown_Query_Request( "SELECT id FROM wp_plugin_records WHERE label = 'missing'", 'wp_' ) );
 
 $checks = array(
 	'an indexed varchar conjunction scans without a numeric lookup' => 1 === $archive->return_value()
@@ -41,8 +42,10 @@ $checks = array(
 		static fn( object $row ): string => (string) $row->id,
 		$is_null->wpdb_state()['last_result']
 	),
-	'an unindexed varchar equality still fails closed' => false === $unindexed->return_value()
-		&& 'unsupported_lookup' === ( $unindexed->diagnostic()['reason'] ?? null ),
+	'a materialized snapshot scans an unindexed varchar equality' => 1 === $unindexed->return_value()
+		&& '1' === (string) ( $unindexed->wpdb_state()['last_result'][0]->id ?? '' ),
+	'a materialized snapshot applies an unindexed varchar residual filter' => false !== $unindexed_miss->return_value()
+		&& array() === $unindexed_miss->wpdb_state()['last_result'],
 );
 
 $failed = false;

@@ -1054,6 +1054,8 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			return $this->snapshot = $root;
 		}
 		if ( null === $root ) {
+			// Verified absence is the only route to an empty snapshot; an
+			// unresolved read arrives above as a failure result instead.
 			$this->signature = $this->options_signature();
 			return $this->snapshot = array();
 		}
@@ -1144,6 +1146,8 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			return $root;
 		}
 		if ( null === $root ) {
+			// Only a positively verified absent store reaches here; an
+			// unresolved read arrives above as a failure result instead.
 			return array();
 		}
 
@@ -1208,6 +1212,7 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		return hash( 'sha256', serialize( $parts ) );
 	}
 
+	/** A verified-absent lookup resolves to null; every indeterminate lookup is a failure. */
 	private function option_path( string $root, string $name ): string|WP_Markdown_Query_Result|null {
 		$filename = WP_Markdown_Canonical_Option_Path::filename( $name );
 		$path     = $root . DIRECTORY_SEPARATOR . $filename;
@@ -1272,6 +1277,18 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 	private function options_root(): string|WP_Markdown_Query_Result|null {
 		$path = $this->state_root . DIRECTORY_SEPARATOR . '_options';
 		if ( ! file_exists( $path ) && ! is_link( $path ) ) {
+			// A failed stat is indeterminate, never proof of absence: an
+			// unreadable state root fails the lookup of everything inside it.
+			// Absence is only verified when the state root can still be listed
+			// and that listing contains no options entry at all.
+			$entries = @scandir( $this->state_root );
+			if ( false === $entries || in_array( '_options', $entries, true ) ) {
+				return $this->failure(
+					'markdown_db_native_unsafe_path',
+					'indeterminate_options_directory',
+					'The canonical options directory cannot be resolved.'
+				);
+			}
 			return null;
 		}
 		$root = realpath( $path );

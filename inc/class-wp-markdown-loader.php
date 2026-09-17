@@ -328,7 +328,25 @@ class WP_Markdown_Loader {
 		}
 		$this->pending_id_writes = array();
 	}
-	private function option_rows(): array { $rows = array(); foreach ( glob( $this->state_dir . '/_options/*.json' ) ?: array() as $file ) { $row = json_decode( (string) file_get_contents( $file ), true ); if ( is_array( $row ) && isset( $row['option_name'] ) ) { $rows[] = $row; } } return $rows; }
+	private function option_rows(): array {
+		$files = glob( $this->state_dir . '/_options/*.json' );
+		if ( false === $files ) {
+			throw new \RuntimeException( 'Markdown DB: Cannot enumerate the canonical options directory.' );
+		}
+		$rows = array();
+		foreach ( $files as $file ) {
+			$contents = @file_get_contents( $file );
+			if ( false === $contents ) {
+				throw new \RuntimeException( 'Markdown DB: Cannot read canonical option file ' . $file . '.' );
+			}
+			$row = json_decode( $contents, true );
+			if ( ! is_array( $row ) || ! isset( $row['option_name'] ) ) {
+				throw new \RuntimeException( 'Markdown DB: Invalid canonical option file ' . $file . '.' );
+			}
+			$rows[] = $row;
+		}
+		return $rows;
+	}
 	private function schema_files(): array { $schemas = array(); foreach ( glob( $this->state_dir . '/_schema/*.sql' ) ?: array() as $file ) { $table = basename( $file, '.sql' ); if ( $this->persists_table( $table ) ) { $schemas[ $table ] = (string) file_get_contents( $file ); } } return $schemas; }
 	private function persists_table( string $table ): bool { $prefix = ( $this->prefix_resolver )(); return WP_Markdown_Table_Durability_Policy::persists( $prefix . $table, $prefix ); }
 	private function file_identity( string $path ): ?array { $file = $this->state_dir . '/' . $path; clearstatcache( true, $file ); return is_file( $file ) ? array( 'mtime' => (int) filemtime( $file ), 'size' => (int) filesize( $file ), 'path' => $file ) : null; }

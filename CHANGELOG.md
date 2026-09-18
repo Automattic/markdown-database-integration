@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.3] - 2026-09-18
+
+### Fixed
+- collect interrupted-write temp files with their generation
+
 ## [0.13.2] - 2026-09-18
 
 ### Fixed

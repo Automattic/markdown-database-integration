@@ -794,6 +794,62 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 		}
 	}
 
+	public function identity_column(): string {
+		return $this->identity_column;
+	}
+
+	/** @return resource|WP_Markdown_Query_Result */
+	public function exclusive_lock() {
+		return $this->partition_lock( LOCK_EX );
+	}
+
+	public function active_generation_directory(): string|WP_Markdown_Query_Result|null {
+		return $this->active_generation();
+	}
+
+	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
+	public function scan_generation( string $generation ): array|WP_Markdown_Query_Result {
+		return $this->generation_rows( $generation );
+	}
+
+	/** @return array<string,mixed>|WP_Markdown_Query_Result|null */
+	public function row_for_identity( string $generation, string $identity ): array|WP_Markdown_Query_Result|null {
+		return $this->partition_row( $generation, $identity );
+	}
+
+	public function delete_identity( string $generation, string $identity, ?WP_Markdown_Native_Transaction_Journal $transactions ): bool|WP_Markdown_Query_Result {
+		$filename = hash( 'sha256', $identity ) . '.json';
+		$path     = $generation . DIRECTORY_SEPARATOR . $filename;
+		if ( is_link( $path ) ) {
+			return $this->failure(
+				'markdown_db_native_unsafe_path',
+				'unsafe_partition_row',
+				'The canonical partition row is not contained by its generation directory.'
+			);
+		}
+		if ( ! is_file( $path ) ) {
+			return false;
+		}
+		$real = realpath( $path );
+		if ( false === $real || ! $this->contains( $generation, $real ) ) {
+			return $this->failure(
+				'markdown_db_native_unsafe_path',
+				'unsafe_partition_row',
+				'The canonical partition row is not contained by its generation directory.'
+			);
+		}
+		if ( null !== $transactions ) {
+			$recorded = $transactions->record( $path );
+			if ( true !== $recorded ) {
+				return $this->failure( 'markdown_db_native_table_mutation_failed', 'transaction_journal_failed', $recorded );
+			}
+		}
+		if ( ! @unlink( $path ) ) {
+			return $this->malformed( 'partition_delete_failed', 'The canonical partition row could not be deleted.' );
+		}
+		return true;
+	}
+
 	public function read( WP_Markdown_Native_Table_Access $access ): iterable|WP_Markdown_Query_Result {
 		$lock = $this->partition_lock();
 		if ( $lock instanceof WP_Markdown_Query_Result ) {
@@ -901,14 +957,14 @@ final class WP_Markdown_Native_JSON_Partition_Provider extends WP_Markdown_Nativ
 	}
 
 	/** @return resource|WP_Markdown_Query_Result */
-	private function partition_lock() {
+	private function partition_lock( int $operation = LOCK_SH ) {
 		$directory = rtrim( sys_get_temp_dir(), '/\\' ) . '/markdown-database-integration-locks';
 		if ( ! is_dir( $directory ) && ! @mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) {
 			return $this->malformed( 'unavailable_partition_lock', 'The native partition lock directory is unavailable.' );
 		}
 		$path = $directory . '/partition-' . hash( 'sha256', $this->lock_root . "\0" . $this->table ) . '.lock';
 		$lock = @fopen( $path, 'c+' );
-		if ( false === $lock || ! flock( $lock, LOCK_SH ) ) {
+		if ( false === $lock || ! flock( $lock, $operation ) ) {
 			if ( is_resource( $lock ) ) {
 				fclose( $lock );
 			}

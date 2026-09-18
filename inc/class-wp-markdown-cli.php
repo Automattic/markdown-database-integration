@@ -136,6 +136,21 @@ class WP_Markdown_CLI {
 					)
 				);
 			}
+
+			if ( ! function_exists( 'wp_has_ability' ) || ! wp_has_ability( 'markdown-db/collect-partition-generations' ) ) {
+				wp_register_ability(
+					'markdown-db/collect-partition-generations',
+					array(
+						'label'               => 'Collect Partition Generations',
+						'description'         => 'Remove inactive partitioned-table generations, or report reclaimable files and bytes.',
+						'category'            => 'markdown-db',
+						'input_schema'        => self::collect_partition_generations_input_schema(),
+						'output_schema'       => array( 'type' => 'object' ),
+						'execute_callback'    => array( self::class, 'collect_partition_generations' ),
+						'permission_callback' => array( self::class, 'can_manage_markdown_db' ),
+					)
+				);
+			}
 		};
 
 		if ( function_exists( 'doing_action' ) && doing_action( 'wp_abilities_api_categories_init' ) ) {
@@ -388,6 +403,62 @@ class WP_Markdown_CLI {
 		if ( empty( $result['healthy'] ) ) {
 			WP_CLI::error( 'MDI health check failed.' );
 		}
+	}
+
+	/**
+	 * Collect inactive partitioned-table generations.
+	 *
+	 * ## OPTIONS
+	 *
+	 * [--state-dir=<dir>]
+	 * : Canonical state root. Defaults to MARKDOWN_DB_STATE_DIR or MARKDOWN_DB_CONTENT_DIR.
+	 *
+	 * [--table=<suffix>]
+	 * : Table suffix without the WordPress prefix. Defaults to every partitioned table.
+	 *
+	 * [--dry-run]
+	 * : Report reclaimable generations, files, and bytes without deleting.
+	 *
+	 * [--format=<format>]
+	 * : Output format. Supports table or json. Defaults to table.
+	 */
+	public static function collect_partition_generations_cli( array $args, array $assoc_args ): void {
+		unset( $args );
+		$result = self::collect_partition_generations(
+			array(
+				'state_dir' => $assoc_args['state-dir'] ?? $assoc_args['content-dir'] ?? '',
+				'table'     => $assoc_args['table'] ?? '',
+				'dry_run'   => array_key_exists( 'dry-run', $assoc_args ),
+			)
+		);
+		if ( isset( $result['success'] ) && false === $result['success'] ) {
+			WP_CLI::error( (string) ( $result['message'] ?? 'Partition generation collection failed.' ) );
+		}
+		if ( 'json' === ( $assoc_args['format'] ?? 'table' ) ) {
+			WP_CLI::line( (string) wp_json_encode( $result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES ) );
+			return;
+		}
+		WP_CLI::line( sprintf( 'Dry run: %s', ! empty( $result['dry_run'] ) ? 'yes' : 'no' ) );
+		WP_CLI::line( sprintf( 'Generations: %d', (int) ( $result['generations'] ?? 0 ) ) );
+		WP_CLI::line( sprintf( 'Files: %d', (int) ( $result['files'] ?? 0 ) ) );
+		WP_CLI::line( sprintf( 'Bytes: %d', (int) ( $result['bytes'] ?? 0 ) ) );
+		if ( ! empty( $result['tables'] ) && class_exists( '\WP_CLI\Utils' ) ) {
+			\WP_CLI\Utils\format_items( 'table', $result['tables'], array( 'table', 'status', 'generations', 'files', 'bytes' ) );
+		}
+	}
+
+	/** Shared collection facade for CLI, abilities, and external callers. */
+	public static function collect_partition_generations( array $options ): array {
+		require_once __DIR__ . '/class-wp-markdown-canonical-persistence.php';
+		$state_dir = self::state_dir( $options );
+		if ( '' === $state_dir || ! is_dir( $state_dir ) || ! is_readable( $state_dir ) ) {
+			return self::failure( 'A readable markdown state directory is required.' );
+		}
+		return WP_Markdown_Canonical_Persistence::collect_partition_generations(
+			$state_dir,
+			! empty( $options['dry_run'] ) || ! empty( $options['dry-run'] ),
+			(string) ( $options['table'] ?? '' )
+		);
 	}
 
 	/**
@@ -734,6 +805,26 @@ class WP_Markdown_CLI {
 		);
 	}
 
+	private static function collect_partition_generations_input_schema(): array {
+		return array(
+			'type'       => 'object',
+			'properties' => array(
+				'state_dir' => array(
+					'type'        => 'string',
+					'description' => 'Canonical state root. Defaults to MARKDOWN_DB_STATE_DIR or MARKDOWN_DB_CONTENT_DIR.',
+				),
+				'table'     => array(
+					'type'        => 'string',
+					'description' => 'Table suffix without the WordPress prefix. Defaults to every partitioned table.',
+				),
+				'dry_run'   => array(
+					'type'        => 'boolean',
+					'description' => 'Report reclaimable generations, files, and bytes without deleting.',
+				),
+			),
+		);
+	}
+
 	private static function reconcile_input_schema(): array {
 		return array(
 			'type'       => 'object',
@@ -812,6 +903,17 @@ class WP_Markdown_CLI {
 			return rtrim( $path, '/' );
 		}
 		return defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? rtrim( MARKDOWN_DB_CONTENT_DIR, '/' ) : '';
+	}
+
+	private static function state_dir( array $options ): string {
+		$path = (string) ( $options['state_dir'] ?? $options['state-dir'] ?? $options['path'] ?? '' );
+		if ( '' !== $path ) {
+			return rtrim( $path, '/' );
+		}
+		if ( defined( 'MARKDOWN_DB_STATE_DIR' ) && '' !== (string) MARKDOWN_DB_STATE_DIR ) {
+			return rtrim( (string) MARKDOWN_DB_STATE_DIR, '/' );
+		}
+		return self::content_dir( '' );
 	}
 
 	private static function content_layout_profile( array $options ): string {

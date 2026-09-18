@@ -1384,20 +1384,140 @@ class WP_Markdown_Canonical_Persistence {
 	}
 
 	private function partition_lock_path( string $table_suffix ): string {
-		$directory = sys_get_temp_dir() . '/markdown-database-integration-locks';
-		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create lock directory.' ); }
-		return $directory . '/partition-' . hash( 'sha256', $this->state_dir . "\0" . $table_suffix ) . '.lock';
+		return self::partition_lock_file( $this->state_dir, $table_suffix );
 	}
 
-	private function remove_inactive_partition_generations( string $directory, string $active_generation ): void {
+	private static function partition_lock_file( string $state_dir, string $table_suffix ): string {
+		$directory = sys_get_temp_dir() . '/markdown-database-integration-locks';
+		if ( ! is_dir( $directory ) && ! mkdir( $directory, 0755, true ) && ! is_dir( $directory ) ) { throw new \RuntimeException( 'Markdown DB: Failed to create lock directory.' ); }
+		return $directory . '/partition-' . hash( 'sha256', $state_dir . "\0" . $table_suffix ) . '.lock';
+	}
+
+	/**
+	 * Collect inactive partition generations independently of a full write.
+	 *
+	 * @return array{dry_run:bool,tables:array<int,array<string,mixed>>,generations:int,files:int,bytes:int}
+	 */
+	public static function collect_partition_generations( string $state_dir, bool $dry_run = false, string $table_suffix = '' ): array {
+		$state_dir = rtrim( $state_dir, '/' );
+		$suffixes = '' === $table_suffix ? self::partitioned_table_suffixes( $state_dir ) : array( $table_suffix );
+		$report = array( 'dry_run' => $dry_run, 'tables' => array(), 'generations' => 0, 'files' => 0, 'bytes' => 0 );
+		foreach ( $suffixes as $suffix ) {
+			$table_report = self::collect_partition_generations_for( $state_dir, $suffix, $dry_run );
+			$report['tables'][] = $table_report;
+			$report['generations'] += (int) ( $table_report['generations'] ?? 0 );
+			$report['files'] += (int) ( $table_report['files'] ?? 0 );
+			$report['bytes'] += (int) ( $table_report['bytes'] ?? 0 );
+		}
+		return $report;
+	}
+
+	/** @return array<int,string> */
+	private static function partitioned_table_suffixes( string $state_dir ): array {
+		$suffixes = array();
+		foreach ( glob( $state_dir . '/_tables/*', GLOB_ONLYDIR ) ?: array() as $directory ) {
+			$suffix = basename( $directory );
+			if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $suffix ) ) {
+				continue;
+			}
+			$has_marker = is_file( $directory . '/.mdi-partition.json' );
+			$has_generation = array() !== ( glob( $directory . '/generation-*', GLOB_ONLYDIR ) ?: array() );
+			if ( $has_marker || $has_generation ) {
+				$suffixes[] = $suffix;
+			}
+		}
+		sort( $suffixes, SORT_STRING );
+		return $suffixes;
+	}
+
+	/** @return array<string,mixed> */
+	private static function collect_partition_generations_for( string $state_dir, string $table_suffix, bool $dry_run ): array {
+		$empty = array( 'table' => $table_suffix, 'status' => 'missing_marker', 'active_generation' => '', 'generations' => 0, 'files' => 0, 'bytes' => 0, 'removed' => array() );
+		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $table_suffix ) ) {
+			$empty['status'] = 'malformed_marker';
+			return $empty;
+		}
+		$directory = $state_dir . '/_tables/' . $table_suffix;
+		$lock = fopen( self::partition_lock_file( $state_dir, $table_suffix ), 'c+' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			$empty['status'] = 'lock_failed';
+			return $empty;
+		}
+		try {
+			$marker = $directory . '/.mdi-partition.json';
+			if ( ! is_file( $marker ) || is_link( $marker ) ) {
+				return $empty;
+			}
+			$marker_data = json_decode( (string) file_get_contents( $marker ), true );
+			$active_generation = is_array( $marker_data ) ? (string) ( $marker_data['generation'] ?? '' ) : '';
+			if ( ! is_array( $marker_data )
+				|| 1 !== ( $marker_data['version'] ?? null )
+				|| $table_suffix !== ( $marker_data['table'] ?? null )
+				|| 1 !== preg_match( '/^generation-[a-f0-9]{24}$/D', $active_generation )
+			) {
+				$empty['status'] = 'malformed_marker';
+				return $empty;
+			}
+			$inactive = self::inactive_partition_generation_directories( $directory, $active_generation );
+			$files = 0;
+			$bytes = 0;
+			$removed = array();
+			foreach ( $inactive as $generation_directory ) {
+				$removed[] = basename( $generation_directory );
+				foreach ( glob( $generation_directory . '/*.json' ) ?: array() as $path ) {
+					if ( is_file( $path ) ) {
+						++$files;
+						$bytes += (int) filesize( $path );
+					}
+				}
+			}
+			if ( ! $dry_run ) {
+				self::purge_inactive_partition_generations( $directory, $active_generation );
+			}
+			return array(
+				'table'             => $table_suffix,
+				'status'            => $dry_run ? 'dry_run' : 'collected',
+				'active_generation' => $active_generation,
+				'generations'       => count( $inactive ),
+				'files'             => $files,
+				'bytes'             => $bytes,
+				'removed'           => $removed,
+			);
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/** @return array<int,string> */
+	private static function inactive_partition_generation_directories( string $directory, string $active_generation ): array {
+		$inactive = array();
 		foreach ( glob( $directory . '/generation-*', GLOB_ONLYDIR ) ?: array() as $generation_directory ) {
-			if ( basename( $generation_directory ) === $active_generation ) { continue; }
+			if ( basename( $generation_directory ) === $active_generation ) {
+				continue;
+			}
+			$inactive[] = $generation_directory;
+		}
+		return $inactive;
+	}
+
+	private static function purge_inactive_partition_generations( string $directory, string $active_generation, ?self $tracker = null ): void {
+		foreach ( self::inactive_partition_generation_directories( $directory, $active_generation ) as $generation_directory ) {
 			foreach ( glob( $generation_directory . '/*.json' ) ?: array() as $path ) {
-				$this->track_canonical_mutation( $path );
+				if ( null !== $tracker ) {
+					$tracker->track_canonical_mutation( $path );
+				}
 				@unlink( $path );
 			}
 			@rmdir( $generation_directory );
 		}
+	}
+
+	private function remove_inactive_partition_generations( string $directory, string $active_generation ): void {
+		self::purge_inactive_partition_generations( $directory, $active_generation, $this );
 	}
 
 	/**

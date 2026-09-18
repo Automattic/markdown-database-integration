@@ -134,8 +134,16 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				}
 			}
 			$predicates = isset( $derived_selection ) && null !== $derived_selection ? array() : $this->where_predicates();
+			$limit = PHP_INT_MAX;
+			if ( $this->is_word( 'LIMIT' ) ) {
+				if ( isset( $derived_selection ) && null !== $derived_selection ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native does not support LIMIT on a derived selection UPDATE.' );
+				}
+				$this->word( 'LIMIT' );
+				$limit = (int) $this->type( WP_Markdown_Native_SQL_Token::INTEGER )->value();
+			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
-			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates, $derived_selection ?? null );
+			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates, $derived_selection ?? null, $limit );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(

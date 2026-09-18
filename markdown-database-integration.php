@@ -224,5 +224,6 @@ if ( defined( 'WP_CLI' ) && WP_CLI ) {
 	WP_CLI::add_command( 'markdown-db export', array( 'WP_Markdown_CLI', 'export_cli' ) );
 	WP_CLI::add_command( 'markdown-db reconcile', array( 'WP_Markdown_CLI', 'reconcile_cli' ) );
 	WP_CLI::add_command( 'markdown-db doctor', array( 'WP_Markdown_CLI', 'doctor_cli' ) );
+	WP_CLI::add_command( 'markdown-db collect-partition-generations', array( 'WP_Markdown_CLI', 'collect_partition_generations_cli' ) );
 	WP_CLI::add_command( 'markdown-db recover-sqlite-posts', array( 'WP_Markdown_SQLite_Recovery', 'cli' ) );
 }

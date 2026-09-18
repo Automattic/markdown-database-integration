@@ -145,7 +145,8 @@ final class WP_Markdown_Native_Table_Write {
 		private string $table,
 		private array $values,
 		private array $predicates,
-		private ?WP_Markdown_Native_Table_Derived_Selection $derived_selection = null
+		private ?WP_Markdown_Native_Table_Derived_Selection $derived_selection = null,
+		private int $limit = PHP_INT_MAX
 	) {}
 
 	public function is_update(): bool {
@@ -168,5 +169,9 @@ final class WP_Markdown_Native_Table_Write {
 
 	public function derived_selection(): ?WP_Markdown_Native_Table_Derived_Selection {
 		return $this->derived_selection;
+	}
+
+	public function limit(): int {
+		return $this->limit;
 	}
 }

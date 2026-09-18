@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.2] - 2026-09-18
+
+### Fixed
+- delete partitioned rows and collect orphan generations
+- fail closed on indeterminate option reads
+
 ## [0.13.1] - 2026-09-13
 
 ### Changed

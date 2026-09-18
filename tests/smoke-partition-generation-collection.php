@@ -33,8 +33,9 @@ $active = 'generation-' . str_repeat( 'a', 24 );
 $orphan_full = 'generation-' . str_repeat( 'b', 24 );
 $orphan_partial = 'generation-' . str_repeat( 'c', 24 );
 $orphan_empty = 'generation-' . str_repeat( 'd', 24 );
+$orphan_tmp = 'generation-' . str_repeat( '9', 24 );
 $jobs = $root . '/_tables/jobs';
-foreach ( array( $active, $orphan_full, $orphan_partial, $orphan_empty ) as $generation ) {
+foreach ( array( $active, $orphan_full, $orphan_partial, $orphan_empty, $orphan_tmp ) as $generation ) {
 	if ( ! mkdir( $jobs . '/' . $generation, 0755, true ) ) {
 		throw new RuntimeException( 'Failed to create the generation collection fixture.' );
 	}
@@ -51,7 +52,12 @@ mdi_generation_payload( $jobs . '/' . $active, hash( 'sha256', '1' ) . '.json', 
 mdi_generation_payload( $jobs . '/' . $orphan_full, hash( 'sha256', '1' ) . '.json', $orphan_full_a );
 mdi_generation_payload( $jobs . '/' . $orphan_full, hash( 'sha256', '2' ) . '.json', $orphan_full_b );
 mdi_generation_payload( $jobs . '/' . $orphan_partial, hash( 'sha256', '1' ) . '.json', $orphan_partial_payload );
-$expected_bytes = strlen( $orphan_full_a ) + strlen( $orphan_full_b ) + strlen( $orphan_partial_payload );
+// An interrupted write leaves `<sha256>.json.tmp.<pid>.<suffix>` behind. Collection must
+// remove it too: a bare `*.json` sweep strands the temp file, rmdir() then fails, and the
+// generation is retained forever.
+$orphan_tmp_payload = str_repeat( 't', 23 );
+mdi_generation_payload( $jobs . '/' . $orphan_tmp, hash( 'sha256', '1' ) . '.json.tmp.40311.3871b3f7', $orphan_tmp_payload );
+$expected_bytes = strlen( $orphan_full_a ) + strlen( $orphan_full_b ) + strlen( $orphan_partial_payload ) + strlen( $orphan_tmp_payload );
 
 $malformed = $root . '/_tables/malformed';
 mkdir( $malformed . '/generation-' . str_repeat( 'e', 24 ), 0755, true );
@@ -71,7 +77,7 @@ $dry = WP_Markdown_CLI::collect_partition_generations(
 );
 $dry_jobs = $dry['tables'][0] ?? array();
 $dry_active_survives = is_dir( $jobs . '/' . $active ) && is_file( $jobs . '/' . $active . '/' . hash( 'sha256', '1' ) . '.json' );
-$dry_orphans_remain = is_dir( $jobs . '/' . $orphan_full ) && is_dir( $jobs . '/' . $orphan_partial ) && is_dir( $jobs . '/' . $orphan_empty );
+$dry_orphans_remain = is_dir( $jobs . '/' . $orphan_full ) && is_dir( $jobs . '/' . $orphan_partial ) && is_dir( $jobs . '/' . $orphan_empty ) && is_dir( $jobs . '/' . $orphan_tmp );
 
 $collected = WP_Markdown_Canonical_Persistence::collect_partition_generations( $root, false, 'jobs' );
 $collected_jobs = $collected['tables'][0] ?? array();
@@ -82,17 +88,17 @@ $missing_report = WP_Markdown_Canonical_Persistence::collect_partition_generatio
 $checks = array(
 	'dry-run collection removes nothing and reports accurate counts and byte totals' => true === ( $dry['dry_run'] ?? null )
 		&& 'dry_run' === ( $dry_jobs['status'] ?? null )
-		&& 3 === (int) ( $dry_jobs['generations'] ?? -1 )
-		&& 3 === (int) ( $dry_jobs['files'] ?? -1 )
+		&& 4 === (int) ( $dry_jobs['generations'] ?? -1 )
+		&& 4 === (int) ( $dry_jobs['files'] ?? -1 )
 		&& $expected_bytes === (int) ( $dry_jobs['bytes'] ?? -1 )
-		&& 3 === (int) ( $dry['generations'] ?? -1 )
-		&& 3 === (int) ( $dry['files'] ?? -1 )
+		&& 4 === (int) ( $dry['generations'] ?? -1 )
+		&& 4 === (int) ( $dry['files'] ?? -1 )
 		&& $expected_bytes === (int) ( $dry['bytes'] ?? -1 )
 		&& $dry_active_survives
 		&& $dry_orphans_remain,
 	'orphaned generations are collected while the marker\'s active generation survives' => 'collected' === ( $collected_jobs['status'] ?? null )
-		&& 3 === (int) ( $collected_jobs['generations'] ?? -1 )
-		&& 3 === (int) ( $collected_jobs['files'] ?? -1 )
+		&& 4 === (int) ( $collected_jobs['generations'] ?? -1 )
+		&& 4 === (int) ( $collected_jobs['files'] ?? -1 )
 		&& $expected_bytes === (int) ( $collected_jobs['bytes'] ?? -1 )
 		&& is_dir( $jobs . '/' . $active )
 		&& is_file( $jobs . '/' . $active . '/' . hash( 'sha256', '1' ) . '.json' )
@@ -100,6 +106,7 @@ $checks = array(
 		&& ! is_dir( $jobs . '/' . $orphan_full )
 		&& ! is_dir( $jobs . '/' . $orphan_partial )
 		&& ! is_dir( $jobs . '/' . $orphan_empty ),
+	'a generation holding only an interrupted write\'s .json.tmp file is collected' => ! is_dir( $jobs . '/' . $orphan_tmp ),
 	'a malformed or absent marker collects nothing and reports the condition' => 'malformed_marker' === ( $malformed_report['tables'][0]['status'] ?? null )
 		&& 0 === (int) ( $malformed_report['generations'] ?? -1 )
 		&& 0 === (int) ( $malformed_report['files'] ?? -1 )

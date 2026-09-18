@@ -1467,7 +1467,7 @@ class WP_Markdown_Canonical_Persistence {
 			$removed = array();
 			foreach ( $inactive as $generation_directory ) {
 				$removed[] = basename( $generation_directory );
-				foreach ( glob( $generation_directory . '/*.json' ) ?: array() as $path ) {
+				foreach ( self::partition_generation_row_artifacts( $generation_directory ) as $path ) {
 					if ( is_file( $path ) ) {
 						++$files;
 						$bytes += (int) filesize( $path );
@@ -1504,9 +1504,27 @@ class WP_Markdown_Canonical_Persistence {
 		return $inactive;
 	}
 
+	/**
+	 * Every row artifact a partition write can leave in a generation directory.
+	 *
+	 * Successful writes land as `<sha256>.json`. A write interrupted before its atomic
+	 * rename leaves `<sha256>.json.tmp.<pid>.<suffix>`. Enumerating only `*.json` strands
+	 * the temp file, which then makes rmdir() fail and retains the generation forever —
+	 * the same failure shape collection exists to resolve.
+	 *
+	 * @param string $generation_directory Absolute generation directory path.
+	 * @return array<int,string> Absolute paths.
+	 */
+	private static function partition_generation_row_artifacts( string $generation_directory ): array {
+		return array_merge(
+			glob( $generation_directory . '/*.json' ) ?: array(),
+			glob( $generation_directory . '/*.json.tmp.*' ) ?: array()
+		);
+	}
+
 	private static function purge_inactive_partition_generations( string $directory, string $active_generation, ?self $tracker = null ): void {
 		foreach ( self::inactive_partition_generation_directories( $directory, $active_generation ) as $generation_directory ) {
-			foreach ( glob( $generation_directory . '/*.json' ) ?: array() as $path ) {
+			foreach ( self::partition_generation_row_artifacts( $generation_directory ) as $path ) {
 				if ( null !== $tracker ) {
 					$tracker->track_canonical_mutation( $path );
 				}
@@ -1616,7 +1634,7 @@ class WP_Markdown_Canonical_Persistence {
 		$directory = $this->state_dir . '/_tables/' . $table_suffix;
 		if ( ! is_dir( $directory ) ) { return; }
 		foreach ( glob( $directory . '/generation-*', GLOB_ONLYDIR ) ?: array() as $generation ) {
-			foreach ( glob( $generation . '/*.json' ) ?: array() as $path ) { $this->remove_canonical_file( $path ); }
+			foreach ( self::partition_generation_row_artifacts( $generation ) as $path ) { $this->remove_canonical_file( $path ); }
 			if ( ! rmdir( $generation ) ) { throw new RuntimeException( 'Markdown DB: Failed to remove table partition generation.' ); }
 		}
 		$this->remove_canonical_file( $directory . '/.mdi-partition.json' );

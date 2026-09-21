@@ -59,6 +59,26 @@ final class WP_Markdown_Native_Post_Write_Lock_Exception extends RuntimeExceptio
 
 class WP_Markdown_Storage {
 
+	/**
+	 * MDI's own bookkeeping meta keys.
+	 *
+	 * These describe a post's relationship to canonical file storage
+	 * (source path, source identity, source hash, reconciliation
+	 * baseline) rather than the post itself, so they never belong in
+	 * frontmatter even though every other meta key — including other
+	 * underscore-prefixed keys — now round-trips faithfully.
+	 *
+	 * Mirrors the identically named constants in
+	 * WP_Markdown_WordPress_Reconciliation_Adapter and WP_Markdown_CLI.
+	 *
+	 * @var string[]
+	 */
+	private const INTERNAL_BOOKKEEPING_META = array(
+		'_markdown_source_path',
+		'_markdown_source_identity',
+		'_markdown_source_hash',
+		'_markdown_reconciliation_baseline',
+	);
 
 	/**
 	 * Base directory for markdown files.
@@ -1838,30 +1858,16 @@ class WP_Markdown_Storage {
 		if ( $id > 0 && ( null !== $this->meta_resolver || isset( $post->_frontmatter_meta ) ) ) {
 			$meta_rows = isset( $post->_frontmatter_meta ) ? $this->frontmatter_meta_rows( (array) $post->_frontmatter_meta ) : call_user_func( $this->meta_resolver, $id );
 			if ( ! empty( $meta_rows ) ) {
-				/**
-				 * Filter the allowlist of internal (underscore-prefixed)
-				 * meta keys to include in markdown frontmatter.
-				 *
-				 * WordPress meta starting with `_` is hidden from the
-				 * admin UI and normally skipped by MDI, but a handful
-				 * carry data users genuinely want to travel with the
-				 * file: featured images (`_thumbnail_id`), page
-				 * templates (`_wp_page_template`), etc.
-				 *
-				 * Return an array of internal meta keys to include.
-				 *
-				 * @since 0.3.0
-				 *
-				 * @param string[] $allowlist Internal meta keys to include
-				 *                            in the frontmatter.
-				 * @param object   $post      The post being serialized.
-				 */
-				$internal_meta_allowlist = apply_filters(
-					'markdown_db_internal_meta_allowlist',
-					array( '_thumbnail_id', '_wp_page_template' ),
-					$post
-				);
-				$allowed_internal = array_flip( $internal_meta_allowlist );
+				if ( function_exists( 'has_filter' ) && has_filter( 'markdown_db_internal_meta_allowlist' ) && function_exists( '_deprecated_hook' ) ) {
+					_deprecated_hook(
+						'markdown_db_internal_meta_allowlist',
+						'0.14.0',
+						'',
+						'MDI is a database driver: all post meta (including keys starting with "_") now round-trips through markdown frontmatter automatically, so this allowlist no longer restricts what is serialized.'
+					);
+				}
+
+				$bookkeeping = array_flip( self::INTERNAL_BOOKKEEPING_META );
 
 				// Group by key so multi-row meta survives the round-trip.
 				// WordPress allows multiple rows with the same meta_key per
@@ -1874,12 +1880,7 @@ class WP_Markdown_Storage {
 					$key   = $row->meta_key ?? '';
 					$value = $row->meta_value ?? '';
 
-					if ( '' === $key ) {
-						continue;
-					}
-
-					// Skip internal meta unless it's explicitly allowlisted.
-					if ( str_starts_with( $key, '_' ) && ! isset( $allowed_internal[ $key ] ) ) {
+					if ( '' === $key || isset( $bookkeeping[ $key ] ) ) {
 						continue;
 					}
 

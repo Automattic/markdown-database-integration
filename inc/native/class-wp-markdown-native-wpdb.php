@@ -11,6 +11,39 @@ if ( ! class_exists( 'wpdb' ) ) {
 	return;
 }
 
+if ( ! function_exists( 'is_multisite' ) ) {
+	/**
+	 * WP-CLI's `wp db query`/`db import`/`db export`/etc. fast path
+	 * (DB_Command_SQLite::maybe_load_sqlite_dropin()) loads wp-includes/class-wpdb.php
+	 * and this drop-in directly, after only wp-config.php, without wp-includes/load.php.
+	 * The parent wpdb::set_prefix() call below (and other inherited wpdb methods) call
+	 * the core is_multisite() unconditionally, so without this shim the constructor
+	 * fatals with "Call to undefined function is_multisite()".
+	 *
+	 * This is a pure capability shim, not a multisite policy decision: it mirrors
+	 * WordPress core's own wp-includes/load.php implementation exactly, byte for byte.
+	 * A fully bootstrapped WordPress request (including WP-CLI commands that load all of
+	 * WordPress) always requires wp-includes/load.php long before this file can be
+	 * reached, because require_wp_db() -- which loads wp-content/db.php -- runs after
+	 * load.php in wp-settings.php. The function_exists() guard means this definition is
+	 * skipped there, so the real core is_multisite() is always used and multisite
+	 * behavior is unchanged whenever it is available.
+	 *
+	 * @return bool Whether Multisite support is enabled.
+	 */
+	function is_multisite() {
+		if ( defined( 'MULTISITE' ) ) {
+			return MULTISITE;
+		}
+
+		if ( defined( 'SUBDOMAIN_INSTALL' ) || defined( 'VHOST' ) || defined( 'SUNRISE' ) ) {
+			return true;
+		}
+
+		return false;
+	}
+}
+
 final class WP_Markdown_Native_WPDB extends wpdb {
 
 	public int|string $last_errno = 0;

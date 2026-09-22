@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.5] - 2026-09-22
+
+### Reverted
+- frontmatter no longer acts as a second writer for post meta; the table store remains its single owner
+
 ## [0.13.4] - 2026-09-21
 
 ### Fixed

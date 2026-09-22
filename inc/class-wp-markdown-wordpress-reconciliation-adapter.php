@@ -494,15 +494,15 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 	private function wordpress_meta( int $post_id ): array {
 		$all = (array) get_post_meta( $post_id );
 		unset( $all[ self::SOURCE_PATH_META ], $all[ self::SOURCE_IDENTITY_META ], $all[ self::SOURCE_HASH_META ], $all[ self::BASELINE_META ] );
-		if ( function_exists( 'has_filter' ) && has_filter( 'markdown_db_internal_meta_allowlist' ) && function_exists( '_deprecated_hook' ) ) {
-			_deprecated_hook(
-				'markdown_db_internal_meta_allowlist',
-				'0.14.0',
-				'',
-				'MDI is a database driver: all post meta (including keys starting with "_") now round-trips through canonical storage automatically, so this allowlist no longer restricts what is serialized.'
-			);
+		$allowed_internal = array( '_thumbnail_id', '_wp_page_template' );
+		if ( function_exists( 'apply_filters' ) ) {
+			$allowed_internal = (array) apply_filters( 'markdown_db_internal_meta_allowlist', $allowed_internal, function_exists( 'get_post' ) ? get_post( $post_id ) : null );
 		}
 		foreach ( $all as $key => $values ) {
+			if ( str_starts_with( (string) $key, '_' ) && ! in_array( $key, $allowed_internal, true ) ) {
+				unset( $all[ $key ] );
+				continue;
+			}
 			$all[ $key ] = array_map(
 				static fn( mixed $value ): mixed => is_string( $value ) && function_exists( 'maybe_unserialize' ) ? maybe_unserialize( $value ) : $value,
 				(array) $values

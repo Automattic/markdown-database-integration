@@ -219,16 +219,20 @@ class WP_Markdown_SQLite_Recovery {
 				return $resolver_posts[ $id ] ?? null;
 			}
 		);
-		// The meta resolver already restricts rows to DEFAULT_META_ALLOWLIST
-		// (see source_meta() below), so every row it returns is trusted for
-		// recovery. Storage no longer filters underscore-prefixed meta out
-		// of frontmatter — all post meta round-trips faithfully — so no
-		// additional allowlist filter is needed here.
 		$storage->set_meta_resolver(
 			static function ( int $id ) use ( $pdo ) {
 				return WP_Markdown_SQLite_Recovery::source_meta( $pdo, $id );
 			}
 		);
+
+		if ( function_exists( 'add_filter' ) ) {
+			add_filter(
+				'markdown_db_internal_meta_allowlist',
+				static function ( array $allowlist ): array {
+					return array_values( array_unique( array_merge( $allowlist, self::DEFAULT_META_ALLOWLIST ) ) );
+				}
+			);
+		}
 
 		$target_ids = array();
 		foreach ( $source_posts as $id => $post ) {

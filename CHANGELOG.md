@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.13.4] - 2026-09-21
+
+### Fixed
+- stop discarding private post meta from markdown frontmatter
+- keep the drop-in constructible during WP-CLI's fast db bootstrap
+
 ## [0.13.3] - 2026-09-18
 
 ### Fixed

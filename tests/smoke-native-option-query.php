@@ -407,7 +407,7 @@ $checks = array(
 		&& 'second' === ( $read_partial_preserved->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'on' === ( $read_partial_preserved->wpdb_state()['last_result'][0]->autoload ?? null )
 		&& 2 === $run_control_upsert->return_value()
-		&& '7' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->option_id ?? null )
+		&& '8' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->option_id ?? null )
 		&& 'third' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'no' === ( $read_partial_upsert->wpdb_state()['last_result'][0]->autoload ?? null ),
 	'option mutations fail closed for non-deterministic duplicate assignments' => false === $unsupported_upsert->return_value()
@@ -415,14 +415,14 @@ $checks = array(
 		&& ! file_exists( $root . '/_options/invalid.json' ),
 	'plain canonical option inserts preserve integer values and reject duplicate collated identities' => 1 === $plain_insert->return_value()
 		&& 1 === $plain_insert_state['rows_affected']
-		&& 8 === $plain_insert_state['insert_id']
+		&& 10 === $plain_insert_state['insert_id']
 		&& '123456' === ( $read_plain_insert->wpdb_state()['last_result'][0]->option_value ?? null )
 		&& 'no' === ( $read_plain_insert->wpdb_state()['last_result'][0]->autoload ?? null )
 		&& false === $duplicate_plain_insert->return_value()
 		&& 'duplicate_key' === ( $duplicate_plain_insert->diagnostic()['reason'] ?? null ),
 	'wpdb exposes native mutation affected rows and insert identity' => 1 === $wpdb_upsert
 		&& 1 === $wpdb_upsert_state['rows_affected']
-		&& 8 === $wpdb_upsert_state['insert_id'],
+		&& 9 === $wpdb_upsert_state['insert_id'],
 	'wpdb get_results consumes the core alloptions query' => 4 === count( $wpdb_alloptions ) && 'legacy' === ( $wpdb_alloptions[3]->option_name ?? null ),
 	'wpdb get_results consumes the core alloptions fallback' => 7 === count( $wpdb_alloptions_fallback ) && 'disabled' === ( $wpdb_alloptions_fallback[5]->option_name ?? null ),
 	'wpdb get_results consumes option cache priming queries' => 2 === count( $wpdb_primed ) && 'siteurl' === ( $wpdb_primed[0]->option_name ?? null ),

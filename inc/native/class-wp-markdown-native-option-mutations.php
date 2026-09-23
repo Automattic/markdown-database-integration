@@ -414,32 +414,36 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 
 			// A canonical option resolves to a deterministic path, so the common
 			// mutation reads one row rather than the whole options directory.
-			$existing = $this->existing_at_canonical_path( $directory, $mutation->option_name(), $identity );
+			$existing   = $this->existing_at_canonical_path( $directory, $mutation->option_name(), $identity );
 			$maximum_id = 0;
+			$file_count = null;
 			if ( null === $existing ) {
 				// A miss still has to prove the identity is absent under any other
-				// canonical filename, and creating a row needs the next identifier.
-				$rows = $this->provider->read(
-					new WP_Markdown_Native_Table_Access(
-						$this->schema->column_names(),
-						null,
-						$this->schema->natural_order(),
-						PHP_INT_MAX
-					)
-				);
-				if ( $rows instanceof WP_Markdown_Query_Result ) {
-					return $rows;
+				// canonical filename. Collated identities share a filename stem up to
+				// case, so only those few files need reading, not every row.
+				$filenames = $this->option_filenames( $directory );
+				if ( $filenames instanceof WP_Markdown_Query_Result ) {
+					return $filenames;
 				}
-				foreach ( $rows as $candidate ) {
-					$maximum_id = max( $maximum_id, (int) $candidate['option_id'] );
-					if ( $identity === $this->schema->value_key( 'option_name', $candidate['option_name'] ) ) {
-						if ( null !== $existing ) {
-							return $this->failure( 'duplicate_collated_identity', 'Canonical option files contain duplicate collated identities.' );
+				$existing = $this->existing_by_collated_stem( $directory, $filenames, $mutation->option_name(), $identity );
+				if ( $existing instanceof WP_Markdown_Query_Result ) {
+					return $existing;
+				}
+				$file_count = count( $filenames );
+				if ( null === $existing && ( $mutation->is_insert() || $mutation->is_upsert() ) ) {
+					$allocated = $this->allocator_high_water( $file_count );
+					if ( null !== $allocated ) {
+						$maximum_id = $allocated;
+					} else {
+						// No trustworthy allocator record: derive the next identifier
+						// from every row, as before, and reseed the record after writing.
+						$maximum_id = $this->scanned_maximum_id();
+						if ( $maximum_id instanceof WP_Markdown_Query_Result ) {
+							return $maximum_id;
 						}
-						$existing = array(
-							'path' => $directory . '/' . WP_Markdown_Canonical_Option_Path::filename( (string) $candidate['option_name'] ),
-							'row'  => $candidate,
-						);
+						// Identifiers never go backwards, as with MySQL AUTO_INCREMENT: a
+						// stale record still bounds every identifier issued here.
+						$maximum_id = max( $maximum_id, $this->allocator_record()['high_water'] ?? 0 );
 					}
 				}
 			}
@@ -472,6 +476,7 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 				if ( ! @unlink( $existing['path'] ) ) {
 					return $this->failure( 'option_delete_failed', 'The canonical option row could not be deleted.' );
 				}
+				$this->record_deleted_option();
 				return WP_Markdown_Query_Result::mutated( 1 );
 			}
 			$is_insert = null === $existing;
@@ -507,11 +512,162 @@ final class WP_Markdown_Native_Option_Mutation_Runtime {
 			if ( $written instanceof WP_Markdown_Query_Result ) {
 				return $written;
 			}
+			if ( $is_insert && null !== $file_count ) {
+				$this->record_allocation( $option_id, $file_count + 1 );
+			}
 			$rows_affected = $mutation->is_upsert() ? ( $is_insert ? 1 : 2 ) : 1;
 			return WP_Markdown_Query_Result::mutated( $rows_affected, $is_insert ? $option_id : 0 );
 		} finally {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
+		}
+	}
+
+	/**
+	 * Canonical option filenames in the store, excluding temporaries and locks.
+	 *
+	 * @return array<int,string>|WP_Markdown_Query_Result
+	 */
+	private function option_filenames( string $directory ): array|WP_Markdown_Query_Result {
+		$entries = @scandir( $directory );
+		if ( false === $entries ) {
+			return $this->failure( 'options_directory_unreadable', 'The canonical options directory could not be listed.' );
+		}
+		return array_values( array_filter( $entries, static fn( string $entry ): bool => str_ends_with( $entry, '.json' ) ) );
+	}
+
+	/**
+	 * Find a row whose collated identity matches under a noncanonical filename.
+	 *
+	 * @param array<int,string> $filenames Canonical option filenames.
+	 * @return array{path:string,row:array<string,mixed>}|WP_Markdown_Query_Result|null
+	 */
+	private function existing_by_collated_stem( string $directory, array $filenames, string $name, string $identity ): array|WP_Markdown_Query_Result|null {
+		$stem      = strtolower( WP_Markdown_Canonical_Option_Path::stem( $name ) );
+		$canonical = WP_Markdown_Canonical_Option_Path::filename( $name );
+		$found     = null;
+		foreach ( $filenames as $filename ) {
+			if ( $filename === $canonical || ! in_array( $stem, array_map( 'strtolower', WP_Markdown_Canonical_Option_Path::filename_stems( $filename ) ), true ) ) {
+				continue;
+			}
+			$path = $directory . '/' . $filename;
+			if ( is_link( $path ) || ! is_file( $path ) ) {
+				continue;
+			}
+			$row = json_decode( (string) @file_get_contents( $path ), true );
+			if ( ! is_array( $row ) || ! isset( $row['option_name'] ) || $identity !== $this->schema->value_key( 'option_name', $row['option_name'] ) ) {
+				continue;
+			}
+			if ( null !== $found ) {
+				return $this->failure( 'duplicate_collated_identity', 'Canonical option files contain duplicate collated identities.' );
+			}
+			foreach ( $this->schema->column_names() as $column ) {
+				if ( ! array_key_exists( $column, $row ) ) {
+					return $this->failure( 'invalid_option_row', 'A canonical option file is missing a schema column.' );
+				}
+			}
+			$found = array( 'path' => $path, 'row' => $row );
+		}
+		return $found;
+	}
+
+	/** The largest option_id across every canonical row: the slow, authoritative path. */
+	private function scanned_maximum_id(): int|WP_Markdown_Query_Result {
+		$rows = $this->provider->read(
+			new WP_Markdown_Native_Table_Access(
+				$this->schema->column_names(),
+				null,
+				$this->schema->natural_order(),
+				PHP_INT_MAX
+			)
+		);
+		if ( $rows instanceof WP_Markdown_Query_Result ) {
+			return $rows;
+		}
+		$maximum_id = 0;
+		foreach ( $rows as $candidate ) {
+			$maximum_id = max( $maximum_id, (int) $candidate['option_id'] );
+		}
+		return $maximum_id;
+	}
+
+	/*
+	 * Option identifier allocation.
+	 *
+	 * Allocating max(option_id) + 1 by reading every row costs time proportional
+	 * to the whole options store, and it runs under the exclusive mutation lock,
+	 * so every new option stalled all other writers. The allocator record keeps
+	 * the high-water identifier and the file count it was valid for. Every insert
+	 * and delete made here updates it under the same lock; an update changes
+	 * neither. Any other change to the set of files (another writer, a restored
+	 * backup, a rolled-back transaction) leaves the count different, so the next
+	 * insert falls back to the full scan and reseeds. A stale record can only
+	 * cost speed, never a duplicate identifier.
+	 */
+
+	/** High-water option_id when the record still describes this file set. */
+	private function allocator_high_water( int $file_count ): ?int {
+		$record = $this->allocator_record();
+		if ( null === $record || $record['count'] !== $file_count ) {
+			return null;
+		}
+		return $record['high_water'];
+	}
+
+	private function record_allocation( int $option_id, int $file_count ): void {
+		$record = $this->allocator_record();
+		$high   = max( $option_id, null === $record ? 0 : $record['high_water'] );
+		$this->write_allocator_record( $high, $file_count );
+	}
+
+	private function record_deleted_option(): void {
+		$record = $this->allocator_record();
+		if ( null === $record ) {
+			return;
+		}
+		// The count describes the file set this record trusts. A delete only keeps
+		// it trustworthy when the record already matched; otherwise the next
+		// insert's mismatch correctly forces a rescan either way.
+		$this->write_allocator_record( $record['high_water'], max( 0, $record['count'] - 1 ) );
+	}
+
+	private function allocator_path(): ?string {
+		$directory = $this->state_root . '/_indexes';
+		if ( ! file_exists( $directory ) && ! @mkdir( $directory, 0755 ) && ! is_dir( $directory ) ) {
+			return null;
+		}
+		$root = realpath( $directory );
+		if ( false === $root || is_link( $directory ) || dirname( $root ) !== $this->state_root ) {
+			return null;
+		}
+		return $root . '/option-id-allocator.json';
+	}
+
+	/** @return array{high_water:int,count:int}|null */
+	private function allocator_record(): ?array {
+		$path = $this->allocator_path();
+		if ( null === $path || ! is_file( $path ) || is_link( $path ) ) {
+			return null;
+		}
+		$record = json_decode( (string) @file_get_contents( $path ), true );
+		if ( ! is_array( $record ) || 1 !== ( $record['version'] ?? null ) || ! is_int( $record['high_water'] ?? null ) || ! is_int( $record['count'] ?? null ) || $record['high_water'] < 0 || $record['count'] < 0 ) {
+			return null;
+		}
+		return array( 'high_water' => $record['high_water'], 'count' => $record['count'] );
+	}
+
+	private function write_allocator_record( int $high_water, int $count ): void {
+		$path = $this->allocator_path();
+		if ( null === $path ) {
+			return;
+		}
+		$json = json_encode( array( 'version' => 1, 'high_water' => $high_water, 'count' => $count ) );
+		$temp = $path . '.tmp-' . getmypid() . '-' . bin2hex( random_bytes( 8 ) );
+		if ( false === $json || false === @file_put_contents( $temp, $json ) || ! @rename( $temp, $path ) ) {
+			@unlink( $temp );
+			// An unwritable record must not survive with a count that could match
+			// again later; without it the next insert simply rescans.
+			@unlink( $path );
 		}
 	}
 

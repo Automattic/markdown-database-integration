@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.13.7] - 2026-09-23
+
+### Changed
+- fast option inserts and shared reads to end lock-timeout failures
+
+### Fixed
+- accept double-quoted string literals and doubled-quote escapes
+
 ## [0.13.6] - 2026-09-23
 
 ### Fixed

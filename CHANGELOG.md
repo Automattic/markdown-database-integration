@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.9] - 2026-09-23
+
+### Changed
+- Internal improvements
+
 ## [0.13.8] - 2026-09-23
 
 ### Fixed

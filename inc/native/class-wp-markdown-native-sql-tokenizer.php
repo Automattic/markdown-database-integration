@@ -126,8 +126,9 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 				continue;
 			}
 
-			if ( "'" === $character ) {
-				$tokens[] = $this->string( $sql, $offset );
+			// MySQL's default SQL mode (no ANSI_QUOTES) reads "…" as a string, not an identifier.
+			if ( "'" === $character || '"' === $character ) {
+				$tokens[] = $this->string( $sql, $offset, $character );
 				continue;
 			}
 			if ( '`' === $character ) {
@@ -175,13 +176,24 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 		return $tokens;
 	}
 
-	private function string( string $sql, int &$offset ): WP_Markdown_Native_SQL_Token {
+	/**
+	 * Read one quoted string literal, delimited by `'` or `"`.
+	 *
+	 * Inside either quote style a doubled delimiter is one literal quote, as in
+	 * MySQL, which keeps this reader in agreement with contains_statement_separator().
+	 */
+	private function string( string $sql, int &$offset, string $quote = "'" ): WP_Markdown_Native_SQL_Token {
 		$start   = $offset++;
 		$length  = strlen( $sql );
 		$decoded = '';
 		while ( $offset < $length ) {
 			$character = $sql[ $offset++ ];
-			if ( "'" === $character ) {
+			if ( $quote === $character ) {
+				if ( $offset < $length && $quote === $sql[ $offset ] ) {
+					$decoded .= $quote;
+					++$offset;
+					continue;
+				}
 				return new WP_Markdown_Native_SQL_Token(
 					WP_Markdown_Native_SQL_Token::STRING,
 					substr( $sql, $start, $offset - $start ),

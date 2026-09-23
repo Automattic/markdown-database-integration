@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.8] - 2026-09-23
+
+### Fixed
+- never reissue a generic-table AUTO_INCREMENT value
+
 ## [0.13.7] - 2026-09-23
 
 ### Changed

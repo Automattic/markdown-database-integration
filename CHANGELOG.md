@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.6] - 2026-09-23
+
+### Fixed
+- support ORDER BY on bounded single-table writes
+
 ## [0.13.5] - 2026-09-22
 
 ### Reverted

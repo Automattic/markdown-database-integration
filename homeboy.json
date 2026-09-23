@@ -23,5 +23,16 @@
       "file": "markdown-database-integration.php",
       "pattern": "MARKDOWN_DB_VERSION',\\s*'([0-9.]+)'"
     }
-  ]
+  ],
+  "scopes": {
+    "release": {
+      "exclude": [
+        "artifacts/**",
+        "bench/**",
+        "fuzz/**",
+        "rigs/**",
+        "tools/**"
+      ]
+    }
+  }
 }

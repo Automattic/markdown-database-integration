@@ -1,0 +1,51 @@
+# Release package excludes (rsync patterns). Replaces the Homeboy defaults,
+# which are carried over below. The package holds only what WordPress runs:
+# markdown-database-integration.php, db.php, inc/, vendor/, and the changelog.
+
+# Homeboy defaults
+.git
+.gitignore
+.gitattributes
+README.md
+CLAUDE.md
+AGENTS.md
+.claude
+.vscode
+.idea
+*.swp
+*.swo
+*~
+/.homeboy-build/
+/dist/
+*.zip
+*.tar.gz
+.DS_Store
+._*
+node_modules
+*.log
+*.tmp
+*.temp
+.env*
+build.sh
+.buildignore
+/tests
+phpunit.xml*
+.github
+composer.lock
+package-lock.json
+webpack.config.js
+
+# Development-only inputs and local evidence. /artifacts and /build are
+# gitignored, but the build copies the working tree, so untracked runtime
+# evidence and old zips would otherwise ship.
+/artifacts
+/build
+/bench
+/fuzz
+/rigs
+/tools
+/.pg-bench-result*
+/REMAINING_102_GAPS.md
+/COMPOSITION_REVIEW.md
+/homeboy.json
+/composer.json

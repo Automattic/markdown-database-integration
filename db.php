@@ -1,12 +1,16 @@
 <?php
 /**
- * WordPress db.php drop-in that replaces the SQLite database file with
- * markdown files as the sole source of truth. In-memory SQLite is used
- * as the runtime query engine.
+ * WordPress db.php drop-in for Markdown Database Integration.
  *
- * Supports two modes (set MARKDOWN_DB_MODE in wp-config.php):
- *   'mirror'  — Phase 1: SQLite on disk, markdown mirrored on writes
- *   'primary' — Phase 2: In-memory SQLite, markdown files are the database
+ * Selects the backend before plugins load (see markdown_database_integration_configured_backend):
+ *   mdi-native    — default: a pure-PHP engine serves canonical Markdown/JSON
+ *                   files directly; no SQLite or MySQL is involved.
+ *   sqlite        — SQLite Database Integration with markdown persistence.
+ *                   MARKDOWN_DB_MODE applies only here:
+ *                     'mirror'  — SQLite on disk, markdown mirrored on writes
+ *                     'primary' — markdown files are the database, indexed in SQLite
+ *   mysql-content — plugin-level MySQL runtime; wpdb boots normally.
+ *   mysql-full    — MySQL wpdb with a canonical-publishing outbox.
  *
  * This file goes in wp-content/db.php (replacing the SQLite drop-in's version).
  *

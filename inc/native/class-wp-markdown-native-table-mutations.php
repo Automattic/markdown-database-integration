@@ -113,6 +113,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		try {
 			$schema = $table['schema'];
 			$provider = $table['provider'];
+			$floors = $this->auto_increment_floors( $directory, $suffix );
 			foreach ( $insert->upsert_assignments() ?? array() as $assignment ) {
 				if ( ! $schema->has_column( $assignment['target'] ) || ( null !== $assignment['source'] && ! $schema->has_column( $assignment['source'] ) ) ) {
 					return $this->failure( 'unsupported_column', 'The duplicate-key assignment references an undeclared column.' );
@@ -154,7 +155,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				$unique_set_verified = $this->unique_set_is_verified( $suffix, $path );
 				// The index answers identity and uniqueness, so the snapshot is
 				// appended to rather than read, decoded, and republished.
-				$row = $this->complete_row( $insert->values(), $definition, array(), $index['max'] );
+				$row = $this->complete_row( $insert->values(), $definition, array(), $index['max'], $floors );
 				if ( $row instanceof WP_Markdown_Query_Result ) {
 					return $row;
 				}
@@ -178,6 +179,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					$this->remember_verified_unique_set( $suffix, $path );
 				}
 				$provider->append_row( $row );
+				$this->record_auto_increment( $directory, $suffix, $row, $definition, $floors );
 				return $this->insert_result( $row, $definition );
 			}
 
@@ -186,7 +188,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return $rows;
 			}
 			$rows = is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
-			$row = $this->complete_row( $insert->values(), $definition, $rows );
+			$row = $this->complete_row( $insert->values(), $definition, $rows, null, $floors );
 			if ( $row instanceof WP_Markdown_Query_Result ) {
 				return $row;
 			}
@@ -212,6 +214,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					// derived insert index for the next operation that needs it.
 					$table_index->forget( $suffix, $this->transactions );
 					$provider->replace_rows( $rows );
+					$this->record_auto_increment( $directory, $suffix, $row, $definition, $floors );
 					return WP_Markdown_Query_Result::mutated( count( $duplicates ) + 1, $this->auto_increment_value( $row, $definition ) );
 				}
 				if ( $insert->ignores_duplicate() ) {
@@ -263,6 +266,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 			$table_index->save( $suffix, $path, WP_Markdown_Native_Table_Index::build( $rows, $definition, $schema ), $this->transactions );
 			$provider->replace_rows( $rows );
+			$this->record_auto_increment( $directory, $suffix, $row, $definition, $floors );
 			return WP_Markdown_Query_Result::mutated( 1, $this->auto_increment_value( $row, $definition ) );
 		} finally {
 			flock( $lock, LOCK_UN );
@@ -354,8 +358,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 * @param array<string,mixed>             $definition Compiled definition.
 	 * @param array<int,array<string,mixed>>  $rows       Snapshot rows, empty when maxima are supplied.
 	 * @param array<string,int>|null          $maxima     Known auto-increment maxima.
+	 * @param array<string,int>               $floors     Durable high-water values that generated identifiers must exceed.
 	 */
-	private function complete_row( array $provided, array $definition, array $rows, ?array $maxima = null ): array|WP_Markdown_Query_Result {
+	private function complete_row( array $provided, array $definition, array $rows, ?array $maxima = null, array $floors = array() ): array|WP_Markdown_Query_Result {
 		if ( array_diff_key( $provided, $definition['columns'] ) ) {
 			return $this->failure( 'unsupported_column', 'The INSERT references an undeclared column.' );
 		}
@@ -387,6 +392,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 						$maximum = max( $maximum, (int) $existing[ $name ] );
 					}
 				}
+				// Like MySQL AUTO_INCREMENT, never reissue a value once used, even after
+				// the row holding the current maximum is deleted.
+				$maximum = max( $maximum, $floors[ $name ] ?? 0 );
 				if ( PHP_INT_MAX === $maximum ) {
 					return $this->failure( 'auto_increment_exhausted', 'The persisted auto-increment range is exhausted.' );
 				}
@@ -1197,6 +1205,81 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		} catch ( Throwable ) {
 			return false;
 		}
+	}
+
+	/*
+	 * Durable AUTO_INCREMENT high-water marks.
+	 *
+	 * Generic tables derived the next identifier from the largest value still
+	 * present, so deleting the newest row handed its identifier out again. MySQL
+	 * never does that, and callers rely on it: Action Scheduler deletes a claim
+	 * row on release while completed actions keep its claim_id, so a reissued
+	 * claim_id re-selected those finished actions on every queue run. The high
+	 * water per table lives beside the snapshot, is only raised, and is updated
+	 * under the table lock every insert already holds. It is not journaled:
+	 * like MySQL, a rolled-back insert does not return its value.
+	 */
+
+	/** @return array<string,int> */
+	private function auto_increment_floors( string $directory, string $suffix ): array {
+		$path = $this->auto_increment_path( $directory, $suffix, false );
+		if ( null === $path || ! is_file( $path ) || is_link( $path ) ) {
+			return array();
+		}
+		$record = json_decode( (string) @file_get_contents( $path ), true );
+		if ( ! is_array( $record ) || 1 !== ( $record['version'] ?? null ) || ! is_array( $record['high_water'] ?? null ) ) {
+			return array();
+		}
+		$floors = array();
+		foreach ( $record['high_water'] as $column => $value ) {
+			if ( is_string( $column ) && is_int( $value ) && $value >= 0 ) {
+				$floors[ $column ] = $value;
+			}
+		}
+		return $floors;
+	}
+
+	/**
+	 * @param array<string,mixed> $row        Inserted row.
+	 * @param array<string,mixed> $definition Compiled definition.
+	 * @param array<string,int>   $floors     High-water values read before the insert.
+	 */
+	private function record_auto_increment( string $directory, string $suffix, array $row, array $definition, array $floors ): void {
+		$high_water = $floors;
+		$changed    = false;
+		foreach ( $definition['columns'] as $name => $column ) {
+			if ( true !== ( $column['auto_increment'] ?? false ) || ! isset( $row[ $name ] ) || ! is_numeric( $row[ $name ] ) ) {
+				continue;
+			}
+			// An explicit identifier above the counter raises it, as in MySQL.
+			$value = (int) $row[ $name ];
+			if ( $value > ( $high_water[ $name ] ?? 0 ) ) {
+				$high_water[ $name ] = $value;
+				$changed             = true;
+			}
+		}
+		$path = $changed ? $this->auto_increment_path( $directory, $suffix, true ) : null;
+		if ( null === $path ) {
+			return;
+		}
+		$json = json_encode( array( 'version' => 1, 'high_water' => $high_water ) );
+		$temp = $path . '.tmp-' . getmypid() . '-' . bin2hex( random_bytes( 8 ) );
+		if ( false === $json || false === @file_put_contents( $temp, $json ) || ! @rename( $temp, $path ) ) {
+			// A missing record only loses the floor; the rows still bound the next value.
+			@unlink( $temp );
+		}
+	}
+
+	private function auto_increment_path( string $directory, string $suffix, bool $create ): ?string {
+		$records = $directory . '/.auto_increment';
+		if ( ! is_dir( $records ) && ( ! $create || ( ! @mkdir( $records, 0755 ) && ! is_dir( $records ) ) ) ) {
+			return null;
+		}
+		$real = realpath( $records );
+		if ( false === $real || is_link( $records ) || dirname( $real ) !== $directory ) {
+			return null;
+		}
+		return $real . '/' . $suffix . '.json';
 	}
 
 	private function tables_directory( string $root ): string|WP_Markdown_Query_Result {

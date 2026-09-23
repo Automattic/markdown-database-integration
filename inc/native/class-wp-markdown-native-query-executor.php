@@ -146,9 +146,13 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		// transaction lock while waiting for one would invert their release order.
 		$mutation = null !== WP_Markdown_SQL_Classifier::mutation( $request->sql() );
 		$canonical_admitted = null !== $this->transactions && ! $this->is_advisory_lock_statement( $request->sql() );
+		// A plain autocommit read shares the root lock; mutations, explicit
+		// transactions, and locking reads keep the exclusive hold.
+		$shared_read = $canonical_admitted && ! $mutation && $this->is_plain_read( $request->sql() )
+			&& $this->transactions->is_autocommit() && ! $this->transactions->is_in_transaction();
 		if ( $canonical_admitted ) {
 			$transactional_view = $this->transactions->is_in_transaction();
-			$locked = $this->transactions->begin_write();
+			$locked = $shared_read ? $this->transactions->begin_read() : $this->transactions->begin_write();
 			if ( true !== $locked ) {
 				return $this->failure( $mutation ? 'transaction_write_lock_failed' : 'transaction_read_lock_failed', $locked );
 			}
@@ -162,9 +166,19 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			return $this->execute_unlocked_request( $request );
 		} finally {
 			if ( $canonical_admitted ) {
-				$this->transactions->finish_write();
+				if ( $shared_read ) {
+					$this->transactions->finish_read();
+				} else {
+					$this->transactions->finish_write();
+				}
 			}
 		}
+	}
+
+	/** SELECT/SHOW/DESCRIBE without row locks: the statements safe under a shared hold. */
+	private function is_plain_read( string $sql ): bool {
+		return 1 === preg_match( '/^\s*(?:\(\s*)*(?:SELECT|SHOW|DESCRIBE|DESC|EXPLAIN)\b/i', $sql )
+			&& 1 !== preg_match( '/\bFOR\s+(?:UPDATE|SHARE)\b|\bLOCK\s+IN\s+SHARE\s+MODE\b|\bINTO\s+@|\bGET_LOCK\s*\(|\bRELEASE_(?:ALL_)?LOCKS?\s*\(/i', $sql );
 	}
 
 	private function execute_unlocked_request( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {

@@ -28,6 +28,8 @@ final class WP_Markdown_Native_Transaction_Journal {
 	private $claim = null;
 	/** @var resource|null */
 	private $write_lock = null;
+	/** @var resource|null Shared hold on the root lock for one autocommit read. */
+	private $read_lock = null;
 	private bool $active = false;
 	private bool $autocommit = true;
 	private bool $in_transaction = false;
@@ -224,6 +226,61 @@ final class WP_Markdown_Native_Transaction_Journal {
 		}
 		$this->recovery_required = false;
 		return true;
+	}
+
+	/**
+	 * Admit one autocommit read under a shared hold on the root lock.
+	 *
+	 * Writers hold the root lock exclusively for a whole statement or
+	 * transaction, so a shared holder never observes a half-published write,
+	 * and concurrent readers no longer serialize behind each other. While any
+	 * shared hold exists no live writer can own the root lock, so a journal seen
+	 * here was abandoned: recovery then takes the exclusive path as before.
+	 */
+	public function begin_read(): true|string {
+		if ( null !== $this->write_lock || null !== $this->read_lock || $this->active || $this->recovery_required ) {
+			return $this->begin_write();
+		}
+		$directory = $this->journal_directory();
+		if ( false === $directory ) {
+			return 'The canonical transaction lock directory is unsafe or could not be created.';
+		}
+		$lock_path = $directory . DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . self::WRITE_LOCK_SUFFIX;
+		if ( is_link( $lock_path ) ) {
+			return 'The canonical transaction write lock path is unsafe.';
+		}
+		$handle = $this->open_safe_lock( $lock_path );
+		if ( false === $handle ) {
+			return 'The canonical transaction write lock could not be opened.';
+		}
+		$deadline = hrtime( true ) + ( self::WRITE_LOCK_WAIT_US * 1000 );
+		$this->waited_for_write_lock = false;
+		while ( ! flock( $handle, LOCK_SH | LOCK_NB ) ) {
+			$this->waited_for_write_lock = true;
+			if ( hrtime( true ) >= $deadline ) {
+				fclose( $handle );
+				return 'The canonical transaction write lock timed out.';
+			}
+			usleep( 10000 );
+		}
+		if ( array() !== ( glob( $directory . DIRECTORY_SEPARATOR . self::JOURNAL_PREFIX . '*' . self::JOURNAL_SUFFIX ) ?: array() ) ) {
+			flock( $handle, LOCK_UN );
+			fclose( $handle );
+			return $this->begin_write();
+		}
+		$this->read_lock = $handle;
+		return true;
+	}
+
+	/** Release whichever root hold begin_read() or begin_write() took for a statement. */
+	public function finish_read(): void {
+		if ( null === $this->read_lock ) {
+			$this->finish_write();
+			return;
+		}
+		flock( $this->read_lock, LOCK_UN );
+		fclose( $this->read_lock );
+		$this->read_lock = null;
 	}
 
 	/** Release an autocommit statement's root lock after it has published. */

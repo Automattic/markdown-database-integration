@@ -105,8 +105,12 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 		if ( $existing instanceof WP_Markdown_Query_Result ) {
 			return $existing;
 		}
-		foreach ( $existing as $row ) {
-			if ( ! $this->restricts( $row, $write->predicates(), $schema ) ) {
+		$selected = WP_Markdown_Native_Table_Write_Selection::selected_offsets( $existing, $write->predicates(), $write, $schema );
+		if ( null === $selected ) {
+			return $this->failure( 'unsupported_order', 'The write ORDER BY names a wp_posts column mdi-native cannot order.' );
+		}
+		foreach ( $existing as $offset => $row ) {
+			if ( ! isset( $selected[ $offset ] ) ) {
 				continue;
 			}
 			++$affected;
@@ -253,29 +257,6 @@ final class WP_Markdown_Native_Post_Mutation_Runtime {
 			return null;
 		}
 		return WP_Markdown_Native_Schema_Catalog::is_integer( (string) ( $column['type'] ?? '' ) ) ? (int) $value : $value;
-	}
-
-	/**
-	 * @param array<string,mixed>                          $row
-	 * @param array<int,WP_Markdown_Native_Table_Predicate> $predicates
-	 */
-	private function restricts( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
-		foreach ( $predicates as $predicate ) {
-			$value = $row[ $predicate->column() ] ?? null;
-			$matched = $predicate->matches_null() && null === $value;
-			if ( ! $matched ) {
-				foreach ( $predicate->values() as $candidate ) {
-					if ( $schema->values_match( $predicate->column(), $value, $candidate ) ) {
-						$matched = true;
-						break;
-					}
-				}
-			}
-			if ( ! $matched ) {
-				return false;
-			}
-		}
-		return true;
 	}
 
 	private function failure( string $reason, string $message ): WP_Markdown_Query_Result {

@@ -134,6 +134,13 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				}
 			}
 			$predicates = isset( $derived_selection ) && null !== $derived_selection ? array() : $this->where_predicates();
+			$order_by = array();
+			if ( $this->is_word( 'ORDER' ) ) {
+				if ( isset( $derived_selection ) && null !== $derived_selection ) {
+					throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_grammar', $this->current()->sql_offset(), 'mdi-native does not support ORDER BY on a derived selection UPDATE.' );
+				}
+				$order_by = $this->write_order_by();
+			}
 			$limit = PHP_INT_MAX;
 			if ( $this->is_word( 'LIMIT' ) ) {
 				if ( isset( $derived_selection ) && null !== $derived_selection ) {
@@ -143,7 +150,7 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 				$limit = (int) $this->type( WP_Markdown_Native_SQL_Token::INTEGER )->value();
 			}
 			$this->type( WP_Markdown_Native_SQL_Token::END );
-			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates, $derived_selection ?? null, $limit );
+			return new WP_Markdown_Native_Table_Write( $kind, $table, $values, $predicates, $derived_selection ?? null, $limit, $order_by );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return WP_Markdown_Query_Result::failure(
 				array(
@@ -370,6 +377,35 @@ final class WP_Markdown_Native_Table_Insert_Parser {
 			throw new WP_Markdown_Native_SQL_Parse_Error( 'unsupported_predicate', $token->sql_offset(), 'Unsupported NULL equality restriction.' );
 		}
 		return new WP_Markdown_Native_Table_Predicate( $column, array( $value ), false );
+	}
+
+	/**
+	 * Parse a single-table write's `ORDER BY col [ASC|DESC][, …]`.
+	 *
+	 * @return array<int,array{column:string,descending:bool}>
+	 */
+	private function write_order_by(): array {
+		$this->word( 'ORDER' );
+		$this->word( 'BY' );
+		$order_by = array();
+		do {
+			if ( array() !== $order_by ) {
+				$this->type( WP_Markdown_Native_SQL_Token::COMMA );
+			}
+			$column = $this->identifier();
+			$descending = false;
+			if ( $this->is_word( 'DESC' ) ) {
+				++$this->position;
+				$descending = true;
+			} elseif ( $this->is_word( 'ASC' ) ) {
+				++$this->position;
+			}
+			$order_by[] = array(
+				'column'     => $column,
+				'descending' => $descending,
+			);
+		} while ( WP_Markdown_Native_SQL_Token::COMMA === $this->current()->type() );
+		return $order_by;
 	}
 
 	/** @return '<>'|'<'|'<='|'>'|'>='|null */

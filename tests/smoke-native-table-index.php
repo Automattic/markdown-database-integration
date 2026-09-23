@@ -152,13 +152,15 @@ $checks = array(
 	'same-size same-mtime atomic replacement invalidates the index' => 1 === $after_replacement->return_value()
 		&& '6' === (string) ( rows( $snapshot )[5]['id'] ?? null ),
 	'a rolled back insert restores the snapshot' => $before_rollback === $after_rollback,
-	'a rolled-back identity and unique key are immediately reusable' => 1 === $post_rollback_insert->return_value()
-		&& array( '1', '2', '3', '4', '5', '6', '7' ) === $post_rollback_ids,
+	// Like MySQL AUTO_INCREMENT, a rolled-back insert consumes its identity, while
+	// its unique key is immediately reusable.
+	'a rolled-back unique key is immediately reusable and its identity is not reissued' => 1 === $post_rollback_insert->return_value()
+		&& array( '1', '2', '3', '4', '5', '6', '8' ) === $post_rollback_ids,
 	'REPLACE defers its derived index rebuild' => 2 === $replaced->return_value()
 		&& $replace_deferred_index,
 	'the next insert rebuilds the index without corrupting identity' => 1 === $after_replace->return_value()
 		&& $replace_rebuilt_index
-		&& array( '1', '2', '3', '4', '5', '6', '8', '9' ) === $after_replace_ids,
+		&& array( '1', '2', '3', '4', '5', '6', '9', '10' ) === $after_replace_ids,
 );
 
 $passed = ! in_array( false, $checks, true );

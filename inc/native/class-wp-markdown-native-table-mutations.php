@@ -601,12 +601,16 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
 
+			$selected = WP_Markdown_Native_Table_Write_Selection::selected_offsets( $rows, $predicates, $write, $schema );
+			if ( null === $selected ) {
+				return $this->failure( 'unsupported_order', 'The write ORDER BY names a column mdi-native cannot order.' );
+			}
 			$retained = array();
 			$affected = 0;
 			$preserves_index_values = $write->is_update() && $this->preserves_index_values( $write->values(), $definition );
 			$updated_index = $preserves_index_values ? $index : null;
-			foreach ( $rows as $row ) {
-				if ( ! $this->restricts( $row, $predicates, $schema ) || $affected >= $write->limit() ) {
+			foreach ( $rows as $offset => $row ) {
+				if ( ! isset( $selected[ $offset ] ) ) {
 					$retained[] = $row;
 					continue;
 				}
@@ -687,7 +691,9 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			if ( null === $generation ) {
 				return WP_Markdown_Query_Result::mutated( 0 );
 			}
-			$identities = $this->partition_identity_candidates( $predicates, $identity_column );
+			// An ORDER BY must rank every matching row before LIMIT applies, so the
+			// identity fast path (which visits candidates in literal order) is skipped.
+			$identities = array() === $write->order_by() ? $this->partition_identity_candidates( $predicates, $identity_column ) : null;
 			$affected = 0;
 			if ( null !== $identities ) {
 				foreach ( $identities as $value ) {
@@ -719,6 +725,15 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			$rows = $provider->scan_generation( $generation );
 			if ( $rows instanceof WP_Markdown_Query_Result ) {
 				return $rows;
+			}
+			if ( array() !== $write->order_by() ) {
+				$rows = is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
+				$selected = WP_Markdown_Native_Table_Write_Selection::selected_offsets( $rows, $predicates, $write, $schema );
+				if ( null === $selected ) {
+					return $this->failure( 'unsupported_order', 'The write ORDER BY names a column mdi-native cannot order.' );
+				}
+				// The selection is already bounded by ORDER BY … LIMIT; delete exactly it.
+				$rows = array_values( array_intersect_key( $rows, $selected ) );
 			}
 			foreach ( $rows as $row ) {
 				if ( $affected >= $write->limit() ) {
@@ -997,53 +1012,7 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group> $predicates
 	 */
 	private function restricts( array $row, array $predicates, WP_Markdown_Native_Table_Schema $schema ): bool {
-		foreach ( $predicates as $predicate ) {
-			if ( ! $this->restricts_predicate( $row, $predicate, $schema ) ) {
-				return false;
-			}
-		}
-		return true;
-	}
-
-	/** @param WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group $predicate */
-	private function restricts_predicate( array $row, $predicate, WP_Markdown_Native_Table_Schema $schema ): bool {
-		if ( $predicate instanceof WP_Markdown_Native_Table_Predicate_Group ) {
-			foreach ( $predicate->any() as $alternative ) {
-				$matches = $this->restricts_predicate( $row, $alternative, $schema );
-				if ( $matches !== $predicate->all() ) {
-					return $matches;
-				}
-			}
-			return $predicate->all();
-		}
-		$value = $row[ $predicate->column() ] ?? null;
-		if ( $predicate->matches_null() && null === $value ) {
-			return true;
-		}
-		$operator = $predicate->operator();
-		if ( '<>' === $operator ) {
-			// Like MySQL, comparisons against NULL are unknown rather than true.
-			return null !== $value && ! $schema->values_match( $predicate->column(), $value, $predicate->values()[0] ?? null );
-		}
-		if ( in_array( $operator, array( '<', '<=', '>', '>=' ), true ) ) {
-			// A comparison with NULL is unknown, which never restricts.
-			if ( null === $value ) {
-				return false;
-			}
-			$comparison = $schema->compare_values( $predicate->column(), $value, $predicate->values()[0] ?? null );
-			return match ( $operator ) {
-				'<' => $comparison < 0,
-				'<=' => $comparison <= 0,
-				'>' => $comparison > 0,
-				default => $comparison >= 0,
-			};
-		}
-		foreach ( $predicate->values() as $candidate ) {
-			if ( $schema->values_match( $predicate->column(), $value, $candidate ) ) {
-				return true;
-			}
-		}
-		return false;
+		return WP_Markdown_Native_Table_Write_Selection::restricts( $row, $predicates, $schema );
 	}
 
 	/** @param WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group $predicate @return array<int,string> */

@@ -75,6 +75,23 @@ $child_nested = array() !== $child_files && str_ends_with( $child_files[0], '/po
 $child_body = $runtime->execute( new WP_Markdown_Query_Request( "SELECT ID FROM wp_posts WHERE post_content LIKE '%needle%'", 'wp_' ) );
 $child_body_ids = array_map( static fn( object $row ): int => (int) $row->ID, $child_body->wpdb_state()['last_result'] ?? array() );
 
+// wp-codebox#2500: a stored excerpt, password, or MIME type of the literal
+// string '0' is legitimate content, not absence. The Markdown frontmatter
+// writer previously used `!empty()` to decide whether to include these
+// fields, which is falsy for '0' and silently dropped it -- the field then
+// read back as '' instead of '0'.
+$zero_value_insert = $runtime->execute(
+	new WP_Markdown_Query_Request(
+		"INSERT INTO wp_posts (post_author, post_date, post_date_gmt, post_content, post_title, post_excerpt, post_status, comment_status, ping_status, post_password, post_name, to_ping, pinged, post_modified, post_modified_gmt, post_content_filtered, post_parent, guid, menu_order, post_type, post_mime_type, comment_count) VALUES (1, '2026-08-27 12:00:00', '2026-08-27 12:00:00', 'Zero value body', 'Zero value', '0', 'publish', 'open', 'open', '0', 'zero-value-slug', '', '', '2026-08-27 12:00:00', '2026-08-27 12:00:00', '', 0, 'http://localhost/zero-value-slug/', 0, 'post', '0', 0)",
+		'wp_'
+	)
+);
+$zero_value_id = (int) ( $zero_value_insert->wpdb_state()['insert_id'] ?? 0 );
+$zero_value_read = $runtime->execute(
+	new WP_Markdown_Query_Request( 'SELECT post_excerpt, post_password, post_mime_type FROM wp_posts WHERE ID = ' . $zero_value_id, 'wp_' )
+);
+$zero_value_row = $zero_value_read->wpdb_state()['last_result'][0] ?? null;
+
 $checks = array(
 	'an INSERT assigns an identity and writes markdown' => 1 === $insert->return_value()
 		&& 1 === $insert->wpdb_state()['insert_id']
@@ -93,6 +110,12 @@ $checks = array(
 		&& $wp_id > 0
 		&& 'Native Save Probe' === ( $wp_read->wpdb_state()['last_result'][0]->post_title ?? null )
 		&& '0' === (string) ( $wp_read->wpdb_state()['last_result'][0]->comment_count ?? '' ),
+	'a stored excerpt, password, and MIME type of \'0\' round-trip as \'0\', not \'\'' => 1 === $zero_value_insert->return_value()
+		&& $zero_value_id > 0
+		&& null !== $zero_value_row
+		&& '0' === $zero_value_row->post_excerpt
+		&& '0' === $zero_value_row->post_password
+		&& '0' === $zero_value_row->post_mime_type,
 );
 
 $failed = false;

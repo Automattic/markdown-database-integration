@@ -1813,21 +1813,25 @@ class WP_Markdown_Storage {
 		$fm['guid']           = $post->guid ?? '';
 		$fm['comment_count']  = (int) ( $post->comment_count ?? 0 );
 
-		// Excerpt — only include if non-empty.
-		$excerpt = $post->post_excerpt ?? '';
-		if ( ! empty( $excerpt ) ) {
+		// Excerpt — only include if non-empty. A stored excerpt of the literal
+		// string '0' is legitimate content, not absence: only the empty string
+		// means "no excerpt was set" (wp-codebox#2500).
+		$excerpt = (string) ( $post->post_excerpt ?? '' );
+		if ( '' !== $excerpt ) {
 			$fm['excerpt'] = $excerpt;
 		}
 
-		// Password — only include if set.
-		$password = $post->post_password ?? '';
-		if ( ! empty( $password ) ) {
+		// Password — only include if set. Same '0' vs '' distinction as above:
+		// a post password of '0' is a valid (if weak) password, not "no password".
+		$password = (string) ( $post->post_password ?? '' );
+		if ( '' !== $password ) {
 			$fm['password'] = $password;
 		}
 
-		// MIME type — only include if set (attachments).
-		$mime = $post->post_mime_type ?? '';
-		if ( ! empty( $mime ) ) {
+		// MIME type — only include if set (attachments). Included for symmetry
+		// with the two checks above even though a real MIME type is never '0'.
+		$mime = (string) ( $post->post_mime_type ?? '' );
+		if ( '' !== $mime ) {
 			$fm['mime_type'] = $mime;
 		}
 

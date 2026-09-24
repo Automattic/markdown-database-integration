@@ -40,6 +40,21 @@ $insert_doubled = $run( "INSERT INTO wp_notes (label) VALUES ('it''s')" );
 $insert_nested  = $run( 'INSERT INTO wp_notes (label) VALUES ("say ""hi"" it\'s")' );
 $update_double  = $run( 'UPDATE wp_notes SET label = "renamed" WHERE label = "double" LIMIT 1' );
 
+// Long literals with dense escapes decode exactly (the run-copying fast path).
+$long_value = str_repeat( "{\"key\":\"it's\\path\\x\",\n\t\"n\":1};", 20000 );
+$long_sql   = "UPDATE wp_notes SET label = '" . addslashes( $long_value ) . "' WHERE id = 1";
+$long_token = null;
+foreach ( $tokenizer->tokenize( $long_sql ) as $token ) {
+	if ( WP_Markdown_Native_SQL_Token::STRING === $token->type() ) {
+		$long_token = $token;
+	}
+}
+$doubled_value = str_repeat( "a''b", 50000 );
+$doubled_token = $strings( "SELECT '" . $doubled_value . "'" );
+$memo_first  = $tokenizer->tokenize( "SELECT 'first'" );
+$memo_second = ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( "SELECT 'second'" );
+$memo_again  = $tokenizer->tokenize( "SELECT 'first'" );
+
 $checks = array(
 	'a double-quoted literal tokenizes as a string'                  => array( 'x' ) === $strings( 'SELECT "x"' ),
 	'a doubled single quote is one literal quote'                    => array( "it's" ) === $strings( "SELECT 'it''s'" ),
@@ -59,6 +74,10 @@ $checks = array(
 	'a semicolon inside a double-quoted literal is not a separator'  => ! WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( 'SELECT "a;b"' ),
 	'double-quoted INSERT, UPDATE, and WHERE values round-trip'      => 1 === $insert_double->return_value() && 1 === $update_double->return_value() && array( 'renamed' ) === $labels( 'label = "renamed"' ),
 	'a doubled-quote value is stored and matched as one quote'       => 1 === $insert_doubled->return_value() && array( "it's" ) === $labels( "label = 'it''s'" ) && array( "it's" ) === $labels( "label = \"it's\"" ),
+	'a long literal with dense escapes decodes exactly'           => null !== $long_token && $long_value === $long_token->value() && addslashes( $long_value ) === substr( $long_token->lexeme(), 1, -1 ),
+	'a long run of doubled quotes decodes to single quotes'        => array( str_repeat( "a'b", 50000 ) ) === $doubled_token,
+	'a semicolon deep inside a long literal is not a separator'    => ! WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $long_sql ) && WP_Markdown_Native_SQL_Tokenizer::contains_statement_separator( $long_sql . '; SELECT 1' ),
+	'memoized tokens always belong to the requested statement'     => 'first' === $memo_first[1]->value() && 'second' === $memo_second[1]->value() && 'first' === $memo_again[1]->value(),
 	'mixed quoting stores the decoded value'                         => 1 === $insert_nested->return_value() && array( 'say "hi" it\'s' ) === $labels( "label = 'say \"hi\" it\\'s'" ),
 );
 

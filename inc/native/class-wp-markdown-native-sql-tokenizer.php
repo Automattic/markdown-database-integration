@@ -71,8 +71,31 @@ final class WP_Markdown_Native_SQL_Token {
 }
 
 final class WP_Markdown_Native_SQL_Tokenizer {
+	/**
+	 * The most recent statement and its tokens, shared by every tokenizer.
+	 *
+	 * One statement is tokenized by several parsers while the runtime decides
+	 * which one owns it (schema introspection, the SELECT AST, JSON probes, the
+	 * mutation parsers). Tokens are immutable and arrays are copied on write, so
+	 * handing each caller the same result is safe and removes the repeat passes.
+	 */
+	private static ?string $last_sql = null;
+	/** @var array<int,WP_Markdown_Native_SQL_Token> */
+	private static array $last_tokens = array();
+
 	/** @return array<int,WP_Markdown_Native_SQL_Token> */
 	public function tokenize( string $sql ): array {
+		if ( self::$last_sql === $sql ) {
+			return self::$last_tokens;
+		}
+		$tokens = $this->scan( $sql );
+		self::$last_sql    = $sql;
+		self::$last_tokens = $tokens;
+		return $tokens;
+	}
+
+	/** @return array<int,WP_Markdown_Native_SQL_Token> */
+	private function scan( string $sql ): array {
 		$tokens = array();
 		$length = strlen( $sql );
 		for ( $offset = 0; $offset < $length; ) {
@@ -186,7 +209,19 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 		$start   = $offset++;
 		$length  = strlen( $sql );
 		$decoded = '';
+		// Copy each run of ordinary characters in one step. Per-character
+		// appends made a multi-megabyte literal cost hundreds of milliseconds,
+		// and a statement is tokenized several times.
+		$stops = $quote . '\\';
 		while ( $offset < $length ) {
+			$run = strcspn( $sql, $stops, $offset );
+			if ( $run > 0 ) {
+				$decoded .= substr( $sql, $offset, $run );
+				$offset  += $run;
+				if ( $offset >= $length ) {
+					break;
+				}
+			}
 			$character = $sql[ $offset++ ];
 			if ( $quote === $character ) {
 				if ( $offset < $length && $quote === $sql[ $offset ] ) {
@@ -249,6 +284,13 @@ final class WP_Markdown_Native_SQL_Tokenizer {
 		$length = strlen( $sql );
 		$quote  = null;
 		for ( $offset = 0; $offset < $length; $offset++ ) {
+			if ( null !== $quote ) {
+				// Skip straight to the next delimiter or escape inside a literal.
+				$offset += strcspn( $sql, '`' === $quote ? '`' : $quote . '\\', $offset );
+				if ( $offset >= $length ) {
+					break;
+				}
+			}
 			$character = $sql[ $offset ];
 			if ( null !== $quote ) {
 				if ( '\\' === $character && '`' !== $quote ) {

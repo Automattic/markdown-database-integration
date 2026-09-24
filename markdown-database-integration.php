@@ -9,7 +9,7 @@
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
  * Text Domain: markdown-database-integration
  * Requires at least: 6.9
- * Requires PHP: 8.1
+ * Requires PHP: 8.2
  *
  * Backends (set MARKDOWN_DB_BACKEND in wp-config.php):
  *   - 'mdi-native' (default): canonical Markdown and JSON files are the database.

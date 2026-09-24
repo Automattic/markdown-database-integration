@@ -360,7 +360,7 @@ boundary.
 ## Requirements
 
 - WordPress 6.9+
-- PHP 8.1+
+- PHP 8.2+
 - Composer
 
 The default `mdi-native` runtime uses the bundled `db.php` drop-in and the

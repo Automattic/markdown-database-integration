@@ -201,6 +201,16 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 			return $this->failure( 'unsupported_schema', 'mdi-native requires a column definition for ADD and MODIFY.' );
 		}
 
+		// A generated core table (wp_users, wp_posts, ...) is described by the
+		// compiled schema catalog, not a persisted CREATE TABLE statement --
+		// creating one never writes a `_schema/<suffix>.sql` file, see the
+		// core-table branch above -- so the ordinary path below, which reads
+		// that persisted definition, rewrites it, and recompiles it, has
+		// nothing to read and fails closed as `unknown_table`.
+		if ( WP_Markdown_Native_Schema_Catalog::is_core_table( $suffix ) ) {
+			return $this->execute_core_table_alter( $table, $suffix, $operation, $column );
+		}
+
 		$directory = $this->schema_directory();
 		if ( $directory instanceof WP_Markdown_Query_Result ) {
 			return $directory;
@@ -254,6 +264,90 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 				null === $schema ? null : new WP_Markdown_Native_JSON_Snapshot_Provider( $this->state_root, $schema, $suffix . '.json' ),
 				$definition
 			);
+			return WP_Markdown_Query_Result::schema_changed();
+		} finally {
+			flock( $lock, LOCK_UN );
+			fclose( $lock );
+		}
+	}
+
+	/**
+	 * Apply one bounded ADD/MODIFY column action to a generated core table.
+	 *
+	 * `wp_users` is the one core table whose compiled column set differs
+	 * between the single-site and multisite catalog variants (`spam`,
+	 * `deleted`, see WP_Markdown_Native_Schema_Catalog::definitions()).
+	 * WordPress promotes a single-site install to a network mid-request by
+	 * running exactly this ALTER TABLE against it (dbDelta, inside
+	 * populate_network()) -- and every later query resolves `wp_users`'s
+	 * compiled schema from the *current* is_multisite() state, not from
+	 * whichever variant was live when a given row was written. A real MySQL
+	 * server backfills every existing row with a new column's default the
+	 * moment ADD COLUMN runs; skip that and a row written during the
+	 * single-site phase permanently fails schema validation -- and takes
+	 * every later read and write against the table down with it -- the
+	 * instant is_multisite() flips true.
+	 *
+	 * There is no persisted CREATE TABLE statement to rewrite and recompile
+	 * for a generated table, so resolve the added column from the catalog's
+	 * own two known variants instead, backfill it on the persisted snapshot
+	 * the same way `reconcile_rows()` already does for a plugin's own
+	 * persisted table, and rebuild the table's registration from the
+	 * catalog -- the same path a fresh boot under the current is_multisite()
+	 * state would take.
+	 *
+	 * DROP is intentionally unsupported here: re-registering from the
+	 * catalog re-derives whichever variant this runtime's is_multisite()
+	 * state (fixed for the runtime's lifetime) already resolves to, which is
+	 * exactly what makes ADD self-correcting after the single-site to
+	 * multisite transition. Applied to DROP that same re-registration would
+	 * NOT shrink the column set back down -- it would restore the wider
+	 * variant over rows this call just stripped, replacing one mismatch with
+	 * its opposite. WordPress core has no DDL path that drops a core table
+	 * back to a narrower generated shape, so this fails closed rather than
+	 * silently mishandling a case that cannot occur.
+	 */
+	private function execute_core_table_alter( string $table, string $suffix, string $operation, string $column ): WP_Markdown_Query_Result {
+		if ( 'MODIFY' === $operation ) {
+			// Every column shared by both catalog variants is identical, so a
+			// same-shape MODIFY against a core table needs no row rewrite.
+			return WP_Markdown_Query_Result::schema_changed();
+		}
+		if ( 'ADD' !== $operation ) {
+			return $this->failure( 'unsupported_schema', 'mdi-native supports bounded ADD and MODIFY column alterations for a core table.' );
+		}
+		$current = $this->registry->table( $table );
+		if ( null === $current || null === $this->core_registrar ) {
+			return $this->failure( 'unknown_table', 'mdi-native cannot alter a table it does not persist.' );
+		}
+
+		$default = WP_Markdown_Native_Schema_Catalog::definitions( true )[ $suffix ]['columns'][ $column ]['default']
+			?? WP_Markdown_Native_Schema_Catalog::definitions( false )[ $suffix ]['columns'][ $column ]['default']
+			?? null;
+
+		$directory = $this->schema_directory();
+		if ( $directory instanceof WP_Markdown_Query_Result ) {
+			return $directory;
+		}
+		$lock = @fopen( $directory . '/.mdi-native.lock', 'c+b' );
+		if ( false === $lock || ! flock( $lock, LOCK_EX ) ) {
+			if ( is_resource( $lock ) ) {
+				fclose( $lock );
+			}
+			return $this->failure( 'mutation_lock_failed', 'The canonical schema mutation lock could not be acquired.' );
+		}
+		try {
+			$definition_overlay = array( 'columns' => array( $column => array( 'default' => $default ) ) );
+			$reconciled = $this->reconcile_rows( $suffix, $operation, $column, $current['schema'], $definition_overlay );
+			if ( $reconciled instanceof WP_Markdown_Query_Result ) {
+				return $reconciled;
+			}
+			// Re-derive the registration from the catalog rather than hand-patch
+			// the in-memory schema/provider, so a core table's bespoke lookup
+			// semantics (e.g. wp_users' ASCII case-insensitive user_login
+			// matching) stay exactly what a fresh boot would build.
+			$this->registry->unregister( $table );
+			( $this->core_registrar )( $suffix );
 			return WP_Markdown_Query_Result::schema_changed();
 		} finally {
 			flock( $lock, LOCK_UN );

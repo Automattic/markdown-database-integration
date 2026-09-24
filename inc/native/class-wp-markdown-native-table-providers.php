@@ -1096,23 +1096,22 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 	/** @return array<int,array<string,mixed>>|WP_Markdown_Query_Result */
 	private function snapshot( ?array $autoload_values = null ): array|WP_Markdown_Query_Result {
 		$scope = null === $autoload_values ? '*' : implode( ',', array_map( 'strval', $autoload_values ) );
-		if ( $this->loaded && $scope === $this->snapshot_scope ) {
-			$signature = $this->options_signature();
-			if ( $signature === $this->signature ) {
-				return $this->snapshot;
-			}
+		// Taken before any read: a file that changes while the snapshot is built
+		// makes the next comparison differ, so a stale snapshot is never reused.
+		$signature = $this->options_signature();
+		if ( $this->loaded && $scope === $this->snapshot_scope && $signature === $this->signature ) {
+			return $this->snapshot;
 		}
 		$this->loaded = true;
 		$this->snapshot_scope = $scope;
+		$this->signature = $signature;
 		$root = $this->options_root();
 		if ( $root instanceof WP_Markdown_Query_Result ) {
-			$this->signature = $this->options_signature();
 			return $this->snapshot = $root;
 		}
 		if ( null === $root ) {
 			// Verified absence is the only route to an empty snapshot; an
 			// unresolved read arrives above as a failure result instead.
-			$this->signature = $this->options_signature();
 			return $this->snapshot = array();
 		}
 
@@ -1124,7 +1123,6 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 				}
 			}
 		} catch ( UnexpectedValueException $error ) {
-			$this->signature = $this->options_signature();
 			return $this->snapshot = $this->failure(
 				'markdown_db_native_unsafe_path',
 				'unreadable_options_directory',
@@ -1134,7 +1132,6 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		if ( $root !== realpath( $this->state_root . DIRECTORY_SEPARATOR . '_options' )
 			|| is_link( $this->state_root . DIRECTORY_SEPARATOR . '_options' )
 		) {
-			$this->signature = $this->options_signature();
 			return $this->snapshot = $this->failure(
 				'markdown_db_native_unsafe_path',
 				'changed_options_directory',
@@ -1143,26 +1140,31 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		}
 
 		sort( $paths, SORT_STRING );
+		// The catalogue answers every file whose identity is unchanged; only new
+		// or changed files are read, so one option write no longer forces a
+		// re-read of the whole store.
 		$catalogued = $this->catalogue->restore( $root, $paths );
 		$rows  = array();
 		$ids   = array();
 		$names = array();
-		$signatures = array();
+		$persist_rows = array();
 		$ordered_signatures = array();
 		foreach ( $paths as $offset => $path ) {
-			$path_signature = null === $catalogued ? null : ( $catalogued['signatures'][ $offset ] ?? null );
-			$row = null === $catalogued ? $this->read_option( $path, $root, null, $path_signature ) : ( $catalogued['rows'][ $offset ] ?? null );
-			if ( null !== $catalogued && null === $row ) {
+			$stale = null === $catalogued || ! empty( $catalogued['stale'][ $offset ] );
+			$path_signature = $stale ? null : ( $catalogued['signatures'][ $offset ] ?? null );
+			$row = $stale ? null : ( $catalogued['rows'][ $offset ] ?? null );
+			if ( ! $stale && null === $row ) {
 				$autoload = $catalogued['autoloads'][ $offset ] ?? null;
 				if ( null !== $autoload_values && is_string( $autoload ) && ! in_array( $autoload, $autoload_values, true ) ) {
-					$signatures[ basename( $path ) ] = (string) $path_signature;
+					$persist_rows[] = array( 'autoload' => $autoload );
 					$ordered_signatures[] = (string) $path_signature;
 					continue;
 				}
+			}
+			if ( null === $row ) {
 				$row = $this->read_option( $path, $root, null, $path_signature );
 			}
 			if ( $row instanceof WP_Markdown_Query_Result ) {
-				$this->signature = $this->options_signature();
 				return $this->snapshot = $row;
 			}
 			if ( ! is_array( $row ) || true !== $this->schema->validate_row( $row )
@@ -1170,7 +1172,6 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 				|| isset( $ids[ $row['option_id'] ] )
 				|| isset( $names[ $row['option_name'] ] )
 			) {
-				$this->signature = $this->options_signature();
 				return $this->snapshot = $this->failure(
 					'markdown_db_native_malformed_option',
 					'invalid_option_identity',
@@ -1180,18 +1181,17 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 			$ids[ $row['option_id'] ]     = true;
 			$names[ $row['option_name'] ] = true;
 			$rows[]                       = $row;
-			$signatures[ basename( $path ) ] = (string) $path_signature;
-			$ordered_signatures[] = (string) $path_signature;
+			$persist_rows[]               = $row;
+			$ordered_signatures[]         = (string) $path_signature;
 			$key = (string) $this->schema->value_key( 'option_name', $row['option_name'] );
 			$this->option_cache[ $key ] = array(
 				'signature' => (string) $path_signature,
 				'value'     => $row,
 			);
 		}
-		if ( null === $catalogued ) {
-			$this->catalogue->persist( $paths, $rows, $ordered_signatures );
+		if ( null === $catalogued || ! empty( $catalogued['stale'] ) ) {
+			$this->catalogue->persist( $paths, $persist_rows, $ordered_signatures );
 		}
-		$this->signature = $this->options_signature( $signatures );
 		return $this->snapshot = $rows;
 	}
 
@@ -1247,17 +1247,26 @@ final class WP_Markdown_Native_Option_Provider extends WP_Markdown_Native_File_P
 		return $rows;
 	}
 
-	/** @param array<string,string>|null $file_signatures */
-	private function options_signature( ?array $file_signatures = null ): string {
+	/**
+	 * Cheap change detector for the whole options store.
+	 *
+	 * Built from each file's lstat identity (device, inode, mode, size, mtime,
+	 * ctime, link count), the same trust basis the option catalogue uses.
+	 * Canonical writes publish by rename, so every write changes the inode.
+	 * Hashing every file's contents here read the entire store to answer "did
+	 * anything change?" and made each reused snapshot cost ~0.5 s on a large site.
+	 */
+	private function options_signature(): string {
 		$directory = $this->state_root . DIRECTORY_SEPARATOR . '_options';
 		$parts = array( $this->path_signature( $directory ) );
-		if ( null !== $file_signatures ) {
-			$parts += $file_signatures;
-		} elseif ( is_dir( $directory ) && ! is_link( $directory ) ) {
+		if ( is_dir( $directory ) && ! is_link( $directory ) ) {
 			try {
 				foreach ( new FilesystemIterator( $directory, FilesystemIterator::SKIP_DOTS ) as $entry ) {
 					if ( str_ends_with( $entry->getFilename(), '.json' ) ) {
-						$parts[ $entry->getFilename() ] = $this->path_signature( $directory . DIRECTORY_SEPARATOR . $entry->getFilename() );
+						$stat = @lstat( $entry->getPathname() );
+						$parts[ $entry->getFilename() ] = false === $stat
+							? 'missing'
+							: implode( ':', array( $stat['dev'], $stat['ino'], $stat['mode'], $stat['size'], $stat['mtime'], $stat['ctime'], $stat['nlink'] ?? 0 ) );
 					}
 				}
 			} catch ( UnexpectedValueException $error ) {

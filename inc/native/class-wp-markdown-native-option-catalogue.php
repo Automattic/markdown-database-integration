@@ -13,8 +13,19 @@ final class WP_Markdown_Native_Option_Catalogue {
 
 	public function __construct( private readonly string $state_root ) {}
 
-	/** @param array<int,string> $paths @return array{rows:array<int,array<string,mixed>|null>,autoloads:array<int,string>,signatures:array<int,string>}|null */
+	/**
+	 * Restore catalogued rows for the given paths.
+	 *
+	 * Entries are matched by filename. A file whose lstat identity still equals
+	 * the catalogued identity is answered from the catalogue; a new or changed
+	 * file is marked stale so the caller reads just that file. Returns null only
+	 * when the catalogue itself is missing or unusable.
+	 *
+	 * @param array<int,string> $paths
+	 * @return array{rows:array<int,array<string,mixed>|null>,autoloads:array<int,?string>,signatures:array<int,?string>,stale:array<int,true>}|null
+	 */
 	public function restore( string $root, array $paths ): ?array {
+		unset( $root );
 		$path = $this->path();
 		if ( null === $path || ! is_file( $path ) || is_link( $path ) ) {
 			return null;
@@ -29,32 +40,41 @@ final class WP_Markdown_Native_Option_Catalogue {
 		} catch ( Throwable ) {
 			return null;
 		}
-		if ( ! is_array( $decoded ) || self::SCHEMA !== ( $decoded['schema'] ?? null ) || ! is_array( $decoded['entries'] ?? null ) || count( $paths ) !== count( $decoded['entries'] ) ) {
+		if ( ! is_array( $decoded ) || self::SCHEMA !== ( $decoded['schema'] ?? null ) || ! is_array( $decoded['entries'] ?? null ) ) {
 			return null;
+		}
+		$by_filename = array();
+		foreach ( $decoded['entries'] as $entry ) {
+			if ( is_array( $entry ) && is_string( $entry['filename'] ?? null ) ) {
+				$by_filename[ $entry['filename'] ] = $entry;
+			}
 		}
 		$rows = array();
 		$autoloads = array();
 		$signatures = array();
+		$stale = array();
 		foreach ( $paths as $offset => $option_path ) {
-			$entry = $decoded['entries'][ $offset ] ?? null;
+			$entry = $by_filename[ basename( $option_path ) ] ?? null;
+			$current = WP_Markdown_File_Witness::take( $option_path );
 			if ( ! is_array( $entry )
-				|| basename( $option_path ) !== ( $entry['filename'] ?? null )
 				|| ! is_array( $entry['identity'] ?? null )
 				|| ! is_string( $entry['autoload'] ?? null )
 				|| ( null !== ( $entry['row'] ?? null ) && ! is_array( $entry['row'] ) )
 				|| ! is_string( $entry['signature'] ?? null )
+				|| null === $current
+				|| $entry['identity'] !== $current->identity()
 			) {
-				return null;
-			}
-			$current = WP_Markdown_File_Witness::take( $option_path );
-			if ( null === $current || $entry['identity'] !== $current->identity() ) {
-				return null;
+				$rows[] = null;
+				$autoloads[] = null;
+				$signatures[] = null;
+				$stale[ $offset ] = true;
+				continue;
 			}
 			$rows[] = $entry['row'];
 			$autoloads[] = $entry['autoload'];
 			$signatures[] = $entry['signature'];
 		}
-		return array( 'rows' => $rows, 'autoloads' => $autoloads, 'signatures' => $signatures );
+		return array( 'rows' => $rows, 'autoloads' => $autoloads, 'signatures' => $signatures, 'stale' => $stale );
 	}
 
 	/** @param array<int,string> $paths @param array<int,array<string,mixed>> $rows @param array<int,string> $signatures */

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.11] - 2026-09-24
+
+### Changed
+- validate option snapshots by identity and refresh the catalogue incrementally
+
 ## [0.13.10] - 2026-09-24
 
 ### Changed

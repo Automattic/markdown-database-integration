@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.13.12] - 2026-09-24
+
+### Changed
+- tokenize large string literals in runs and once per statement
+
 ## [0.13.11] - 2026-09-24
 
 ### Changed

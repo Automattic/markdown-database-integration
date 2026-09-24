@@ -1,5 +1,16 @@
 # Changelog
 
+## [0.13.10] - 2026-09-24
+
+### Changed
+- add continuous release via homeboy-action reusable workflow
+
+### Fixed
+- require PHP 8.2 to match the syntax the native backend uses
+- pin composer platform to PHP 8.1 to match the supported floor
+- reconcile a generated core table's rows on ALTER TABLE
+- preserve stored '0' in post excerpt, password, and MIME type
+
 ## [0.13.9] - 2026-09-23
 
 ### Changed

@@ -220,7 +220,11 @@ if ( 'mdi-native' === MARKDOWN_DB_BACKEND ) {
 	$markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : $markdown_db_native_content_dir;
 	$markdown_db_native_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
 	$markdown_db_native_runtime = WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $markdown_db_native_state_dir, $markdown_db_native_prefix, $markdown_db_native_content_dir );
-	$GLOBALS['wpdb'] = new WP_Markdown_Native_WPDB( $markdown_db_native_runtime, $markdown_db_native_prefix );
+	$GLOBALS['wpdb'] = new WP_Markdown_Native_WPDB(
+		$markdown_db_native_runtime,
+		$markdown_db_native_prefix,
+		static fn(): WP_Markdown_Query_Runtime => WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $markdown_db_native_state_dir, $markdown_db_native_prefix, $markdown_db_native_content_dir )
+	);
 	define( 'MARKDOWN_DB_DROPIN', true );
 	return;
 }

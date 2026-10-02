@@ -54,12 +54,19 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 	private WP_Markdown_Query_Runtime $native_runtime;
 	private string $native_table_prefix;
 	private string $native_database_name;
+	/** @var (Closure(): WP_Markdown_Query_Runtime)|null */
+	private ?Closure $native_connection_factory;
 
-	public function __construct( WP_Markdown_Query_Runtime $runtime, string $table_prefix = 'wp_' ) {
+	/**
+	 * @param (Closure(): WP_Markdown_Query_Runtime)|null $connection_factory Builds a
+	 *        fresh runtime over the same canonical store, enabling open_connection().
+	 */
+	public function __construct( WP_Markdown_Query_Runtime $runtime, string $table_prefix = 'wp_', ?Closure $connection_factory = null ) {
 		if ( 1 !== preg_match( '/^[A-Za-z0-9_]+$/D', $table_prefix ) ) {
 			throw new InvalidArgumentException( 'The table prefix contains unsupported characters.' );
 		}
 		$this->native_runtime = $runtime;
+		$this->native_connection_factory = $connection_factory;
 		$this->native_table_prefix = $table_prefix;
 		$this->native_database_name = defined( 'DB_NAME' ) ? (string) DB_NAME : '';
 		// Native executes the MySQL-compatible dialect in-process; this is not a
@@ -130,6 +137,27 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		} catch ( Throwable ) {
 			return false;
 		}
+	}
+
+	/**
+	 * Open an independent logical connection to the same canonical store.
+	 *
+	 * The native counterpart of a second `new wpdb( DB_USER, DB_PASSWORD, DB_NAME,
+	 * DB_HOST )`: the returned wpdb has its own session and its own advisory-lock
+	 * ownership, so GET_LOCK held here contends with every other connection exactly
+	 * like a separate MySQL connection would. No mysqli handle is involved.
+	 *
+	 * @throws LogicException When this instance was built without a connection factory.
+	 */
+	public function open_connection(): self {
+		if ( null === $this->native_connection_factory ) {
+			throw new LogicException( 'This native wpdb was constructed without a connection factory.' );
+		}
+		$connection = new self( ( $this->native_connection_factory )(), $this->native_table_prefix, $this->native_connection_factory );
+		if ( '' !== $this->prefix && $this->prefix !== $this->native_table_prefix ) {
+			$connection->prefix = $this->prefix;
+		}
+		return $connection;
 	}
 
 	/** Close the logical native connection while leaving its configured root intact. */

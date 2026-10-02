@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.1] - 2026-10-02
+
+### Fixed
+- exclude same-process advisory lock owners without relying on flock
+
 ## [0.14.0] - 2026-10-02
 
 ### Added

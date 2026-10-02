@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.0] - 2026-10-02
+
+### Added
+- open independent logical connections from the native wpdb
+
 ## [0.13.12] - 2026-09-24
 
 ### Changed

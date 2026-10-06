@@ -142,13 +142,14 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		WP_Markdown_Storage $storage,
 		?WP_Markdown_Backend_Capabilities $backend_capabilities = null
 	) {
+		$pdo_option = defined( 'MARKDOWN_DB_SQLITE_LEGACY_RESULT_API' ) && MARKDOWN_DB_SQLITE_LEGACY_RESULT_API ? 'pdo' : 'sqlite_pdo';
 		parent::__construct(
 			sprintf( 'mysql-on-sqlite:dbname=%s', $database ),
 			null,
 			null,
 			array(
-				'pdo'          => $connection->get_pdo(),
-				'journal_mode' => $connection->get_pdo()->query( 'PRAGMA journal_mode' )->fetchColumn(),
+				$pdo_option          => $connection->get_pdo(),
+				'sqlite_journal_mode' => $connection->get_pdo()->query( 'PRAGMA journal_mode' )->fetchColumn(),
 			)
 		);
 		$connection->get_pdo()->setAttribute( PDO::ATTR_STRINGIFY_FETCHES, true );

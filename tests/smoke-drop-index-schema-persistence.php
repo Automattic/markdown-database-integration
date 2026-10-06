@@ -34,7 +34,7 @@ class WP_MySQL_On_SQLite {
 
 	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
 		unset( $dsn, $username, $password );
-		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
+		$this->connection = new WP_SQLite_Connection( $options['sqlite_pdo'] );
 	}
 
 	private WP_SQLite_Connection $connection;
@@ -139,7 +139,7 @@ mdi_drop_index_assert( str_contains( $schema_sql, 'retained_payload_idx' ), 'per
 
 $cold_pdo = new PDO( 'sqlite::memory:' );
 $cold_pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$cold_driver = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $cold_pdo ) );
+$cold_driver = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'sqlite_pdo' => $cold_pdo ) );
 $loader = new WP_Markdown_Loader( $root, $cold_driver, new WP_Markdown_Storage( $root ), 'wp_' );
 $load_plugin_tables = new ReflectionMethod( $loader, 'load_plugin_tables' );
 $load_plugin_tables->invoke( $loader );

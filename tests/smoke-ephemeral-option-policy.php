@@ -42,10 +42,10 @@ if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
 		private WP_SQLite_Connection $connection;
 		private PDO $pdo;
 
-		/** @param array{pdo?:PDO,rows?:object[]} $options */
+		/** @param array{sqlite_pdo?:PDO,rows?:object[]} $options */
 		public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
 			unset( $dsn, $username, $password );
-			$this->pdo = $options['pdo'] ?? new PDO( 'sqlite::memory:' );
+			$this->pdo = $options['sqlite_pdo'] ?? new PDO( 'sqlite::memory:' );
 			$this->connection = new WP_SQLite_Connection( $this->pdo );
 			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS mdi_rows (option_id INTEGER, option_name TEXT, option_value TEXT, autoload TEXT)' );
 			foreach ( $options['rows'] ?? array() as $row ) {
@@ -141,7 +141,7 @@ mdi_ephemeral_assert( ! file_exists( $root . '/_options/transient_proof.json' ),
 $pdo = new PDO( 'sqlite::memory:' );
 $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
 $pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
-$loader = new WP_Markdown_Loader( $root, new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $pdo ) ), new WP_Markdown_Storage( $root ), 'wp_', $root );
+$loader = new WP_Markdown_Loader( $root, new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'sqlite_pdo' => $pdo ) ), new WP_Markdown_Storage( $root ), 'wp_', $root );
 $load_options = new ReflectionMethod( WP_Markdown_Loader::class, 'load_options' );
 $load_options->invoke( $loader );
 $loaded_value  = $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'cron'" )->fetchColumn();

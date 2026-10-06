@@ -43,7 +43,8 @@ if ( 'child' === ( $argv[1] ?? '' ) ) {
 
 		public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
 			unset( $dsn, $username, $password );
-			$this->connection = new WP_SQLite_Connection( $options['pdo'] );
+			$pdo_option = class_exists( 'WP_PDO_MySQL_On_SQLite', false ) ? 'pdo' : 'sqlite_pdo';
+			$this->connection = new WP_SQLite_Connection( $options[ $pdo_option ] );
 		}
 
 		#[ReturnTypeWillChange]

@@ -39,7 +39,7 @@ class WP_MySQL_On_SQLite {
 
 	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
 		unset( $dsn, $username, $password );
-		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
+		$this->connection = new WP_SQLite_Connection( $options['sqlite_pdo'] );
 	}
 
 	public function get_connection(): WP_SQLite_Connection {
@@ -139,7 +139,7 @@ $pdo = new PDO( 'sqlite::memory:' );
 $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
 mdi_state_schema( $pdo );
 $connection = new WP_SQLite_Connection( $pdo );
-$driver  = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'pdo' => $pdo ) );
+$driver  = new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'sqlite_pdo' => $pdo ) );
 $storage = new WP_Markdown_Storage( $content_dir );
 $loader  = new WP_Markdown_Loader( $content_dir, $driver, $storage, 'wp_', $state_dir );
 $pdo->exec( "INSERT INTO wp_terms (term_id, slug) VALUES (9, 'guides')" );

@@ -80,10 +80,36 @@ if ( ! function_exists( 'markdown_database_integration_configured_backend' ) ) {
 		if ( defined( 'MARKDOWN_DB_BACKEND' ) ) {
 			return (string) MARKDOWN_DB_BACKEND;
 		}
-		if ( defined( 'FQDB' ) && is_file( FQDB ) ) {
+		if ( defined( 'DB_PATH' ) || defined( 'FQDB' ) ) {
+			$path = defined( 'DB_PATH' ) ? DB_PATH : FQDB;
+			return is_string( $path ) && is_file( $path ) ? 'sqlite' : 'mdi-native';
+		}
+
+		$directory = markdown_database_integration_sqlite_directory();
+		if ( defined( 'DB_FILE' ) ) {
+			return is_file( $directory . DB_FILE ) ? 'sqlite' : 'mdi-native';
+		}
+
+		// Handle the randomized secret database path.
+		if ( is_file( $directory . 'db-path.php' ) ) {
 			return 'sqlite';
 		}
-		return is_file( __DIR__ . '/database/.ht.sqlite' ) ? 'sqlite' : 'mdi-native';
+		return is_file( $directory . '.ht.sqlite' ) || is_file( $directory . '.ht.sqlite.php' ) ? 'sqlite' : 'mdi-native';
+	}
+}
+
+if ( ! function_exists( 'markdown_database_integration_sqlite_directory' ) ) {
+	/** Resolve the SQLite storage directory before integration constants load. */
+	function markdown_database_integration_sqlite_directory(): string {
+		if ( defined( 'FQDBDIR' ) ) {
+			$directory = FQDBDIR;
+		} elseif ( defined( 'DB_DIR' ) ) {
+			$directory = DB_DIR;
+		} else {
+			$directory  = defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR : __DIR__;
+			$directory .= '/database';
+		}
+		return rtrim( $directory, '/\\' ) . '/';
 	}
 }
 
@@ -326,12 +352,13 @@ if ( ! defined( 'WP_SQLITE_AST_DRIVER' ) ) {
 	define( 'WP_SQLITE_AST_DRIVER', true );
 }
 
-// Primary mode uses markdown-index.sqlite as the active query engine. The
-// SQLite Integration install shim opens FQDB directly during wp_install(). Only
-// point FQDB at the markdown index when the markdown store already represents an
+// Primary mode uses markdown-index.sqlite as the active query engine.
+// Only point the SQLite installation shim at the index when the store represents an
 // installed site. Partial seed stores fall back to the existing SQLite database
 // so already-installed Playground sites do not reset to the install screen.
-if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
+$markdown_db_primary = defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE;
+$markdown_db_install_fallback = false;
+if ( $markdown_db_primary ) {
 	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
 		? MARKDOWN_DB_CONTENT_DIR
 		: markdown_db_default_content_dir();
@@ -353,6 +380,37 @@ if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
 		if ( ! defined( 'FQDB' ) ) {
 			define( 'FQDB', MARKDOWN_DB_INDEX_PATH );
 		}
+	} else {
+		$markdown_db_install_fallback = true;
+		if ( ! defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
+			define( 'MARKDOWN_DB_INSTALL_FALLBACK', true );
+		}
+	}
+}
+
+// Select configured paths before older integrations define FQDB by default.
+$markdown_db_sqlite_storage_file = $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/class-wp-sqlite-storage.php';
+$markdown_db_sqlite_path = null;
+if ( defined( 'DB_PATH' ) ) {
+	$markdown_db_sqlite_path = DB_PATH;
+} elseif ( defined( 'FQDB' ) ) {
+	$markdown_db_sqlite_path = FQDB;
+} elseif ( defined( 'DB_FILE' ) ) {
+	$markdown_db_sqlite_path = markdown_database_integration_sqlite_directory() . DB_FILE;
+} elseif ( ! is_file( $markdown_db_sqlite_storage_file ) ) {
+	$markdown_db_sqlite_path = markdown_database_integration_sqlite_directory() . '.ht.sqlite';
+	if ( ! is_file( $markdown_db_sqlite_path ) && is_file( $markdown_db_sqlite_path . '.php' ) ) {
+		$markdown_db_sqlite_path .= '.php';
+	}
+}
+
+// Older integrations read the legacy constants instead of DB_PATH.
+if ( null !== $markdown_db_sqlite_path ) {
+	if ( ! defined( 'FQDB' ) ) {
+		define( 'FQDB', $markdown_db_sqlite_path );
+	}
+	if ( ! defined( 'FQDBDIR' ) && ':memory:' !== $markdown_db_sqlite_path ) {
+		define( 'FQDBDIR', rtrim( dirname( $markdown_db_sqlite_path ), '/\\' ) . '/' );
 	}
 }
 
@@ -367,6 +425,11 @@ if ( ! extension_loaded( 'pdo' ) || ! extension_loaded( 'pdo_sqlite' ) ) {
 
 // Load the SQLite v2 driver stack (parser, lexer, connection, driver).
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/database/load.php';
+
+// Load SQLite storage support when available.
+if ( is_file( $markdown_db_sqlite_storage_file ) ) {
+	require_once $markdown_db_sqlite_storage_file;
+}
 
 // SQLite Integration renamed the canonical PDO driver after its latest release.
 if ( ! class_exists( 'WP_MySQL_On_SQLite', false ) ) {
@@ -386,24 +449,6 @@ if ( ! class_exists( 'WP_MySQL_On_SQLite', false ) ) {
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/class-wp-sqlite-db.php';
 require_once $sqlite_plugin_implementation_folder_path . '/wp-includes/sqlite/install-functions.php';
 
-if ( defined( 'MARKDOWN_DB_MODE' ) && 'primary' === MARKDOWN_DB_MODE ) {
-	$markdown_db_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' )
-		? MARKDOWN_DB_CONTENT_DIR
-		: markdown_db_default_content_dir();
-	$markdown_db_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' )
-		? MARKDOWN_DB_STATE_DIR
-		: $markdown_db_content_dir;
-
-	if ( ! markdown_database_integration_store_has_siteurl( $markdown_db_state_dir ) ) {
-		if ( ! defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
-			define( 'MARKDOWN_DB_INSTALL_FALLBACK', true );
-		}
-		$db_name          = defined( 'DB_NAME' ) && '' !== DB_NAME ? DB_NAME : 'database_name_here';
-		$GLOBALS['wpdb'] = new WP_SQLite_DB( $db_name );
-		return;
-	}
-}
-
 // Load our markdown classes.
 $markdown_plugin_dir = null;
 
@@ -420,32 +465,46 @@ foreach ( $possible_paths as $path ) {
 	}
 }
 
-// If the markdown plugin isn't installed yet, fall back to standard SQLite.
-if ( ! $markdown_plugin_dir ) {
-	// Fallback: standard SQLite behavior.
-	if ( defined( 'DB_NAME' ) && '' !== DB_NAME ) {
-		$db_name = DB_NAME;
-	} else {
-		$db_name = 'database_name_here';
+$markdown_db_sqlite_fallback = $markdown_db_install_fallback || ! $markdown_plugin_dir;
+
+if ( ! $markdown_db_sqlite_fallback ) {
+	// MDI is storage-only; content-format dependencies belong to the application.
+	$composer_autoload = $markdown_plugin_dir . '/vendor/autoload.php';
+	if ( file_exists( $composer_autoload ) ) {
+		require_once $composer_autoload;
 	}
+
+	require_once $markdown_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
+	$markdown_db_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
+	WP_Markdown_Backend_Resolver::require_runtime_capabilities(
+		$markdown_db_backend,
+		defined( 'MARKDOWN_DB_MODE' ) ? (string) MARKDOWN_DB_MODE : 'mirror'
+	);
+}
+
+// Primary mode creates its index during reconstruction, after storage is loaded.
+if ( class_exists( 'WP_SQLite_Storage' ) && ( ! $markdown_db_primary || $markdown_db_sqlite_fallback ) ) {
+	$storage = null !== $markdown_db_sqlite_path
+		? WP_SQLite_Storage::with_explicit_path( $markdown_db_sqlite_path )
+		: WP_SQLite_Storage::with_secret_path( FQDBDIR );
+	$markdown_db_sqlite_path = $storage->initialize();
+	if ( ! defined( 'FQDB' ) ) {
+		define( 'FQDB', $markdown_db_sqlite_path );
+	}
+}
+if ( ! defined( 'DB_PATH' ) ) {
+	define( 'DB_PATH', $markdown_db_sqlite_path );
+}
+
+$db_name = defined( 'DB_NAME' ) && '' !== DB_NAME ? DB_NAME : 'database_name_here';
+
+// Use standard SQLite for installation or when the markdown plugin is missing.
+if ( $markdown_db_sqlite_fallback ) {
 	$GLOBALS['wpdb'] = new WP_SQLite_DB( $db_name );
 	return;
 }
 
-// Load composer autoloader if present. MDI is storage-only; content-format
-// dependencies belong to the application layer above this drop-in.
-$composer_autoload = $markdown_plugin_dir . '/vendor/autoload.php';
-if ( file_exists( $composer_autoload ) ) {
-	require_once $composer_autoload;
-}
-
 // Load markdown integration classes.
-require_once $markdown_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
-$markdown_db_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
-WP_Markdown_Backend_Resolver::require_runtime_capabilities(
-	$markdown_db_backend,
-	defined( 'MARKDOWN_DB_MODE' ) ? (string) MARKDOWN_DB_MODE : 'mirror'
-);
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-frontmatter-profiles.php';
 require_once $markdown_plugin_dir . '/inc/class-wp-markdown-content-layout-profiles.php';
 if ( defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP' ) && is_file( MARKDOWN_DB_CONTENT_LAYOUT_PROFILE_BOOTSTRAP ) ) {
@@ -466,12 +525,6 @@ if ( ! defined( 'MARKDOWN_DB_VERSION' ) ) {
 }
 
 // Create the database connection — our WP_Markdown_DB extends WP_SQLite_DB.
-if ( defined( 'DB_NAME' ) && '' !== DB_NAME ) {
-	$db_name = DB_NAME;
-} else {
-	$db_name = 'database_name_here';
-}
-
 $GLOBALS['wpdb'] = new WP_Markdown_DB( $db_name );
 markdown_database_integration_enable_native_shadow( $GLOBALS['wpdb'], $markdown_plugin_dir );
 

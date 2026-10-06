@@ -17,9 +17,11 @@ and the [CLI-first benchmark requirements](tests/bench/README.md#priorities-and-
 MDI selects its backend in `wp-content/db.php` before plugins load:
 
 - An explicit `MARKDOWN_DB_BACKEND` configuration always wins.
-- Without one, an existing SQLite database (`FQDB`, when it names a file, or
-  `wp-content/database/.ht.sqlite`) keeps the SQLite backend so an upgrade does
-  not change an operating site's query engine.
+- Without one, an existing SQLite database or managed `db-path.php` file keeps
+  the SQLite backend so an upgrade does not change an operating site's query
+  engine. Discovery honors `DB_PATH` before legacy settings and recognizes
+  legacy `.ht.sqlite` and `.ht.sqlite.php` files. It does not create or migrate
+  a database.
 - Otherwise, MDI selects **`mdi-native`**, where canonical Markdown and JSON
   files are the database.
 

@@ -128,8 +128,8 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 			$pdo = null;
 		} else {
 			// Phase 1 / mirror: use on-disk SQLite file.
-			$db_path = FQDB;
-			$this->ensure_database_directory_exists();
+			$db_path = defined( 'DB_PATH' ) ? DB_PATH : FQDB;
+			$this->ensure_database_directory_exists( $db_path );
 		}
 
 		// Create the markdown storage engine.
@@ -674,8 +674,11 @@ class WP_Markdown_DB extends WP_SQLite_DB {
 	/**
 	 * Ensure the SQLite database directory exists with protections.
 	 */
-	private function ensure_database_directory_exists(): void {
-		$dir = dirname( FQDB );
+	private function ensure_database_directory_exists( string $db_path ): void {
+		if ( ':memory:' === $db_path ) {
+			return;
+		}
+		$dir = dirname( $db_path );
 		$this->ensure_directory_exists( $dir );
 
 		// .htaccess protection.

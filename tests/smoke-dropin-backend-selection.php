@@ -105,6 +105,80 @@ if ( 2 === $argc ) {
 	define( 'DB_PASSWORD', 'password' );
 	define( 'DB_HOST', 'host' );
 	define( 'MARKDOWN_DB_VERSION', 'test' );
+	if ( in_array( $scenario, array( 'primary-cold-index', 'primary-warm-index' ), true ) ) {
+		define( 'MARKDOWN_DB_BACKEND', 'sqlite' );
+		define( 'MARKDOWN_DB_MODE', 'primary' );
+		mkdir( $content . '/markdown/_options', 0755 );
+		file_put_contents( $content . '/markdown/_options/siteurl.json', '"https://example.test"' );
+		if ( 'primary-warm-index' === $scenario ) {
+			file_put_contents( $content . '/markdown-index.sqlite', 'existing primary index' );
+		}
+		file_put_contents( $sqlite . '/wp-includes/sqlite/class-wp-sqlite-storage.php', '<?php class WP_SQLite_Storage { public static function with_explicit_path( string $path ) { throw new RuntimeException( "Storage initialization must not touch the primary index." ); } }' );
+	}
+	$expected_backend = 'mdi-native';
+	$database_dir = $content . '/database';
+	if ( in_array( $scenario, array( 'default-db-dir', 'default-fqdbdir' ), true ) ) {
+		$database_dir = $root . '/custom';
+		define( 'default-db-dir' === $scenario ? 'DB_DIR' : 'FQDBDIR', $database_dir );
+	}
+	if ( 'default-native' !== $scenario ) {
+		mkdir( $database_dir, 0755, true );
+	}
+	if ( in_array( $scenario, array( 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'default-interrupted-migration', 'mdi-native', 'mysql-content', 'mysql-full' ), true ) ) {
+		file_put_contents( $database_dir . ( 'default-legacy-php' === $scenario ? '/.ht.sqlite.php' : '/.ht.sqlite' ), 'legacy database' );
+		$expected_backend = 'sqlite';
+	}
+	if ( in_array( $scenario, array( 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration' ), true ) ) {
+		$recorded = $database_dir . '/.ht.secret/.ht.sqlite';
+		file_put_contents( $database_dir . '/db-path.php', '<?php return ' . var_export( $recorded, true ) . ';' );
+		$expected_backend = 'sqlite';
+		if ( 'default-randomized' === $scenario ) {
+			mkdir( dirname( $recorded ), 0755 );
+			file_put_contents( $recorded, 'managed database' );
+		}
+	}
+	if ( 'default-unread-metadata' === $scenario ) {
+		file_put_contents( $database_dir . '/db-path.php', '<?php throw new RuntimeException( "Detection read metadata." );' );
+		$expected_backend = 'sqlite';
+	}
+	if ( in_array( $scenario, array( 'default-db-path', 'default-conflicting-paths', 'default-fqdb', 'default-db-file' ), true ) ) {
+		$constant = match ( $scenario ) {
+			'default-fqdb' => 'FQDB',
+			'default-db-file' => 'DB_FILE',
+			default => 'DB_PATH',
+		};
+		define( $constant, 'DB_FILE' === $constant ? 'custom.sqlite' : $database_dir . '/custom.sqlite' );
+		file_put_contents( $database_dir . '/custom.sqlite', 'configured database' );
+		$expected_backend = 'sqlite';
+		if ( 'default-conflicting-paths' === $scenario ) {
+			define( 'FQDB', $database_dir . '/missing.sqlite' );
+		}
+	}
+	if ( in_array( $scenario, array( 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file' ), true ) ) {
+		$constant = match ( $scenario ) {
+			'default-missing-fqdb' => 'FQDB',
+			'default-missing-db-file' => 'DB_FILE',
+			default => 'DB_PATH',
+		};
+		define( $constant, 'DB_FILE' === $constant ? 'missing.sqlite' : $database_dir . '/missing.sqlite' );
+		if ( 'DB_PATH' === $constant ) {
+			define( 'FQDB', $database_dir . '/.ht.sqlite' );
+		}
+		$expected_backend = 'mdi-native';
+	}
+	$snapshot = static function () use ( $database_dir ): array {
+		$files = array( $database_dir => is_dir( $database_dir ) );
+		if ( is_dir( $database_dir ) ) {
+			foreach ( new RecursiveIteratorIterator( new RecursiveDirectoryIterator( $database_dir, FilesystemIterator::SKIP_DOTS ), RecursiveIteratorIterator::SELF_FIRST ) as $file ) {
+				$files[ $file->getPathname() ] = $file->isDir() ? 'directory' : hash_file( 'sha256', $file->getPathname() );
+			}
+		}
+		return $files;
+	};
+	$storage_before = $snapshot();
+	if ( 'mysql-content' === $scenario ) {
+		define( 'MARKDOWN_DB_BACKEND', 'mysql-content' );
+	}
 	if ( 'unknown' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'unknown' );
 	} elseif ( 'incomplete' === $scenario ) {
@@ -112,18 +186,15 @@ if ( 2 === $argc ) {
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
 	} elseif ( 'sqlite' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'sqlite' );
-	} elseif ( in_array( $scenario, array( 'mdi-native', 'default-native', 'default-legacy-sqlite' ), true ) ) {
+	} elseif ( in_array( $scenario, array( 'mdi-native', 'mysql-content' ), true ) || str_starts_with( $scenario, 'default-' ) ) {
 		// The default scenarios leave MARKDOWN_DB_BACKEND undefined on purpose.
 		if ( 'mdi-native' === $scenario ) {
 			define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
 		}
-		if ( 'default-legacy-sqlite' === $scenario ) {
-			mkdir( $content . '/database', 0755, true );
-			file_put_contents( $content . '/database/.ht.sqlite', 'SQLite format 3' );
-		}
 		define( 'MARKDOWN_DB_STATE_DIR', $content . '/markdown' );
 		define( 'MARKDOWN_DB_CONTENT_DIR', $content . '/markdown' );
 		class wpdb {
+			public bool $is_mysql = false;
 			public string $prefix = '';
 			public string $base_prefix = '';
 			public array $last_result = array();
@@ -188,6 +259,16 @@ if ( 2 === $argc ) {
 			}
 		};
 		$bootstrap();
+		if ( in_array( $scenario, array( 'primary-cold-index', 'primary-warm-index' ), true ) ) {
+			if ( ! $GLOBALS['wpdb'] instanceof WP_Markdown_DB || DB_PATH !== $content . '/markdown-index.sqlite' || defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) ) {
+				throw new RuntimeException( 'An installed primary site did not use its index.' );
+			}
+			if ( 'primary-cold-index' === $scenario ? file_exists( DB_PATH ) : 'existing primary index' !== file_get_contents( DB_PATH ) ) {
+				throw new RuntimeException( 'The drop-in created or changed the primary index.' );
+			}
+			echo "PASS: {$scenario} leaves index initialization to primary mode.\n";
+			exit( 0 );
+		}
 		if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox' ), true ) && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB && ( $GLOBALS['markdown_db_mysql_outbox'] ?? null ) instanceof WP_Markdown_MySQL_Outbox ) {
 			if ( 'mysql-full-prior-outbox' === $scenario && ! $GLOBALS['wpdb']->markdown_db_mysql_connection()->upgraded ) { throw new RuntimeException( 'Prior outbox schema was not upgraded.' ); }
 			if ( 'mysql-full-shadow' === $scenario && ! ( $GLOBALS['markdown_db_native_shadow_verifier'] ?? null ) instanceof WP_Markdown_Native_Shadow_Verifier ) { throw new RuntimeException( 'Native shadow verifier was not attached.' ); }
@@ -198,18 +279,18 @@ if ( 2 === $argc ) {
 			echo "PASS: mdi-native installs the filesystem-backed wpdb boundary.\n";
 			exit( 0 );
 		}
-		if ( 'default-native' === $scenario ) {
-			if ( ! $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB || 'mdi-native' !== MARKDOWN_DB_BACKEND ) {
-				throw new RuntimeException( 'An unconfigured install did not serve canonical files natively.' );
-			}
-			echo "PASS: an unconfigured install serves canonical files without SQLite.\n";
+		if ( $storage_before !== $snapshot() ) {
+			throw new RuntimeException( 'Backend detection changed SQLite storage.' );
+		}
+		if ( 'mysql-content' === $scenario && $GLOBALS['wpdb'] instanceof wpdb && MARKDOWN_DB_RETAINED_DROPIN ) {
+			echo "PASS: explicit mysql-content overrides existing SQLite storage.\n";
 			exit( 0 );
 		}
-		if ( 'default-legacy-sqlite' === $scenario ) {
-			if ( $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB || 'sqlite' !== MARKDOWN_DB_BACKEND ) {
-				throw new RuntimeException( 'An existing SQLite database did not keep its query engine.' );
+		if ( str_starts_with( $scenario, 'default-' ) ) {
+			if ( $expected_backend !== MARKDOWN_DB_BACKEND || ( 'mdi-native' === $expected_backend ) !== ( $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB ) ) {
+				throw new RuntimeException( 'Unexpected backend for ' . $scenario . ': ' . MARKDOWN_DB_BACKEND );
 			}
-			echo "PASS: an existing SQLite database keeps its query engine.\n";
+			echo "PASS: {$scenario} selects {$expected_backend} without changing storage.\n";
 			exit( 0 );
 		}
 		if ( in_array( $scenario, array( 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ), true ) && $GLOBALS['wpdb'] instanceof wpdb && str_starts_with( (string) ( $GLOBALS['markdown_db_mysql_full_diagnostic']['code'] ?? '' ), 'markdown_db_mysql_full_' ) ) {
@@ -236,7 +317,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'default-native', 'default-legacy-sqlite', 'mdi-native', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'primary-cold-index', 'primary-warm-index', 'default-native', 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration', 'default-unread-metadata', 'default-db-path', 'default-fqdb', 'default-db-file', 'default-conflicting-paths', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'mdi-native', 'mysql-content', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

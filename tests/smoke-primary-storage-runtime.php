@@ -23,7 +23,7 @@ class WP_MySQL_On_SQLite {
 	private bool $in_transaction = false;
 	public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
 		unset( $dsn, $username, $password );
-		$this->connection = new WP_SQLite_Connection( $options['pdo'] );
+		$this->connection = new WP_SQLite_Connection( $options['sqlite_pdo'] );
 	}
 	public function get_connection(): WP_SQLite_Connection { return $this->connection; }
 	public function get_insert_id(): int { return (int) $this->connection->get_pdo()->lastInsertId(); }

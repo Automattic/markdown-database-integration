@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.3] - 2026-10-19
+
+### Changed
+- Order native rows by integer columns without a collation check
+
 ## [0.14.2] - 2026-10-19
 
 ### Changed

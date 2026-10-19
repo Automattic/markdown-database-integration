@@ -147,8 +147,58 @@ final class WP_Markdown_Native_Table_Schema {
 		return isset( $this->columns[ $column ] ) && $this->columns[ $column ]->supports_lookup();
 	}
 
-	public function allows_order( string $column ): bool {
-		return $column === $this->natural_order || in_array( $column, $this->order_columns, true );
+	/**
+	 * Whether a plain ORDER BY term over this column has a reproducible order.
+	 *
+	 * Integer columns always do: they order numerically, exactly as MySQL
+	 * orders them, so no collation is involved. Other columns need the natural
+	 * order or an explicit order column.
+	 *
+	 * A textual column that is not otherwise orderable may still follow an
+	 * integer leading term when the schema already compares it exactly: it
+	 * declares a lookup, so equality on it is already decided by the column's
+	 * ASCII case-insensitive normalizer. Ordering then uses that same folded
+	 * comparison within each run of equal integers, and the row check in
+	 * unsupported_order_reason() still refuses any non-ASCII value. Such a
+	 * column never leads a key, because its order alone would answer a
+	 * collation question this engine does not implement.
+	 *
+	 * @param string      $column  Ordered column.
+	 * @param string|null $leading Column of the key's leading plain term, when
+	 *                             this term is not the leading one.
+	 */
+	public function allows_order( string $column, ?string $leading = null ): bool {
+		if ( ! isset( $this->columns[ $column ] ) ) {
+			return false;
+		}
+		if ( $column === $this->natural_order || in_array( $column, $this->order_columns, true ) || $this->orders_numerically( $column ) ) {
+			return true;
+		}
+		return null !== $leading
+			&& $leading !== $column
+			&& isset( $this->columns[ $leading ] )
+			&& $this->orders_numerically( $leading )
+			&& $this->orders_textually( $column )
+			&& $this->columns[ $column ]->supports_lookup();
+	}
+
+	/**
+	 * The column a key's leading term orders by, when that term is a plain column.
+	 *
+	 * @param array<int,array<string,mixed>> $order_by
+	 */
+	public static function leading_order_column( array $order_by ): ?string {
+		$item = $order_by[0] ?? null;
+		if ( ! is_array( $item ) || ! is_string( $item['column'] ?? null )
+			|| null !== ( $item['case'] ?? null )
+			|| null !== ( $item['like'] ?? null )
+			|| null !== ( $item['field'] ?? null )
+			|| null !== ( $item['expression'] ?? null )
+			|| true === ( $item['numeric'] ?? false )
+		) {
+			return null;
+		}
+		return $item['column'];
 	}
 
 	/** @param array<int,int|string> $values */
@@ -361,7 +411,8 @@ final class WP_Markdown_Native_Table_Schema {
 	 * @param array<int,array<string,mixed>>                  $rows
 	 */
 	public function unsupported_order_reason( array $order_by, array $rows ): ?string {
-		foreach ( $order_by as $item ) {
+		$leading = self::leading_order_column( $order_by );
+		foreach ( $order_by as $position => $item ) {
 			$case = $item['case'] ?? null;
 			if ( null !== $case ) {
 				foreach ( $case['branches'] as $branch ) {
@@ -389,8 +440,19 @@ final class WP_Markdown_Native_Table_Schema {
 				}
 				continue;
 			}
-			if ( ! $this->allows_order( $column ) ) {
+			if ( ! $this->allows_order( $column, 0 === $position ? null : $leading ) ) {
 				return 'unsupported_order';
+			}
+			if ( $this->orders_numerically( $column ) ) {
+				// An integer outside PHP's integer range has no exact native
+				// order key, so it fails closed rather than ordering as a float.
+				foreach ( $rows as $row ) {
+					$value = $row[ $column ] ?? null;
+					if ( null !== $value && ! is_int( $this->order_value( $column, $value ) ) ) {
+						return 'unsupported_order';
+					}
+				}
+				continue;
 			}
 			if ( ! $this->orders_textually( $column ) ) {
 				continue;
@@ -411,7 +473,8 @@ final class WP_Markdown_Native_Table_Schema {
 	/**
 	 * Validate and order rows after normalizing each comparison value once.
 	 *
-	 * Original offsets are retained because post providers use them to hydrate
+	 * Both sorts are stable, so rows that tie on every requested term keep the
+	 * order the provider read them in. Original offsets are retained because post providers use them to hydrate
 	 * the bounded rows from their corresponding canonical files.
 	 *
 	 * @param array<int,array<string,mixed>>                  $rows
@@ -428,11 +491,8 @@ final class WP_Markdown_Native_Table_Schema {
 			foreach ( $rows as $offset => $row ) {
 				$keys[ $offset ] = $this->order_item_value( $item, $row );
 			}
-			if ( $item['descending'] ) {
-				arsort( $keys, SORT_REGULAR );
-			} else {
-				asort( $keys, SORT_REGULAR );
-			}
+			$direction = $item['descending'] ? -1 : 1;
+			uasort( $keys, static fn( mixed $left, mixed $right ): int => $direction * self::compare_order_values( $left, $right ) );
 			$offsets = array_keys( $keys );
 		} else {
 			$keys = array();
@@ -444,7 +504,7 @@ final class WP_Markdown_Native_Table_Schema {
 				$offsets,
 				static function ( int $left, int $right ) use ( $keys ): int {
 					foreach ( $keys[ $left ] as $index => $key ) {
-						$comparison = ( $key['descending'] ? -1 : 1 ) * ( $key['value'] <=> $keys[ $right ][ $index ]['value'] );
+						$comparison = ( $key['descending'] ? -1 : 1 ) * self::compare_order_values( $key['value'], $keys[ $right ][ $index ]['value'] );
 						if ( 0 !== $comparison ) {
 							return $comparison;
 						}
@@ -654,9 +714,31 @@ final class WP_Markdown_Native_Table_Schema {
 		return $negative ? -$integer : $integer;
 	}
 
+	/**
+	 * Compare two order keys the way MySQL places them in ascending order.
+	 *
+	 * NULL sorts before every value, including an integer zero that PHP's
+	 * loose comparison would otherwise treat as equal to it.
+	 */
+	private static function compare_order_values( mixed $left, mixed $right ): int {
+		if ( null === $left || null === $right ) {
+			return ( null !== $left ) <=> ( null !== $right );
+		}
+		return $left <=> $right;
+	}
+
 	private function order_value( string $column, mixed $value ): mixed {
 		$value = $this->column( $column )->normalize( $value );
+		if ( $this->orders_numerically( $column ) && is_string( $value ) ) {
+			$integer = filter_var( $value, FILTER_VALIDATE_INT );
+			return false === $integer ? $value : $integer;
+		}
 		return $this->orders_textually( $column ) && is_string( $value ) ? strtolower( $value ) : $value;
+	}
+
+	/** Integer field types, whose order is numeric and needs no collation. */
+	private function orders_numerically( string $column ): bool {
+		return in_array( $this->column( $column )->type(), array( 1, 2, 3, 8, 9 ), true );
 	}
 
 	private function orders_textually( string $column ): bool {

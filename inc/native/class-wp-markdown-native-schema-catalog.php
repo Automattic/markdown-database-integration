@@ -308,11 +308,12 @@ final class WP_Markdown_Native_Schema_Catalog {
 			}
 		}
 
-		// Numeric and temporal SQL types have an unambiguous native order even
-		// without an index. Textual ordering still requires the conservative
-		// indexed/ASCII path below because its collation is not generic.
+		// Decimal and temporal SQL types have an unambiguous native order even
+		// without an index; the schema orders every integer column itself.
+		// Textual ordering still requires the conservative indexed/ASCII path
+		// below because its collation is not generic.
 		foreach ( $definition['columns'] as $name => $column ) {
-			if ( ( self::is_integer( $column['type'] ) || self::is_decimal( $column['type'] ) || in_array( $column['type'], array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) )
+			if ( ( self::is_decimal( $column['type'] ) || in_array( $column['type'], array( 'date', 'datetime', 'timestamp', 'time', 'year' ), true ) )
 				&& ! in_array( $name, $order_columns, true )
 			) {
 				$order_columns[] = $name;

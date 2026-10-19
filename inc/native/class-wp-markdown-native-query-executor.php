@@ -543,7 +543,8 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		) {
 			return $this->failure( 'unsupported_lookup', 'mdi-native requires one indexable predicate for a filtered query.' );
 		}
-		foreach ( $plan->order_by() as $item ) {
+		$leading_order = WP_Markdown_Native_Table_Schema::leading_order_column( $plan->order_by() );
+		foreach ( $plan->order_by() as $position => $item ) {
 			if ( null !== ( $item['expression'] ?? null ) ) { continue; }
 			if ( in_array( $item['column'], array_column( $plan->aggregates(), 'alias' ), true ) ) { continue; }
 			if ( null !== ( $item['case'] ?? null ) ) {
@@ -563,7 +564,7 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 			if ( $ranked && ! $schema->allows_filter( $item['column'], 'LIKE', array( $item['like'] ) ) ) {
 				return $this->failure( 'unsupported_order', 'mdi-native cannot rank rows by the requested pattern.' );
 			}
-			if ( ! $ranked && ! $schema->allows_order( $item['column'] ) ) {
+			if ( ! $ranked && ! $schema->allows_order( $item['column'], 0 === $position ? null : $leading_order ) ) {
 				return $this->failure( 'unsupported_order', 'mdi-native cannot apply the requested ordering collation.' );
 			}
 		}

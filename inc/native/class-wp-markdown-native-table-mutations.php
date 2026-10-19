@@ -843,10 +843,11 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			}
 			$predicates[] = $predicate;
 		}
-		foreach ( $plan->order_by() as $order ) {
+		$leading_order = WP_Markdown_Native_Table_Schema::leading_order_column( $plan->order_by() );
+		foreach ( $plan->order_by() as $position => $order ) {
 			if ( ! in_array( $order['source'], array( null, $target_table, $plan->table_alias() ), true )
 				|| ! $schema->has_column( $order['column'] )
-				|| ! $schema->allows_order( $order['column'] )
+				|| ! $schema->allows_order( $order['column'], 0 === $position ? null : $leading_order )
 				|| null !== ( $order['expression'] ?? null )
 				|| null !== ( $order['field'] ?? null )
 				|| null !== ( $order['case'] ?? null )

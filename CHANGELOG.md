@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.2] - 2026-10-19
+
+### Changed
+- Support randomized SQLite storage and DB_PATH
+
 ## [0.14.1] - 2026-10-02
 
 ### Fixed

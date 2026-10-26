@@ -179,8 +179,7 @@ $checks = array(
 	'information_schema predicates preserve schema equality and AND intersections' => 0 === $absent_information_schema->return_value()
 		&& 0 === $contradictory_information_tables->return_value()
 		&& 0 === $contradictory_information_columns->return_value(),
-	'information_schema does not manufacture a transactional storage engine' => false === $information_engine->return_value()
-		&& 'unsupported_column' === ( $information_engine->diagnostic()['reason'] ?? null ),
+	'information_schema reports persisted tables as transactional InnoDB' => 'InnoDB' === ( $information_engine->wpdb_state()['last_result'][0]->Engine ?? null ),
 	'information_schema catalog scans remain fail-closed without a bounded table name' => false === $unbounded_information->return_value()
 		&& 'unsupported_lookup' === ( $unbounded_information->diagnostic()['reason'] ?? null ),
 	'information_schema reports TEXT character maxima and bounds list cardinality' => array( 'task_url' => '65535', 'payload' => '4294967295' ) === array_reduce( $text_information->wpdb_state()['last_result'], static function ( array $values, object $row ): array { $values[ $row->COLUMN_NAME ] = $row->CHARACTER_MAXIMUM_LENGTH; return $values; }, array() )

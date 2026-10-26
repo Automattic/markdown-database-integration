@@ -415,7 +415,8 @@ final class WP_Markdown_Native_Schema_Introspection {
 
 	/** @return array<string,string> */
 	private function information_schema_table( string $table ): array {
-		return array( 'TABLE_SCHEMA' => $this->database_name(), 'TABLE_NAME' => $table, 'TABLE_TYPE' => 'BASE TABLE' );
+		// Native tables are transactional, which is what callers mean by InnoDB.
+		return array( 'TABLE_SCHEMA' => $this->database_name(), 'TABLE_NAME' => $table, 'TABLE_TYPE' => 'BASE TABLE', 'ENGINE' => 'InnoDB' );
 	}
 
 	/** @param array<string,mixed> $column */

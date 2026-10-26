@@ -106,8 +106,13 @@ $duplicate_add = $runtime->execute(
 $unknown_table = $runtime->execute(
 	new WP_Markdown_Query_Request( 'ALTER TABLE wp_absent MODIFY label VARCHAR(10) NULL', 'wp_' )
 );
-$unsupported_action = $runtime->execute(
+$schema_before_engine = persisted_schema( $root );
+$innodb_engine = $runtime->execute(
 	new WP_Markdown_Query_Request( 'ALTER TABLE wp_agents ENGINE = InnoDB', 'wp_' )
+);
+$schema_after_engine = persisted_schema( $root );
+$unsupported_action = $runtime->execute(
+	new WP_Markdown_Query_Request( 'ALTER TABLE wp_agents ENGINE = MyISAM', 'wp_' )
 );
 $combined = $runtime->execute( new WP_Markdown_Query_Request( "ALTER TABLE wp_agents ADD COLUMN owner_id bigint unsigned DEFAULT NULL, ADD KEY owner_id (owner_id), ADD COLUMN tags varchar(40) DEFAULT 'one,two'" ) );
 $combined_row = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT owner_id, tags FROM wp_agents WHERE id = 1' ) );
@@ -148,6 +153,7 @@ $checks = array(
 		&& 'column_exists' === ( $duplicate_add->diagnostic()['reason'] ?? null ),
 	'altering an unpersisted table fails closed' => false === $unknown_table->return_value()
 		&& 'unknown_table' === ( $unknown_table->diagnostic()['reason'] ?? null ),
+	'ENGINE=InnoDB is accepted without rewriting the schema' => null === $innodb_engine->diagnostic() && $schema_before_engine === $schema_after_engine,
 	'an unsupported table alteration fails closed' => false === $unsupported_action->return_value(),
 );
 

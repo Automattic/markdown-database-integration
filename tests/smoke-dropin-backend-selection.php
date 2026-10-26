@@ -124,8 +124,12 @@ if ( 2 === $argc ) {
 	if ( 'default-native' !== $scenario ) {
 		mkdir( $database_dir, 0755, true );
 	}
-	if ( in_array( $scenario, array( 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'default-interrupted-migration', 'mdi-native', 'mysql-content', 'mysql-full' ), true ) ) {
-		file_put_contents( $database_dir . ( 'default-legacy-php' === $scenario ? '/.ht.sqlite.php' : '/.ht.sqlite' ), 'legacy database' );
+	if ( in_array( $scenario, array( 'default-legacy-sqlite', 'default-db-dir', 'default-fqdbdir', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'default-interrupted-migration', 'mdi-native', 'mysql-content', 'mysql-full' ), true ) ) {
+		file_put_contents( $database_dir . '/.ht.sqlite', "SQLite format 3\0" . str_repeat( "\0", 16 ) );
+		$expected_backend = 'sqlite';
+	}
+	if ( 'default-legacy-php' === $scenario ) {
+		file_put_contents( $database_dir . '/.ht.sqlite.php', "SQLite format 3\0" . str_repeat( "\0", 16 ) );
 		$expected_backend = 'sqlite';
 	}
 	if ( in_array( $scenario, array( 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration' ), true ) ) {
@@ -137,19 +141,22 @@ if ( 2 === $argc ) {
 			file_put_contents( $recorded, 'managed database' );
 		}
 	}
+	if ( 'default-empty-ht' === $scenario || 'default-nonsqlite-ht' === $scenario ) {
+		file_put_contents( $database_dir . '/.ht.sqlite', 'default-empty-ht' === $scenario ? '' : 'not sqlite' );
+	}
 	if ( 'default-unread-metadata' === $scenario ) {
 		file_put_contents( $database_dir . '/db-path.php', '<?php throw new RuntimeException( "Detection read metadata." );' );
 		$expected_backend = 'sqlite';
 	}
-	if ( in_array( $scenario, array( 'default-db-path', 'default-conflicting-paths', 'default-fqdb', 'default-db-file' ), true ) ) {
+	if ( in_array( $scenario, array( 'default-db-path', 'default-conflicting-paths', 'default-fqdb', 'default-db-file', 'default-empty-fqdb' ), true ) ) {
 		$constant = match ( $scenario ) {
-			'default-fqdb' => 'FQDB',
+			'default-fqdb', 'default-empty-fqdb' => 'FQDB',
 			'default-db-file' => 'DB_FILE',
 			default => 'DB_PATH',
 		};
 		define( $constant, 'DB_FILE' === $constant ? 'custom.sqlite' : $database_dir . '/custom.sqlite' );
-		file_put_contents( $database_dir . '/custom.sqlite', 'configured database' );
-		$expected_backend = 'sqlite';
+		file_put_contents( $database_dir . '/custom.sqlite', 'default-empty-fqdb' === $scenario ? '' : "SQLite format 3\0" . str_repeat( "\0", 16 ) );
+		$expected_backend = 'default-empty-fqdb' === $scenario ? 'mdi-native' : 'sqlite';
 		if ( 'default-conflicting-paths' === $scenario ) {
 			define( 'FQDB', $database_dir . '/missing.sqlite' );
 		}
@@ -179,7 +186,11 @@ if ( 2 === $argc ) {
 	if ( 'mysql-content' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'mysql-content' );
 	}
-	if ( 'unknown' === $scenario ) {
+	if ( 'explicit-empty-sqlite' === $scenario ) {
+		define( 'MARKDOWN_DB_BACKEND', 'sqlite' );
+		file_put_contents( $database_dir . '/.ht.sqlite', '' );
+		$storage_before = $snapshot();
+	} elseif ( 'unknown' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'unknown' );
 	} elseif ( 'incomplete' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
@@ -297,7 +308,7 @@ if ( 2 === $argc ) {
 			echo "PASS: {$scenario} explicitly falls back to stock wpdb.\n";
 			exit( 0 );
 		}
-		if ( 'sqlite' !== $scenario || ! isset( $GLOBALS['wpdb'] ) ) {
+		if ( ! in_array( $scenario, array( 'sqlite', 'explicit-empty-sqlite' ), true ) || ! isset( $GLOBALS['wpdb'] ) ) {
 			throw new RuntimeException( 'Expected backend bootstrap failure.' );
 		}
 		echo "PASS: an explicitly configured SQLite backend keeps the SQLite drop-in path.\n";
@@ -317,7 +328,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'primary-cold-index', 'primary-warm-index', 'default-native', 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration', 'default-unread-metadata', 'default-db-path', 'default-fqdb', 'default-db-file', 'default-conflicting-paths', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'mdi-native', 'mysql-content', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'explicit-empty-sqlite', 'default-empty-ht', 'default-nonsqlite-ht', 'default-empty-fqdb', 'primary-cold-index', 'primary-warm-index', 'default-native', 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration', 'default-unread-metadata', 'default-db-path', 'default-fqdb', 'default-db-file', 'default-conflicting-paths', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'mdi-native', 'mysql-content', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

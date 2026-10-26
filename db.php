@@ -64,6 +64,28 @@ if ( ! function_exists( 'markdown_database_integration_enable_native_shadow' ) )
 	}
 }
 
+if ( ! function_exists( 'markdown_database_integration_path_is_sqlite' ) ) {
+	/**
+	 * Whether a path holds a SQLite database, judged by its file header.
+	 *
+	 * Opening a SQLite path creates an empty file, so presence alone does not
+	 * prove a database exists. Reads only the 16-byte header; plugin classes
+	 * are not loaded yet when the drop-in runs.
+	 */
+	function markdown_database_integration_path_is_sqlite( string $path ): bool {
+		if ( ! is_file( $path ) || ! is_readable( $path ) ) {
+			return false;
+		}
+		$handle = @fopen( $path, 'rb' );
+		if ( false === $handle ) {
+			return false;
+		}
+		$header = fread( $handle, 16 );
+		fclose( $handle );
+		return "SQLite format 3\0" === $header;
+	}
+}
+
 if ( ! function_exists( 'markdown_database_integration_configured_backend' ) ) {
 	/**
 	 * Resolve the backend that owns this bootstrap.
@@ -72,9 +94,10 @@ if ( ! function_exists( 'markdown_database_integration_configured_backend' ) ) {
 	 * file store is authoritative and mdi-native serves it directly, which is
 	 * why SQLite Database Integration is optional rather than required.
 	 *
-	 * An install that already holds a SQLite database keeps using it, so
-	 * upgrading never moves a running site onto a different query engine
-	 * without the operator asking for it.
+	 * Inferred database paths are accepted only when they are readable regular
+	 * files with the SQLite format 3 header. An install that already holds a
+	 * SQLite database keeps using it, so upgrading never moves a running site
+	 * onto a different query engine without the operator asking for it.
 	 */
 	function markdown_database_integration_configured_backend(): string {
 		if ( defined( 'MARKDOWN_DB_BACKEND' ) ) {
@@ -82,19 +105,23 @@ if ( ! function_exists( 'markdown_database_integration_configured_backend' ) ) {
 		}
 		if ( defined( 'DB_PATH' ) || defined( 'FQDB' ) ) {
 			$path = defined( 'DB_PATH' ) ? DB_PATH : FQDB;
-			return is_string( $path ) && is_file( $path ) ? 'sqlite' : 'mdi-native';
+			return is_string( $path ) && markdown_database_integration_path_is_sqlite( $path ) ? 'sqlite' : 'mdi-native';
 		}
 
 		$directory = markdown_database_integration_sqlite_directory();
 		if ( defined( 'DB_FILE' ) ) {
-			return is_file( $directory . DB_FILE ) ? 'sqlite' : 'mdi-native';
+			return markdown_database_integration_path_is_sqlite( $directory . DB_FILE ) ? 'sqlite' : 'mdi-native';
 		}
 
-		// Handle the randomized secret database path.
+		// db-path.php records a randomized database path as executable PHP.
+		// Detection never runs it, so its presence alone selects SQLite.
 		if ( is_file( $directory . 'db-path.php' ) ) {
 			return 'sqlite';
 		}
-		return is_file( $directory . '.ht.sqlite' ) || is_file( $directory . '.ht.sqlite.php' ) ? 'sqlite' : 'mdi-native';
+		// .ht.sqlite.php is the integration's legacy name for the same raw
+		// SQLite file; it renames it to .ht.sqlite on first connection.
+		return markdown_database_integration_path_is_sqlite( $directory . '.ht.sqlite' )
+			|| markdown_database_integration_path_is_sqlite( $directory . '.ht.sqlite.php' ) ? 'sqlite' : 'mdi-native';
 	}
 }
 

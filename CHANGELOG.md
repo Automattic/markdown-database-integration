@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.9] - 2026-10-26
+
+### Changed
+- Report persisted tables as InnoDB
+
 ## [0.14.8] - 2026-10-26
 
 ### Changed

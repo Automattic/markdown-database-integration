@@ -106,16 +106,14 @@ if ( false !== $duplicate ) {
 	$failures[] = 'duplicate route identity was not rejected';
 }
 
-$indexed = array();
-$storage->set_index_writer( static function ( int $id, string $path ) use ( &$indexed ): void { $indexed[ $id ] = $path; } );
 $moved = $storage->write_post( (object) array( 'ID' => 1, 'post_type' => 'page', 'post_name' => 'moved', 'post_status' => 'publish', 'post_title' => 'Moved', 'post_content' => 'Moved' ) );
-if ( $root . '/moved.md' !== $moved || file_exists( $root . '/foo.md' ) || 'moved.md' !== ( $indexed[1] ?? '' ) ) {
+if ( $root . '/moved.md' !== $moved || file_exists( $root . '/foo.md' ) || $root . '/moved.md' !== $storage->path_for_post( 1 ) ) {
 	$failures[] = 'profile write did not atomically move the prior canonical path and update the index';
 }
 
 $blocked = new WP_Markdown_Storage( $root );
 $blocked->set_content_layout_profile( 'flat-pages-fixture' );
-$blocked->set_file_mutation_observer(
+$blocked->add_file_mutation_observer(
 	static function ( string $path ): void {
 		if ( str_ends_with( $path, '/moved.md' ) ) {
 			unlink( $path );

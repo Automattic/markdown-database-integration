@@ -5,7 +5,6 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-require_once __DIR__ . '/class-wp-markdown-native-json-row-stream.php';
 require_once __DIR__ . '/../class-wp-markdown-file-witness.php';
 require_once __DIR__ . '/class-wp-markdown-native-post-catalogue.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-catalogue.php';

@@ -5,7 +5,7 @@ declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/compatibility/class-wp-markdown-query-compatibility-comparator.php';
+require_once __DIR__ . '/support/compatibility/class-wp-markdown-query-compatibility-comparator.php';
 
 $GLOBALS['mdi_native_query_filter'] = null;
 function apply_filters( string $hook, mixed $value ): mixed {
@@ -95,7 +95,7 @@ mdi_indeterminate_assert( array( $auth_key, $auth_salt ) === $healthy_values, 'a
 $healthy_absent = $healthy_provider->read( mdi_indeterminate_named_access( array( 'never_generated_option' ) ) );
 mdi_indeterminate_assert( array() === $healthy_absent, 'a genuinely absent option still resolves cleanly as verified absent' );
 
-$healthy_runtime = new WP_Markdown_Native_Option_Query_Runtime( $healthy_root );
+$healthy_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $healthy_root, 'wp_' );
 $baseline = $healthy_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name IN ('auth_key','auth_salt')" ) );
 $baseline_rows = array_column( array_map( 'get_object_vars', $baseline->wpdb_state()['last_result'] ), 'option_value' );
 mdi_indeterminate_assert( 2 === $baseline->return_value() && array( $auth_key, $auth_salt ) === $baseline_rows, 'a healthy option query returns the salt rows' );
@@ -114,7 +114,7 @@ mkdir( $locked_root . '/_options', 0777, true );
 mdi_indeterminate_write_salt( $locked_root, 'auth_key', $auth_key, 1 );
 mdi_indeterminate_write_salt( $locked_root, 'auth_salt', $auth_salt, 2 );
 $locked_provider = new WP_Markdown_Native_Option_Provider( $locked_root, WP_Markdown_Native_Runtime_Factory::options_schema() );
-$locked_runtime  = new WP_Markdown_Native_Option_Query_Runtime( $locked_root );
+$locked_runtime  = WP_Markdown_Native_Runtime_Factory::runtime( $locked_root, 'wp_' );
 chmod( $locked_root, 0000 );
 
 $locked_salt_read = $locked_provider->read( mdi_indeterminate_named_access( $salt_names ) );

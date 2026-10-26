@@ -1606,17 +1606,6 @@ final class WP_Markdown_Native_Select_AST_Parser {
 		return new WP_Markdown_Native_SQL_Predicate( $column, 'REGEXP', array( $pattern ) );
 	}
 
-	/** @return array<int,WP_Markdown_Native_SQL_Literal> */
-	private function in_list(): array {
-		$this->expect_type( WP_Markdown_Native_SQL_Token::LEFT_PAREN );
-		$values = array( $this->literal() );
-		while ( $this->match_type( WP_Markdown_Native_SQL_Token::COMMA ) ) {
-			$values[] = $this->literal();
-		}
-		$this->expect_type( WP_Markdown_Native_SQL_Token::RIGHT_PAREN );
-		return $values;
-	}
-
 	private function identifier(): WP_Markdown_Native_SQL_Identifier {
 		$first = $this->unqualified_identifier();
 		if ( ! $this->match_type( WP_Markdown_Native_SQL_Token::DOT ) ) {
@@ -1640,12 +1629,6 @@ final class WP_Markdown_Native_Select_AST_Parser {
 
 	private function matches_identifier(): bool {
 		return in_array( $this->current()->type(), array( WP_Markdown_Native_SQL_Token::WORD, WP_Markdown_Native_SQL_Token::QUOTED_IDENTIFIER ), true );
-	}
-
-	private function next_is_keyword( string $keyword ): bool {
-		$token = $this->tokens[ $this->current + 1 ] ?? null;
-		return WP_Markdown_Native_SQL_Token::KEYWORD === $token?->type()
-			&& 0 === strcasecmp( $keyword, (string) $token->value() );
 	}
 
 	private function literal(): WP_Markdown_Native_SQL_Literal {

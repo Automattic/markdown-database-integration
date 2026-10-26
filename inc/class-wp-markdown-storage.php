@@ -114,28 +114,6 @@ class WP_Markdown_Storage {
 	 */
 	private $terms_resolver = null;
 
-	/**
-	 * Callback that persists a file-index update for a post.
-	 *
-	 * Signature: function ( int $post_id, string $relative_path, int $mtime, int $size ): void
-	 *
-	 * Invoked whenever the storage engine renames a file as a side effect of
-	 * another write (parent promotion in resolve_parent_dir — a child write
-	 * forces its ancestor's leaf file to migrate to `index.md`). Without this
-	 * hook the persistent `_markdown_file_index` row points at a path that
-	 * no longer exists on disk, and `sync_markdown_posts()` on the next
-	 * warm boot treats the old path as a deletion and the new path as a
-	 * fresh insert — churning the ancestor through a full delete-and-
-	 * reinsert on every boot. See GitHub issue #68.
-	 *
-	 * Optional. Cold-boot paths that build storage before the driver exists
-	 * simply skip the callback — their in-memory `$this->index` is enough
-	 * until the index is materialised.
-	 *
-	 * @var callable|null
-	 */
-	private $index_writer = null;
-
 	/** @var callable|null Receives a canonical file path before a mutation. */
 	private $file_mutation_observer = null;
 
@@ -191,33 +169,6 @@ class WP_Markdown_Storage {
 	 */
 	public function set_terms_resolver( callable $resolver ): void {
 		$this->terms_resolver = $resolver;
-	}
-
-	/**
-	 * Set the index-writer callback.
-	 *
-	 * Invoked whenever the storage engine renames a file as a side effect
-	 * of another write (currently only parent promotion in
-	 * resolve_parent_dir). Callback signature:
-	 *
-	 *     function ( int $post_id, string $relative_path, int $mtime, int $size ): void
-	 *
-	 * $relative_path is relative to the storage's content_dir. The callback
-	 * is expected to upsert the corresponding row in `_markdown_file_index`
-	 * so warm boot comparisons see the file as unchanged rather than as a
-	 * delete + re-insert pair.
-	 *
-	 * See GitHub issue #68.
-	 *
-	 * @param callable $writer Index-update callback.
-	 */
-	public function set_index_writer( callable $writer ): void {
-		$this->index_writer = $writer;
-	}
-
-	/** @param callable $observer Receives an absolute path before it is mutated. */
-	public function set_file_mutation_observer( callable $observer ): void {
-		$this->file_mutation_observer = $observer;
 	}
 
 	/** Add a canonical mutation observer without replacing cache invalidation. */
@@ -536,24 +487,6 @@ class WP_Markdown_Storage {
 		$this->index = null;
 	}
 
-	/** Delete Markdown files while propagating any incomplete filesystem mutation. */
-	public function truncate_strict( string $post_type = '' ): void {
-		if ( ! is_dir( $this->content_dir ) ) { return; }
-		if ( '' !== $post_type ) {
-			$this->remove_directory_recursive_strict( $this->content_dir . '/' . $this->sanitize_path( $post_type ) );
-		} else {
-			$entries = scandir( $this->content_dir );
-			if ( false === $entries ) { throw new RuntimeException( 'Markdown DB: Failed to inspect canonical content directory.' ); }
-			foreach ( $entries as $entry ) {
-				if ( '.' === $entry || '..' === $entry || str_starts_with( $entry, '_' ) ) { continue; }
-				$path = $this->content_dir . '/' . $entry;
-				if ( is_link( $path ) ) { throw new RuntimeException( 'Markdown DB: Refusing to truncate a linked content path.' ); }
-				if ( is_dir( $path ) ) { $this->remove_directory_recursive_strict( $path ); }
-			}
-		}
-		$this->index = null;
-	}
-
 	/**
 	 * Get all markdown files as post objects.
 	 *
@@ -573,20 +506,6 @@ class WP_Markdown_Storage {
 	 */
 	public function get_all_posts( bool $metadata_only = false ): array {
 		return iterator_to_array( $this->get_all_posts_iterator( $metadata_only ), false );
-	}
-
-	/**
-	 * Get lightweight metadata for every markdown file without parsing posts.
-	 *
-	 * Warm sync only needs path, mtime, size, and derived parent hints to diff
-	 * against the persisted file index. Parsing every file into a post object at
-	 * 100k+ corpus sizes exhausts PHP memory before the diff can prove nothing
-	 * changed.
-	 *
-	 * @return array<string,array{mtime:int,size:int,absolute:string,parent_id:int|null}> Relative path keyed manifest.
-	 */
-	public function get_markdown_file_manifest(): array {
-		return iterator_to_array( $this->get_markdown_file_manifest_iterator() );
 	}
 
 	/**
@@ -939,7 +858,6 @@ class WP_Markdown_Storage {
 		if ( $id > 0 ) {
 			$this->index ??= array();
 			$this->index[ $id ] = $file_path;
-			$this->record_profile_index( $id, $file_path );
 		}
 		return $file_path;
 	}
@@ -1023,12 +941,6 @@ class WP_Markdown_Storage {
 			return null;
 		}
 		return $path;
-	}
-
-	private function record_profile_index( int $post_id, string $path ): void {
-		if ( null !== $this->index_writer && false !== ( $mtime = @filemtime( $path ) ) && false !== ( $size = @filesize( $path ) ) ) {
-			call_user_func( $this->index_writer, $post_id, $this->relative_path( $path ), (int) $mtime, (int) $size );
-		}
 	}
 
 	/**
@@ -1155,17 +1067,9 @@ class WP_Markdown_Storage {
 	/**
 	 * Record that a file was renamed during parent promotion.
 	 *
-	 * Updates the in-memory index for the duration of the request AND
-	 * invokes the persistent index-writer callback so the canonical
-	 * `_markdown_file_index` row tracks the new path. Without the
-	 * callback, warm boot would see the old path as deleted and the new
-	 * path as new, churning the promoted post through a full delete-
-	 * and-reinsert. See GitHub issue #68.
-	 *
-	 * Extracts the post ID from the new file's frontmatter. If the file
-	 * has no parseable `id:` (shouldn't happen for renamed posts, but
-	 * defend against corruption), silently returns — the next warm boot
-	 * will detect the mismatch and recover via heal / sync.
+	 * Keeps the in-memory index in sync so same-request lookups resolve the
+	 * promoted post at its new path. A file without a parseable `id:` is
+	 * skipped; the next corpus scan rebuilds its entry.
 	 *
 	 * @param string $absolute_file_path The renamed file's absolute path.
 	 */
@@ -1180,29 +1084,6 @@ class WP_Markdown_Storage {
 		if ( null !== $this->index ) {
 			$this->index[ $promoted_id ] = $absolute_file_path;
 		}
-
-		if ( null === $this->index_writer ) {
-			return;
-		}
-
-		// Relative-to-content-dir path matches what the loader stores when
-		// it rebuilds the index from disk, so later mtime/size comparisons
-		// see the same string the driver's update_file_index uses.
-		$relative_path = $absolute_file_path;
-		$prefix        = $this->content_dir . '/';
-		if ( str_starts_with( $absolute_file_path, $prefix ) ) {
-			$relative_path = substr( $absolute_file_path, strlen( $prefix ) );
-		}
-
-		$mtime = @filemtime( $absolute_file_path );
-		$size  = @filesize( $absolute_file_path );
-		if ( false === $mtime || false === $size ) {
-			// Stat failed — defer to the next sync rather than writing
-			// bogus values.
-			return;
-		}
-
-		call_user_func( $this->index_writer, (int) $promoted_id, $relative_path, (int) $mtime, (int) $size );
 	}
 
 	/**
@@ -1555,7 +1436,7 @@ class WP_Markdown_Storage {
 		$post->filter                = (string) ( $post->filter ?? 'raw' );
 
 		// Store the source file path on the post object.
-		// Used by the loader to populate the _markdown_file_index table.
+		// Import reads it back to record source paths and hashes.
 		$post->_source_file = $file_path;
 		$post->_frontmatter = $frontmatter;
 		if ( is_string( $frontmatter['source_identity'] ?? null ) && '' !== $frontmatter['source_identity'] ) {
@@ -1564,11 +1445,11 @@ class WP_Markdown_Storage {
 		$post->_frontmatter_profile = (string) ( $profile['id'] ?? '' );
 
 		// Extract meta from frontmatter (key-value pairs).
-		// These will be INSERTed into wp_postmeta by the loader.
+		// Import and frontmatter migration write these as post meta.
 		$post->_frontmatter_meta = isset( $post->_frontmatter_meta ) && is_array( $post->_frontmatter_meta ) ? $post->_frontmatter_meta : array();
 
 		// Extract terms from frontmatter (taxonomy → [slugs]).
-		// These will be resolved and INSERTed into wp_term_relationships by the loader.
+		// Import and frontmatter migration resolve these into terms.
 		$post->_frontmatter_terms = isset( $post->_frontmatter_terms ) && is_array( $post->_frontmatter_terms ) ? $post->_frontmatter_terms : array();
 
 		return $post;
@@ -1626,123 +1507,6 @@ class WP_Markdown_Storage {
 		$buffer .= "\n";
 
 		return $buffer;
-	}
-
-	/**
-	 * Read the content body from a markdown file (everything after frontmatter).
-	 *
-	 * Used by the driver for lazy-loading post_content on demand.
-	 * Only reads the body — skips the frontmatter header.
-	 *
-	 * @param string $file_path Absolute path to the markdown file.
-	 * @return string|null The content body, or null on failure.
-	 */
-	public function read_content_from_file( string $file_path ): ?string {
-		if ( ! file_exists( $file_path ) ) {
-			return null;
-		}
-
-		$raw = file_get_contents( $file_path );
-		if ( false === $raw ) {
-			return null;
-		}
-
-		// Split frontmatter and content.
-		if ( ! preg_match( '/^---\n.+?\n---\n\n?(.*)/s', $raw, $m ) ) {
-			return null;
-		}
-
-		return str_ends_with( $m[1], "\n" ) ? substr( $m[1], 0, -1 ) : $m[1];
-	}
-
-	/**
-	 * Inject or replace the `id:` field in a markdown file's frontmatter.
-	 *
-	 * Used by the loader when it auto-assigns an ID to a file that was
-	 * dropped on disk without one (via AI agents, git pulls, or hand-
-	 * written content). The rewrite is surgical — only the `id:` line is
-	 * touched; body content, other frontmatter keys, and their order are
-	 * preserved.
-	 *
-	 * The write is atomic (tmp file + rename) so a crash mid-write cannot
-	 * leave a partially-updated file.
-	 *
-	 * See GitHub issue #42.
-	 *
-	 * @param string $file_path Absolute path to the .md file.
-	 * @param int    $id        The post ID to inject.
-	 * @return bool True on successful write, false on any failure.
-	 */
-	public function inject_id_into_frontmatter( string $file_path, int $id ): bool {
-		if ( $id <= 0 || ! file_exists( $file_path ) ) {
-			return false;
-		}
-
-		$raw = file_get_contents( $file_path );
-		if ( false === $raw ) {
-			return false;
-		}
-
-		// Split the file into frontmatter block + body. Frontmatter is
-		// between a leading `---\n` and the next `---\n` on its own line.
-		if ( ! preg_match( '/\A---\n(.*?)\n---\n?(.*)\z/s', $raw, $m ) ) {
-			// No frontmatter block at all — prepend a minimal one.
-			$new = "---\nid: {$id}\n---\n\n" . $raw;
-			return $this->atomic_write( $file_path, $new );
-		}
-
-		$frontmatter = $m[1];
-		$separator   = "---\n";
-		// Preserve the original trailing newline/whitespace after the closing `---`.
-		$after_close = '';
-		if ( preg_match( '/\A---\n.*?\n(---\n?)(.*)\z/s', $raw, $m2 ) ) {
-			$separator   = $m2[1];
-			$after_close = $m2[2];
-		} else {
-			$after_close = $m[2];
-		}
-
-		// Replace existing `id:` line, or prepend one at the top of the block.
-		$lines       = explode( "\n", $frontmatter );
-		$id_replaced = false;
-		foreach ( $lines as $i => $line ) {
-			if ( preg_match( '/^id\s*:/i', $line ) ) {
-				$lines[ $i ] = "id: {$id}";
-				$id_replaced = true;
-				break;
-			}
-		}
-		if ( ! $id_replaced ) {
-			array_unshift( $lines, "id: {$id}" );
-		}
-
-		$new_frontmatter = implode( "\n", $lines );
-		$new_raw         = "---\n{$new_frontmatter}\n{$separator}{$after_close}";
-
-		return $this->atomic_write( $file_path, $new_raw );
-	}
-
-	/**
-	 * Atomically write content to a file.
-	 *
-	 * Writes to a temp file in the same directory and renames to the
-	 * target. Rename is atomic on POSIX, so readers never observe a
-	 * partially-written file.
-	 *
-	 * @param string $file_path Target file path.
-	 * @param string $content   Content to write.
-	 * @return bool True on success.
-	 */
-	private function atomic_write( string $file_path, string $content ): bool {
-		$tmp = $file_path . '.' . uniqid() . '.tmp';
-		if ( false === @file_put_contents( $tmp, $content, LOCK_EX ) ) {
-			return false;
-		}
-		if ( ! @rename( $tmp, $file_path ) ) {
-			@unlink( $tmp );
-			return false;
-		}
-		return true;
 	}
 
 	/**
@@ -2002,38 +1766,8 @@ class WP_Markdown_Storage {
 		}
 	}
 
-	/**
-	 * Get the content directory path.
-	 *
-	 * @return string
-	 */
-	public function get_content_dir(): string {
-		return $this->content_dir;
-	}
-
 	public function delete_relative_path( string $relative ): bool {
 		$relative = $this->validate_profile_path( $relative );
 		return null !== $relative && $this->safe_unlink( rtrim( $this->content_dir, '/\\' ) . DIRECTORY_SEPARATOR . $relative );
-	}
-
-	/**
-	 * Get the excluded post types.
-	 *
-	 * @return string[]
-	 */
-	public function get_excluded_types(): array {
-		return $this->excluded_types;
-	}
-
-	/**
-	 * Check if a post type should be stored as markdown.
-	 *
-	 * All types are stored unless explicitly excluded.
-	 *
-	 * @param string $post_type The post type slug.
-	 * @return bool
-	 */
-	public function is_markdown_type( string $post_type ): bool {
-		return ! in_array( $post_type, $this->excluded_types, true );
 	}
 }

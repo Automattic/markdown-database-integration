@@ -6,7 +6,7 @@ declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );
 define( 'ARRAY_A', 'ARRAY_A' );
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/compatibility/class-wp-markdown-query-compatibility-comparator.php';
+require_once __DIR__ . '/support/compatibility/class-wp-markdown-query-compatibility-comparator.php';
 
 class wpdb {
 	public string $prefix = '';

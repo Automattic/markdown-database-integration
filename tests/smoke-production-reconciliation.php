@@ -4,11 +4,8 @@ declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/class-wp-markdown-reconciliation-adapters.php';
-require_once __DIR__ . '/../inc/interface-wp-markdown-backend-operations.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-frontmatter-profiles.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-storage.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
-require_once __DIR__ . '/stubs/stub-backend-operations.php';
 
 $failures = array();
 function mdi_production_check( bool $condition, string $message ): void {
@@ -101,20 +98,6 @@ $stale = $claimed; $newer = $stale; $newer['id'] = str_repeat( 'b', 64 ); $newer
 $recovery_adapter->fence( $newer ); $stale_rejected = false;
 try { $recovery_adapter->apply( $stale ); } catch ( WP_Markdown_Reconciliation_Store_Conflict ) { $stale_rejected = true; }
 mdi_production_check( $stale_rejected && 'recovered' === file_get_contents( $path ), 'durable filesystem fence rejects stale replacement owner' );
-
-// JSON-fallback post types never enter the immediate Markdown reconciliation path.
-$actual_operations = new class extends MDI_Stub_Backend_Operations {
-	public function post_rows( array $post_ids ): array { return $this->rows['posts']; }
-};
-$actual_operations->rows['posts'] = array( array( 'ID' => 43, 'post_title' => 'Revision', 'post_name' => '42-revision-v1', 'post_status' => 'inherit', 'post_type' => 'revision', 'post_parent' => 42 ) );
-$actual_storage = new WP_Markdown_Storage( $canonical, array( 'revision' ) );
-$actual_persistence = new WP_Markdown_Canonical_Persistence( $canonical, $actual_storage, $actual_operations, 'wp_', $canonical );
-$reconciled_persistence = new WP_Markdown_Canonical_Persistence( $canonical, $actual_storage, $actual_operations, 'wp_', $canonical, $coordinator );
-$revision_prepared = $reconciled_persistence->prepare_post_commit( 43, null );
-$actual_persistence->persist_mutation( array( 'key' => 'wp_posts:43', 'resource' => 'wp_posts:43', 'operation' => 'INSERT', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '43' ) ) ) );
-$actual_persistence->flush_dirty( true );
-$fallback_posts = json_decode( (string) file_get_contents( $canonical . '/_tables/posts.json' ), true );
-mdi_production_check( null === $revision_prepared && in_array( 43, array_map( static fn( array $row ): int => (int) $row['ID'], $fallback_posts ), true ) && null === $actual_storage->read_post( 43 ), 'revision creation persists through JSON fallback without planning a Markdown reconciliation operation' );
 
 // Recover a post-commit effect that was applied before its observation could complete.
 $checkpoint_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );

@@ -11,7 +11,7 @@ $source = (string) getenv( 'MDI_REPLACE_PARITY_SOURCE' );
 if ( '/workspace/mdi' !== $source ) {
 	throw new RuntimeException( 'MDI_REPLACE_PARITY_SOURCE must identify the staged MDI source package.' );
 }
-require_once $source . '/inc/class-wp-markdown-wpdb-result-snapshot.php';
+require_once $source . '/tests/support/class-wp-markdown-wpdb-result-snapshot.php';
 require_once $source . '/inc/native/class-wp-markdown-native-wpdb.php';
 $source_package = json_decode( (string) file_get_contents( $source . '/.wp-codebox-source-package.json' ), true, 512, JSON_THROW_ON_ERROR );
 $source_digest = $source_package['digest']['sha256'] ?? '';

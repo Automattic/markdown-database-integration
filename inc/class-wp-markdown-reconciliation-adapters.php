@@ -73,16 +73,6 @@ final class WP_Markdown_Durable_Reconciliation_Coordinator {
 	public function recoverable( int $limit = 100 ): array {
 		return $this->store->recoverable( time(), max( 1, min( 1000, $limit ) ) );
 	}
-
-	/** @param callable(array):?WP_Markdown_Reconciliation_Adapter $adapter_for */
-	public function recover_pending( callable $adapter_for, int $limit = 100 ): array {
-		$results = array();
-		foreach ( $this->recoverable( $limit ) as $record ) {
-			$adapter = $adapter_for( $record );
-			if ( null !== $adapter ) { $results[ $record['id'] ] = $this->recover( $record['id'], $adapter ); }
-		}
-		return $results;
-	}
 }
 
 /** Build the shared production coordinator outside the managed canonical roots. */

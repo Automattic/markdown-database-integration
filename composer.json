@@ -5,8 +5,7 @@
     "license": "GPL-2.0-or-later",
     "require": {
         "php": ">=8.2",
-        "automattic/blocks-engine-php-transformer": "0.1.15",
-        "halaxa/json-machine": "^1.2"
+        "automattic/blocks-engine-php-transformer": "0.1.15"
     },
     "autoload": {
         "classmap": [

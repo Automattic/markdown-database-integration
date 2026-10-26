@@ -45,7 +45,5 @@ webpack.config.js
 /rigs
 /tools
 /.pg-bench-result*
-/REMAINING_102_GAPS.md
-/COMPOSITION_REVIEW.md
 /homeboy.json
 /composer.json

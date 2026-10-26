@@ -157,6 +157,10 @@ final class WP_Markdown_Native_Schema_Mutation_Runtime {
 		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $suffix ) || null === $this->registry->definition( $table ) ) {
 			return $this->failure( 'unknown_table', 'mdi-native cannot alter a table it does not persist.' );
 		}
+		if ( 1 === preg_match( '/^ENGINE\s*=?\s*`?InnoDB`?$/iD', $action ) ) {
+			// Native tables already provide InnoDB's transactional semantics.
+			return WP_Markdown_Query_Result::schema_changed();
+		}
 		try {
 			$actions = array();
 			$start = 0;

@@ -141,6 +141,9 @@ transactions retain it through commit/rollback. This is coarse serialization,
 not MVCC. Lock waits are bounded at five seconds. Direct filesystem writers
 outside the protocol and independent same-process connection isolation are not
 covered. Runtime instances sharing a root in one process share a transaction owner.
+Because explicit transactions commit and roll back, persisted tables report
+`ENGINE` `InnoDB` in `information_schema.TABLES`, and `ALTER TABLE … ENGINE=InnoDB`
+is a no-op. Other engines are rejected.
 
 ### Known limits
 

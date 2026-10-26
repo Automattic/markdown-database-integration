@@ -89,7 +89,7 @@ mdi_storage_only_assert( ! in_array( 'chubes4/html-to-blocks-converter', $locked
 $production_php = array(
 	$plugin_dir . '/markdown-database-integration.php',
 	$plugin_dir . '/db.php',
-	$plugin_dir . '/inc/class-wp-markdown-write-engine.php',
+	$plugin_dir . '/inc/class-wp-markdown-canonical-persistence.php',
 );
 $production_blob = '';
 foreach ( $production_php as $path ) {
@@ -114,45 +114,14 @@ mdi_storage_only_assert( ! str_contains( $production_blob, "'blocks', 'markdown'
 // Write engine mirrors post_content bytes unchanged.
 // ---------------------------------------------------------------------------
 
-if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
-	class WP_MySQL_On_SQLite {}
-}
-
 require_once $plugin_dir . '/inc/class-wp-markdown-storage.php';
-require_once $plugin_dir . '/inc/class-wp-markdown-write-engine.php';
+require_once $plugin_dir . '/inc/class-wp-markdown-canonical-persistence.php';
+require_once __DIR__ . '/stubs/stub-backend-operations.php';
 
-class MDI_Storage_Only_Driver extends WP_MySQL_On_SQLite {
-	/** @var array<int, object> */
+class MDI_Storage_Only_Operations extends MDI_Stub_Backend_Operations {
 	public array $posts = array();
-	private int $insert_id = 0;
-	private PDO $pdo;
-
-	public function __construct() {
-		$this->pdo = new PDO( 'sqlite::memory:' );
-		$this->pdo->setAttribute( PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_OBJ );
-	}
-
-	public function set_next_insert_id( int $id ): void {
-		$this->insert_id = $id;
-	}
-
-	public function get_insert_id(): int {
-		return $this->insert_id;
-	}
-
-	public function query( string $sql ): PDOStatement {
-		if ( 1 === preg_match( '/WHERE\s+ID\s*=\s*(\d+)/i', $sql, $m ) ) {
-			$id = (int) $m[1];
-			$row = $this->posts[ $id ] ?? null;
-			if ( null !== $row ) {
-				$columns = array();
-				foreach ( (array) $row as $name => $value ) {
-					$columns[] = $this->pdo->quote( (string) $value ) . ' AS `' . $name . '`';
-				}
-				return $this->pdo->query( 'SELECT ' . implode( ', ', $columns ) );
-			}
-		}
-		return $this->pdo->query( 'SELECT 1 WHERE 0' );
+	public function post_rows( array $post_ids ): array {
+		return array_map( static fn( object $post ): array => (array) $post, array_values( array_intersect_key( $this->posts, array_flip( $post_ids ) ) ) );
 	}
 }
 
@@ -188,16 +157,15 @@ $tmp_root = sys_get_temp_dir() . '/mdi-storage-only-boundary-' . getmypid() . '-
 mkdir( $tmp_root, 0755, true );
 
 $storage = new WP_Markdown_Storage( $tmp_root, array() );
-$driver  = new MDI_Storage_Only_Driver();
-$engine  = new WP_Markdown_Write_Engine( $tmp_root, $storage, $driver, 'wp_' );
+$driver  = new MDI_Storage_Only_Operations();
+$engine  = new WP_Markdown_Canonical_Persistence( $tmp_root, $storage, $driver, 'wp_' );
 
 $serialized_blocks = '<!-- wp:heading {"level":2} --><h2>Stored As Sent</h2><!-- /wp:heading -->'
 	. "\n\n"
 	. '<!-- wp:paragraph --><p>Block markup remains block markup.</p><!-- /wp:paragraph -->';
 
 $driver->posts[202] = mdi_storage_only_make_post( 202, 'stored-as-sent', $serialized_blocks );
-$driver->set_next_insert_id( 202 );
-$engine->persist_write( 'INSERT INTO `wp_posts` (`ID`) VALUES (202)', 'wp_posts', 'INSERT' );
+$engine->persist_mutation( array( 'key' => 'wp_posts:202', 'resource' => 'wp_posts:202', 'operation' => 'INSERT', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '202' ) ) ) );
 $engine->flush_dirty();
 
 $path = $tmp_root . '/wiki/stored-as-sent.md';

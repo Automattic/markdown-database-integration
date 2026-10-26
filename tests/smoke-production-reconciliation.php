@@ -5,12 +5,10 @@ declare( strict_types=1 );
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/class-wp-markdown-reconciliation-adapters.php';
 require_once __DIR__ . '/../inc/interface-wp-markdown-backend-operations.php';
-require_once __DIR__ . '/../inc/sqlite/class-wp-markdown-sqlite-operations.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-frontmatter-profiles.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-storage.php';
 require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-backend-adapter.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
+require_once __DIR__ . '/stubs/stub-backend-operations.php';
 
 $failures = array();
 function mdi_production_check( bool $condition, string $message ): void {
@@ -53,18 +51,6 @@ final class MDI_MySQL_Protocol_Statement extends PDOStatement {
 	}
 	public function fetchColumn( int $column = 0 ): mixed { unset( $column ); return $this->row['fence'] ?? false; }
 	public function fetch( int $mode = PDO::FETCH_DEFAULT, int $cursorOrientation = PDO::FETCH_ORI_NEXT, int $cursorOffset = 0 ): mixed { unset( $mode, $cursorOrientation, $cursorOffset ); return empty( $this->row ) ? false : $this->row; }
-}
-final class MDI_Production_Connection {
-	public function __construct( private PDO $pdo ) {}
-	public function get_pdo(): PDO { return $this->pdo; }
-}
-final class MDI_Production_Driver {
-	private MDI_Production_Connection $connection;
-	public function __construct( PDO $pdo ) { $this->connection = new MDI_Production_Connection( $pdo ); }
-	public function get_connection(): MDI_Production_Connection { return $this->connection; }
-	public function get_insert_id(): int { return (int) $this->connection->get_pdo()->lastInsertId(); }
-	public function query( string $sql ): PDOStatement|false { return $this->connection->get_pdo()->query( $sql ); }
-	public function query_cursor( string $sql ): PDOStatement|false { return $this->query( $sql ); }
 }
 
 $root = tempnam( sys_get_temp_dir(), 'mdi-production-reconciliation-' );
@@ -116,41 +102,13 @@ $recovery_adapter->fence( $newer ); $stale_rejected = false;
 try { $recovery_adapter->apply( $stale ); } catch ( WP_Markdown_Reconciliation_Store_Conflict ) { $stale_rejected = true; }
 mdi_production_check( $stale_rejected && 'recovered' === file_get_contents( $path ), 'durable filesystem fence rejects stale replacement owner' );
 
-// Real SQLite fence ownership and mutation share one transaction boundary.
-$database = $root . '/wordpress.sqlite'; $pdo = new PDO( 'sqlite:' . $database ); $pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$pdo->exec( 'CREATE TABLE wp_posts (ID INTEGER PRIMARY KEY, post_title TEXT NOT NULL, post_content TEXT NOT NULL DEFAULT \'\', post_name TEXT NOT NULL DEFAULT \'\', post_status TEXT NOT NULL DEFAULT \'publish\', post_type TEXT NOT NULL DEFAULT \'post\', post_parent INTEGER NOT NULL DEFAULT 0)' ); $pdo->exec( "INSERT INTO wp_posts (ID, post_title) VALUES (42, 'before')" );
-$pdo->exec( 'CREATE TABLE wp_postmeta (post_id INTEGER, meta_key TEXT, meta_value TEXT)' );
-$pdo->exec( 'CREATE TABLE wp_terms (term_id INTEGER, slug TEXT)' );
-$pdo->exec( 'CREATE TABLE wp_term_taxonomy (term_taxonomy_id INTEGER, term_id INTEGER, taxonomy TEXT)' );
-$pdo->exec( 'CREATE TABLE wp_term_relationships (object_id INTEGER, term_taxonomy_id INTEGER)' );
-$pdo->exec( 'CREATE TABLE `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
-$observe_db = static function ( array $operation, PDO $connection ): array { unset( $operation ); $value = $connection->query( 'SELECT post_title FROM wp_posts WHERE ID = 42' )->fetchColumn(); return array( 'wordpress' => false === $value ? null : $value ); };
-$mutate_db = static function ( array $operation, PDO $connection ): void { unset( $operation ); $connection->exec( "UPDATE wp_posts SET post_title = 'after' WHERE ID = 42" ); };
-$db_adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $pdo, $observe_db, $mutate_db );
-$db_result = $coordinator->reconcile( mdi_production_intent( $canonical, 'db-update', 'update', array( 'wordpress' => 'before' ), array( 'wordpress' => 'after' ) ), $db_adapter );
-mdi_production_check( 'completed' === $db_result['state'] && 'after' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 42' )->fetchColumn(), 'production SQLite adapter atomically fences and mutates WordPress state' );
-
-$db_plan = $store->plan( array_merge( mdi_production_intent( $canonical, 'db-stale', 'update', array( 'wordpress' => WP_Markdown_Reconciliation_Identity::exact( 'after' ) ), array( 'wordpress' => WP_Markdown_Reconciliation_Identity::exact( 'stale-write' ) ) ) ) );
-$db_stale = $store->claim( $db_plan['id'], $db_plan['revision'], 'process-a', 200, 1 ); $db_adapter->fence( $db_stale );
-$db_newer = $db_stale; $db_newer['id'] = str_repeat( 'c', 64 ); $db_newer['fence'] = $db_stale['fence'] + 1; $db_adapter->fence( $db_newer );
-$db_rejected = false; try { $db_adapter->apply( $db_stale ); } catch ( WP_Markdown_Reconciliation_Store_Conflict ) { $db_rejected = true; }
-mdi_production_check( $db_rejected && 'after' === $pdo->query( 'SELECT post_title FROM wp_posts WHERE ID = 42' )->fetchColumn(), 'persisted SQLite fence rejects stale database owner before mutation' );
-
-// Drive the actual production persistence, operations, and loader entry points.
-$actual_driver = new MDI_Production_Driver( $pdo );
-$actual_operations = new WP_Markdown_SQLite_Operations( $actual_driver, 'wp_' );
-$actual_operations->ensure_reconciliation_state();
+// JSON-fallback post types never enter the immediate Markdown reconciliation path.
+$actual_operations = new class extends MDI_Stub_Backend_Operations {
+	public function post_rows( array $post_ids ): array { return $this->rows['posts']; }
+};
+$actual_operations->rows['posts'] = array( array( 'ID' => 43, 'post_title' => 'Revision', 'post_name' => '42-revision-v1', 'post_status' => 'inherit', 'post_type' => 'revision', 'post_parent' => 42 ) );
 $actual_storage = new WP_Markdown_Storage( $canonical, array( 'revision' ) );
 $actual_persistence = new WP_Markdown_Canonical_Persistence( $canonical, $actual_storage, $actual_operations, 'wp_', $canonical );
-$actual_persistence->persist_mutation( array( 'key' => 'wp_posts:42', 'resource' => 'wp_posts:42', 'operation' => 'UPDATE', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '42' ) ) ) );
-$actual_persistence->flush_dirty( true );
-$actual_loader = new WP_Markdown_Loader( $canonical, $actual_operations, $actual_storage, 'wp_', $canonical );
-$actual_loader->prepare_existing_cache();
-$actual_index = $actual_operations->file_index_receipt( 42 );
-mdi_production_check( null !== $actual_storage->read_post( 42 ) && array( 'post_id' => 42 ) === $actual_index, 'actual canonical persistence, SQLite operations, and loader entry points publish matching file and index state' );
-
-// JSON-fallback post types never enter the immediate Markdown reconciliation path.
-$pdo->exec( "INSERT INTO wp_posts (ID, post_title, post_name, post_status, post_type, post_parent) VALUES (43, 'Revision', '42-revision-v1', 'inherit', 'revision', 42)" );
 $reconciled_persistence = new WP_Markdown_Canonical_Persistence( $canonical, $actual_storage, $actual_operations, 'wp_', $canonical, $coordinator );
 $revision_prepared = $reconciled_persistence->prepare_post_commit( 43, null );
 $actual_persistence->persist_mutation( array( 'key' => 'wp_posts:43', 'resource' => 'wp_posts:43', 'operation' => 'INSERT', 'table' => 'wp_posts', 'context' => array( 'resource_ids' => array( '43' ) ) ) );
@@ -163,7 +121,7 @@ $checkpoint_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'in
 $checkpoint_observer = static function () use ( &$checkpoint_state ): array { return $checkpoint_state; };
 $checkpoint_applies = 0;
 $checkpoint_apply = static function () use ( &$checkpoint_state, &$checkpoint_applies ): void { ++$checkpoint_applies; $checkpoint_state['canonical'] = 'after'; $checkpoint_state['index'] = array( 'post_id' => 42 ); };
-$checkpoint_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $checkpoint_observer, $checkpoint_apply );
+$checkpoint_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $root . '/checkpoint-fences', $checkpoint_observer, $checkpoint_apply );
 $checkpoint_intent = array( 'plan_id' => 'prepared-production-write', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $checkpoint_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) );
 $checkpoint_intent['checkpoint'] = array_map( array( WP_Markdown_Reconciliation_Identity::class, 'exact' ), $checkpoint_intent['checkpoint'] );
 $checkpoint_record = $coordinator->plan( $checkpoint_intent );
@@ -179,7 +137,7 @@ $mismatch_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'inde
 $mismatch_observer = static function () use ( &$mismatch_state ): array { return $mismatch_state; };
 $mismatch_applies = 0;
 $mismatch_apply = static function () use ( &$mismatch_state, &$mismatch_applies ): void { ++$mismatch_applies; $mismatch_state['canonical'] = 'different'; $mismatch_state['index'] = array( 'post_id' => 42 ); };
-$mismatch_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $mismatch_observer, $mismatch_apply );
+$mismatch_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $root . '/checkpoint-fences', $mismatch_observer, $mismatch_apply );
 $mismatch_intent = array( 'plan_id' => 'prepared-production-mismatch', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $mismatch_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) );
 $mismatch_intent['checkpoint'] = array_map( array( WP_Markdown_Reconciliation_Identity::class, 'exact' ), $mismatch_intent['checkpoint'] );
 $mismatch_record = $coordinator->plan( $mismatch_intent );
@@ -193,7 +151,7 @@ mdi_production_check( $mismatch_rejected && 'reconciliation_required' === $store
 // Recovery apply failures become terminal conflicts instead of remaining perpetually claimed.
 $apply_failure_state = array( 'wordpress' => 'before', 'canonical' => 'before', 'index' => null );
 $apply_failure_observer = static function () use ( &$apply_failure_state ): array { return $apply_failure_state; };
-$apply_failure_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $fences, $apply_failure_observer, static function (): void { throw new RuntimeException( 'cannot apply' ); } );
+$apply_failure_adapter = new WP_Markdown_Filesystem_Reconciliation_Adapter( $root . '/checkpoint-fences', $apply_failure_observer, static function (): void { throw new RuntimeException( 'cannot apply' ); } );
 $apply_failure_intent = array( 'plan_id' => 'prepared-apply-failure', 'continuation' => array( 'post_id' => 42 ), 'canonical_root' => $canonical, 'resource' => array( 'type' => 'post', 'id' => '42' ), 'kind' => 'update', 'direction' => 'wordpress_to_canonical', 'before' => $apply_failure_state, 'checkpoint' => array( 'wordpress' => 'after', 'canonical' => 'before', 'index' => null ), 'after' => array( 'wordpress' => 'after', 'canonical' => 'after', 'index' => array( 'post_id' => 42 ) ) );
 $apply_failure_intent['checkpoint'] = array_map( array( WP_Markdown_Reconciliation_Identity::class, 'exact' ), $apply_failure_intent['checkpoint'] );
 $apply_failure_record = $coordinator->plan( $apply_failure_intent );

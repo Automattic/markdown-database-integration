@@ -12,20 +12,11 @@
  *
  * What this surfaces:
  *
- *   - get_post p50/p95: ID-keyed lookup is the cheapest WP read. SDI sets
- *     the floor; MDI subclassing should add measurable but small cost.
- *   - get_page_by_path: slug index efficiency. MDI primary's in-memory
- *     SQLite has different index characteristics than SDI's on-disk
- *     SQLite — this op type quantifies that.
- *   - Date-range WP_Query: range scan over post_date. p99 widening here
- *     suggests index pressure.
- *   - Taxonomy WP_Query: term + term_relationships join. Both substrates
- *     use the same SQLite engine for taxonomy in primary mode (the JSON
- *     fallback tables); mirror keeps SQLite-native taxonomy.
- *   - Full-text-ish: WP's `s=` lowers to LIKE %term% — MDI primary's
- *     PHP grep backend (#43) is the regression risk. If primary's
- *     full-text p99 is much worse than mirror, the grep backend isn't
- *     scaling.
+ *   - get_post: ID-keyed native lookup.
+ *   - get_page_by_path: canonical slug lookup.
+ *   - Date-range WP_Query: range scans over post_date.
+ *   - Taxonomy WP_Query: term and term_relationships joins.
+ *   - Search: LIKE matching over canonical post bodies.
  *
  * Important: read-heavy DOES NOT seed inside the iteration. Seeding is
  * one-time on the first call (the warmup iteration). That keeps the

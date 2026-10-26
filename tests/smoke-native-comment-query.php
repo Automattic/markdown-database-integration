@@ -5,28 +5,6 @@ declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/native/class-wp-markdown-native-shadow-verifier.php';
-
-final class MDI_Comment_Shadow_DB {
-	public string $prefix = 'wp_';
-	public array $last_result = array();
-	public string $last_error = '';
-	public int $last_errno = 0;
-	public int $insert_id = 0;
-	public int $rows_affected = 0;
-	public int $num_rows = 0;
-	protected array $col_info = array();
-
-	public function result( array $rows, array $columns ): void {
-		$this->last_result = array_map( static fn( array $row ): object => (object) $row, $rows );
-		$this->col_info = array_map( static fn( array $column ): object => (object) $column, $columns );
-		$this->num_rows = count( $rows );
-	}
-
-	public function get_col_info( string $field ): array {
-		return array_map( static fn( object $column ): mixed => $column->{$field} ?? null, $this->col_info );
-	}
-}
 
 function mdi_comment_row( string $id, string $post_id, string $email, string $content, string $parent = '0' ): array {
 	return array(
@@ -69,12 +47,6 @@ $parent = $runtime->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID, 
 $site_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_2_', 'wp_', true );
 $site_comment = $site_runtime->execute( new WP_Markdown_Query_Request( 'SELECT comment_ID FROM wp_2_comments WHERE comment_ID = 1', 'wp_2_' ) );
 
-$shadow_db = new MDI_Comment_Shadow_DB();
-$shadow_db->result( array( array( 'comment_ID' => '1' ) ), array( array( 'name' => 'comment_ID', 'type' => 8 ) ) );
-$shadow = new WP_Markdown_Native_Shadow_Verifier( $runtime );
-$shadow->observe( $blocker_sql, 1, $shadow_db );
-$report = $shadow->report();
-
 $checks = array(
 	'conjunctive comment blocker executes through pushdown and residual filtering' => 1 === $blocker->return_value()
 		&& '1' === ( $blocker->wpdb_state()['last_result'][0]->comment_ID ?? null ),
@@ -83,8 +55,6 @@ $checks = array(
 		&& array( 8, 8, 252, 253 ) === array_slice( array_map( static fn( object $column ): int => $column->type, $exact->wpdb_state()['col_info'] ), 0, 4 ),
 	'parent lookup, ordering, projection, and LIMIT remain provider-neutral' => array( 'comment_ID' => '3', 'comment_content' => 'Reply' ) === get_object_vars( $parent->wpdb_state()['last_result'][0] ?? (object) array() ),
 	'comments use the active multisite table prefix' => 1 === $site_comment->return_value(),
-	'shadow verifier compares the retained comment blocker exactly' => 1 === ( $report['counts']['compatible'] ?? 0 )
-		&& null === ( $report['first_blocker'] ?? null ),
 );
 
 $invalid = $comments[0];

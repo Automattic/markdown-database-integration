@@ -86,16 +86,6 @@ class WP_Markdown_Backend_Capabilities {
 		}
 	}
 
-	/**
-	 * SQLite is the shipped reference backend. Keep this declaration complete
-	 * while future backends are extracted behind this contract.
-	 */
-	public static function sqlite(): self {
-		$capabilities = array_fill_keys( self::KNOWN, true );
-		$capabilities['canonical_option_select'] = false;
-		return new self( 'sqlite', $capabilities );
-	}
-
 	/** mdi-native executes canonical options, persisted schema, and generic snapshot tables. */
 	public static function mdi_native(): self {
 		return new self(
@@ -180,14 +170,11 @@ class WP_Markdown_Backend_Resolver {
 			}
 		}
 
-		$id = defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'sqlite';
-		if ( 'sqlite' === $id && ! isset( self::$declarations['sqlite'] ) ) {
-			self::register( WP_Markdown_Backend_Capabilities::sqlite() );
-		}
+		$id = defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'mdi-native';
 		if ( 'mdi-native' === $id && ! isset( self::$declarations['mdi-native'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::mdi_native() );
 		}
-		if ( ! isset( self::$declarations[ $id ] ) ) {
+		if ( 'mdi-native' !== $id || ! isset( self::$declarations[ $id ] ) ) {
 			throw new WP_Markdown_Unknown_Backend( array(
 				'code'    => 'markdown_db_unknown_backend',
 				'backend' => $id,
@@ -199,29 +186,7 @@ class WP_Markdown_Backend_Resolver {
 		return self::$declarations[ $id ];
 	}
 
-	/** Fail bootstrap before wpdb exists when its configured backend is incomplete. */
-	public static function require_runtime_capabilities( WP_Markdown_Backend_Capabilities $backend, string $mode ): void {
-		$required = array(
-			'content_mutation_capture',
-			'table_mutation_capture',
-			'schema_persistence',
-			'lazy_post_content_resolution',
-			'explicit_flush',
-			'changed_path_receipts',
-		);
-		if ( 'primary' === $mode ) {
-			$required[] = 'disposable_index_operation';
-			$required[] = 'cold_reconstruction';
-		}
-		foreach ( $required as $capability ) {
-			$backend->require( $capability );
-		}
-	}
-
-	/**
-	 * SQLite is the only shipped runtime backend. A supplied declaration is used
-	 * by tests and future backend adapters without coupling feature code to one.
-	 */
+	/** Resolve the native capability contract, or an explicitly supplied contract. */
 	public static function resolve( ?WP_Markdown_Backend_Capabilities $backend = null ): WP_Markdown_Backend_Capabilities {
 		if ( null !== $backend ) {
 			return $backend;
@@ -229,6 +194,6 @@ class WP_Markdown_Backend_Resolver {
 		if ( null !== self::$active_backend ) {
 			return self::$declarations[ self::$active_backend ];
 		}
-		return WP_Markdown_Backend_Capabilities::sqlite();
+		return WP_Markdown_Backend_Capabilities::mdi_native();
 	}
 }

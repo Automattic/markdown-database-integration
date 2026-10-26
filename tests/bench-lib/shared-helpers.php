@@ -13,7 +13,7 @@
  *     across substrates, which is the whole point of the harness.
  *
  *   - Substrate-agnostic. Workloads NEVER touch markdown files directly,
- *     never query SQLite directly, never `define()` MDI mode. Substrate
+ *     never query internal storage directly, never select a runtime mode. Substrate
  *     selection is the component's db.php concern; workloads only call
  *     WordPress public APIs (wp_insert_post / wp_update_post / etc).
  *
@@ -44,9 +44,8 @@ if (!defined('MDI_BENCH_DEFAULT_SEED')) {
 /**
  * Default corpus size when BENCH_CORPUS_SIZE env var is unset.
  *
- * 100 matches the smallest tier in the PLAN.md size table — the smoke
- * matrix runs at this size. Operators bump it via `BENCH_CORPUS_SIZE=10000
- * homeboy bench mdi-bench-primary` for full-vault numbers.
+ * 100 is the default smoke corpus size. Operators can set
+ * BENCH_CORPUS_SIZE=10000 for larger native workloads.
  */
 if (!defined('MDI_BENCH_DEFAULT_CORPUS_SIZE')) {
     define('MDI_BENCH_DEFAULT_CORPUS_SIZE', 100);
@@ -76,7 +75,7 @@ function mdi_bench_corpus_size(): int {
 function mdi_bench_runtime(): array {
     global $wpdb;
 
-    $backend = defined('MARKDOWN_DB_BACKEND') ? (string) MARKDOWN_DB_BACKEND : 'sqlite';
+    $backend = defined('MARKDOWN_DB_BACKEND') ? (string) MARKDOWN_DB_BACKEND : 'mdi-native';
     $wpdb_class = is_object($wpdb) ? get_class($wpdb) : gettype($wpdb);
     $native_active = class_exists('WP_Markdown_Native_WPDB', false) && $wpdb instanceof WP_Markdown_Native_WPDB;
 
@@ -269,7 +268,7 @@ function mdi_bench_pick(array $ids): int {
  * crashing in `mt_rand(0, -1)`. Workloads that exercise read-by-slug or
  * other index-keyed operations call this and skip the op when -1 is
  * returned. Without this guard, a substrate that returns zero posts
- * from `mdi_bench_seed_corpus()` (for example MDI primary mode under
+ * from `mdi_bench_seed_corpus()` (for example canonical persistence under
  * a non-default `$table_prefix` — see Automattic/markdown-database-
  * integration#77) would crash every iteration with a `mt_rand(): max
  * must be >= min` ValueError.

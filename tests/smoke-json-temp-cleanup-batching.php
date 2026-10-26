@@ -13,24 +13,21 @@ function do_action(): void {}
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
-class MDI_Temp_Batch_Driver {
-	public PDO $pdo;
-	public function __construct( int $row_count ) {
-		$this->pdo = new PDO( 'sqlite::memory:' );
-		$this->pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-		$this->pdo->exec( 'CREATE TABLE wp_runtime_events (event_id INTEGER PRIMARY KEY, payload TEXT)' );
-		$insert = $this->pdo->prepare( 'INSERT INTO wp_runtime_events (event_id, payload) VALUES (?, ?)' );
-		$this->pdo->beginTransaction();
-		for ( $id = 1; $id <= $row_count; $id++ ) { $insert->execute( array( $id, "payload-{$id}" ) ); }
-		$this->pdo->commit();
-	}
-	public function query( string $sql ): PDOStatement|false { return $this->pdo->query( $sql ); }
-	public function query_cursor( string $sql ): PDOStatement|false { return $this->query( $sql ); }
-	public function get_insert_id(): int { return (int) $this->pdo->lastInsertId(); }
-	public function get_connection(): object { return new class( $this->pdo ) { public function __construct( private PDO $pdo ) {} public function get_pdo(): PDO { return $this->pdo; } }; }
-}
+require_once __DIR__ . '/stubs/stub-backend-operations.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
-require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
+class MDI_Temp_Batch_Operations extends MDI_Stub_Backend_Operations {
+	public function __construct( int $row_count ) {
+		for ( $id = 1; $id <= $row_count; $id++ ) { $this->rows['runtime_events'][ $id ] = array( 'event_id' => $id, 'payload' => "payload-{$id}" ); }
+	}
+	public function table_rows( string $table_suffix, ?array $policy = null ): iterable {
+		$rows = $this->rows[ $table_suffix ] ?? array();
+		return isset( $policy['resource_ids'] ) ? array_intersect_key( $rows, array_flip( $policy['resource_ids'] ) ) : $rows;
+	}
+	public function mutations_for_query( string $query, array $operation ): array {
+		return array( array( 'stable_id' => 'event:2', 'operation' => $operation['op'], 'table' => $operation['table'], 'resource_ids' => array( '2' ), 'scope' => array( 'resource_ids_by_column' => array( 'event_id' => array( '2' ) ) ) ) );
+	}
+}
 
 $failed = 0;
 function mdi_temp_batch_assert( bool $condition, string $label ): void { global $failed; echo ( $condition ? 'PASS' : 'FAIL' ) . ': ' . $label . PHP_EOL; if ( ! $condition ) { $failed++; } }
@@ -49,8 +46,8 @@ add_filter( 'markdown_db_table_persistence_policy', static function ( array $pol
 $row_count = 2000;
 $root = sys_get_temp_dir() . '/mdi-temp-batch-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
-$driver = new MDI_Temp_Batch_Driver( $row_count );
-$engine = new WP_Markdown_Write_Engine( $root, new WP_Markdown_Storage( $root ), $driver, 'wp_' );
+$driver = new MDI_Temp_Batch_Operations( $row_count );
+$engine = new WP_Markdown_Canonical_Persistence( $root, new WP_Markdown_Storage( $root ), $driver, 'wp_' );
 
 $engine->persist_write( "UPDATE wp_runtime_events SET payload = 'two' WHERE event_id = 2", 'wp_runtime_events', 'UPDATE' );
 $engine->flush_dirty( true );
@@ -79,7 +76,7 @@ touch( $other_stale, time() - 400 );
 $locked_handle = fopen( $locked, 'rb' );
 flock( $locked_handle, LOCK_EX );
 
-$driver->pdo->exec( "UPDATE wp_runtime_events SET payload = 'changed' WHERE event_id = 2" );
+$driver->rows['runtime_events'][2]['payload'] = 'changed';
 $engine->persist_write( "UPDATE wp_runtime_events SET payload = 'changed' WHERE event_id = 2", 'wp_runtime_events', 'UPDATE' );
 $engine->flush_dirty( true );
 mdi_temp_batch_assert( ! file_exists( $stale ), 're-armed sweep on the next flush reclaims a stale interrupted-write temp' );

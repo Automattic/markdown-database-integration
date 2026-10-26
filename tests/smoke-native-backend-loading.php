@@ -34,13 +34,13 @@ global $wpdb;
 $wpdb = new MDI_Native_Loading_WPDB();
 require_once __DIR__ . '/../markdown-database-integration.php';
 
-markdown_database_integration_ensure_mysql_reconciliation_state();
+do_action( 'init' );
 do_action( 'switch_blog', 2, 1, 'switch' );
 
 $checks = array(
 	'no fence table DDL runs on init or switch_blog'      => array() === $wpdb->queries,
 	'no MySQL reconciliation schema option is written'    => ! isset( $GLOBALS['mdi_native_options']['_markdown_db_mysql_reconciliation_schema'] ),
-	'the SQLite recovery migration tool remains available' => class_exists( 'WP_Markdown_SQLite_Recovery', false ),
+	'only native runtime classes are loaded' => ! class_exists( 'WP_Markdown_SQLite_Recovery', false ) && ! class_exists( 'WP_Markdown_DB', false ),
 );
 
 $failed = false;
@@ -49,6 +49,6 @@ foreach ( $checks as $label => $passed ) {
 	$failed = $failed || ! $passed;
 }
 if ( $failed ) {
-	echo 'mysql files: ', implode( ', ', array_map( 'basename', $mysql_loaded ) ), "\nqueries: ", implode( ' | ', $wpdb->queries ), "\n";
+	echo 'queries: ', implode( ' | ', $wpdb->queries ), "\n";
 }
 exit( $failed ? 1 : 0 );

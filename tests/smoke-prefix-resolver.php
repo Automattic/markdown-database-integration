@@ -22,21 +22,14 @@ if ( ! defined( 'ABSPATH' ) ) {
     define( 'ABSPATH', __DIR__ . '/' );
 }
 
-// The write engine references WP_Markdown_Storage and WP_MySQL_On_SQLite in
-// its constructor signature. Provide minimal stubs so we can instantiate.
+// Minimal storage and semantic operations for prefix-only tests.
 if ( ! class_exists( 'WP_Markdown_Storage' ) ) {
     class WP_Markdown_Storage {
         public function __construct( ...$args ) {}
     }
 }
-if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
-    class WP_MySQL_On_SQLite {
-        public function __construct( ...$args ) {}
-    }
-}
-
-require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
+require_once __DIR__ . '/stubs/stub-backend-operations.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
 $failures = array();
 $total    = 0;
@@ -59,11 +52,11 @@ function assert_smoke( string $name, bool $cond, string $detail = '' ): void {
  * Uses a temp directory we don't actually write to — all the tests below
  * exercise prefix() reads, not file IO.
  */
-function build_engine( $prefix_resolver ): WP_Markdown_Write_Engine {
-    return new WP_Markdown_Write_Engine(
+function build_engine( $prefix_resolver ): WP_Markdown_Canonical_Persistence {
+    return new WP_Markdown_Canonical_Persistence(
         sys_get_temp_dir() . '/mdi-bench-prefix-test',
         new WP_Markdown_Storage(),
-        new WP_MySQL_On_SQLite(),
+        new MDI_Stub_Backend_Operations(),
         $prefix_resolver
     );
 }
@@ -76,19 +69,11 @@ function build_engine( $prefix_resolver ): WP_Markdown_Write_Engine {
  * the prefix is 'wptests_', `strip_prefix('wptests_options')` returns
  * 'options'. That's the assertion shape.
  */
-function read_prefix_via_strip( WP_Markdown_Write_Engine $engine, string $with_prefix_table ): string {
+function read_prefix_via_strip( WP_Markdown_Canonical_Persistence $engine, string $with_prefix_table ): string {
     // strip_prefix is private. PHP 8.1+ allows reflection access without
     // setAccessible(true), so we just construct the method ref and invoke.
     $ref = new \ReflectionMethod( $engine, 'strip_prefix' );
     return (string) $ref->invoke( $engine, $with_prefix_table );
-}
-
-/**
- * Read the loader's private prefix() value.
- */
-function read_loader_prefix( WP_Markdown_Loader $loader ): string {
-    $ref = new \ReflectionMethod( $loader, 'prefix' );
-    return (string) $ref->invoke( $loader );
 }
 
 // --- tests -----------------------------------------------------------------
@@ -137,26 +122,6 @@ $engine = build_engine( static function (): string { return ''; } );
 assert_smoke(
     'callable prefix: empty string leaves table name untouched',
     'wp_options' === read_prefix_via_strip( $engine, 'wp_options' )
-);
-
-// 5. Loader also re-reads the resolver. This is the primary-mode cold-boot
-// path that creates core tables, so it must not bake the early fallback prefix.
-$current_prefix = 'wp_';
-$loader         = new WP_Markdown_Loader(
-    sys_get_temp_dir() . '/mdi-bench-prefix-test',
-    new WP_MySQL_On_SQLite(),
-    new WP_Markdown_Storage(),
-    static function () use ( &$current_prefix ): string { return $current_prefix; }
-);
-assert_smoke(
-    'loader callable prefix: initial value is "wp_"',
-    'wp_' === read_loader_prefix( $loader )
-);
-$current_prefix = 'wptests_';
-assert_smoke(
-    'loader callable prefix: re-reads after mutation (wptests_)',
-    'wptests_' === read_loader_prefix( $loader ),
-    'loader must NOT cache the construct-time value'
 );
 
 // --- summary ---------------------------------------------------------------

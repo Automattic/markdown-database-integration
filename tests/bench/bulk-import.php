@@ -17,9 +17,8 @@
  *
  *   - Throughput curve: degradation as corpus grows is visible in
  *     p99 vs p50 (the last few inserts at size N tail-spike).
- *   - Storage mirror cost: MDI writes each post row to SQLite and mirrors
- *     post_content bytes to disk. p95 widening on MDI vs SDI quantifies
- *     the persistence overhead.
+ *   - Canonical persistence cost: MDI writes post_content bytes to disk.
+ *     p95 widening quantifies persistence overhead as the corpus grows.
  *   - Disk-write pressure: not measured directly here (homeboy bench
  *     reports peak_bytes only). Read off `du -sh` via the harness when
  *     it matters.
@@ -28,7 +27,7 @@
  * caveats:
  *   - At BENCH_CORPUS_SIZE=10000 and iterations=10, the cell wall-clocks
  *     to roughly N * iters * single-insert time. Sub-second per insert
- *     on SDI means tens of minutes per cell. Drop --iterations for big
+ *     can mean tens of minutes per cell. Drop --iterations for big
  *     corpora.
  *   - The first iteration is the warmup the dispatcher discards. That's
  *     useful for autoload + OPcache, less so for the empty-table reset

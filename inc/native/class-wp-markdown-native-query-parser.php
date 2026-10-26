@@ -11,7 +11,6 @@ final class WP_Markdown_Native_Query_Parser {
 	) {}
 
 	public function parse( string $sql, ?callable $table_columns = null ): WP_Markdown_Native_Query_Plan|WP_Markdown_Native_Found_Rows_Plan|WP_Markdown_Query_Result {
-		self::trace_runtime_phase( 'parser', $sql );
 		$ast = $this->parse_ast( $sql );
 		if ( $ast instanceof WP_Markdown_Query_Result ) {
 			return $ast;
@@ -20,40 +19,6 @@ final class WP_Markdown_Native_Query_Parser {
 			return $this->lower( $ast, array(), $table_columns );
 		} catch ( WP_Markdown_Native_SQL_Parse_Error $error ) {
 			return $this->failure( $error->reason(), $error->getMessage(), $error->sql_offset() );
-		}
-	}
-
-	private static function trace_runtime_phase( string $phase, ?string $sql = null ): void {
-		$path = defined( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' ) ? MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH : getenv( 'MARKDOWN_DB_NATIVE_SHADOW_TRACE_PATH' );
-		if ( ! is_string( $path ) || '' === $path ) {
-			return;
-		}
-		if ( ( is_file( $path ) ? (int) filesize( $path ) : 0 ) >= 65536 ) {
-			return;
-		}
-		$event = array( 'phase' => $phase, 'file_sha256' => hash_file( 'sha256', __FILE__ ) );
-		if ( null !== $sql && strlen( $sql ) <= 65536 ) {
-			try {
-				$event['sql_sha256'] = hash( 'sha256', $sql );
-				$event['token_types'] = array_slice( array_map( static fn( WP_Markdown_Native_SQL_Token $token ): string => $token->type(), ( new WP_Markdown_Native_SQL_Tokenizer() )->tokenize( $sql ) ), 0, 128 );
-			} catch ( WP_Markdown_Native_SQL_Parse_Error ) {
-				$event['token_types'] = array( 'parse_error' );
-			}
-		}
-		$encoded = json_encode( $event, JSON_UNESCAPED_SLASHES ) . "\n";
-		if ( strlen( $encoded ) <= 4096 && false !== ( $trace = @fopen( $path, 'c' ) ) ) {
-			try {
-				if ( flock( $trace, LOCK_EX ) ) {
-					$size = fstat( $trace )['size'] ?? 0;
-					if ( $size + strlen( $encoded ) <= 65536 ) {
-						fseek( $trace, 0, SEEK_END );
-						fwrite( $trace, $encoded );
-					}
-					flock( $trace, LOCK_UN );
-				}
-			} finally {
-				fclose( $trace );
-			}
 		}
 	}
 

@@ -13,20 +13,10 @@ require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
 
 class WP_Markdown_Health {
 
-	/**
-	 * Diagnose the MDI runtime and drop-in state.
-	 *
-	 * @param array $context Optional explicit values for deterministic callers.
-	 * @return array Health report.
-	 */
+	/** Diagnose the native runtime and drop-in state. */
 	public static function diagnose( array $context = array() ): array {
 		global $wpdb;
-
-		$mode = $context['mode'] ?? ( defined( 'MARKDOWN_DB_MODE' ) ? MARKDOWN_DB_MODE : '' );
-		$mode = is_string( $mode ) ? $mode : '';
-
-		$sqlite_runtime = $context['sqlite_runtime'] ?? ( class_exists( 'WP_SQLite_DB' ) && $wpdb instanceof WP_SQLite_DB );
-		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
+		$backend = $context['backend_capabilities'] ?? WP_Markdown_Backend_Resolver::resolve();
 		if ( ! $backend instanceof WP_Markdown_Backend_Capabilities ) {
 			throw new InvalidArgumentException( 'backend_capabilities must be a WP_Markdown_Backend_Capabilities instance.' );
 		}
@@ -37,97 +27,41 @@ class WP_Markdown_Health {
 				return self::with_backend( array(
 					'status'     => 'unsupported_backend_capability',
 					'healthy'    => false,
-					'mode'       => $mode,
 					'message'    => $error->getMessage(),
 					'diagnostic' => $error->get_diagnostic(),
 				), $backend );
 			}
 		}
-		if ( ! $sqlite_runtime ) {
+		$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN );
+		$native_runtime = $context['native_runtime'] ?? ( $wpdb instanceof WP_Markdown_Native_WPDB );
+		$configured = $context['configured'] ?? ( defined( 'MARKDOWN_DB_BACKEND' ) || $dropin_loaded || $native_runtime );
+		if ( ! $configured ) {
 			return self::with_backend( array(
 				'status'  => 'not_applicable',
 				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'MDI drop-in health is not applicable to this non-SQLite runtime. Import/export remains available.',
-			), $backend );
+				'message' => 'Import/export is available without an MDI database runtime.',
+			), new WP_Markdown_Backend_Capabilities( 'none' ) );
 		}
-
-		if ( ! in_array( $mode, array( 'primary', 'mirror' ), true ) ) {
+		if ( $dropin_loaded && $native_runtime ) {
 			return self::with_backend( array(
-				'status'  => 'not_configured',
+				'status'  => 'healthy',
 				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'No MDI primary or mirror mode is configured.',
+				'message' => 'MDI native drop-in and runtime are active.',
 			), $backend );
 		}
-
-		$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN );
-		$install_fallback = $context['install_fallback'] ?? ( defined( 'MARKDOWN_DB_INSTALL_FALLBACK' ) && MARKDOWN_DB_INSTALL_FALLBACK );
-		$runtime_classes = $context['runtime_classes'] ?? array(
-			class_exists( 'WP_Markdown_DB' ),
-			class_exists( 'WP_Markdown_Write_Engine' ),
-			class_exists( 'WP_Markdown_Loader' ),
-			class_exists( 'WP_Markdown_Storage' ),
-		);
-		$runtime_loaded = ! in_array( false, $runtime_classes, true );
-		$markdown_runtime = $context['markdown_runtime'] ?? ( class_exists( 'WP_Markdown_DB' ) && $wpdb instanceof WP_Markdown_DB );
-		$primary_index_evidence = $context['primary_index_evidence'] ?? ( $GLOBALS['markdown_db_primary_index_evidence'] ?? null );
-
-		if ( 'primary' === $mode && $dropin_loaded && $install_fallback ) {
-			return self::with_backend( array(
-				'status'  => 'install_fallback',
-				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'MDI primary install fallback is active until WordPress installation completes.',
-			), $backend );
-		}
-
-		$primary_index_code = is_array( $primary_index_evidence ) ? (string) ( $primary_index_evidence['code'] ?? '' ) : '';
-		$primary_index_usable = in_array( $primary_index_code, array( 'markdown_db_primary_index_ready', 'markdown_db_primary_index_recovered_previous', 'markdown_db_primary_index_cold_reconstructed' ), true );
-		if ( 'primary' === $mode && str_starts_with( $primary_index_code, 'markdown_db_primary_index_' ) && ! $primary_index_usable ) {
-			return self::with_backend( array(
-				'status'     => 'primary_index_unavailable',
-				'healthy'    => false,
-				'mode'       => $mode,
-				'message'    => 'The disposable primary index is unavailable; canonical files remain authoritative and require explicit index maintenance.',
-				'diagnostic' => $primary_index_evidence,
-			), $backend );
-		}
-
-		if ( $dropin_loaded && $runtime_loaded && $markdown_runtime ) {
-			return self::with_backend( array(
-				'status'  => 'markdown_db_primary_index_recovered_previous' === $primary_index_code ? 'primary_index_recovered_previous' : 'healthy',
-				'healthy' => true,
-				'mode'    => $mode,
-				'message' => 'MDI drop-in and runtime classes are active.',
-				'primary_index' => $primary_index_evidence,
-			), $backend );
-		}
-
 		return self::with_backend( array(
 			'status'  => 'dropin_missing_or_replaced',
 			'healthy' => false,
-			'mode'    => $mode,
-			'message' => 'MDI ' . $mode . ' mode is configured, but the MDI db.php drop-in and runtime are not active.',
+			'message' => 'The MDI db.php drop-in and native runtime are not active.',
 		), $backend );
 	}
 
-	/**
-	 * Add the backend contract without changing existing health fields.
-	 *
-	 * @param array $report Health report.
-	 */
 	private static function with_backend( array $report, WP_Markdown_Backend_Capabilities $backend ): array {
 		$report['backend'] = $backend->report();
 		return $report;
 	}
 
-	/**
-	 * Install or repair the MDI db.php drop-in.
-	 *
-	 * @param array $options Repair options.
-	 * @return array Repair report.
-	 */
+	/** Install or repair the MDI db.php drop-in. */
 	public static function repair_dropin( array $options = array() ): array {
 		$source      = $options['source'] ?? ( defined( 'MARKDOWN_DB_PLUGIN_DIR' ) ? MARKDOWN_DB_PLUGIN_DIR . 'db.php' : '' );
 		$destination = $options['destination'] ?? ( defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR . '/db.php' : '' );

@@ -744,7 +744,7 @@ class WP_Markdown_SQLite_Runtime_Adapter extends WP_MySQL_On_SQLite {
 		if ( null === $operation ) {
 			return null;
 		}
-		// mysql-full owns multi-table DELETE and index creation; retain SQLite's prior set.
+		// Retain SQLite's supported mutation set.
 		if ( ! isset( $operation['table'] ) || 'TRUNCATE' === $operation['op'] || preg_match( '/^\s*CREATE\s+(?:(?:OR\s+REPLACE)\s+)?(?:(?:UNIQUE|FULLTEXT|SPATIAL|VECTOR)\s+)?INDEX\b/i', $query ) ) {
 			return null;
 		}

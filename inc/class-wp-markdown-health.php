@@ -26,7 +26,7 @@ class WP_Markdown_Health {
 		$mode = is_string( $mode ) ? $mode : '';
 
 		$sqlite_runtime = $context['sqlite_runtime'] ?? ( class_exists( 'WP_SQLite_DB' ) && $wpdb instanceof WP_SQLite_DB );
-		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime || ( defined( 'MARKDOWN_DB_BACKEND' ) && in_array( MARKDOWN_DB_BACKEND, array( 'mysql-content', 'mysql-full' ), true ) ) ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
+		$backend        = $context['backend_capabilities'] ?? ( $sqlite_runtime ? WP_Markdown_Backend_Resolver::resolve() : new WP_Markdown_Backend_Capabilities( 'none' ) );
 		if ( ! $backend instanceof WP_Markdown_Backend_Capabilities ) {
 			throw new InvalidArgumentException( 'backend_capabilities must be a WP_Markdown_Backend_Capabilities instance.' );
 		}
@@ -44,56 +44,6 @@ class WP_Markdown_Health {
 			}
 		}
 		if ( ! $sqlite_runtime ) {
-			if ( 'mysql-full' === $backend->get_backend() ) {
-				$boundary = $context['mysql_full_boundary'] ?? ( class_exists( 'WP_Markdown_MySQL_WPDB' ) && $wpdb instanceof WP_Markdown_MySQL_WPDB );
-				$sink = $context['mysql_full_sink'] ?? ( is_object( $wpdb ?? null ) && method_exists( $wpdb, 'has_mutation_sink' ) && $wpdb->has_mutation_sink() );
-				$diagnostic = $context['mysql_full_diagnostic'] ?? ( $GLOBALS['markdown_db_mysql_full_diagnostic'] ?? null );
-				if ( is_array( $diagnostic ) && str_starts_with( (string) ( $diagnostic['code'] ?? '' ), 'markdown_db_mysql_full_bootstrap_' ) ) {
-					return self::with_backend( array( 'status' => 'mysql_full_bootstrap_failed', 'healthy' => false, 'mode' => $mode, 'message' => (string) ( $diagnostic['message'] ?? 'mysql-full bootstrap failed.' ), 'diagnostic' => $diagnostic ), $backend );
-				}
-				if ( ! $boundary ) {
-					return self::with_backend( array( 'status' => 'mysql_full_dropin_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full requires the MDI-owned db.php wpdb boundary; normal plugin bootstrap cannot observe early queries.' ), $backend );
-				}
-				if ( ! $sink ) {
-					return self::with_backend( array( 'status' => 'mysql_full_outbox_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full has no durable mutation outbox, so capture is disabled.' ), $backend );
-				}
-				if ( is_array( $diagnostic ) && 'markdown_db_mysql_full_observer_failed' === ( $diagnostic['code'] ?? null ) ) {
-					return self::with_backend( array( 'status' => 'mysql_full_observer_failed', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full mutation capture encountered a sink failure.', 'diagnostic' => $diagnostic ), $backend );
-				}
-				$outbox = $context['mysql_full_outbox'] ?? ( $GLOBALS['markdown_db_mysql_outbox'] ?? null );
-				try {
-					$outbox_diagnostics = $context['mysql_full_outbox_diagnostics'] ?? ( is_object( $outbox ) && method_exists( $outbox, 'diagnostics' ) ? $outbox->diagnostics() : null );
-				} catch ( Throwable $error ) {
-					$outbox_diagnostics = array( 'ready' => false, 'error' => $error->getMessage() );
-				}
-				if ( ! is_array( $outbox_diagnostics ) || empty( $outbox_diagnostics['ready'] ) ) {
-					return self::with_backend( array( 'status' => 'mysql_full_outbox_unavailable', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full could not validate its durable outbox schema.', 'outbox' => $outbox_diagnostics ), $backend );
-				}
-				$drain = $context['mysql_full_semantic_drain'] ?? ( $GLOBALS['markdown_db_mysql_semantic_drain'] ?? null );
-				try { $drain_diagnostics = is_object( $drain ) && method_exists( $drain, 'diagnostics' ) ? $drain->diagnostics() : array( 'ready' => false ); } catch ( Throwable $error ) { $drain_diagnostics = array( 'ready' => false, 'error' => $error->getMessage() ); }
-				if ( empty( $drain_diagnostics['ready'] ) || empty( $drain_diagnostics['planner_ready'] ) ) {
-					return self::with_backend( array( 'status' => 'mysql_full_semantic_drain_unavailable', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full durable capture is ready but semantic intent planning is unavailable.', 'outbox' => $outbox_diagnostics, 'semantic_drain' => $drain_diagnostics ), $backend );
-				}
-				$publisher_ready = $context['mysql_full_publisher_ready'] ?? ( class_exists( 'WP_Markdown_MySQL_Full_Runtime' ) && WP_Markdown_MySQL_Full_Runtime::is_active() );
-				if ( ! $publisher_ready ) {
-					return self::with_backend( array( 'status' => 'mysql_full_canonical_publisher_unavailable', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-full semantic intent planning is ready but canonical publication is unavailable.', 'outbox' => $outbox_diagnostics, 'semantic_drain' => $drain_diagnostics ), $backend );
-				}
-				return self::with_backend( array( 'status' => 'mysql_full_canonical_publication_ready', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI mysql-full durable canonical publication is ready. Cold reconstruction and full-primary stability remain later slices.', 'outbox' => $outbox_diagnostics, 'semantic_drain' => $drain_diagnostics ), $backend );
-			}
-			if ( 'mysql-content' === $backend->get_backend() ) {
-				$dropin_loaded = $context['dropin_loaded'] ?? ( defined( 'MARKDOWN_DB_RETAINED_DROPIN' ) || ( defined( 'MARKDOWN_DB_DROPIN' ) && MARKDOWN_DB_DROPIN ) );
-				if ( $dropin_loaded ) {
-					return self::with_backend( array( 'status' => 'mysql_content_dropin_migration_required', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-content runs on normal MySQL without db.php. Remove the MDI SQLite db.php drop-in, restart PHP, then rerun markdown-db doctor.' ), $backend );
-				}
-				$managed_types = $context['managed_post_types'] ?? ( defined( 'MARKDOWN_DB_MANAGED_POST_TYPES' ) ? MARKDOWN_DB_MANAGED_POST_TYPES : '' );
-				if ( ! is_string( $managed_types ) || '' === trim( $managed_types ) ) {
-					return self::with_backend( array( 'status' => 'not_configured', 'healthy' => false, 'mode' => $mode, 'message' => 'mysql-content requires explicitly configured MARKDOWN_DB_MANAGED_POST_TYPES.' ), $backend );
-				}
-				if ( ! $backend->supports( 'content_mutation_capture' ) || ! $backend->supports( 'cold_reconstruction' ) || ! $backend->supports( 'explicit_flush' ) || ! $backend->supports( 'changed_path_receipts' ) ) {
-					return self::with_backend( array( 'status' => 'unsupported_backend_capability', 'healthy' => false, 'mode' => $mode, 'message' => 'The mysql-content backend declaration is incomplete.' ), $backend );
-				}
-				return self::with_backend( array( 'status' => 'healthy', 'healthy' => true, 'mode' => $mode, 'message' => 'MDI MySQL content-primary lifecycle runtime is active without a db.php drop-in.' ), $backend );
-			}
 			return self::with_backend( array(
 				'status'  => 'not_applicable',
 				'healthy' => true,

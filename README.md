@@ -25,9 +25,8 @@ MDI selects its backend in `wp-content/db.php` before plugins load:
 - Otherwise, MDI selects **`mdi-native`**, where canonical Markdown and JSON
   files are the database.
 
-`sqlite`, `mysql-content`, and `mysql-full` remain supported explicit
-operational backends. Their constraints and setup are documented below; they
-are not the default architecture.
+`sqlite` remains an explicit operational backend. Its constraints and setup
+are documented below; `mdi-native` is the default architecture.
 
 ## SQLite Integration API (Explicit `sqlite` Backend)
 
@@ -386,7 +385,7 @@ composer install --no-dev
 wp plugin activate markdown-database-integration
 
 # Install the MDI db.php drop-in for the native default runtime, or for an
-# explicit sqlite or mysql-full backend.
+# explicit sqlite backend.
 wp markdown-db doctor
 wp markdown-db doctor --repair
 ```
@@ -412,8 +411,8 @@ bounded dirty subset atomically before exit. Subscribe to
 to its tables, post IDs, partition resources, and canonical paths.
 
 On a normal MySQL/MariaDB WordPress site, activate the plugin without copying
-the `db.php` drop-in when using only import/export or `mysql-content`. Install
-the drop-in for `mysql-full`. Use the import/export commands or abilities to
+the `db.php` drop-in when using only import/export. Use the import/export
+commands or abilities to
 move content between the active database and `MARKDOWN_DB_CONTENT_DIR`.
 
 ## Configuration
@@ -445,7 +444,7 @@ define( 'MARKDOWN_DB_EPHEMERAL_TABLES', 'my_session_table' );
 
 // Select an operational backend only when overriding automatic selection.
 // Unconfigured installs use mdi-native unless an existing SQLite database is
-// detected. Valid values: mdi-native, sqlite, mysql-content, mysql-full.
+// detected. Valid values: mdi-native, sqlite.
 define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
 ```
 
@@ -461,45 +460,6 @@ define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
 SQLite primary mode trades cold-boot work for reconstructable persisted state. To
 reconstruct the complete configured state, retain both the content tree and the
 state tree when they are split.
-
-### MySQL/MariaDB Operational Backends
-
-MDI also has two explicit native-database backends:
-
-- `mysql-content` runs as a normal plugin without `db.php`. It makes the post
-  types listed in `MARKDOWN_DB_MANAGED_POST_TYPES` content-primary, including
-  post rows, meta, terms, hierarchy, reconciliation, explicit flush receipts,
-  and reconstruction of those managed posts.
-- `mysql-full` uses the MDI `db.php` boundary to preserve stock `wpdb` behavior
-  while capturing supported DML and DDL into a transactional InnoDB outbox.
-  Successful mutations are planned immediately into stable semantic envelopes,
-  committed through the outbox, and published to
-  the existing Markdown, JSON, and schema layouts. Failed publication remains
-  in the outbox for retry, and `wp_markdown_mysql_full_flush()` provides an
-  explicit durability boundary with changed-path receipts.
-
-Configure one backend in `wp-config.php`:
-
-```php
-define( 'MARKDOWN_DB_BACKEND', 'mysql-content' );
-define( 'MARKDOWN_DB_MANAGED_POST_TYPES', 'post,page,wiki' );
-
-// Or, with the MDI db.php installed:
-define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
-```
-
-For multisite `mysql-full`, site-local canonical roots default to
-`sites/{blog_id}` below the configured content and state roots. Network-global
-tables remain in the base state root. `markdown_db_mysql_full_roots` can supply
-deployment-owned roots for each captured scope. Changed-path receipts qualify
-site-local paths with `sites/{blog_id}/` so equal paths from different sites do
-not collide.
-
-`mysql-full` currently publishes canonical state but does not yet reconstruct
-an empty MySQL/MariaDB database from those files. Direct `mysqli` writes,
-separate connections, server-side writers, multi-statements, stored-routine
-internal statements, and XA transactions remain outside the captured `wpdb`
-boundary and are reported by diagnostics.
 
 ### Query Compatibility Corpus
 
@@ -546,7 +506,7 @@ newer.
 
 ### Native Shadow Verification
 
-An existing SQLite or `mysql-full` runtime can replay authoritative WordPress
+An existing SQLite runtime can replay authoritative WordPress
 reads through `mdi-native` without changing query results. Enable this only in a
 disposable verification runtime:
 

@@ -63,6 +63,11 @@ An existing unrelated `wp-content/db.php` is not overwritten without
 drop-in from Studio refreshes. Restart PHP/WordPress after repair: the drop-in
 loads before plugins, including when WP-CLI skips this plugin.
 
+After a plugin upgrade, the plugin replaces an installed MDI drop-in that
+differs from its bundled `db.php`; the new copy serves the next request. An
+unrelated or absent `db.php` is left alone. If `wp-content` is not writable,
+`wp markdown-db doctor` reports `dropin_outdated`.
+
 For import/export on an ordinary MySQL/MariaDB WordPress installation, activate
 only the plugin, without installing MDI's drop-in. MySQL/MariaDB is an external
 import/export target and compatibility oracle, not an MDI backend.

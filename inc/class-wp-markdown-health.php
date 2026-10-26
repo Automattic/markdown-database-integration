@@ -42,6 +42,13 @@ class WP_Markdown_Health {
 				'message' => 'Import/export is available without an MDI database runtime.',
 			), new WP_Markdown_Backend_Capabilities( 'none' ) );
 		}
+		if ( $dropin_loaded && $native_runtime && ( $context['dropin_outdated'] ?? self::dropin_is_outdated() ) ) {
+			return self::with_backend( array(
+				'status'  => 'dropin_outdated',
+				'healthy' => false,
+				'message' => 'wp-content/db.php differs from the MDI plugin copy and could not be refreshed. Run `wp markdown-db doctor --repair`.',
+			), $backend );
+		}
 		if ( $dropin_loaded && $native_runtime ) {
 			return self::with_backend( array(
 				'status'  => 'healthy',
@@ -59,6 +66,25 @@ class WP_Markdown_Health {
 	private static function with_backend( array $report, WP_Markdown_Backend_Capabilities $backend ): array {
 		$report['backend'] = $backend->report();
 		return $report;
+	}
+
+	/**
+	 * Replace an installed MDI drop-in that differs from the plugin copy.
+	 *
+	 * Runs on every plugin load so a plugin upgrade carries its drop-in with it.
+	 * An absent or unrelated db.php is left alone; doctor reports it.
+	 */
+	public static function refresh_outdated_dropin(): ?array {
+		return self::dropin_is_outdated() ? self::repair_dropin() : null;
+	}
+
+	private static function dropin_is_outdated(): bool {
+		if ( ! defined( 'MARKDOWN_DB_PLUGIN_DIR' ) || ! defined( 'WP_CONTENT_DIR' ) ) {
+			return false;
+		}
+		$installed = @file_get_contents( WP_CONTENT_DIR . '/db.php' );
+		$packaged  = @file_get_contents( MARKDOWN_DB_PLUGIN_DIR . 'db.php' );
+		return is_string( $installed ) && is_string( $packaged ) && $installed !== $packaged && self::is_mdi_dropin_contents( $installed );
 	}
 
 	/** Install or repair the MDI db.php drop-in. */
@@ -122,7 +148,11 @@ class WP_Markdown_Health {
 
 	private static function is_mdi_dropin( string $path ): bool {
 		$contents = file_get_contents( $path );
-		return is_string( $contents ) && str_contains( $contents, '@studio-keep' ) && str_contains( $contents, 'MARKDOWN_DB_DROPIN' );
+		return is_string( $contents ) && self::is_mdi_dropin_contents( $contents );
+	}
+
+	private static function is_mdi_dropin_contents( string $contents ): bool {
+		return str_contains( $contents, '@studio-keep' ) && str_contains( $contents, 'MARKDOWN_DB_DROPIN' );
 	}
 
 	private static function repair_failure( string $message ): array {

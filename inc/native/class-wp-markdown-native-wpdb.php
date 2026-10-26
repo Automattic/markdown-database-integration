@@ -207,8 +207,8 @@ final class WP_Markdown_Native_WPDB extends wpdb {
 		$this->num_rows               = $state['num_rows'];
 		$this->last_runtime_diagnostic = $result->diagnostic();
 		$this->result                 = $result->succeeded();
-		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES && method_exists( $this, 'log_query' ) ) {
-			$this->log_query( $query, microtime( true ) - $query_start, method_exists( $this, 'get_caller' ) ? $this->get_caller() : '', $query_start, array() );
+		if ( defined( 'SAVEQUERIES' ) && SAVEQUERIES ) {
+			$this->log_query( $query, microtime( true ) - $query_start, $this->get_caller(), $query_start, array() );
 		}
 
 		return $result->return_value();

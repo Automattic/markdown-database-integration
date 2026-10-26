@@ -45,6 +45,32 @@ mdi_health_assert( ! $refusal['success'] && str_contains( $refusal['message'], '
 $forced = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination, 'force' => true ) );
 mdi_health_assert( $forced['success'] && file_exists( $destination . '.markdown-db-backup' ), 'forced repair creates deterministic backup' );
 mdi_health_assert( $unrelated_dropin === file_get_contents( $destination . '.markdown-db-backup' ), 'forced repair preserves unrelated drop-in bytes' );
+
+// Plugin load refreshes only an installed MDI drop-in that differs from the packaged copy.
+$outdated_report = WP_Markdown_Health::diagnose( array( 'native_runtime' => true, 'dropin_loaded' => true, 'dropin_outdated' => true ) );
+mdi_health_assert( 'dropin_outdated' === $outdated_report['status'] && ! $outdated_report['healthy'], 'doctor reports a drop-in that could not be refreshed' );
+mkdir( $root . '/plugin' );
+mkdir( $root . '/content' );
+define( 'MARKDOWN_DB_PLUGIN_DIR', $root . '/plugin/' );
+define( 'WP_CONTENT_DIR', $root . '/content' );
+$packaged = "<?php\n// @studio-keep\ndefine( 'MARKDOWN_DB_DROPIN', true );\n// v2\n";
+file_put_contents( MARKDOWN_DB_PLUGIN_DIR . 'db.php', $packaged );
+$installed_path = WP_CONTENT_DIR . '/db.php';
+foreach ( array(
+	'outdated MDI drop-in is replaced' => array( "<?php\n// @studio-keep\ndefine( 'MARKDOWN_DB_DROPIN', true );\n// v1\n", 'updated', $packaged ),
+	'current MDI drop-in is untouched'  => array( $packaged, null, $packaged ),
+	'unrelated drop-in is untouched'    => array( "<?php\n// other plugin\n", null, "<?php\n// other plugin\n" ),
+	'absent drop-in is not installed'   => array( null, null, null ),
+) as $label => list( $before, $status, $after ) ) {
+	if ( file_exists( $installed_path ) ) { unlink( $installed_path ); }
+	if ( null !== $before ) { file_put_contents( $installed_path, $before ); }
+	$result = WP_Markdown_Health::refresh_outdated_dropin();
+	$contents = file_exists( $installed_path ) ? file_get_contents( $installed_path ) : null;
+	mdi_health_assert( $status === ( $result['status'] ?? null ) && $after === $contents, $label );
+}
+foreach ( array( $installed_path, MARKDOWN_DB_PLUGIN_DIR . 'db.php' ) as $path ) { if ( file_exists( $path ) ) { unlink( $path ); } }
+rmdir( $root . '/plugin' );
+rmdir( $root . '/content' );
 foreach ( glob( $root . '/*' ) ?: array() as $path ) { unlink( $path ); }
 rmdir( $root );
 if ( $failures ) {

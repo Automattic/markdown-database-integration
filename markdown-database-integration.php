@@ -47,6 +47,9 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/markdown-db-paths.php';
 
+// db.php loads before plugins, so a refreshed copy takes effect on the next request.
+WP_Markdown_Health::refresh_outdated_dropin();
+
 /** Override in wp-config.php to choose the canonical post content directory. */
 if ( ! defined( 'MARKDOWN_DB_CONTENT_DIR' ) ) {
 	define( 'MARKDOWN_DB_CONTENT_DIR', markdown_db_default_content_dir() );

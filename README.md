@@ -106,7 +106,7 @@ With a single root these directories coexist. Backups must preserve both roots
 when split. Markdown frontmatter carries post fields, metadata, and terms;
 post bodies preserve `post_content` bytes as received. Options have individual
 files; users, taxonomy, comments, links, non-Markdown posts, and plugin-table
-rows use JSON snapshots or configured row partitions. Plugin schemas use SQL.
+rows use JSON snapshots. Plugin schemas use SQL.
 
 MDI does not render Markdown, convert editor blocks during live writes, or
 register content-rendering policy. Applications own content format. Conversion
@@ -126,8 +126,11 @@ define( 'MARKDOWN_DB_TABLE_DURABILITY_POLICY', array(
 ) );
 ```
 
-Existing row-partitioned tables (`_tables/<table>/.mdi-partition.json`) are read
-and updated in place.
+Row-partitioned tables written by earlier MDI releases
+(`_tables/<table>/.mdi-partition.json`) fold into `_tables/<table>.json` on the
+first bootstrap that finds them. Columns added since the rows were written take
+their declared default. A partition that does not fit its schema stays in place,
+the table is not registered, and the reason goes to the PHP error log.
 
 ## Native architecture
 

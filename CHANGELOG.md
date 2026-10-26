@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.5] - 2026-10-26
+
+### Changed
+- Retire the mysql-content and mysql-full backends
+
 ## [0.14.4] - 2026-10-26
 
 ### Changed

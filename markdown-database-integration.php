@@ -3,7 +3,7 @@
  * Plugin Name: Markdown Database Integration
  * Plugin URI: https://github.com/Automattic/markdown-database-integration
  * Description: Native pure-PHP WordPress SQL engine backed by canonical Markdown content, JSON state, and plugin schemas.
- * Version: 0.14.4
+ * Version: 0.14.5
  * Author: Chris Huber
  * License: GPL v2 or later
  * License URI: https://www.gnu.org/licenses/gpl-2.0.html
@@ -36,7 +36,7 @@ if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
-define( 'MARKDOWN_DB_VERSION', '0.14.4' );
+define( 'MARKDOWN_DB_VERSION', '0.14.5' );
 define( 'MARKDOWN_DB_PLUGIN_DIR', dirname( __FILE__ ) . '/' );
 
 $markdown_database_integration_autoload = MARKDOWN_DB_PLUGIN_DIR . 'vendor/autoload.php';

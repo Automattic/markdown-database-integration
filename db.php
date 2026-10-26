@@ -9,8 +9,6 @@
  *                   MARKDOWN_DB_MODE applies only here:
  *                     'mirror'  — SQLite on disk, markdown mirrored on writes
  *                     'primary' — markdown files are the database, indexed in SQLite
- *   mysql-content — plugin-level MySQL runtime; wpdb boots normally.
- *   mysql-full    — MySQL wpdb with a canonical-publishing outbox.
  *
  * This file goes in wp-content/db.php (replacing the SQLite drop-in's version).
  *
@@ -156,11 +154,10 @@ if ( ! function_exists( 'markdown_database_integration_native_plugin_dir' ) ) {
 }
 
 // A process supervisor may provide these early-bootstrap settings through its
-// environment. This supports external disposable MySQL runtimes that generate
-// wp-config.php after WordPress has already loaded db.php.
+// environment before WordPress loads wp-config.php in disposable runtimes.
 if ( ! defined( 'MARKDOWN_DB_BACKEND' ) ) {
 	$markdown_db_environment_backend = getenv( 'MARKDOWN_DB_BACKEND' );
-	if ( is_string( $markdown_db_environment_backend ) && in_array( $markdown_db_environment_backend, array( 'sqlite', 'mdi-native', 'mysql-content', 'mysql-full' ), true ) ) {
+	if ( is_string( $markdown_db_environment_backend ) && in_array( $markdown_db_environment_backend, array( 'sqlite', 'mdi-native' ), true ) ) {
 		define( 'MARKDOWN_DB_BACKEND', $markdown_db_environment_backend );
 	}
 }
@@ -206,54 +203,6 @@ if ( ! $markdown_db_backend_is_explicit ) {
 		$markdown_db_resolved_backend = 'sqlite';
 	}
 	define( 'MARKDOWN_DB_BACKEND', $markdown_db_resolved_backend );
-}
-
-// mysql-content is a plugin-level MySQL runtime. Leave normal wpdb bootstrap
-// intact so the plugin can report the explicit db.php migration diagnostic.
-if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-content' === MARKDOWN_DB_BACKEND ) {
-	define( 'MARKDOWN_DB_RETAINED_DROPIN', true );
-	return;
-}
-
-// mysql-full must own this boundary because plugins load after wpdb bootstrap.
-if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mysql-full' === MARKDOWN_DB_BACKEND ) {
-	$markdown_db_mysql_plugin_dir = null;
-	foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $path ) {
-		if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' ) && is_file( $path . '/inc/class-wp-markdown-sql-classifier.php' ) && is_file( $path . '/inc/mysql/class-wp-markdown-mysql-wpdb.php' ) && is_file( $path . '/inc/mysql/class-wp-markdown-mysql-outbox.php' ) ) {
-			$markdown_db_mysql_plugin_dir = $path;
-			break;
-		}
-	}
-	if ( null === $markdown_db_mysql_plugin_dir || ! class_exists( 'wpdb' ) ) {
-		$GLOBALS['markdown_db_mysql_full_diagnostic'] = array( 'code' => 'markdown_db_mysql_full_bootstrap_unavailable', 'message' => 'mysql-full requires a compatible MDI db.php bootstrap and stock wpdb.' );
-		return;
-	}
-	try {
-		require_once $markdown_db_mysql_plugin_dir . '/inc/class-wp-markdown-backend-capabilities.php';
-		$markdown_db_mysql_backend = WP_Markdown_Backend_Resolver::configure_from_globals();
-		$markdown_db_mysql_backend->require( 'table_mutation_capture' );
-		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-outbox.php';
-		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-impact-adapter.php';
-		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-semantic-drain.php';
-		require_once $markdown_db_mysql_plugin_dir . '/inc/mysql/class-wp-markdown-mysql-wpdb.php';
-		if ( 2 !== WP_Markdown_MySQL_WPDB::BOOTSTRAP_ABI ) {
-			throw new RuntimeException( 'Incompatible mysql-full bootstrap ABI.' );
-		}
-		$markdown_db_mysql_wpdb = new WP_Markdown_MySQL_WPDB( DB_USER, DB_PASSWORD, DB_NAME, DB_HOST );
-		$markdown_db_base_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
-		$markdown_db_mysql_impact_adapter = new WP_Markdown_MySQL_Impact_Adapter( $markdown_db_mysql_wpdb->markdown_db_mysql_connection() );
-		$markdown_db_mysql_outbox = new WP_Markdown_MySQL_Outbox( $markdown_db_mysql_wpdb->markdown_db_mysql_connection(), $markdown_db_base_prefix . 'mdi_mysql_outbox', array( $markdown_db_mysql_impact_adapter, 'intents' ) );
-		$markdown_db_mysql_wpdb->set_mutation_sink( $markdown_db_mysql_outbox );
-		markdown_database_integration_enable_native_shadow( $markdown_db_mysql_wpdb, $markdown_db_mysql_plugin_dir );
-		$GLOBALS['markdown_db_mysql_outbox'] = $markdown_db_mysql_outbox;
-		$GLOBALS['markdown_db_mysql_semantic_drain'] = new WP_Markdown_MySQL_Semantic_Drain( $markdown_db_mysql_outbox, $markdown_db_mysql_impact_adapter );
-		$GLOBALS['wpdb'] = $markdown_db_mysql_wpdb;
-		define( 'MARKDOWN_DB_DROPIN', true );
-	} catch ( Throwable $error ) {
-		unset( $GLOBALS['wpdb'] );
-		$GLOBALS['markdown_db_mysql_full_diagnostic'] = array( 'code' => 'markdown_db_mysql_full_bootstrap_incompatible', 'message' => $error->getMessage() );
-	}
-	return;
 }
 
 // mdi-native serves bounded reads directly from canonical Markdown and JSON.

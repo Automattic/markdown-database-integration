@@ -39,25 +39,6 @@ foreach ( array_diff( $expected, array( 'canonical_option_select' ) ) as $capabi
 }
 mdi_backend_assert( ! $sqlite->supports( 'canonical_option_select' ), 'SQLite does not claim direct canonical option execution' );
 
-$mysql_content = WP_Markdown_Backend_Capabilities::mysql_content();
-mdi_backend_assert( 'mysql-content' === $mysql_content->get_backend(), 'MySQL content-primary backend identifier is stable' );
-foreach ( array( 'content_mutation_capture', 'cold_reconstruction', 'explicit_flush', 'changed_path_receipts' ) as $capability ) {
-	mdi_backend_assert( $mysql_content->supports( $capability ), 'MySQL content-primary supports ' . $capability );
-}
-
-$mysql_full = WP_Markdown_Backend_Capabilities::mysql_full();
-mdi_backend_assert( 'mysql-full' === $mysql_full->get_backend(), 'MySQL full-primary backend identifier is stable' );
-foreach ( array( 'content_mutation_capture', 'table_mutation_capture', 'schema_persistence', 'explicit_flush', 'changed_path_receipts' ) as $capability ) {
-	mdi_backend_assert( $mysql_full->supports( $capability ), 'MySQL full-primary declares ' . $capability );
-}
-foreach ( array( 'cold_reconstruction', 'disposable_index_operation', 'lazy_post_content_resolution' ) as $capability ) {
-	mdi_backend_assert( ! $mysql_full->supports( $capability ), 'MySQL full-primary does not claim an unimplemented reconstruction capability: ' . $capability );
-}
-mdi_backend_assert( ! $mysql_content->supports( 'canonical_option_select' ) && ! $mysql_full->supports( 'canonical_option_select' ), 'MySQL backends do not claim direct canonical option execution' );
-foreach ( array( 'table_mutation_capture', 'schema_persistence', 'disposable_index_operation', 'lazy_post_content_resolution' ) as $capability ) {
-	mdi_backend_assert( ! $mysql_content->supports( $capability ), 'MySQL content-primary fails closed for ' . $capability );
-}
-
 $native = WP_Markdown_Backend_Capabilities::mdi_native();
 mdi_backend_assert( 'mdi-native' === $native->get_backend(), 'Native backend identifier is stable' );
 mdi_backend_assert( $native->supports( 'canonical_option_select' ), 'Native backend declares its bounded option query guarantee' );

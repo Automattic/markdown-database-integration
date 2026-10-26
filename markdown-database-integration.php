@@ -16,7 +16,6 @@
  *                             No SQLite Database Integration install is required.
  *   - 'sqlite':               the SQLite query engine, which requires the SQLite
  *                             Database Integration plugin and honours MARKDOWN_DB_MODE.
- *   - 'mysql-content' / 'mysql-full': MySQL runtimes.
  *
  * SQLite modes (MARKDOWN_DB_MODE, explicit 'sqlite' backend only):
  *   - 'mirror'  (Phase 1): SQLite is primary. Markdown files are mirrored on every write.
@@ -62,26 +61,13 @@ require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-durable-reconciliat
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-adapters.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-reconciliation-service.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-wordpress-reconciliation-adapter.php';
-// The MySQL runtimes only apply when one of them is the configured backend.
-// Their bootstraps already no-op elsewhere; skipping the load keeps the native
-// and SQLite request paths free of code they never execute.
-$markdown_db_mysql_backend = defined( 'MARKDOWN_DB_BACKEND' ) && in_array( MARKDOWN_DB_BACKEND, array( 'mysql-content', 'mysql-full' ), true );
-if ( $markdown_db_mysql_backend ) {
-	require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/mysql/class-wp-markdown-mysql-content-runtime.php';
-	require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/mysql/class-wp-markdown-mysql-outbox.php';
-	require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/mysql/class-wp-markdown-mysql-operations.php';
-	require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/mysql/class-wp-markdown-mysql-canonical-publisher.php';
-	require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/mysql/class-wp-markdown-mysql-full-runtime.php';
-}
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-health.php';
 require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/class-wp-markdown-cli.php';
 
 function markdown_database_integration_ensure_mysql_reconciliation_state(): void {
 	global $wpdb;
-	// mysql-full owns its schema, and mdi-native has no separate WordPress
-	// database to fence: its canonical files are the database, and native
-	// reconciliation fences on the filesystem.
-	if ( defined( 'MARKDOWN_DB_BACKEND' ) && in_array( MARKDOWN_DB_BACKEND, array( 'mysql-full', 'mdi-native' ), true ) ) {
+	// Native canonical files are the database; reconciliation fences on the filesystem.
+	if ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) {
 		return;
 	}
 	if ( ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
@@ -118,8 +104,7 @@ if ( ! defined( 'MARKDOWN_DB_STATE_DIR' ) ) {
  * Override in wp-config.php: define( 'MARKDOWN_DB_MODE', 'primary' );
  *
  * Only the SQLite backend reads this. mdi-native always serves canonical
- * files directly, and the MySQL backends have their own contracts, so the
- * constant has no effect there and can be omitted.
+ * files directly, so this constant has no effect there and can be omitted.
  */
 if ( ! defined( 'MARKDOWN_DB_MODE' ) ) {
 	define( 'MARKDOWN_DB_MODE', 'mirror' );
@@ -226,10 +211,6 @@ add_action( 'init', 'markdown_database_integration_schedule_primary_sync', 0 );
 add_action( 'markdown_database_integration_sync_primary_index', 'markdown_database_integration_sync_primary_index' );
 add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'switch_blog', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
-if ( $markdown_db_mysql_backend ) {
-	add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Content_Runtime', 'bootstrap' ), 20 );
-	add_action( 'plugins_loaded', array( 'WP_Markdown_MySQL_Full_Runtime', 'bootstrap' ), 20 );
-}
 add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 

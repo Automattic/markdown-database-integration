@@ -13,7 +13,7 @@ if ( 2 === $argc ) {
 	$content  = $root . '/wp-content';
 	$sqlite   = $content . '/mu-plugins/sqlite-database-integration';
 	$mdi      = $content . '/plugins/markdown-database-integration';
-	foreach ( array( $sqlite . '/wp-includes/database', $sqlite . '/wp-includes/sqlite', $mdi . '/inc/native/generated', $mdi . '/inc/mysql', $content . '/markdown' ) as $directory ) {
+	foreach ( array( $sqlite . '/wp-includes/database', $sqlite . '/wp-includes/sqlite', $mdi . '/inc/native/generated', $content . '/markdown' ) as $directory ) {
 		mkdir( $directory, 0755, true );
 	}
 	register_shutdown_function( static function () use ( $root ): void {
@@ -81,15 +81,6 @@ if ( 2 === $argc ) {
 		copy( dirname( __DIR__ ) . '/inc/' . $relative, $destination );
 	}
 	copy( dirname( __DIR__ ) . '/inc/native/generated/wp-core-schema-catalog.php', $mdi . '/inc/native/generated/wp-core-schema-catalog.php' );
-	copy( dirname( __DIR__ ) . '/inc/mysql/class-wp-markdown-mysql-outbox.php', $mdi . '/inc/mysql/class-wp-markdown-mysql-outbox.php' );
-	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-mutation-impact.php', $mdi . '/inc/class-wp-markdown-mutation-impact.php' );
-	copy( dirname( __DIR__ ) . '/inc/mysql/class-wp-markdown-mysql-impact-adapter.php', $mdi . '/inc/mysql/class-wp-markdown-mysql-impact-adapter.php' );
-	copy( dirname( __DIR__ ) . '/inc/mysql/class-wp-markdown-mysql-semantic-drain.php', $mdi . '/inc/mysql/class-wp-markdown-mysql-semantic-drain.php' );
-	$mysql_wpdb = $mdi . '/inc/mysql/class-wp-markdown-mysql-wpdb.php';
-	copy( dirname( __DIR__ ) . '/inc/mysql/class-wp-markdown-mysql-wpdb.php', $mysql_wpdb );
-	if ( 'mysql-full-incompatible' === $scenario ) {
-		file_put_contents( $mysql_wpdb, str_replace( 'BOOTSTRAP_ABI = 2', 'BOOTSTRAP_ABI = 3', (string) file_get_contents( $mysql_wpdb ) ) );
-	}
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-durable-reconciliation-operations.php', $mdi . '/inc/class-wp-markdown-durable-reconciliation-operations.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-reconciliation-adapters.php', $mdi . '/inc/class-wp-markdown-reconciliation-adapters.php' );
 	copy( dirname( __DIR__ ) . '/inc/class-wp-markdown-primary-index-health.php', $mdi . '/inc/class-wp-markdown-primary-index-health.php' );
@@ -124,7 +115,7 @@ if ( 2 === $argc ) {
 	if ( 'default-native' !== $scenario ) {
 		mkdir( $database_dir, 0755, true );
 	}
-	if ( in_array( $scenario, array( 'default-legacy-sqlite', 'default-db-dir', 'default-fqdbdir', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'default-interrupted-migration', 'mdi-native', 'mysql-content', 'mysql-full' ), true ) ) {
+	if ( in_array( $scenario, array( 'default-legacy-sqlite', 'default-db-dir', 'default-fqdbdir', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'default-interrupted-migration', 'mdi-native' ), true ) ) {
 		file_put_contents( $database_dir . '/.ht.sqlite', "SQLite format 3\0" . str_repeat( "\0", 16 ) );
 		$expected_backend = 'sqlite';
 	}
@@ -183,21 +174,22 @@ if ( 2 === $argc ) {
 		return $files;
 	};
 	$storage_before = $snapshot();
-	if ( 'mysql-content' === $scenario ) {
-		define( 'MARKDOWN_DB_BACKEND', 'mysql-content' );
-	}
 	if ( 'explicit-empty-sqlite' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'sqlite' );
 		file_put_contents( $database_dir . '/.ht.sqlite', '' );
 		$storage_before = $snapshot();
-	} elseif ( 'unknown' === $scenario ) {
-		define( 'MARKDOWN_DB_BACKEND', 'unknown' );
+	} elseif ( in_array( $scenario, array( 'unknown', 'retired-content', 'retired-full' ), true ) ) {
+		define( 'MARKDOWN_DB_BACKEND', match ( $scenario ) {
+			'retired-content' => 'mysql-content',
+			'retired-full' => 'mysql-full',
+			default => 'unknown',
+		} );
 	} elseif ( 'incomplete' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'incomplete' );
 		$GLOBALS['markdown_db_backend_declarations'] = array( 'incomplete' => array() );
 	} elseif ( 'sqlite' === $scenario ) {
 		define( 'MARKDOWN_DB_BACKEND', 'sqlite' );
-	} elseif ( in_array( $scenario, array( 'mdi-native', 'mysql-content' ), true ) || str_starts_with( $scenario, 'default-' ) ) {
+	} elseif ( 'mdi-native' === $scenario || str_starts_with( $scenario, 'default-' ) ) {
 		// The default scenarios leave MARKDOWN_DB_BACKEND undefined on purpose.
 		if ( 'mdi-native' === $scenario ) {
 			define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
@@ -226,39 +218,6 @@ if ( 2 === $argc ) {
 			public function add_placeholder_escape( string $value ): string { return $value; }
 		}
 	}
-	if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'mysql-full-prior-outbox' ), true ) ) {
-		define( 'MARKDOWN_DB_BACKEND', 'mysql-full' );
-		if ( 'mysql-full-shadow' === $scenario ) { define( 'MARKDOWN_DB_NATIVE_SHADOW', true ); }
-		$GLOBALS['mdi_dropin_scenario'] = $scenario;
-		class MDI_Dropin_Result { private array $rows; public function __construct( array $rows ) { $this->rows = $rows; } public function fetch_assoc(): ?array { return array_shift( $this->rows ); } public function free(): void {} }
-		class MDI_Dropin_Statement {
-			public int $affected_rows = 0;
-			public string $error = '';
-			private mixed $result = true;
-			public function __construct( private MDI_Dropin_Connection $connection, private string $query ) {}
-			public function bind_param( string $types, mixed &...$values ): bool { unset( $types, $values ); return true; }
-			public function execute(): bool { $this->result = $this->connection->query( $this->query ); return false !== $this->result; }
-			public function get_result(): mixed { return $this->result; }
-			public function close(): void {}
-		}
-		class MDI_Dropin_Connection { public int $affected_rows = 0; public string $error = ''; public bool $upgraded = false; public function prepare( string $query ): MDI_Dropin_Statement { return new MDI_Dropin_Statement( $this, $query ); } public function query( string $query ): mixed {
-			if ( str_starts_with( $query, 'ALTER TABLE' ) && str_contains( $query, 'ADD COLUMN `semantic_envelope`' ) ) { $this->upgraded = true; return true; }
-			if ( str_starts_with( $query, 'SHOW COLUMNS' ) ) {
-				$types = array( 'id' => 'bigint unsigned', 'event_id' => 'char(36)', 'schema_version' => 'smallint unsigned', 'state' => 'varchar(16)', 'database_name' => 'varchar(191)', 'blog_id' => 'bigint unsigned', 'table_prefix' => 'varchar(191)', 'base_prefix' => 'varchar(191)', 'event_kind' => 'varchar(16)', 'operation_name' => 'varchar(32)', 'payload' => 'longtext', 'payload_sha256' => 'char(64)', 'created_at' => 'datetime', 'available_at' => 'datetime', 'leased_until' => 'datetime', 'lease_token' => 'varchar(64)', 'worker_token' => 'varchar(64)', 'acknowledged_at' => 'datetime', 'acknowledgement_token' => 'varchar(64)', 'attempts' => 'int unsigned', 'reclaims' => 'int unsigned', 'failures' => 'int unsigned', 'last_error' => 'text', 'last_error_at' => 'datetime', 'semantic_envelope' => 'longtext' );
-				if ( 'mysql-full-outbox-incompatible' === ( $GLOBALS['mdi_dropin_scenario'] ?? '' ) ) { unset( $types['last_error_at'] ); }
-				if ( 'mysql-full-prior-outbox' === ( $GLOBALS['mdi_dropin_scenario'] ?? '' ) && ! $this->upgraded ) { unset( $types['semantic_envelope'] ); }
-				$nullable = array( 'leased_until', 'lease_token', 'worker_token', 'acknowledged_at', 'acknowledgement_token', 'last_error', 'last_error_at', 'semantic_envelope' );
-				$defaults = array( 'state' => 'pending', 'attempts' => '0', 'reclaims' => '0', 'failures' => '0' );
-				$rows = array();
-				foreach ( $types as $field => $type ) { $rows[] = array( 'Field' => $field, 'Type' => $type, 'Null' => in_array( $field, $nullable, true ) ? 'YES' : 'NO', 'Default' => $defaults[ $field ] ?? null, 'Extra' => 'id' === $field ? 'auto_increment' : '' ); }
-				return new MDI_Dropin_Result( $rows );
-			}
-			if ( str_starts_with( $query, 'SHOW INDEX' ) ) { $rows = array(); foreach ( array( 'PRIMARY' => array( 'id' ), 'mdi_event' => array( 'event_id' ), 'mdi_claim' => array( 'state', 'available_at', 'id' ), 'mdi_lease_reclaim' => array( 'state', 'leased_until', 'id' ), 'mdi_scope' => array( 'database_name', 'blog_id', 'table_prefix', 'id' ), 'mdi_payload' => array( 'payload_sha256' ) ) as $key => $columns ) { foreach ( $columns as $offset => $column ) { $rows[] = array( 'Key_name' => $key, 'Seq_in_index' => $offset + 1, 'Column_name' => $column, 'Non_unique' => in_array( $key, array( 'PRIMARY', 'mdi_event' ), true ) ? 0 : 1, 'Sub_part' => null, 'Index_type' => 'BTREE' ); } } return new MDI_Dropin_Result( $rows ); }
-			if ( str_starts_with( $query, 'SELECT `ENGINE`' ) ) { return new MDI_Dropin_Result( array( array( 'Engine' => 'InnoDB' ) ) ); }
-			return true;
-		} }
-		class wpdb { public string $prefix = 'wp_'; public string $base_prefix = 'wp_'; protected object $dbh; public function __construct( $user, $password, $name, $host ) { $this->dbh = new MDI_Dropin_Connection(); } public function query( $query ) { return true; } }
-	}
 
 	try {
 		// Match require_wp_db(): instantiate stock wpdb when db.php leaves no global.
@@ -280,22 +239,12 @@ if ( 2 === $argc ) {
 			echo "PASS: {$scenario} leaves index initialization to primary mode.\n";
 			exit( 0 );
 		}
-		if ( in_array( $scenario, array( 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox' ), true ) && $GLOBALS['wpdb'] instanceof WP_Markdown_MySQL_WPDB && ( $GLOBALS['markdown_db_mysql_outbox'] ?? null ) instanceof WP_Markdown_MySQL_Outbox ) {
-			if ( 'mysql-full-prior-outbox' === $scenario && ! $GLOBALS['wpdb']->markdown_db_mysql_connection()->upgraded ) { throw new RuntimeException( 'Prior outbox schema was not upgraded.' ); }
-			if ( 'mysql-full-shadow' === $scenario && ! ( $GLOBALS['markdown_db_native_shadow_verifier'] ?? null ) instanceof WP_Markdown_Native_Shadow_Verifier ) { throw new RuntimeException( 'Native shadow verifier was not attached.' ); }
-			echo "PASS: mysql-full installs the MDI-owned wpdb boundary.\n";
-			exit( 0 );
-		}
 		if ( 'mdi-native' === $scenario && $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB && defined( 'MARKDOWN_DB_DROPIN' ) ) {
 			echo "PASS: mdi-native installs the filesystem-backed wpdb boundary.\n";
 			exit( 0 );
 		}
 		if ( $storage_before !== $snapshot() ) {
 			throw new RuntimeException( 'Backend detection changed SQLite storage.' );
-		}
-		if ( 'mysql-content' === $scenario && $GLOBALS['wpdb'] instanceof wpdb && MARKDOWN_DB_RETAINED_DROPIN ) {
-			echo "PASS: explicit mysql-content overrides existing SQLite storage.\n";
-			exit( 0 );
 		}
 		if ( str_starts_with( $scenario, 'default-' ) ) {
 			if ( $expected_backend !== MARKDOWN_DB_BACKEND || ( 'mdi-native' === $expected_backend ) !== ( $GLOBALS['wpdb'] instanceof WP_Markdown_Native_WPDB ) ) {
@@ -304,18 +253,14 @@ if ( 2 === $argc ) {
 			echo "PASS: {$scenario} selects {$expected_backend} without changing storage.\n";
 			exit( 0 );
 		}
-		if ( in_array( $scenario, array( 'mysql-full-incompatible', 'mysql-full-outbox-incompatible' ), true ) && $GLOBALS['wpdb'] instanceof wpdb && str_starts_with( (string) ( $GLOBALS['markdown_db_mysql_full_diagnostic']['code'] ?? '' ), 'markdown_db_mysql_full_' ) ) {
-			echo "PASS: {$scenario} explicitly falls back to stock wpdb.\n";
-			exit( 0 );
-		}
 		if ( ! in_array( $scenario, array( 'sqlite', 'explicit-empty-sqlite' ), true ) || ! isset( $GLOBALS['wpdb'] ) ) {
 			throw new RuntimeException( 'Expected backend bootstrap failure.' );
 		}
 		echo "PASS: an explicitly configured SQLite backend keeps the SQLite drop-in path.\n";
 	} catch ( WP_Markdown_Unknown_Backend|WP_Markdown_Unsupported_Backend_Capability $error ) {
 		$diagnostic = $error->get_diagnostic();
-		if ( 'unknown' === $scenario && 'markdown_db_unknown_backend' === $diagnostic['code'] && 'unknown' === $diagnostic['backend'] ) {
-			echo "PASS: unknown backend fails closed with a structured diagnostic.\n";
+		if ( in_array( $scenario, array( 'unknown', 'retired-content', 'retired-full' ), true ) && 'markdown_db_unknown_backend' === $diagnostic['code'] && MARKDOWN_DB_BACKEND === $diagnostic['backend'] && ! isset( $GLOBALS['wpdb'] ) ) {
+			echo "PASS: {$scenario} backend fails closed with a structured diagnostic.\n";
 			exit( 0 );
 		}
 		if ( 'incomplete' === $scenario && 'markdown_db_unsupported_backend_capability' === $diagnostic['code'] && 'incomplete' === $diagnostic['backend'] ) {
@@ -328,7 +273,7 @@ if ( 2 === $argc ) {
 }
 
 $failed = 0;
-foreach ( array( 'sqlite', 'explicit-empty-sqlite', 'default-empty-ht', 'default-nonsqlite-ht', 'default-empty-fqdb', 'primary-cold-index', 'primary-warm-index', 'default-native', 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration', 'default-unread-metadata', 'default-db-path', 'default-fqdb', 'default-db-file', 'default-conflicting-paths', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'mdi-native', 'mysql-content', 'mysql-full', 'mysql-full-shadow', 'mysql-full-no-sink', 'mysql-full-prior-outbox', 'mysql-full-incompatible', 'mysql-full-outbox-incompatible', 'unknown', 'incomplete' ) as $scenario ) {
+foreach ( array( 'sqlite', 'explicit-empty-sqlite', 'default-empty-ht', 'default-nonsqlite-ht', 'default-empty-fqdb', 'primary-cold-index', 'primary-warm-index', 'default-native', 'default-legacy-sqlite', 'default-legacy-php', 'default-db-dir', 'default-fqdbdir', 'default-randomized', 'default-missing-recorded', 'default-interrupted-migration', 'default-unread-metadata', 'default-db-path', 'default-fqdb', 'default-db-file', 'default-conflicting-paths', 'default-missing-db-path', 'default-missing-fqdb', 'default-missing-db-file', 'mdi-native', 'retired-content', 'retired-full', 'unknown', 'incomplete' ) as $scenario ) {
 	passthru( escapeshellarg( PHP_BINARY ) . ' ' . escapeshellarg( __FILE__ ) . ' ' . escapeshellarg( $scenario ), $status );
 	if ( 0 !== $status ) {
 		++$failed;

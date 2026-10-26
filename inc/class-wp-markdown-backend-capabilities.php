@@ -96,27 +96,6 @@ class WP_Markdown_Backend_Capabilities {
 		return new self( 'sqlite', $capabilities );
 	}
 
-	/** Content-primary MySQL deliberately excludes full-table interception. */
-	public static function mysql_content(): self {
-		return new self( 'mysql-content', array(
-			'content_mutation_capture' => true,
-			'cold_reconstruction'      => true,
-			'explicit_flush'           => true,
-			'changed_path_receipts'    => true,
-		) );
-	}
-
-	/** mysql-full captures every supported wpdb mutation and publishes canonical state. */
-	public static function mysql_full(): self {
-		return new self( 'mysql-full', array(
-			'content_mutation_capture' => true,
-			'table_mutation_capture'   => true,
-			'schema_persistence'       => true,
-			'explicit_flush'           => true,
-			'changed_path_receipts'    => true,
-		) );
-	}
-
 	/** mdi-native executes canonical options, persisted schema, and generic snapshot tables. */
 	public static function mdi_native(): self {
 		return new self(
@@ -204,12 +183,6 @@ class WP_Markdown_Backend_Resolver {
 		$id = defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'sqlite';
 		if ( 'sqlite' === $id && ! isset( self::$declarations['sqlite'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::sqlite() );
-		}
-		if ( 'mysql-content' === $id && ! isset( self::$declarations['mysql-content'] ) ) {
-			self::register( WP_Markdown_Backend_Capabilities::mysql_content() );
-		}
-		if ( 'mysql-full' === $id && ! isset( self::$declarations['mysql-full'] ) ) {
-			self::register( WP_Markdown_Backend_Capabilities::mysql_full() );
 		}
 		if ( 'mdi-native' === $id && ! isset( self::$declarations['mdi-native'] ) ) {
 			self::register( WP_Markdown_Backend_Capabilities::mdi_native() );

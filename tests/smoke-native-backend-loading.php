@@ -2,11 +2,8 @@
 /**
  * mdi-native loads no MySQL runtime and provisions no MySQL fence table.
  *
- * The MySQL runtimes, their bootstrap hooks, and the per-request
- * `CREATE TABLE … mdi_resource_fences` plus option write only apply when a
- * MySQL backend is configured. Native requests paid for all of it. The
- * mysql-content counterpart stays covered by
- * smoke-mysql-content-switch-blog-fences.php.
+ * Native reconciliation uses filesystem fences, so plugin bootstrap and
+ * switch_blog must not provision database fence tables or schema options.
  *
  * Usage: php tests/smoke-native-backend-loading.php
  */
@@ -37,21 +34,10 @@ global $wpdb;
 $wpdb = new MDI_Native_Loading_WPDB();
 require_once __DIR__ . '/../markdown-database-integration.php';
 
-$mysql_loaded = array_values( array_filter( get_included_files(), static fn( string $file ): bool => str_contains( $file, '/inc/mysql/' ) ) );
-$bootstraps   = array();
-foreach ( $GLOBALS['mdi_native_hooks']['plugins_loaded'] ?? array() as $group ) {
-	foreach ( $group as $registered ) {
-		if ( is_array( $registered[0] ) && is_string( $registered[0][0] ) && str_starts_with( $registered[0][0], 'WP_Markdown_MySQL_' ) ) {
-			$bootstraps[] = $registered[0][0];
-		}
-	}
-}
 markdown_database_integration_ensure_mysql_reconciliation_state();
 do_action( 'switch_blog', 2, 1, 'switch' );
 
 $checks = array(
-	'no MySQL runtime class is loaded'                   => array() === $mysql_loaded && ! class_exists( 'WP_Markdown_MySQL_Outbox', false ),
-	'no MySQL runtime bootstrap is hooked'                => array() === $bootstraps,
 	'no fence table DDL runs on init or switch_blog'      => array() === $wpdb->queries,
 	'no MySQL reconciliation schema option is written'    => ! isset( $GLOBALS['mdi_native_options']['_markdown_db_mysql_reconciliation_schema'] ),
 	'the SQLite recovery migration tool remains available' => class_exists( 'WP_Markdown_SQLite_Recovery', false ),

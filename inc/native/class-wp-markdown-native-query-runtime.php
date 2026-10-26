@@ -625,35 +625,6 @@ final class WP_Markdown_Native_Runtime_Factory {
 	}
 }
 
-final class WP_Markdown_Native_Option_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
-
-	private WP_Markdown_Native_Query_Runtime $runtime;
-
-	public function __construct(
-		string $state_root,
-		private string $table_prefix = 'wp_'
-	) {
-		$this->runtime = WP_Markdown_Native_Runtime_Factory::runtime( $state_root, $table_prefix );
-	}
-
-	public function execute( WP_Markdown_Query_Request $request ): WP_Markdown_Query_Result {
-		if ( $this->table_prefix !== $request->table_prefix() ) {
-			return WP_Markdown_Query_Result::failure(
-				array(
-					'code'    => 'markdown_db_native_unsupported_query',
-					'reason'  => 'unsupported_table_prefix',
-					'message' => 'The native option runtime is bound to a different canonical state root.',
-				)
-			);
-		}
-		return $this->runtime->execute( $request );
-	}
-
-	public function supports_transactional_tables( array $tables ): bool {
-		return $this->runtime->supports_transactional_tables( $tables );
-	}
-}
-
 /** Lazily construct a single-root runtime for the prefix selected by wpdb. */
 final class WP_Markdown_Native_Prefix_Query_Runtime implements WP_Markdown_Query_Runtime, WP_Markdown_Native_Transactional_Table_Support {
 

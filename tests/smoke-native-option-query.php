@@ -4,7 +4,7 @@ declare( strict_types=1 );
 
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/compatibility/class-wp-markdown-query-compatibility-comparator.php';
+require_once __DIR__ . '/support/compatibility/class-wp-markdown-query-compatibility-comparator.php';
 
 $GLOBALS['mdi_native_query_filter'] = null;
 function apply_filters( string $hook, mixed $value ): mixed {
@@ -69,7 +69,7 @@ $write_option( 'automatic', array( 'option_id' => 4, 'option_name' => 'automatic
 $write_option( 'legacy', array( 'option_id' => 5, 'option_name' => 'legacy', 'option_value' => 'legacy', 'autoload' => 'yes' ) );
 $write_option( 'disabled', array( 'option_id' => 6, 'option_name' => 'disabled', 'option_value' => 'disabled', 'autoload' => 'off' ) );
 
-$runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $query = "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1";
 $result = $runtime->execute( new WP_Markdown_Query_Request( $query ) );
 $autoload_query = "SELECT option_name, option_value FROM wp_options WHERE autoload IN ( 'yes', 'on', 'auto-on', 'auto' )";
@@ -120,7 +120,7 @@ $comparison = WP_Markdown_Query_Compatibility_Comparator::compare( $fixture, $ac
 $catalogue_path = $root . '/_indexes/options.json';
 $persisted_catalogue = json_decode( (string) file_get_contents( $catalogue_path ), true, 512, JSON_THROW_ON_ERROR );
 $persisted_entries = array_column( $persisted_catalogue['entries'], null, 'filename' );
-$catalogued_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$catalogued_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $catalogued_rows = $catalogued_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) )->wpdb_state()['last_result'];
 
 // A same-size, same-mtime atomic replacement must invalidate persisted rows.
@@ -132,12 +132,12 @@ $replacement_path = $disabled_path . '.replacement';
 file_put_contents( $replacement_path, $replacement_raw );
 touch( $replacement_path, (int) $disabled_stat['mtime'] );
 rename( $replacement_path, $disabled_path );
-$replaced_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$replaced_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $replaced_rows = $replaced_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) )->wpdb_state()['last_result'];
 $replaced_values = array_column( array_map( 'get_object_vars', $replaced_rows ), 'option_value', 'option_name' );
 
 file_put_contents( $catalogue_path, '{' );
-$corrupt_catalogue_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$corrupt_catalogue_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $corrupt_catalogue_result = $corrupt_catalogue_runtime->execute( new WP_Markdown_Query_Request( $alloptions_query ) );
 
 $state = $result->wpdb_state();
@@ -151,7 +151,7 @@ $unsupported = array(
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 0" ) ),
 	$runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'site\\qurl'" ) ),
 );
-$custom_prefix_runtime = new WP_Markdown_Native_Option_Query_Runtime( $root, 'wp_2_' );
+$custom_prefix_runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_2_' );
 $custom_prefix = $custom_prefix_runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_2_options WHERE option_name = 'siteurl'", 'wp_2_' ) );
 $like_option = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name LIKE 'site%'" ) );
 $escaped = $runtime->execute( new WP_Markdown_Query_Request( "SELECT option_value FROM wp_options WHERE option_name = 'tab\\tback\\\\slash'" ) );

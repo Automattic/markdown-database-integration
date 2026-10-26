@@ -211,16 +211,6 @@ final class WP_Markdown_Native_Schema_Catalog {
 		return $multisite ? $artifact['multisite'] : $artifact['single_site'];
 	}
 
-	/** @param array<int,string> $prefixes */
-	public static function assert_current( string $ddl, array $prefixes, bool $multisite ): void {
-		$compiled = self::compile( $ddl, $prefixes );
-		$artifact = self::artifact();
-		$scope    = $multisite ? 'multisite' : 'single_site';
-		if ( ! hash_equals( $artifact['hashes'][ $scope ], self::hash( $compiled ) ) ) {
-			throw new RuntimeException( 'The generated native schema catalog does not match this WordPress core.' );
-		}
-	}
-
 	/** @param array<string,mixed> $definitions */
 	public static function hash( array $definitions ): string {
 		return hash( 'sha256', json_encode( $definitions, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) );

@@ -447,11 +447,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 	}
 
 	/** @param array<string,mixed> $row @param array<int,array<string,mixed>> $rows @param array<string,mixed> $definition */
-	private function duplicates_unique_index( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): bool {
-		return null !== $this->duplicate_row_offset( $row, $rows, $definition, $schema );
-	}
-
-	/** @param array<string,mixed> $row @param array<int,array<string,mixed>> $rows @param array<string,mixed> $definition */
 	private function duplicate_row_offset( array $row, array $rows, array $definition, WP_Markdown_Native_Table_Schema $schema ): ?int {
 		$duplicates = $this->duplicate_row_offsets( $row, $rows, $definition, $schema );
 		return $duplicates[0] ?? null;

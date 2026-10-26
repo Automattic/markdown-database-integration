@@ -15,7 +15,7 @@ file_put_contents(
 	json_encode( array( 'option_id' => 1, 'option_name' => 'siteurl', 'option_value' => 'https://example.test', 'autoload' => 'on' ), JSON_THROW_ON_ERROR )
 );
 
-$runtime = new WP_Markdown_Native_Option_Query_Runtime( $root );
+$runtime = WP_Markdown_Native_Runtime_Factory::runtime( $root, 'wp_' );
 $plain_sql = "SELECT option_value FROM wp_options WHERE option_name = 'siteurl' LIMIT 1";
 $locked_sql = $plain_sql . ' FOR UPDATE';
 $plain = $runtime->execute( new WP_Markdown_Query_Request( $plain_sql ) );

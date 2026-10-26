@@ -109,42 +109,42 @@ is confined to explicit import/export.
 
 ### Table durability
 
-Tables are canonical by default. `MARKDOWN_DB_TABLE_DURABILITY_POLICY` and
-`markdown_db_table_durability_policy` classify unprefixed table names as
-`canonical`, `reconstructible`, or `ephemeral`. Canonical tables persist complete
-rows and schemas. Reconstructible tables may retain bounded projections;
-ephemeral tables are excluded from canonical persistence and native registration.
+Tables persist to canonical state by default. Mark a table `ephemeral` to keep
+it out of canonical state and native table registration, using
+`MARKDOWN_DB_TABLE_DURABILITY_POLICY`, `MARKDOWN_DB_EPHEMERAL_TABLES`,
+`markdown_db_ephemeral_tables`, or `markdown_db_table_durability_policy`
+(unprefixed table names; durability is `canonical` or `ephemeral`).
 
 ```php
 define( 'MARKDOWN_DB_TABLE_DURABILITY_POLICY', array(
-    'runtime_events' => array(
-        'durability' => 'reconstructible',
-        'projection' => array( 'limit' => 100 ),
-    ),
     'runtime_locks' => 'ephemeral',
 ) );
 ```
 
-`markdown_db_ephemeral_tables`, `markdown_db_table_persistence_policy`,
-`markdown_db_persistent_table_query`, and `markdown_db_persistent_table_rows`
-remain shared policy inputs. Row partitions support bounded identity-scoped
-updates and complete-generation publication for unscoped changes.
+Existing row-partitioned tables (`_tables/<table>/.mdi-partition.json`) are read
+and updated in place.
 
 ## Native architecture
 
 Native parser, planner, executor, and `wpdb` adapter operate on canonical state.
-Canonical persistence and storage remain separate from query execution. Native
+Storage remains separate from query execution. Native
 SQL reads and writes acquire cross-process canonical-root admission; explicit
 transactions retain it through commit/rollback. This is coarse serialization,
 not MVCC. Lock waits are bounded at five seconds. Direct filesystem writers
 outside the protocol and independent same-process connection isolation are not
 covered. Runtime instances sharing a root in one process share a transaction owner.
 
-Canonical persistence registers its PHP shutdown callback only after a tracked
-mutation. Read-only commands have a zero-work flush; dirty requests publish their
-bounded dirty subset atomically. The
-`markdown_database_integration_persistence_diagnostics` action attributes flushes
-to tables, post IDs, resource partitions, and paths.
+### Known limits
+
+- No physical MySQL connection: code that needs a real `mysqli` handle is not supported.
+- Title lookups support ASCII case-insensitive, trailing-space-padded `=` and
+  `IN`; non-ASCII values fail closed (no full Unicode collation). An uncached
+  title lookup fails after 1,024 canonical source files.
+- Correlated subqueries are bounded to 10,000 distinct outer bindings per
+  statement. Correlated aggregate inputs and nested correlated subqueries fail
+  closed with `unsupported_subquery_correlation`.
+- UNION branches need equal projection counts and compatible column types.
+  Global ORDER BY accepts first-branch output names or positive ordinals.
 
 ### Reconciliation
 
@@ -211,8 +211,8 @@ homeboy review lint markdown-database-integration --path .
 ```
 
 Drop-in selection tests create nonempty read-only legacy databases and a managed
-path file to prove native boots without loading or mutating them. Shared
-canonical tests use semantic operations rather than a retired SQL adapter.
+path file to prove native boots without loading or mutating them. Query
+compatibility helpers used by tests and probes live in `tests/support/`.
 
 ## License
 

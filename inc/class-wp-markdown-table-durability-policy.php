@@ -1,26 +1,23 @@
 <?php
-/** Resolve one backend-neutral durability policy for a database table. */
+/** Decide whether a database table persists to canonical state. */
 
 if ( ! defined( 'ABSPATH' ) ) {
 	exit;
 }
 
 final class WP_Markdown_Table_Durability_Policy {
-	public const CANONICAL       = 'canonical';
-	public const RECONSTRUCTIBLE = 'reconstructible';
-	public const EPHEMERAL       = 'ephemeral';
+	public const CANONICAL = 'canonical';
+	public const EPHEMERAL = 'ephemeral';
 
-	/**
-	 * @return array{durability:string,projection:array<string,mixed>}
-	 */
-	public static function resolve( string $table, string $prefix = 'wp_' ): array {
+	public static function persists( string $table, string $prefix = 'wp_' ): bool {
+		return self::EPHEMERAL !== self::resolve( $table, $prefix );
+	}
+
+	private static function resolve( string $table, string $prefix ): string {
 		$table_suffix = str_starts_with( $table, $prefix ) ? substr( $table, strlen( $prefix ) ) : $table;
-		$policy       = array(
-			'durability' => self::CANONICAL,
-			'projection' => array(),
-		);
+		$durability   = self::CANONICAL;
 		if ( defined( 'MARKDOWN_DB_TABLE_DURABILITY_POLICY' ) && is_array( MARKDOWN_DB_TABLE_DURABILITY_POLICY ) && array_key_exists( $table_suffix, MARKDOWN_DB_TABLE_DURABILITY_POLICY ) ) {
-			$policy = self::merge_table_policy( $policy, MARKDOWN_DB_TABLE_DURABILITY_POLICY[ $table_suffix ] );
+			$durability = self::durability_of( MARKDOWN_DB_TABLE_DURABILITY_POLICY[ $table_suffix ], $durability );
 		}
 
 		$ephemeral = array();
@@ -35,57 +32,28 @@ final class WP_Markdown_Table_Durability_Policy {
 			$ephemeral          = is_array( $filtered_ephemeral ) ? $filtered_ephemeral : $ephemeral;
 		}
 		if ( in_array( $table, $ephemeral, true ) ) {
-			$policy['durability'] = self::EPHEMERAL;
+			$durability = self::EPHEMERAL;
 		}
 
 		if ( function_exists( 'apply_filters' ) ) {
-			$legacy = apply_filters( 'markdown_db_table_persistence_policy', array() );
-			if ( is_array( $legacy ) && array_key_exists( $table_suffix, $legacy ) ) {
-				$table_policy = $legacy[ $table_suffix ];
-				if ( false === $table_policy ) {
-					$policy['durability'] = self::EPHEMERAL;
-				} elseif ( is_array( $table_policy ) ) {
-					$policy['projection'] = $table_policy;
-				}
-			}
-
 			/**
-			 * Filters the complete durability policy for one database table.
+			 * Filters the durability policy for one database table.
 			 *
-			 * `durability` accepts `canonical`, `reconstructible`, or `ephemeral`.
-			 * `projection` is passed to backend-neutral table snapshot readers and
-			 * may contain generic options such as `query`, `limit`, or `partition_by`.
+			 * `durability` accepts `canonical` or `ephemeral`. Ephemeral tables are
+			 * excluded from canonical state and native table registration.
 			 *
-			 * @param array  $policy       Normalized durability policy.
+			 * @param array  $policy       Policy with a `durability` key.
 			 * @param string $table_suffix Table name without the WordPress prefix.
 			 * @param string $table        Full database table name.
 			 */
-			$policy = self::merge_table_policy( $policy, apply_filters( 'markdown_db_table_durability_policy', $policy, $table_suffix, $table ) );
+			$durability = self::durability_of( apply_filters( 'markdown_db_table_durability_policy', array( 'durability' => $durability ), $table_suffix, $table ), $durability );
 		}
 
-		if ( ! in_array( $policy['durability'] ?? null, array( self::CANONICAL, self::RECONSTRUCTIBLE, self::EPHEMERAL ), true ) ) {
-			$policy['durability'] = self::CANONICAL;
-		}
-		if ( ! is_array( $policy['projection'] ?? null ) ) {
-			$policy['projection'] = array();
-		}
-
-		return array(
-			'durability' => $policy['durability'],
-			'projection' => $policy['projection'],
-		);
+		return $durability;
 	}
 
-	public static function persists( string $table, string $prefix = 'wp_' ): bool {
-		return self::EPHEMERAL !== self::resolve( $table, $prefix )['durability'];
-	}
-
-	/** @param array{durability:string,projection:array<string,mixed>} $policy */
-	private static function merge_table_policy( array $policy, mixed $table_policy ): array {
-		if ( is_string( $table_policy ) ) {
-			$policy['durability'] = $table_policy;
-			return $policy;
-		}
-		return is_array( $table_policy ) ? array_merge( $policy, $table_policy ) : $policy;
+	private static function durability_of( mixed $policy, string $current ): string {
+		$durability = is_array( $policy ) ? ( $policy['durability'] ?? $current ) : $policy;
+		return in_array( $durability, array( self::CANONICAL, self::EPHEMERAL ), true ) ? $durability : $current;
 	}
 }

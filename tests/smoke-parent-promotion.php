@@ -1,20 +1,12 @@
 <?php
 /**
- * Smoke tests for the parent-promotion index-writer callback.
+ * Smoke tests for parent promotion in WP_Markdown_Storage.
  *
- * Exercises the hook that WP_Markdown_Storage invokes when
- * resolve_parent_dir() renames a parent's leaf file to `index.md`
- * because the parent gained a child. Without this hook the
- * `_markdown_file_index` SQLite row still points at the old path
- * and warm boot churns the promoted post through a full delete +
- * reinsert on every sync. See issue #68.
+ * When a parent gains its first child, resolve_parent_dir() renames the
+ * parent's leaf file to `<slug>/index.md`. The in-memory index must follow
+ * the rename so same-request lookups resolve the parent at its new path.
  *
- * Uses a real filesystem temp dir + a capture-to-array callback
- * stand-in for the production driver's update_file_index call. The
- * storage's public set_index_writer() accepts any callable, so we
- * don't need a real PDO here.
- *
- * Usage: php tests/smoke-parent-promotion-index.php
+ * Usage: php tests/smoke-parent-promotion.php
  *
  * @package Markdown_Database_Integration
  */
@@ -104,9 +96,9 @@ $posts = array(
 );
 
 // ---------------------------------------------------------------------------
-// Test 1 — rename during promotion fires the index-writer callback
+// Test 1 — single-level promotion
 // ---------------------------------------------------------------------------
-echo "Test 1: single-level promotion invokes index_writer with the new path\n";
+echo "Test 1: single-level promotion moves the parent and its index entry\n";
 
 rm_rf( $tmp_root );
 mkdir( $tmp_root . '/wiki', 0755, true );
@@ -119,15 +111,6 @@ $storage->set_post_resolver( function ( int $id ) use ( $posts ) {
 	return $posts[ $id ] ?? null;
 } );
 
-$captured = array();
-$storage->set_index_writer( function ( int $post_id, string $relative_path, int $mtime, int $size ) use ( &$captured ) {
-	$captured[] = array(
-		'post_id'       => $post_id,
-		'relative_path' => $relative_path,
-		'mtime'         => $mtime,
-		'size'          => $size,
-	);
-} );
 
 // Write a child of the parent. This triggers resolve_parent_dir to
 // promote /wiki/root-parent.md → /wiki/root-parent/index.md.
@@ -145,11 +128,7 @@ $written_path = $storage->write_post( $child );
 assert_true( false !== $written_path, 'write_post returned a path' );
 assert_true( file_exists( $tmp_root . '/wiki/root-parent/index.md' ), 'parent promoted to index.md on disk' );
 assert_true( ! file_exists( $tmp_root . '/wiki/root-parent.md' ), 'old leaf path removed by rename' );
-assert_eq( count( $captured ), 1, 'index_writer invoked exactly once' );
-assert_eq( $captured[0]['post_id'], 10, 'callback received the promoted parent ID (10)' );
-assert_eq( $captured[0]['relative_path'], 'wiki/root-parent/index.md', 'callback received relative path to new location' );
-assert_true( $captured[0]['mtime'] > 0, 'callback received a real mtime' );
-assert_true( $captured[0]['size'] > 0, 'callback received a real size' );
+assert_eq( ( $storage->indexed_post_file( 10 )['absolute'] ?? null ), $tmp_root . '/wiki/root-parent/index.md', 'in-memory index follows the promoted parent' );
 
 // ---------------------------------------------------------------------------
 // Test 2 — two sequential child writes each promote a different ancestor
@@ -168,10 +147,6 @@ $storage->set_post_resolver( function ( int $id ) use ( $posts ) {
 	return $posts[ $id ] ?? null;
 } );
 
-$captured = array();
-$storage->set_index_writer( function ( int $post_id, string $relative_path ) use ( &$captured ) {
-	$captured[] = array( 'post_id' => $post_id, 'relative_path' => $relative_path );
-} );
 
 // Write mid-parent. Promotes root-parent from leaf to index.md.
 $mid = (object) array(
@@ -185,13 +160,10 @@ $mid = (object) array(
 );
 $storage->write_post( $mid );
 
-assert_eq( count( $captured ), 1, 'mid-parent write promoted 1 ancestor' );
-assert_eq( $captured[0]['post_id'], 10, 'root-parent (10) promoted first' );
-assert_eq( $captured[0]['relative_path'], 'wiki/root-parent/index.md', 'root-parent at new path' );
+assert_eq( ( $storage->indexed_post_file( 10 )['absolute'] ?? null ), $tmp_root . '/wiki/root-parent/index.md', 'root-parent (10) promoted first' );
 
 // Write leaf-child. Promotes mid-parent (now under root-parent/) from leaf to index.md.
-// root-parent was already promoted so it does not fire again.
-$captured = array();
+// root-parent was already promoted, so it stays put.
 $leaf = (object) array(
 	'ID'           => 12,
 	'post_type'    => 'wiki',
@@ -203,14 +175,12 @@ $leaf = (object) array(
 );
 $storage->write_post( $leaf );
 
-assert_eq( count( $captured ), 1, 'leaf-child write promoted 1 ancestor' );
-assert_eq( $captured[0]['post_id'], 11, 'mid-parent (11) promoted on second write' );
-assert_eq( $captured[0]['relative_path'], 'wiki/root-parent/mid-parent/index.md', 'mid-parent at new path' );
+assert_eq( ( $storage->indexed_post_file( 11 )['absolute'] ?? null ), $tmp_root . '/wiki/root-parent/mid-parent/index.md', 'mid-parent (11) promoted on second write' );
 
 // ---------------------------------------------------------------------------
-// Test 3 — no promotion, no callback
+// Test 3 — no promotion
 // ---------------------------------------------------------------------------
-echo "\nTest 3: writing a child whose parent directory already exists fires no callback\n";
+echo "\nTest 3: writing a child whose parent directory already exists keeps the parent path\n";
 
 rm_rf( $tmp_root );
 mkdir( $tmp_root . '/wiki/root-parent', 0755, true );
@@ -223,10 +193,6 @@ $storage->set_post_resolver( function ( int $id ) use ( $posts ) {
 	return $posts[ $id ] ?? null;
 } );
 
-$captured = array();
-$storage->set_index_writer( function ( int $post_id, string $relative_path ) use ( &$captured ) {
-	$captured[] = array( 'post_id' => $post_id, 'relative_path' => $relative_path );
-} );
 
 $child = (object) array(
 	'ID'           => 11,
@@ -239,41 +205,12 @@ $child = (object) array(
 );
 $storage->write_post( $child );
 
-assert_eq( count( $captured ), 0, 'no promotion → no callback' );
+assert_eq( ( $storage->indexed_post_file( 10 )['absolute'] ?? null ), $tmp_root . '/wiki/root-parent/index.md', 'already-promoted parent keeps its index.md path' );
 
 // ---------------------------------------------------------------------------
-// Test 4 — index_writer not set: no fatal, in-memory index still correct
+// Test 4 — rename onto an existing dir-without-index.md path (second branch)
 // ---------------------------------------------------------------------------
-echo "\nTest 4: no index_writer registered — promotion still works, no fatal\n";
-
-rm_rf( $tmp_root );
-mkdir( $tmp_root . '/wiki', 0755, true );
-write_leaf( $tmp_root . '/wiki/root-parent.md', 10, 'root-parent', 0 );
-
-$storage = new WP_Markdown_Storage( $tmp_root, array() );
-$storage->set_post_resolver( function ( int $id ) use ( $posts ) {
-	return $posts[ $id ] ?? null;
-} );
-// Intentionally do NOT call set_index_writer.
-
-$child = (object) array(
-	'ID'           => 11,
-	'post_type'    => 'wiki',
-	'post_name'    => 'mid-parent',
-	'post_parent'  => 10,
-	'post_status'  => 'publish',
-	'post_title'   => 'Mid',
-	'post_content' => 'body',
-);
-$written_path = $storage->write_post( $child );
-
-assert_true( false !== $written_path, 'write_post succeeded with no writer' );
-assert_true( file_exists( $tmp_root . '/wiki/root-parent/index.md' ), 'parent still promoted on disk' );
-
-// ---------------------------------------------------------------------------
-// Test 5 — rename onto an existing dir-without-index.md path (second branch)
-// ---------------------------------------------------------------------------
-echo "\nTest 5: orphaned leaf moved into existing directory fires callback\n";
+echo "\nTest 4: orphaned leaf moved into existing directory\n";
 
 rm_rf( $tmp_root );
 
@@ -289,14 +226,10 @@ $storage->set_post_resolver( function ( int $id ) use ( $posts ) {
 	return $posts[ $id ] ?? null;
 } );
 
-$captured = array();
-$storage->set_index_writer( function ( int $post_id, string $relative_path ) use ( &$captured ) {
-	$captured[ $post_id ] = $relative_path;
-} );
 
 // Write another child of root-parent. The second branch of resolve_parent_dir
 // (directory exists, index.md doesn't) should move the leaf into index.md
-// and fire the callback.
+// and update the index.
 $new_child = (object) array(
 	'ID'           => 11,
 	'post_type'    => 'wiki',
@@ -310,12 +243,12 @@ $storage->write_post( $new_child );
 
 assert_true( file_exists( $tmp_root . '/wiki/root-parent/index.md' ), 'leaf moved into dir as index.md' );
 assert_true( ! file_exists( $tmp_root . '/wiki/root-parent.md' ), 'sibling leaf file removed' );
-assert_eq( $captured[10] ?? null, 'wiki/root-parent/index.md', 'callback fired with new index.md path' );
+assert_eq( ( $storage->indexed_post_file( 10 )['absolute'] ?? null ), $tmp_root . '/wiki/root-parent/index.md', 'in-memory index follows the moved index.md' );
 
 // ---------------------------------------------------------------------------
-// Test 6 — deleting a parent then writing its core-reparented child
+// Test 5 — deleting a parent then writing its core-reparented child
 // ---------------------------------------------------------------------------
-echo "\nTest 6: parent deletion allows its child to move to the type root\n";
+echo "\nTest 5: parent deletion allows its child to move to the type root\n";
 
 rm_rf( $tmp_root );
 write_leaf( $tmp_root . '/wiki/root-parent/index.md', 10, 'root-parent', 0 );
@@ -346,9 +279,9 @@ assert_true( ! file_exists( $tmp_root . '/wiki/root-parent/mid-parent.md' ), 'ol
 assert_true( ! is_dir( $tmp_root . '/wiki/root-parent' ), 'empty parent directory removed' );
 
 // ---------------------------------------------------------------------------
-// Test 7 — a warmed index must not delete a reused cached path
+// Test 6 — a warmed index must not delete a reused cached path
 // ---------------------------------------------------------------------------
-echo "\nTest 7: stale cached paths preserve a different post that reused them\n";
+echo "\nTest 6: stale cached paths preserve a different post that reused them\n";
 
 rm_rf( $tmp_root );
 write_leaf( $tmp_root . '/wiki/original.md', 10, 'original' );
@@ -375,9 +308,9 @@ assert_true( file_exists( $tmp_root . '/wiki/original.md' ), 'reused cached path
 assert_eq( $storage->read_file( $tmp_root . '/wiki/original.md', true )->ID ?? null, 20, 'reused path retains its new owner' );
 
 // ---------------------------------------------------------------------------
-// Test 8 — an externally removed cached path does not become a read warning
+// Test 7 — an externally removed cached path does not become a read warning
 // ---------------------------------------------------------------------------
-echo "\nTest 8: stale missing cached paths are ignored without parsing them\n";
+echo "\nTest 7: stale missing cached paths are ignored without parsing them\n";
 
 rm_rf( $tmp_root );
 write_leaf( $tmp_root . '/wiki/original.md', 10, 'original' );
@@ -407,9 +340,9 @@ try {
 }
 
 // ---------------------------------------------------------------------------
-// Test 9 — a fresh write still wins over a stale duplicate during first scan
+// Test 8 — a fresh write still wins over a stale duplicate during first scan
 // ---------------------------------------------------------------------------
-echo "\nTest 9: fresh writes remain canonical during initial duplicate cleanup\n";
+echo "\nTest 8: fresh writes remain canonical during initial duplicate cleanup\n";
 
 rm_rf( $tmp_root );
 write_leaf( $tmp_root . '/wiki/stale/fresh.md', 30, 'fresh' );

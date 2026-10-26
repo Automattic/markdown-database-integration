@@ -308,11 +308,6 @@ final class WP_Markdown_Native_Query_Runtime implements WP_Markdown_Query_Runtim
 		);
 	}
 
-	public static function supports_tableless_scalar_projection( string $sql ): bool {
-		return null !== self::tableless_json_valid_literal( $sql )
-			|| ! ( ( new WP_Markdown_Native_Query_Parser() )->parse_tableless_scalar_projection( $sql ) instanceof WP_Markdown_Query_Result );
-	}
-
 	/** @return array{value:?string,column:string}|null */
 	private static function tableless_json_valid_literal( string $sql ): ?array {
 		try {

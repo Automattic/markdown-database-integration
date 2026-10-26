@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.14.7] - 2026-10-26
+
+### Changed
+- Refresh an outdated MDI drop-in on plugin load
+- Remove dead code left by the backend retirements
+
 ## [0.14.6] - 2026-10-26
 
 ### Changed

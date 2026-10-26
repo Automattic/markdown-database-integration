@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.6] - 2026-10-26
+
+### Changed
+- Retire the SQLite backend
+
 ## [0.14.5] - 2026-10-26
 
 ### Changed

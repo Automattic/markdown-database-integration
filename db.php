@@ -10,39 +10,27 @@
  * @package Markdown_Database_Integration
  */
 
-if ( ! function_exists( 'markdown_database_integration_configured_backend' ) ) {
-	/** Resolve the backend without inspecting database files on disk. */
-	function markdown_database_integration_configured_backend(): string {
-		return defined( 'MARKDOWN_DB_BACKEND' ) ? (string) MARKDOWN_DB_BACKEND : 'mdi-native';
-	}
-}
-
-if ( ! function_exists( 'markdown_database_integration_native_plugin_dir' ) ) {
-	/** Locate an MDI install able to serve canonical files during bootstrap. */
-	function markdown_database_integration_native_plugin_dir( string $content_dir ): ?string {
-		foreach ( array( $content_dir . '/mu-plugins/markdown-database-integration', $content_dir . '/plugins/markdown-database-integration' ) as $path ) {
-			if ( is_file( $path . '/inc/class-wp-markdown-backend-capabilities.php' )
-				&& is_file( $path . '/inc/native/class-wp-markdown-native-query-runtime.php' )
-				&& is_file( $path . '/inc/native/class-wp-markdown-native-wpdb.php' )
-			) {
-				return $path;
-			}
-		}
-		return null;
-	}
-}
-
 // Process supervisors may supply the backend before wp-config.php loads.
 if ( ! defined( 'MARKDOWN_DB_BACKEND' ) ) {
 	$markdown_db_environment_backend = getenv( 'MARKDOWN_DB_BACKEND' );
 	if ( is_string( $markdown_db_environment_backend ) && '' !== $markdown_db_environment_backend ) {
 		define( 'MARKDOWN_DB_BACKEND', $markdown_db_environment_backend );
 	} else {
-		define( 'MARKDOWN_DB_BACKEND', markdown_database_integration_configured_backend() );
+		define( 'MARKDOWN_DB_BACKEND', 'mdi-native' );
 	}
 }
 
-$markdown_db_native_plugin_dir = markdown_database_integration_native_plugin_dir( __DIR__ );
+// Locate an MDI install able to serve canonical files during bootstrap.
+$markdown_db_native_plugin_dir = null;
+foreach ( array( __DIR__ . '/mu-plugins/markdown-database-integration', __DIR__ . '/plugins/markdown-database-integration' ) as $markdown_db_candidate_dir ) {
+	if ( is_file( $markdown_db_candidate_dir . '/inc/class-wp-markdown-backend-capabilities.php' )
+		&& is_file( $markdown_db_candidate_dir . '/inc/native/class-wp-markdown-native-query-runtime.php' )
+		&& is_file( $markdown_db_candidate_dir . '/inc/native/class-wp-markdown-native-wpdb.php' )
+	) {
+		$markdown_db_native_plugin_dir = $markdown_db_candidate_dir;
+		break;
+	}
+}
 if ( null === $markdown_db_native_plugin_dir ) {
 	throw new RuntimeException( 'mdi-native requires the MDI plugin during db.php bootstrap.' );
 }

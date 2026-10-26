@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.8] - 2026-10-26
+
+### Changed
+- Fold legacy row-partitioned tables into snapshots
+
 ## [0.14.7] - 2026-10-26
 
 ### Changed

@@ -8,20 +8,9 @@
  * prefix so two instances never target the same row by ID, but they do
  * race on shared resources:
  *
- *   - SDI:           one .ht.sqlite file with WAL mode → SQLite handles
- *                    serialization; lock contention shows as p95/p99
- *                    spread, not data loss.
- *   - MDI mirror:    .ht.sqlite + per-write .md mirror. The .md write
- *                    path goes through file_put_contents — concurrent
- *                    writes to the SAME slug are the hazard, but slug
- *                    namespacing avoids that. Cross-process meta writes
- *                    on _markdown_file_index are the remaining risk.
- *   - MDI primary:   the hot spot. Concurrent boot rebuild + concurrent
- *                    in-memory SQLite + concurrent .md writes. Issue
- *                    #47 (UNIQUE constraint on wp_posts.ID) is the
- *                    canonical reproducer. If two instances each call
- *                    `wp_insert_post` and the rebuild path assigns
- *                    overlapping IDs, this workload surfaces it.
+ * Native canonical-root admission serializes writes across processes.
+ * This workload measures contention and checks that concurrent ID allocation
+ * and canonical publication preserve every successful write.
  *
  * Per-instance scoping:
  *

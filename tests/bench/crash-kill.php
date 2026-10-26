@@ -21,11 +21,8 @@
  *
  * This is a partial reproduction of the real `kill -9` semantics:
  *
- *   - It DOES test "did the substrate flush each write durably?" — if
- *     mirror's .md write completes after the SQLite commit, exit(0)
- *     mid-stream leaves orphan rows; if primary's .md write is the
- *     authoritative step and the SQLite index is rebuilt-on-boot, the
- *     index next iteration shows the gap.
+ *   - It tests persistence across orderly PHP exit. Native shutdown
+ *     callbacks still run, so this does not prove interrupted-write durability.
  *
  *   - It does NOT test "what happens if the OS kills the PHP process
  *     mid-fwrite?" That's the real-world durability case (#70 + #47).

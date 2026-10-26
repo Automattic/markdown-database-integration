@@ -30,40 +30,8 @@ function apply_filters( string $tag, mixed $value ): mixed {
 
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
 
-if ( ! class_exists( 'WP_SQLite_Connection' ) ) {
-	class WP_SQLite_Connection {
-		public function __construct( private PDO $pdo ) {}
-		public function get_pdo(): PDO { return $this->pdo; }
-	}
-}
-
-if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
-	class WP_MySQL_On_SQLite {
-		private WP_SQLite_Connection $connection;
-		private PDO $pdo;
-
-		/** @param array{sqlite_pdo?:PDO,rows?:object[]} $options */
-		public function __construct( string $dsn, ?string $username = null, ?string $password = null, array $options = array() ) {
-			unset( $dsn, $username, $password );
-			$this->pdo = $options['sqlite_pdo'] ?? new PDO( 'sqlite::memory:' );
-			$this->connection = new WP_SQLite_Connection( $this->pdo );
-			$this->pdo->exec( 'CREATE TABLE IF NOT EXISTS mdi_rows (option_id INTEGER, option_name TEXT, option_value TEXT, autoload TEXT)' );
-			foreach ( $options['rows'] ?? array() as $row ) {
-				$stmt = $this->pdo->prepare( 'INSERT INTO mdi_rows VALUES (?, ?, ?, ?)' );
-				$stmt->execute( array( $row->option_id, $row->option_name, $row->option_value, $row->autoload ) );
-			}
-		}
-		public function get_connection(): WP_SQLite_Connection { return $this->connection; }
-
-		public function query( string $sql ): PDOStatement {
-			unset( $sql );
-			return $this->pdo->query( 'SELECT option_id, option_name, option_value, autoload FROM mdi_rows' );
-		}
-	}
-}
-
-require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
+require_once __DIR__ . '/stubs/stub-backend-operations.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
 $failed = 0;
 function mdi_ephemeral_assert( bool $condition, string $label ): void {
@@ -109,9 +77,11 @@ $rows      = array(
 );
 $root      = sys_get_temp_dir() . '/mdi-ephemeral-policy-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
-$engine = new WP_Markdown_Write_Engine( $root, new WP_Markdown_Storage( $root ), new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'rows' => $rows ) ), 'wp_' );
-$dirty  = new ReflectionProperty( WP_Markdown_Write_Engine::class, 'dirty_option_names' );
-$flush  = new ReflectionMethod( WP_Markdown_Write_Engine::class, 'persist_options' );
+$operations = new MDI_Stub_Backend_Operations();
+$operations->rows['options'] = array_column( array_map( static fn( object $row ): array => (array) $row, $rows ), null, 'option_name' );
+$engine = new WP_Markdown_Canonical_Persistence( $root, new WP_Markdown_Storage( $root ), $operations, 'wp_' );
+$dirty  = new ReflectionProperty( WP_Markdown_Canonical_Persistence::class, 'dirty_option_names' );
+$flush  = new ReflectionMethod( WP_Markdown_Canonical_Persistence::class, 'persist_options' );
 $mark_all_dirty = static function () use ( $dirty, $engine ): void {
 	$dirty->setValue( $engine, array( 'cron' => true, 'doing_cron' => true, '_transient_proof' => true ) );
 };
@@ -137,16 +107,6 @@ mdi_ephemeral_assert( file_exists( $cron_path ), 'durable runtime can opt cron i
 mdi_ephemeral_assert( 1 === $GLOBALS['mdi_ephemeral_filter_calls'], 'exact-name policy resolves once per option flush' );
 mdi_ephemeral_assert( ! file_exists( $root . '/_options/doing_cron.json' ), 'durable cron opt-in keeps doing_cron ephemeral' );
 mdi_ephemeral_assert( ! file_exists( $root . '/_options/transient_proof.json' ), 'durable cron opt-in keeps transient prefixes ephemeral' );
-
-$pdo = new PDO( 'sqlite::memory:' );
-$pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$pdo->exec( 'CREATE TABLE wp_options (option_id INTEGER PRIMARY KEY, option_name TEXT UNIQUE, option_value TEXT, autoload TEXT)' );
-$loader = new WP_Markdown_Loader( $root, new WP_MySQL_On_SQLite( 'mysql-on-sqlite:dbname=wordpress', null, null, array( 'sqlite_pdo' => $pdo ) ), new WP_Markdown_Storage( $root ), 'wp_', $root );
-$load_options = new ReflectionMethod( WP_Markdown_Loader::class, 'load_options' );
-$load_options->invoke( $loader );
-$loaded_value  = $pdo->query( "SELECT option_value FROM wp_options WHERE option_name = 'cron'" )->fetchColumn();
-$reconstructed = unserialize( (string) $loaded_value );
-mdi_ephemeral_assert( isset( $reconstructed[ $timestamp ]['wp_codebox_durable_cron'][ $event_key ] ), 'actual cold option loader reconstructs the scheduled hook, timestamp, arguments, and event key' );
 
 remove_all_filters( 'markdown_database_integration_ephemeral_option_names' );
 add_filter( 'markdown_database_integration_ephemeral_option_names', static fn (): string => 'invalid' );

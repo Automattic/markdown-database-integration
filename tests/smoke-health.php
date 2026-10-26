@@ -1,58 +1,32 @@
 <?php
-/**
- * Smoke tests for MDI runtime health and safe drop-in repair.
- *
- * Usage: php tests/smoke-health.php
- *
- * @package Markdown_Database_Integration
- */
-
+/** Native runtime health and safe drop-in repair coverage. */
 declare( strict_types=1 );
-
 define( 'ABSPATH', __DIR__ . '/' );
 require_once __DIR__ . '/../inc/class-wp-markdown-health.php';
-
 $root = sys_get_temp_dir() . '/mdi-health-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
 $source = $root . '/source.php';
 $destination = $root . '/db.php';
 file_put_contents( $source, "<?php\n// @studio-keep\ndefine( 'MARKDOWN_DB_DROPIN', true );\n" );
-
 $failures = array();
 function mdi_health_assert( bool $condition, string $message ): void {
 	global $failures;
-	if ( ! $condition ) {
-		$failures[] = $message;
-	}
+	if ( ! $condition ) { $failures[] = $message; }
 }
-
-$healthy = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true ) );
-mdi_health_assert( 'healthy' === $healthy['status'], 'healthy MDI runtime is healthy' );
-mdi_health_assert( 'sqlite' === $healthy['backend']['id'], 'SQLite is identified as the active backend' );
-mdi_health_assert( $healthy['backend']['capabilities']['explicit_flush'], 'health reports SQLite explicit flush support' );
-$recovered_index = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true, 'primary_index_evidence' => array( 'code' => 'markdown_db_primary_index_recovered_previous', 'served_generation' => 'previous' ) ) );
-mdi_health_assert( 'primary_index_recovered_previous' === $recovered_index['status'] && $recovered_index['healthy'], 'health exposes typed successful previous-index recovery' );
-$unavailable_index = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true, 'primary_index_evidence' => array( 'code' => 'markdown_db_primary_index_unavailable', 'reason' => 'invalid_sqlite_header' ) ) );
-mdi_health_assert( 'primary_index_unavailable' === $unavailable_index['status'] && ! $unavailable_index['healthy'] && 'invalid_sqlite_header' === $unavailable_index['diagnostic']['reason'], 'health preserves typed unavailable-index evidence' );
-$deadline_index = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true, 'primary_index_evidence' => array( 'code' => 'markdown_db_primary_index_deadline_exceeded', 'deadline_ms' => 500 ) ) );
-mdi_health_assert( 'primary_index_unavailable' === $deadline_index['status'] && ! $deadline_index['healthy'], 'health treats a typed index deadline as unavailable' );
-$healthy_mirror = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => true ) );
-mdi_health_assert( 'healthy' === $healthy_mirror['status'], 'healthy MDI mirror runtime is healthy' );
-$standard_sqlite = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'runtime_classes' => array( true, true, true, true ), 'markdown_runtime' => false ) );
-mdi_health_assert( 'dropin_missing_or_replaced' === $standard_sqlite['status'], 'standard SQLite runtime is not mistaken for MDI' );
-$primary_degraded = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => false, 'runtime_classes' => array( false, false, false, false ) ) );
-mdi_health_assert( 'dropin_missing_or_replaced' === $primary_degraded['status'], 'degraded primary reports replaced drop-in' );
-$mirror_degraded = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => true, 'dropin_loaded' => false, 'runtime_classes' => array( false, false, false, false ) ) );
-mdi_health_assert( 'dropin_missing_or_replaced' === $mirror_degraded['status'], 'degraded mirror reports replaced drop-in' );
-$mysql = WP_Markdown_Health::diagnose( array( 'mode' => 'mirror', 'sqlite_runtime' => false ) );
-mdi_health_assert( 'not_applicable' === $mysql['status'] && $mysql['healthy'], 'MySQL import/export runtime is not reported broken' );
-mdi_health_assert( 'none' === $mysql['backend']['id'], 'non-SQLite runtime reports no active MDI backend' );
-$incomplete_backend = new WP_Markdown_Backend_Capabilities( 'incomplete', array() );
-$unsupported = WP_Markdown_Health::diagnose( array( 'sqlite_runtime' => true, 'backend_capabilities' => $incomplete_backend, 'required_capabilities' => array( 'cold_reconstruction' ) ) );
-mdi_health_assert( 'unsupported_backend_capability' === $unsupported['status'] && ! $unsupported['healthy'], 'health fails closed for a required unsupported capability' );
-mdi_health_assert( 'markdown_db_unsupported_backend_capability' === $unsupported['diagnostic']['code'], 'health exposes structured unsupported-capability diagnostics' );
-$fallback = WP_Markdown_Health::diagnose( array( 'mode' => 'primary', 'sqlite_runtime' => true, 'dropin_loaded' => true, 'install_fallback' => true, 'runtime_classes' => array( false, false, false, false ) ) );
-mdi_health_assert( 'install_fallback' === $fallback['status'] && $fallback['healthy'], 'primary install fallback is distinguished from degradation' );
+$healthy = WP_Markdown_Health::diagnose( array( 'native_runtime' => true, 'dropin_loaded' => true ) );
+mdi_health_assert( 'healthy' === $healthy['status'] && $healthy['healthy'], 'native runtime is healthy' );
+mdi_health_assert( 'mdi-native' === $healthy['backend']['id'], 'health identifies native backend' );
+mdi_health_assert( $healthy['backend']['capabilities']['canonical_option_select'], 'health reports native capability contract' );
+$missing = WP_Markdown_Health::diagnose( array( 'configured' => true, 'native_runtime' => false, 'dropin_loaded' => false ) );
+mdi_health_assert( 'dropin_missing_or_replaced' === $missing['status'] && ! $missing['healthy'], 'configured native runtime without drop-in is broken' );
+$replaced = WP_Markdown_Health::diagnose( array( 'native_runtime' => false, 'dropin_loaded' => true ) );
+mdi_health_assert( 'dropin_missing_or_replaced' === $replaced['status'], 'drop-in marker alone does not prove native runtime' );
+$mysql = WP_Markdown_Health::diagnose( array( 'configured' => false, 'native_runtime' => false, 'dropin_loaded' => false ) );
+mdi_health_assert( 'not_applicable' === $mysql['status'] && $mysql['healthy'], 'import/export-only runtime is not broken' );
+mdi_health_assert( 'none' === $mysql['backend']['id'], 'import/export-only runtime has no active backend' );
+$unsupported = WP_Markdown_Health::diagnose( array( 'backend_capabilities' => new WP_Markdown_Backend_Capabilities( 'incomplete' ), 'required_capabilities' => array( 'schema_persistence' ) ) );
+mdi_health_assert( 'unsupported_backend_capability' === $unsupported['status'] && ! $unsupported['healthy'], 'required unsupported capability fails closed' );
+mdi_health_assert( 'markdown_db_unsupported_backend_capability' === $unsupported['diagnostic']['code'], 'health retains structured diagnostics' );
 
 $install = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination ) );
 mdi_health_assert( $install['success'] && $install['changed'] && file_exists( $destination ), 'missing drop-in installs' );
@@ -71,17 +45,10 @@ mdi_health_assert( ! $refusal['success'] && str_contains( $refusal['message'], '
 $forced = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination, 'force' => true ) );
 mdi_health_assert( $forced['success'] && file_exists( $destination . '.markdown-db-backup' ), 'forced repair creates deterministic backup' );
 mdi_health_assert( $unrelated_dropin === file_get_contents( $destination . '.markdown-db-backup' ), 'forced repair preserves unrelated drop-in bytes' );
-
-foreach ( glob( $root . '/*' ) ?: array() as $path ) {
-	unlink( $path );
-}
+foreach ( glob( $root . '/*' ) ?: array() as $path ) { unlink( $path ); }
 rmdir( $root );
-
 if ( $failures ) {
-	foreach ( $failures as $failure ) {
-		echo 'FAIL: ' . $failure . PHP_EOL;
-	}
+	foreach ( $failures as $failure ) { echo 'FAIL: ' . $failure . PHP_EOL; }
 	exit( 1 );
 }
-
 echo "All health checks passed.\n";

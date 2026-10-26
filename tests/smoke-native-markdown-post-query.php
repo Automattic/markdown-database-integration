@@ -9,7 +9,6 @@ function apply_filters( string $hook, mixed $value, mixed ...$args ): mixed {
 	return $value;
 }
 require_once __DIR__ . '/../inc/native/class-wp-markdown-native-query-runtime.php';
-require_once __DIR__ . '/../inc/native/class-wp-markdown-native-shadow-verifier.php';
 
 final class MDI_Observed_Post_Storage extends WP_Markdown_Storage {
 	public int $metadata_reads = 0;
@@ -61,27 +60,6 @@ final class MDI_Replacing_Post_Storage extends WP_Markdown_Storage {
 			$this->replaced = true;
 		}
 		return $post;
-	}
-}
-
-final class MDI_Post_Shadow_DB {
-	public string $prefix = 'wp_';
-	public array $last_result = array();
-	public string $last_error = '';
-	public int $last_errno = 0;
-	public int $insert_id = 0;
-	public int $rows_affected = 0;
-	public int $num_rows = 0;
-	protected array $col_info = array();
-
-	public function result( array $rows, array $columns ): void {
-		$this->last_result = array_map( static fn( array $row ): object => (object) $row, $rows );
-		$this->col_info = array_map( static fn( array $column ): object => (object) $column, $columns );
-		$this->num_rows = count( $rows );
-	}
-
-	public function get_col_info( string $field ): array {
-		return array_map( static fn( object $column ): mixed => $column->{$field} ?? null, $this->col_info );
 	}
 }
 
@@ -144,11 +122,6 @@ $updated_post->post_title = 'Updated title';
 $observed_storage->write_post( $updated_post );
 $scoped_after_write = $observed_runtime->execute( new WP_Markdown_Query_Request( "SELECT ID, post_title FROM wp_posts WHERE post_type = 'post'" ) );
 
-$shadow_db = new MDI_Post_Shadow_DB();
-$shadow_db->result( array( array( 'ID' => '41' ) ), array( array( 'name' => 'ID', 'type' => 8 ) ) );
-$shadow = new WP_Markdown_Native_Shadow_Verifier( $runtime );
-$shadow->observe( $blocker_sql, 1, $shadow_db );
-$shadow_report = $shadow->report();
 
 $replacing_storage = new MDI_Replacing_Post_Storage( $content );
 $replacing_storage->target = $content . '/post/private.md';
@@ -189,8 +162,6 @@ $checks = array(
 		&& array() === $replaced->wpdb_state()['last_result']
 		&& 'markdown_db_native_malformed_post' === ( $replaced->diagnostic()['code'] ?? null )
 		&& 'changed_post' === ( $replaced->diagnostic()['reason'] ?? null ),
-	'shadow verifier compares the recorded post blocker exactly' => 1 === ( $shadow_report['counts']['compatible'] ?? 0 )
-		&& null === ( $shadow_report['first_blocker'] ?? null ),
 );
 
 $malformed_path = $content . '/post/malformed.md';
@@ -219,9 +190,6 @@ $checks['linked Markdown paths fail closed'] = ( ! $linked || ( false === $unsaf
 	&& ( ! $hardlinked || ( false === $unsafe_hardlink->return_value()
 	&& 'markdown_db_native_malformed_post' === ( $unsafe_hardlink->diagnostic()['code'] ?? null ) ) );
 
-if ( 1 !== ( $shadow_report['counts']['compatible'] ?? 0 ) ) {
-	fwrite( STDERR, json_encode( $shadow_report, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR ) . PHP_EOL );
-}
 
 $failed = 0;
 foreach ( $checks as $label => $passed ) {

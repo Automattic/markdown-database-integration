@@ -29,13 +29,7 @@ function has_filter( string $tag ): bool {
 
 require_once __DIR__ . '/../vendor/autoload.php';
 require_once __DIR__ . '/stubs/stub-wp-markdown-storage.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-write-engine.php';
-require_once __DIR__ . '/../inc/class-wp-markdown-loader.php';
-
-if ( ! class_exists( 'WP_MySQL_On_SQLite' ) ) {
-	class WP_MySQL_On_SQLite {}
-}
-require_once __DIR__ . '/../inc/sqlite/class-wp-markdown-sqlite-runtime-adapter.php';
+require_once __DIR__ . '/../inc/class-wp-markdown-canonical-persistence.php';
 
 final class MDI_Durability_Operations implements WP_Markdown_Backend_Operations {
 	public array $row_policies = array();
@@ -118,7 +112,7 @@ unset( $GLOBALS['mdi_legacy_ephemeral'] );
 $root = sys_get_temp_dir() . '/mdi-durability-' . getmypid() . '-' . bin2hex( random_bytes( 4 ) );
 mkdir( $root, 0755, true );
 $operations = new MDI_Durability_Operations();
-$engine = new WP_Markdown_Write_Engine( $root, new WP_Markdown_Storage( $root ), $operations );
+$engine = new WP_Markdown_Canonical_Persistence( $root, new WP_Markdown_Storage( $root ), $operations );
 foreach ( array( 'canonical_jobs', 'reconstructible_jobs', 'ephemeral_jobs' ) as $table ) {
 	$engine->persist_write( 'UPDATE wp_' . $table . ' SET id = 1', 'wp_' . $table, 'UPDATE' );
 	$engine->persist_schema( '', 'wp_' . $table, 'CREATE' );
@@ -129,37 +123,7 @@ mdi_durability_assert( is_file( $root . '/_tables/reconstructible_jobs.json' ) &
 mdi_durability_assert( 2 === ( $operations->row_policies['reconstructible_jobs']['limit'] ?? null ), 'reconstructible projection reaches backend-neutral snapshot reads' );
 mdi_durability_assert( ! is_file( $root . '/_tables/ephemeral_jobs.json' ) && ! is_file( $root . '/_schema/ephemeral_jobs.sql' ) && ! isset( $operations->row_policies['ephemeral_jobs'] ), 'ephemeral DML and DDL produce no canonical state' );
 
-$adapter = ( new ReflectionClass( WP_Markdown_SQLite_Runtime_Adapter::class ) )->newInstanceWithoutConstructor();
-$prefix = new ReflectionProperty( $adapter, 'table_prefix' );
-$prefix->setValue( $adapter, 'wp_' );
-$detect = new ReflectionMethod( $adapter, 'detect_operation' );
-mdi_durability_assert( null === $detect->invoke( $adapter, 'UPDATE wp_ephemeral_jobs SET id = 2' ), 'SQLite excludes ephemeral DML before mutation capture' );
-mdi_durability_assert( null === $detect->invoke( $adapter, 'CREATE TABLE wp_ephemeral_jobs (id INTEGER)' ), 'SQLite excludes ephemeral DDL before mutation capture' );
-mdi_durability_assert( is_array( $detect->invoke( $adapter, 'UPDATE wp_reconstructible_jobs SET id = 2' ) ), 'SQLite captures reconstructible mutations' );
-
-file_put_contents( $root . '/_schema/ephemeral_jobs.sql', 'CREATE TABLE wp_ephemeral_jobs (id INTEGER PRIMARY KEY);' );
-file_put_contents( $root . '/_tables/ephemeral_jobs.json', '[{"id":9}]' );
-$cold_operations = new MDI_Durability_Operations();
-$loader = new WP_Markdown_Loader( $root, $cold_operations, new WP_Markdown_Storage( $root ) );
-$cold = $loader->load_all();
-mdi_durability_assert( 'complete' === $cold->status(), 'empty-index cold reconstruction completes with classified plugin tables' );
-mdi_durability_assert( in_array( 'canonical_jobs', $cold_operations->ensured, true ) && in_array( 'reconstructible_jobs', $cold_operations->ensured, true ), 'cold reconstruction registers canonical and reconstructible schemas' );
-mdi_durability_assert( ! in_array( 'ephemeral_jobs', $cold_operations->ensured, true ) && ! isset( $cold_operations->hydrated['ephemeral_jobs'] ), 'cold reconstruction ignores stale ephemeral schema and rows' );
-mdi_durability_assert( isset( $cold_operations->hydrated['canonical_jobs'], $cold_operations->hydrated['reconstructible_jobs'] ), 'cold reconstruction hydrates available canonical projections' );
-
-$warm_operations = new MDI_Durability_Operations();
-$warm_loader = new WP_Markdown_Loader( $root, $warm_operations, new WP_Markdown_Storage( $root ) );
-$warm = $warm_loader->sync_incremental();
-mdi_durability_assert( 'complete' === $warm->status() && isset( $warm_operations->hydrated['canonical_jobs'], $warm_operations->hydrated['reconstructible_jobs'] ), 'warm synchronization consumes the same durability decision' );
-mdi_durability_assert( ! isset( $warm_operations->hydrated['ephemeral_jobs'] ), 'warm synchronization excludes ephemeral snapshots' );
-
-$empty = $root . '-empty';
-mkdir( $empty, 0755, true );
-$empty_loader = new WP_Markdown_Loader( $empty, new MDI_Durability_Operations(), new WP_Markdown_Storage( $empty ) );
-mdi_durability_assert( 'complete' === $empty_loader->load_all()->status(), 'missing reconstructible and ephemeral state is owner-recreatable during cold reconstruction' );
-
 mdi_durability_remove_tree( $root );
-mdi_durability_remove_tree( $empty );
 
 echo PHP_EOL . "Passed: {$passed}; Failed: {$failed}" . PHP_EOL;
 exit( $failed > 0 ? 1 : 0 );

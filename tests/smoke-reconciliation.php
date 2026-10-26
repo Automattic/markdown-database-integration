@@ -199,9 +199,7 @@ if ( false === $runtime || ! unlink( $runtime ) || ! mkdir( $runtime, 0700 ) ) {
 register_shutdown_function( static fn() => mdi_reconcile_remove( $runtime ) );
 $canonical = $runtime . '/canonical';
 mkdir( $canonical, 0700 );
-$pdo = new PDO( 'sqlite:' . $runtime . '/fixture.sqlite' );
-$pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$pdo->exec( 'CREATE TABLE `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
+$pdo = new MDI_Reconciliation_MySQL_PDO();
 
 $base_a = array( 'body' => 'baseline-a-private-secret' );
 $base_b = array( 'body' => 'baseline-b-private-secret' );
@@ -316,9 +314,7 @@ while ( null !== $page['continuation'] ) {
 sort( $seen, SORT_STRING );
 mdi_reconcile_check( array_column( $snapshots, 'resource_id' ) === $seen && count( $seen ) === count( array_unique( $seen ) ), 'bounded continuation covers a stable snapshot exactly once' );
 
-$bounded_pdo = new PDO( 'sqlite::memory:' );
-$bounded_pdo->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$bounded_pdo->exec( 'CREATE TABLE `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
+$bounded_pdo = new MDI_Reconciliation_MySQL_PDO();
 $bounded_apply_adapter = new MDI_Reconciliation_Content_Adapter( array_slice( $snapshots, 0, 4 ), $runtime . '/bounded-apply', $bounded_pdo, 'bounded-apply' );
 $bounded_apply_adapter->change_source_on_mutation = true;
 $bounded_apply_service = new WP_Markdown_Reconciliation_Service( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/bounded-apply-journal', $canonical ) ), $bounded_apply_adapter );
@@ -482,22 +478,12 @@ mdi_reconcile_check( 0 === $fs_mutations && $owner_b['fence'] > $owner_a['fence'
 $equal_owner = $owner_b; $equal_owner['id'] = str_repeat( 'e', 64 );
 mdi_reconcile_throws( fn() => $fs_adapter->fence( $equal_owner ), WP_Markdown_Reconciliation_Store_Conflict::class, 'equal fence token from a different operation does not acquire ownership' );
 
-// Real SQLite PDO engine behavior: fence and content mutation commit together, stale owner is rejected.
-$sqlite = new PDO( 'sqlite:' . $runtime . '/ownership.sqlite' ); $sqlite->setAttribute( PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION );
-$sqlite->exec( 'CREATE TABLE `_mdi_resource_fences` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL)' );
-$sqlite->exec( 'CREATE TABLE content (id INTEGER PRIMARY KEY, value TEXT NOT NULL)' ); $sqlite->exec( "INSERT INTO content VALUES (1, 'before')" );
-$sqlite_adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $sqlite, static fn( array $op, PDO $db ): array => array( 'wordpress' => $db->query( 'SELECT value FROM content WHERE id = 1' )->fetchColumn() ), static fn( array $op, PDO $db ) => $db->exec( "UPDATE content SET value = 'after' WHERE id = 1" ) );
-$sqlite_intent = array_replace( $intent, array( 'plan_id' => 'sqlite-real', 'resource' => array( 'type' => 'post', 'id' => 'sqlite-1' ), 'kind' => 'updated_from_file', 'direction' => 'canonical_to_wordpress', 'before' => array( 'wordpress' => mdi_reconcile_identity( 'before' ) ), 'after' => array( 'wordpress' => mdi_reconcile_identity( 'after' ) ) ) );
-$sqlite_result = ( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/sqlite-journal', $canonical ) ) )->reconcile( $sqlite_intent, $sqlite_adapter );
-mdi_reconcile_check( 'completed' === $sqlite_result['state'] && 'after' === $sqlite->query( 'SELECT value FROM content WHERE id = 1' )->fetchColumn(), 'real SQLite PDO adapter fences, mutates, and verifies committed state' );
-$sqlite_stale = $sqlite_result; $sqlite_stale['id'] = str_repeat( 'a', 64 ); $sqlite_stale['fence'] = 1;
-$sqlite_newer = $sqlite_stale; $sqlite_newer['id'] = str_repeat( 'b', 64 ); $sqlite_newer['fence'] = $sqlite_result['fence'] + 10;
-$sqlite_adapter->fence( $sqlite_newer );
-mdi_reconcile_throws( fn() => $sqlite_adapter->apply( $sqlite_stale ), WP_Markdown_Reconciliation_Store_Conflict::class, 'real SQLite PDO fence rejects stale database ownership' );
-
+// MySQL protocol fixture exercises the shared PDO adapter; live MariaDB probes
+// retain the real-engine transaction and ownership checks.
+$mysql_intent = array_replace( $intent, array( 'kind' => 'updated_from_file', 'direction' => 'canonical_to_wordpress', 'before' => array( 'wordpress' => mdi_reconcile_identity( 'before' ) ), 'after' => array( 'wordpress' => mdi_reconcile_identity( 'after' ) ) ) );
 $mysql = new MDI_Reconciliation_MySQL_PDO(); $mysql_state = 'before';
 $mysql_adapter = new WP_Markdown_PDO_Reconciliation_Adapter( $mysql, static function () use ( &$mysql_state ): array { return array( 'wordpress' => $mysql_state ); }, static function () use ( &$mysql_state ): void { $mysql_state = 'after'; } );
-$mysql_result = ( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/mysql-journal', $canonical ) ) )->reconcile( array_replace( $sqlite_intent, array( 'plan_id' => 'mysql-protocol', 'resource' => array( 'type' => 'post', 'id' => 'mysql-1' ) ) ), $mysql_adapter );
+$mysql_result = ( new WP_Markdown_Durable_Reconciliation_Coordinator( mdi_reconcile_store( $runtime . '/mysql-journal', $canonical ) ) )->reconcile( array_replace( $mysql_intent, array( 'plan_id' => 'mysql-protocol', 'resource' => array( 'type' => 'post', 'id' => 'mysql-1' ) ) ), $mysql_adapter );
 $mysql_sql = implode( "\n", $mysql->sql );
 mdi_reconcile_check( 'completed' === $mysql_result['state'] && ! str_contains( $mysql_sql, 'CREATE TABLE' ) && str_contains( $mysql_sql, 'BEGIN' ) && str_contains( $mysql_sql, 'COMMIT' ) && str_contains( $mysql_sql, 'DELETE FROM' ) && str_contains( $mysql_sql, 'INSERT INTO' ) && str_contains( $mysql_sql, 'SELECT operation_id, fence FROM' ), 'MySQL-compatible PDO protocol uses a pre-provisioned fence without mutation-path DDL' );
 

@@ -77,36 +77,6 @@
       "${components.markdown-database-integration.path}"
     ]
   },
-  "fuzz": {
-    "default_component": "markdown-database-integration"
-  },
-  "fuzz_workloads": {
-    "wordpress": [
-      {
-        "path": "${package.root}/fuzz/mdi-native-sqlite-differential.json"
-      }
-    ]
-  },
-  "fuzz_profiles": {
-    "quick": [
-      "mdi-native-sqlite-differential"
-    ],
-    "read-only": [
-      "mdi-native-sqlite-differential"
-    ],
-    "crud": [
-      "mdi-native-sqlite-differential"
-    ],
-    "full": [
-      "mdi-native-sqlite-differential"
-    ],
-    "nightly": [
-      "mdi-native-sqlite-differential"
-    ],
-    "differential": [
-      "mdi-native-sqlite-differential"
-    ]
-  },
   "bench": {
     "default_component": "markdown-database-integration",
     "warmup_iterations": 5,
@@ -116,9 +86,6 @@
   },
   "bench_workloads": {
     "wordpress": [
-      {
-        "path": "${package.root}/tests/bench/boot-timing.php"
-      },
       {
         "path": "${package.root}/tests/bench/bulk-import.php"
       },
@@ -141,7 +108,6 @@
   },
   "bench_profiles": {
     "decision": [
-      "boot-timing",
       "bulk-import",
       "obsidian-bursty",
       "read-heavy",

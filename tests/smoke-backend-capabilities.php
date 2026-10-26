@@ -1,6 +1,6 @@
 <?php
 /**
- * Executable backend capability contract and SQLite reference compatibility test.
+ * Executable native backend capability contract.
  *
  * Usage: php tests/smoke-backend-capabilities.php
  */
@@ -18,27 +18,6 @@ function mdi_backend_assert( bool $condition, string $message ): void {
 	}
 }
 
-$sqlite = WP_Markdown_Backend_Capabilities::sqlite();
-$expected = array(
-	'content_mutation_capture',
-	'table_mutation_capture',
-	'schema_persistence',
-	'cold_reconstruction',
-	'disposable_index_operation',
-	'lazy_post_content_resolution',
-	'explicit_flush',
-	'changed_path_receipts',
-	'canonical_option_select',
-);
-
-mdi_backend_assert( 'sqlite' === $sqlite->get_backend(), 'SQLite reference backend identifier is stable' );
-mdi_backend_assert( $expected === array_keys( $sqlite->report()['capabilities'] ), 'SQLite reference contract declares the complete compatibility matrix in stable order' );
-foreach ( array_diff( $expected, array( 'canonical_option_select' ) ) as $capability ) {
-	mdi_backend_assert( $sqlite->supports( $capability ), 'SQLite supports ' . $capability );
-	$sqlite->require( $capability );
-}
-mdi_backend_assert( ! $sqlite->supports( 'canonical_option_select' ), 'SQLite does not claim direct canonical option execution' );
-
 $native = WP_Markdown_Backend_Capabilities::mdi_native();
 mdi_backend_assert( 'mdi-native' === $native->get_backend(), 'Native backend identifier is stable' );
 mdi_backend_assert( $native->supports( 'canonical_option_select' ), 'Native backend declares its bounded option query guarantee' );
@@ -48,13 +27,8 @@ foreach ( array( 'schema_persistence', 'table_mutation_capture', 'content_mutati
 foreach ( array( 'cold_reconstruction', 'disposable_index_operation', 'explicit_flush', 'changed_path_receipts' ) as $capability ) {
 	mdi_backend_assert( ! $native->supports( $capability ), 'Native backend fails closed for ' . $capability );
 }
-try {
-	WP_Markdown_Backend_Resolver::require_runtime_capabilities( $native, 'primary' );
-	mdi_backend_assert( false, 'Native backend cannot activate the incomplete primary runtime' );
-} catch ( WP_Markdown_Unsupported_Backend_Capability $error ) {
-	mdi_backend_assert( 'mdi-native' === $error->get_diagnostic()['backend'], 'Native primary-runtime rejection identifies the backend' );
-}
-
+mdi_backend_assert( 'mdi-native' === WP_Markdown_Backend_Resolver::configure_from_globals()->get_backend(), 'default backend is native' );
+mdi_backend_assert( 'mdi-native' === WP_Markdown_Backend_Resolver::resolve()->get_backend(), 'runtime resolution is native' );
 $incomplete = new WP_Markdown_Backend_Capabilities( 'test', array( 'content_mutation_capture' => true ) );
 mdi_backend_assert( ! $incomplete->supports( 'explicit_flush' ), 'undeclared capabilities fail closed' );
 try {

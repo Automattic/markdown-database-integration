@@ -525,16 +525,12 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 		$definition = $this->registry->definition( $write->table() );
 		$provider = is_array( $table ) ? $table['provider'] : null;
 		$is_snapshot = $provider instanceof WP_Markdown_Native_JSON_Snapshot_Provider;
-		$is_partition = $provider instanceof WP_Markdown_Native_JSON_Partition_Provider;
 		if ( 1 !== preg_match( '/^[A-Za-z_][A-Za-z0-9_]*$/D', $suffix )
 			|| null === $table
-			|| ( ! $is_snapshot && ! $is_partition )
+			|| ! $is_snapshot
 			|| ! is_array( $definition )
 			|| ! $this->is_authoritative_definition( $suffix, $definition, $prefix, $write->table() )
 		) {
-			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
-		}
-		if ( $is_partition && $write->is_update() ) {
 			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
 		}
 
@@ -569,9 +565,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 					}
 				}
 			}
-		}
-		if ( $is_partition ) {
-			return $this->execute_partition_delete( $write, $table, $predicates );
 		}
 		$scalar_runtime = new WP_Markdown_Native_Query_Runtime( $this->registry, new WP_Markdown_Native_Query_Parser() );
 		$root = $this->root_for( $write->table() );
@@ -664,123 +657,6 @@ final class WP_Markdown_Native_Table_Mutation_Runtime {
 			flock( $lock, LOCK_UN );
 			fclose( $lock );
 		}
-	}
-
-	/**
-	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group> $predicates
-	 */
-	private function execute_partition_delete( WP_Markdown_Native_Table_Write $write, array $table, array $predicates ): WP_Markdown_Query_Result {
-		if ( null !== $write->derived_selection() ) {
-			return $this->failure( 'unsupported_derived_selection', 'mdi-native requires one bounded ordered same-table primary-key selection.' );
-		}
-		$provider = $table['provider'];
-		if ( ! $provider instanceof WP_Markdown_Native_JSON_Partition_Provider ) {
-			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
-		}
-		$schema = $table['schema'];
-		$identity_column = $provider->identity_column();
-		if ( array( $identity_column ) !== $schema->identity_columns() ) {
-			return $this->failure( 'unsupported_mutation_table', 'mdi-native can mutate only a persisted generic snapshot table.' );
-		}
-		$lock = $provider->exclusive_lock();
-		if ( $lock instanceof WP_Markdown_Query_Result ) {
-			return $lock;
-		}
-		try {
-			$generation = $provider->active_generation_directory();
-			if ( $generation instanceof WP_Markdown_Query_Result ) {
-				return $generation;
-			}
-			if ( null === $generation ) {
-				return WP_Markdown_Query_Result::mutated( 0 );
-			}
-			// An ORDER BY must rank every matching row before LIMIT applies, so the
-			// identity fast path (which visits candidates in literal order) is skipped.
-			$identities = array() === $write->order_by() ? $this->partition_identity_candidates( $predicates, $identity_column ) : null;
-			$affected = 0;
-			if ( null !== $identities ) {
-				foreach ( $identities as $value ) {
-					if ( $affected >= $write->limit() ) {
-						break;
-					}
-					$normalized = $schema->column( $identity_column )->normalize( $value );
-					if ( ! is_int( $normalized ) && ! is_string( $normalized ) ) {
-						return $this->failure( 'invalid_partition_identity', 'The requested partition identity cannot be normalized.' );
-					}
-					$identity = (string) $normalized;
-					$row = $provider->row_for_identity( $generation, $identity );
-					if ( $row instanceof WP_Markdown_Query_Result ) {
-						return $row;
-					}
-					if ( null === $row || ! $this->restricts( $row, $predicates, $schema ) ) {
-						continue;
-					}
-					$deleted = $provider->delete_identity( $generation, $identity, $this->transactions );
-					if ( $deleted instanceof WP_Markdown_Query_Result ) {
-						return $deleted;
-					}
-					if ( true === $deleted ) {
-						++$affected;
-					}
-				}
-				return WP_Markdown_Query_Result::mutated( $affected );
-			}
-			$rows = $provider->scan_generation( $generation );
-			if ( $rows instanceof WP_Markdown_Query_Result ) {
-				return $rows;
-			}
-			if ( array() !== $write->order_by() ) {
-				$rows = is_array( $rows ) ? $rows : iterator_to_array( $rows, false );
-				$selected = WP_Markdown_Native_Table_Write_Selection::selected_offsets( $rows, $predicates, $write, $schema );
-				if ( null === $selected ) {
-					return $this->failure( 'unsupported_order', 'The write ORDER BY names a column mdi-native cannot order.' );
-				}
-				// The selection is already bounded by ORDER BY … LIMIT; delete exactly it.
-				$rows = array_values( array_intersect_key( $rows, $selected ) );
-			}
-			foreach ( $rows as $row ) {
-				if ( $affected >= $write->limit() ) {
-					break;
-				}
-				if ( ! $this->restricts( $row, $predicates, $schema ) ) {
-					continue;
-				}
-				$normalized = $schema->column( $identity_column )->normalize( $row[ $identity_column ] ?? null );
-				if ( ! is_int( $normalized ) && ! is_string( $normalized ) ) {
-					return $this->failure( 'invalid_partition_identity', 'The requested partition identity cannot be normalized.' );
-				}
-				$deleted = $provider->delete_identity( $generation, (string) $normalized, $this->transactions );
-				if ( $deleted instanceof WP_Markdown_Query_Result ) {
-					return $deleted;
-				}
-				if ( true === $deleted ) {
-					++$affected;
-				}
-			}
-			return WP_Markdown_Query_Result::mutated( $affected );
-		} finally {
-			flock( $lock, LOCK_UN );
-			fclose( $lock );
-		}
-	}
-
-	/**
-	 * @param array<int,WP_Markdown_Native_Table_Predicate|WP_Markdown_Native_Table_Predicate_Group> $predicates
-	 * @return array<int,int|string>|null
-	 */
-	private function partition_identity_candidates( array $predicates, string $identity_column ): ?array {
-		foreach ( $predicates as $predicate ) {
-			if ( ! $predicate instanceof WP_Markdown_Native_Table_Predicate
-				|| $identity_column !== $predicate->column()
-				|| ! in_array( $predicate->operator(), array( '=', 'IN' ), true )
-				|| $predicate->matches_null()
-				|| array() === $predicate->values()
-			) {
-				continue;
-			}
-			return $predicate->values();
-		}
-		return null;
 	}
 
 	/**

@@ -188,7 +188,7 @@ final class WP_Markdown_Native_Table_Write {
  *
  * One definition of which rows a write touches: its WHERE restrictions, then
  * MySQL's single-table `ORDER BY … LIMIT n` bound. Keeping it here means the
- * generic snapshot, partition, and wp_posts paths cannot drift apart on
+ * generic snapshot and wp_posts paths cannot drift apart on
  * comparison operators or on which n rows a bounded write selects.
  */
 final class WP_Markdown_Native_Table_Write_Selection {

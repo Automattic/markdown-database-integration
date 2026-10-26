@@ -16,6 +16,7 @@ require_once __DIR__ . '/class-wp-markdown-native-query-ast.php';
 require_once __DIR__ . '/class-wp-markdown-native-query-parser.php';
 require_once __DIR__ . '/../class-wp-markdown-storage.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-providers.php';
+require_once __DIR__ . '/class-wp-markdown-native-partition-fold.php';
 require_once __DIR__ . '/class-wp-markdown-native-option-mutations.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-index.php';
 require_once __DIR__ . '/class-wp-markdown-native-table-mutations.php';
@@ -465,60 +466,18 @@ final class WP_Markdown_Native_Runtime_Factory {
 				if ( null !== $schema ) {
 					$partition_marker = rtrim( $state_root, '/\\' ) . '/_tables/' . $table . '/.mdi-partition.json';
 					if ( file_exists( $partition_marker ) || is_link( $partition_marker ) ) {
-						$marker = self::read_persisted_partition_marker( $state_root, $table );
-						$identity = is_array( $marker ) ? (string) ( $marker['identity_column'] ?? '' ) : '';
-						if ( array( $identity ) !== $schema->identity_columns() ) {
+						$folded = WP_Markdown_Native_Partition_Fold::fold( $state_root, $table, $schema, $definitions[ $table ] );
+						if ( true !== $folded ) {
+							error_log( 'MDI could not fold partitioned table ' . $table . ': ' . $folded );
 							continue;
 						}
-						$registry->register(
-							$prefix . $table,
-							$schema,
-							new WP_Markdown_Native_JSON_Partition_Provider( $state_root, $schema, $table, $identity )
-						);
-					} else {
-						self::register_json_snapshot( $registry, $state_root, $prefix . $table, $schema, $table . '.json' );
 					}
+					self::register_json_snapshot( $registry, $state_root, $prefix . $table, $schema, $table . '.json' );
 				}
 			} catch ( Throwable ) {
 				continue;
 			}
 		}
-	}
-
-	/** @return array<string,mixed>|null */
-	private static function read_persisted_partition_marker( string $state_root, string $table ): ?array {
-		$state = realpath( $state_root );
-		$tables_path = rtrim( $state_root, '/\\' ) . '/_tables';
-		$tables = realpath( $tables_path );
-		$table_path = false === $tables ? '' : $tables . '/' . $table;
-		$directory = '' === $table_path ? false : realpath( $table_path );
-		if ( false === $state
-			|| false === $tables
-			|| false === $directory
-			|| is_link( $tables_path )
-			|| is_link( $table_path )
-			|| dirname( $tables ) !== $state
-			|| dirname( $directory ) !== $tables
-		) {
-			return null;
-		}
-		$path = $directory . '/.mdi-partition.json';
-		$contents = self::read_persisted_file( $directory, $path );
-		if ( null === $contents ) {
-			return null;
-		}
-		try {
-			$marker = json_decode( $contents, true, 512, JSON_THROW_ON_ERROR );
-		} catch ( JsonException ) {
-			return null;
-		}
-		return is_array( $marker )
-			&& 1 === ( $marker['version'] ?? null )
-			&& $table === ( $marker['table'] ?? null )
-			&& is_string( $marker['identity_column'] ?? null )
-			&& 1 === preg_match( '/^generation-[a-f0-9]{24}$/D', (string) ( $marker['generation'] ?? '' ) )
-			? $marker
-			: null;
 	}
 
 	/** @param array{columns:array<string,array<string,mixed>>,indexes:array<int,array<string,mixed>>} $definition */

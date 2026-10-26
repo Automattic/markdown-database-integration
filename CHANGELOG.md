@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.14.4] - 2026-10-26
+
+### Changed
+- Detect existing SQLite databases by file header, not presence
+
 ## [0.14.3] - 2026-10-19
 
 ### Changed

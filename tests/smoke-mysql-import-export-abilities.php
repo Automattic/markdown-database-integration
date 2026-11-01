@@ -37,12 +37,15 @@ guid: ""
 comment_count: 0
 meta:
   color: blue
+  pattern: '\d+\s'
 terms:
   category:
     - docs
 ---
 
 Original body.
+
+`C:\docs\file.md` and `\d+`.
 MD
 );
 
@@ -183,7 +186,17 @@ function get_page_by_path( string $path, string $output = OBJECT, string $post_t
 	return null;
 }
 
+// Model the slashed-input contract of WordPress's post and metadata APIs.
+function wp_slash( $value ) {
+	return is_array( $value ) ? array_map( 'wp_slash', $value ) : ( is_string( $value ) ? addslashes( $value ) : $value );
+}
+
+function wp_unslash( $value ) {
+	return is_array( $value ) ? array_map( 'wp_unslash', $value ) : ( is_string( $value ) ? stripslashes( $value ) : $value );
+}
+
 function wp_insert_post( array $postarr, bool $wp_error = false ) {
+	$postarr = wp_unslash( $postarr );
 	$id = (int) ( $postarr['ID'] ?? $postarr['import_id'] ?? 0 );
 	if ( $id <= 0 ) {
 		$id = $GLOBALS['mdi_next_post_id']++;
@@ -204,7 +217,7 @@ function get_post_meta( int $post_id, string $key = '', bool $single = false ) {
 }
 
 function update_post_meta( int $post_id, string $key, $value ): void {
-	$GLOBALS['mdi_test_meta'][ $post_id ][ $key ] = $value;
+	$GLOBALS['mdi_test_meta'][ $post_id ][ $key ] = wp_unslash( $value );
 }
 
 function delete_post_meta( int $post_id, string $key ): void {
@@ -215,7 +228,7 @@ function add_post_meta( int $post_id, string $key, $value ): void {
 	if ( ! isset( $GLOBALS['mdi_test_meta'][ $post_id ][ $key ] ) ) {
 		$GLOBALS['mdi_test_meta'][ $post_id ][ $key ] = array();
 	}
-	$GLOBALS['mdi_test_meta'][ $post_id ][ $key ][] = $value;
+	$GLOBALS['mdi_test_meta'][ $post_id ][ $key ][] = wp_unslash( $value );
 }
 
 function wp_set_object_terms( int $post_id, array $terms, string $taxonomy, bool $append = false ): void {
@@ -268,7 +281,17 @@ mdi_mysql_import_export_do_action( 'wp_abilities_api_init' );
 
 add_filter(
 	'markdown_db_content_format_convert',
-	static fn( $converted, string $content, string $from, string $to ): string => "[{$from}:{$to}]{$content}",
+	static function ( $converted, string $content, string $from, string $to ): string {
+		if ( 'markdown' === $from ) {
+			// Representative serialized block attributes from an HTML-link conversion.
+			$content = '<!-- wp:list-item ' . json_encode( array( 'content' => '<a href="https://example.com">Join</a>' ), JSON_HEX_TAG | JSON_HEX_QUOT ) . ' -->' . "\n" . $content;
+		}
+		$result = "[{$from}:{$to}]{$content}";
+		if ( 'markdown' === $from ) {
+			$GLOBALS['mdi_expected_import_content'] = $result;
+		}
+		return $result;
+	},
 	10,
 	5
 );
@@ -312,6 +335,10 @@ if ( ! str_contains( (string) ( $GLOBALS['mdi_test_posts'][17]->post_content ?? 
 	$failures[] = 'import content transform filter did not modify post_content before insert';
 }
 
+if ( $GLOBALS['mdi_expected_import_content'] !== ( $GLOBALS['mdi_test_posts'][17]->post_content ?? null ) ) {
+	$failures[] = 'import did not preserve converter output, block JSON escapes, and literal backslashes exactly';
+}
+
 $import_context = $GLOBALS['mdi_test_contexts']['import_content'] ?? array();
 if ( 'import' !== ( $import_context['operation'] ?? '' ) || 'page' !== ( $import_context['post_type'] ?? '' ) || 'page/home.md' !== ( $import_context['source_path'] ?? '' ) || ! isset( $import_context['frontmatter']['title'] ) ) {
 	$failures[] = 'import content transform filter did not receive expected context';
@@ -322,6 +349,9 @@ if ( 'page/home.md' !== ( $GLOBALS['mdi_test_meta'][17]['_markdown_source_path']
 }
 if ( 'page/home.md' !== ( $GLOBALS['mdi_test_meta'][17]['_markdown_source_identity'] ?? '' ) ) {
 	$failures[] = 'import ability did not store immutable source identity meta';
+}
+if ( array( '\\d+\\s' ) !== ( $GLOBALS['mdi_test_meta'][17]['pattern'] ?? null ) ) {
+	$failures[] = 'import did not preserve frontmatter metadata backslashes';
 }
 if ( array( 'docs' ) !== ( $GLOBALS['mdi_test_terms'][17]['category'] ?? array() ) ) {
 	$failures[] = 'import ability did not preserve frontmatter terms';
@@ -338,6 +368,10 @@ if ( 1 !== ( $second_import['update_count'] ?? 0 ) || 1 !== count( $GLOBALS['mdi
 }
 if ( 'Home Updated' !== ( $GLOBALS['mdi_test_posts'][17]->post_title ?? '' ) ) {
 	$failures[] = 'second import did not update post title';
+}
+
+if ( $GLOBALS['mdi_expected_import_content'] !== ( $GLOBALS['mdi_test_posts'][17]->post_content ?? null ) ) {
+	$failures[] = 'update import did not preserve converted content exactly';
 }
 
 WP_Markdown_CLI::import_cli( array(), array( 'content-dir' => $content_dir, 'dry-run' => true, 'format' => 'json' ) );

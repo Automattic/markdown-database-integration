@@ -489,7 +489,7 @@ class WP_Markdown_CLI {
 				continue;
 			}
 
-			$result = wp_insert_post( $postarr, true );
+			$result = wp_insert_post( wp_slash( $postarr ), true );
 			if ( self::is_error( $result ) ) {
 				$skipped[] = array(
 					'path'   => $source_path,
@@ -514,8 +514,8 @@ class WP_Markdown_CLI {
 
 			self::sync_meta( $new_id, (array) ( $post->_frontmatter_meta ?? array() ) );
 			self::sync_terms( $new_id, (array) ( $post->_frontmatter_terms ?? array() ) );
-			update_post_meta( $new_id, self::SOURCE_PATH_META, $source_path );
-			update_post_meta( $new_id, self::SOURCE_IDENTITY_META, $source_path );
+			update_post_meta( $new_id, self::SOURCE_PATH_META, wp_slash( $source_path ) );
+			update_post_meta( $new_id, self::SOURCE_IDENTITY_META, wp_slash( $source_path ) );
 			update_post_meta( $new_id, self::SOURCE_HASH_META, $source_hash );
 
 			$row = array(
@@ -616,8 +616,8 @@ class WP_Markdown_CLI {
 					'path' => $relative,
 				);
 				if ( $filtered_export_post_id > 0 ) {
-					update_post_meta( $filtered_export_post_id, self::SOURCE_PATH_META, $relative );
-					update_post_meta( $filtered_export_post_id, self::SOURCE_IDENTITY_META, (string) ( $filtered_export_post->_source_identity ?? $relative ) );
+					update_post_meta( $filtered_export_post_id, self::SOURCE_PATH_META, wp_slash( $relative ) );
+					update_post_meta( $filtered_export_post_id, self::SOURCE_IDENTITY_META, wp_slash( (string) ( $filtered_export_post->_source_identity ?? $relative ) ) );
 					update_post_meta( $filtered_export_post_id, self::SOURCE_HASH_META, self::source_hash( $file ) );
 				}
 			} else {
@@ -1136,7 +1136,7 @@ class WP_Markdown_CLI {
 			delete_post_meta( $post_id, $key );
 			$values = is_array( $value ) ? $value : array( $value );
 			foreach ( $values as $meta_value ) {
-				add_post_meta( $post_id, $key, $meta_value );
+				add_post_meta( $post_id, $key, wp_slash( $meta_value ) );
 			}
 		}
 	}

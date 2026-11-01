@@ -371,6 +371,31 @@ if ( $export_dir !== ( $cli_export['path'] ?? null ) || array( 'page' ) !== ( $c
 	$failures[] = 'export CLI did not route --content-dir to the markdown content root';
 }
 
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-content-layout-profiles.php';
+markdown_db_register_content_layout_profile(
+	'nested-export-fixture',
+	array(
+		'enumerate' => static fn(): array => array( 'plugins/foo/docs/user/home.md' ),
+		'map_source' => static fn(): array => array( 'post_type' => 'page', 'post_name' => 'home' ),
+		'path_for_post' => static fn(): string => 'plugins/foo/docs/user/home.md',
+	)
+);
+$nested_options = array( 'path' => $tmp_root . '/nested-export', 'post_types' => 'page', 'layout_profile' => 'nested-export-fixture' );
+$nested_export = WP_Markdown_CLI::export( $nested_options );
+if ( true !== $nested_export['success'] || 1 !== $nested_export['written_count'] || 0 !== $nested_export['skipped_count'] || ! is_file( $nested_options['path'] . '/plugins/foo/docs/user/home.md' ) ) {
+	$failures[] = 'nested layout export did not write into a fresh root';
+}
+// A conflicting route must be accounted for rather than silently disappearing.
+file_put_contents( $nested_options['path'] . '/plugins/foo/docs/user/home.md', "---\nid: 999\n---\n\nOther post\n" );
+$failed_export = WP_Markdown_CLI::export( $nested_options );
+if ( false !== $failed_export['success'] || 1 !== $failed_export['candidate_count'] || 0 !== $failed_export['written_count'] || 1 !== $failed_export['skipped_count'] || 17 !== ( $failed_export['skipped'][0]['id'] ?? null ) || 'plugins/foo/docs/user/home.md' !== ( $failed_export['skipped'][0]['path'] ?? null ) || empty( $failed_export['skipped'][0]['reason'] ) ) {
+	$failures[] = 'failed export write was not reported as a skip with unsuccessful status';
+}
+$dry_export = WP_Markdown_CLI::export( array_merge( $nested_options, array( 'dry_run' => true ) ) );
+if ( true !== $dry_export['success'] || 0 !== $dry_export['written_count'] || 0 !== $dry_export['skipped_count'] ) {
+	$failures[] = 'dry-run export was incorrectly reported as a failed write';
+}
+
 mdi_mysql_import_export_rm_rf( $tmp_root );
 
 if ( ! empty( $failures ) ) {

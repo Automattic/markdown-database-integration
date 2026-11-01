@@ -1412,7 +1412,7 @@ class WP_Markdown_Storage {
 		}
 
 		// Missing and empty frontmatter are accepted only by an opted-in profile.
-		$has_frontmatter = (bool) preg_match( '/^---\n(.*?)^---\n\n?(.*)/ms', $raw, $m );
+		$has_frontmatter = (bool) preg_match( '/\A---\n(.*?)^---\n\n?(.*)/ms', $raw, $m );
 		$frontmatter = $has_frontmatter ? (array) WP_Markdown_Yaml::decode_yaml( $m[1] ) : array();
 		$body = $has_frontmatter ? $m[2] : $raw;
 		// write_post() adds one LF; preserve all other body whitespace.

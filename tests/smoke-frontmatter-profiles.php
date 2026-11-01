@@ -296,6 +296,18 @@ if ( is_string( $plain_file ) ) {
 	}
 }
 
+// Horizontal rules (`---`) inside a plain body must not be mistaken for frontmatter.
+$rules_storage = new WP_Markdown_Storage( $tmp_root . '/rules' );
+$rules_storage->set_frontmatter_profile( 'markdown-h1-title' );
+$rules_file = $tmp_root . '/rules/page/rules.md';
+if ( ! is_dir( dirname( $rules_file ) ) ) {
+	mkdir( dirname( $rules_file ), 0755, true );
+}
+file_put_contents( $rules_file, "# Rules\n\nIntro\n\n---\n\nMiddle\n\n---\n\nEnd\n" );
+$rules_post = $rules_storage->read_file( $rules_file );
+if ( ! $rules_post || 'Rules' !== $rules_post->post_title || "Intro\n\n---\n\nMiddle\n\n---\n\nEnd" !== $rules_post->post_content ) {
+	$failures[] = 'horizontal rules in a plain body were parsed as frontmatter';
+}
 if ( ! empty( $failures ) ) {
 	foreach ( $failures as $failure ) {
 		echo 'FAIL: ' . $failure . PHP_EOL;

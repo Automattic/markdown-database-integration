@@ -69,22 +69,7 @@ if ( ! defined( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE' ) ) {
 	define( 'MARKDOWN_DB_CONTENT_LAYOUT_PROFILE', 'post-type-hierarchy' );
 }
 
-/** Prepare shared reconciliation fencing for import/export-only MySQL sites. */
-function markdown_database_integration_ensure_mysql_reconciliation_state(): void {
-	global $wpdb;
-	if ( ( defined( 'MARKDOWN_DB_BACKEND' ) && 'mdi-native' === MARKDOWN_DB_BACKEND ) || $wpdb instanceof WP_Markdown_Native_WPDB || ! is_object( $wpdb ) || ! method_exists( $wpdb, 'query' ) ) {
-		return;
-	}
-	$table = (string) ( $wpdb->prefix ?? 'wp_' ) . 'mdi_resource_fences';
-	if ( false === $wpdb->query( "CREATE TABLE IF NOT EXISTS `{$table}` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL) ENGINE=InnoDB" ) ) {
-		return;
-	}
-	update_option( '_markdown_db_mysql_reconciliation_schema', '1', false );
-}
-
 // Content-format conversion belongs to the application above this storage plugin.
-add_action( 'init', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
-add_action( 'switch_blog', 'markdown_database_integration_ensure_mysql_reconciliation_state', 0 );
 add_action( 'init', array( 'WP_Markdown_CLI', 'register' ) );
 add_action( 'init', array( 'WP_Markdown_Frontmatter_Migration', 'maybe_run' ), 1 );
 

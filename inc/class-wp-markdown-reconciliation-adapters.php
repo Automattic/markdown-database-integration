@@ -275,10 +275,27 @@ final class WP_Markdown_WPDB_Reconciliation_Adapter implements WP_Markdown_Recon
 		return (string) ( $this->wpdb->prefix ?? 'wp_' ) . 'mdi_resource_fences';
 	}
 
+	/** Ensure only the active blog's schema, and never issue DDL inside a mutation transaction. */
+	private function ensure_fence_schema(): void {
+		static $ensured = array();
+		$table = $this->fence_table();
+		if ( isset( $ensured[ $table ] ) ) {
+			return;
+		}
+		$option = '_markdown_db_mysql_reconciliation_schema';
+		$version = '1';
+		if ( get_option( $option ) !== $version ) {
+			$this->query( "CREATE TABLE IF NOT EXISTS `{$table}` (`resource_key` VARCHAR(191) PRIMARY KEY, `operation_id` VARCHAR(64) NOT NULL, `fence` BIGINT NOT NULL) ENGINE=InnoDB" );
+			update_option( $option, $version, false );
+		}
+		$ensured[ $table ] = true;
+	}
+
 	private function transaction( callable $callback ): void {
 		if ( 1 === (int) $this->wpdb->get_var( 'SELECT @@session.in_transaction' ) ) {
 			throw new WP_Markdown_Reconciliation_Store_Conflict( 'Reconciliation cannot own a mutation inside an existing database transaction.' );
 		}
+		$this->ensure_fence_schema();
 		$this->query( 'START TRANSACTION' );
 		try {
 			$callback();

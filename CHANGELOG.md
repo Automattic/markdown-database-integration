@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.15.1] - 2026-11-01
+
+### Changed
+- ensure fence schema lazily instead of on every request
+
+### Fixed
+- preserve backslashes at WordPress write boundaries
+
 ## [0.15.0] - 2026-11-01
 
 ### Added

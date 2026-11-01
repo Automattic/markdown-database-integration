@@ -101,6 +101,23 @@ if ( $root . '/foo.md' !== $written ) {
 	$failures[] = 'fixture profile did not export page /foo to content/foo.md';
 }
 
+$nested_path = 'plugins/foo/docs/user/page.md';
+$nested = $storage->write_post( (object) array( 'ID' => 20, 'post_type' => 'page', 'post_name' => 'plugins/foo/docs/user/page', 'post_content' => 'Nested body' ) );
+if ( $root . '/' . $nested_path !== $nested || ! is_file( $root . '/' . $nested_path ) || ! str_contains( (string) file_get_contents( $root . '/' . $nested_path ), 'Nested body' ) ) {
+	$failures[] = 'profile write did not create missing nested target directories';
+}
+if ( @symlink( $outside, $root . '/escape-dir' ) ) {
+	$escaped = $storage->write_post( (object) array( 'ID' => 21, 'post_name' => 'escape-dir/missing/deep/page' ) );
+	if ( false !== $escaped || file_exists( $outside . '/missing' ) ) {
+		$failures[] = 'nested profile write followed an outside ancestor symlink';
+	}
+}
+if ( @symlink( $outside . '/nonexistent', $root . '/dangling-dir' ) ) {
+	if ( false !== $storage->write_post( (object) array( 'ID' => 22, 'post_name' => 'dangling-dir/missing/page' ) ) || file_exists( $outside . '/nonexistent' ) ) {
+		$failures[] = 'nested profile write accepted a dangling ancestor symlink';
+	}
+}
+
 $duplicate = $storage->write_post( (object) array( 'ID' => 2, 'post_type' => 'page', 'post_name' => 'foo', 'post_status' => 'publish', 'post_title' => 'Duplicate', 'post_content' => 'Duplicate' ) );
 if ( false !== $duplicate ) {
 	$failures[] = 'duplicate route identity was not rejected';

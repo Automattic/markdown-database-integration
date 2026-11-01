@@ -936,7 +936,23 @@ class WP_Markdown_Storage {
 			$root = realpath( $this->content_dir );
 		}
 		$path = rtrim( $this->content_dir, '/' ) . '/' . $relative;
-		$target = realpath( $allow_missing ? dirname( $path ) : $path );
+		$ancestor = $allow_missing ? dirname( $path ) : $path;
+		if ( $allow_missing ) {
+			// Validate before mkdir: missing parents are safe only when their
+			// nearest existing ancestor resolves inside the content root.
+			// Stop at dangling symlinks too, so they fail closed below.
+			while ( ! file_exists( $ancestor ) && ! is_link( $ancestor ) ) {
+				$parent = dirname( $ancestor );
+				if ( $parent === $ancestor ) {
+					return null;
+				}
+				$ancestor = $parent;
+			}
+			if ( ! is_dir( $ancestor ) ) {
+				return null;
+			}
+		}
+		$target = realpath( $ancestor );
 		if ( false === $target || ( $target !== $root && ! str_starts_with( $target, $root . '/' ) ) ) {
 			return null;
 		}

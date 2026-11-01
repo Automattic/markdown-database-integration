@@ -570,9 +570,10 @@ class WP_Markdown_CLI {
 		$storage->set_meta_resolver( array( self::class, 'post_meta_rows' ) );
 		$storage->set_terms_resolver( array( self::class, 'post_term_rows' ) );
 
-		$written = array();
-		$skipped = array();
-		$sample  = array();
+		$written      = array();
+		$skipped      = array();
+		$sample       = array();
+		$write_failed = false;
 		foreach ( $posts as $post ) {
 			$expected = self::expected_export_path( $post, $layout_profile );
 			if ( count( $sample ) < 10 ) {
@@ -616,11 +617,18 @@ class WP_Markdown_CLI {
 					update_post_meta( $filtered_export_post_id, self::SOURCE_IDENTITY_META, (string) ( $filtered_export_post->_source_identity ?? $relative ) );
 					update_post_meta( $filtered_export_post_id, self::SOURCE_HASH_META, self::source_hash( $file ) );
 				}
+			} else {
+				$write_failed = true;
+				$skipped[] = array(
+					'id'     => (int) ( $post->ID ?? 0 ),
+					'path'   => $expected,
+					'reason' => 'Markdown storage could not write the post.',
+				);
 			}
 		}
 
 		return array(
-			'success'         => true,
+			'success'         => ! $write_failed,
 			'mode'            => $dry_run ? 'dry-run' : 'apply',
 			'path'            => $content_dir,
 			'post_types'      => $post_types,

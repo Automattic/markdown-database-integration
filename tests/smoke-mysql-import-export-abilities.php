@@ -267,7 +267,7 @@ mdi_mysql_import_export_do_action( 'wp_abilities_api_categories_init' );
 mdi_mysql_import_export_do_action( 'wp_abilities_api_init' );
 
 add_filter(
-	'datamachine_content_format_convert',
+	'markdown_db_content_format_convert',
 	static fn( $converted, string $content, string $from, string $to ): string => "[{$from}:{$to}]{$content}",
 	10,
 	5

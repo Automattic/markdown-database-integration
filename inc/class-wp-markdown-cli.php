@@ -1006,7 +1006,8 @@ class WP_Markdown_CLI {
 	private static function convert_content_format( string $content, string $from, string $to, array $context, object $source_post ) {
 		$converted = null;
 		if ( function_exists( 'apply_filters' ) ) {
-			$converted = apply_filters( 'datamachine_content_format_convert', null, $content, $from, $to, $context );
+			// A null result leaves conversion to the bundled Blocks Engine transformer.
+			$converted = apply_filters( 'markdown_db_content_format_convert', null, $content, $from, $to, $context );
 		}
 
 		if ( null === $converted ) {

@@ -24,9 +24,11 @@ class WP_Markdown_Frontmatter_Profiles {
 	/**
 	 * Register a frontmatter profile.
 	 *
+	 * The frontmatter policy is 'required' (default) or 'optional'.
 	 * A profile may provide these callbacks:
 	 * - supports_post( object $post, array $context ): bool
 	 * - export_frontmatter( object $post, array $context ): array
+	 * - export_body( object $post, array $context ): string
 	 * - import_post_data( array $frontmatter, string $body, array $context ): array|object
 	 * - supports_frontmatter( array $frontmatter, string $body, array $context ): bool
 	 *
@@ -36,7 +38,7 @@ class WP_Markdown_Frontmatter_Profiles {
 	 */
 	public static function register( string $id, array $profile ): bool {
 		$id = self::sanitize_id( $id );
-		if ( '' === $id ) {
+		if ( '' === $id || ! in_array( $profile['frontmatter'] ?? 'required', array( 'required', 'optional' ), true ) ) {
 			return false;
 		}
 
@@ -133,6 +135,23 @@ class WP_Markdown_Frontmatter_Profiles {
 	 * Ensure the built-in WordPress-safe profile exists.
 	 */
 	private static function ensure_builtin_profiles(): void {
+		if ( ! isset( self::$profiles['markdown-h1-title'] ) ) {
+			self::$profiles['markdown-h1-title'] = array(
+				'id'                 => 'markdown-h1-title',
+				'label'              => 'Markdown H1 title',
+				'frontmatter'        => 'optional',
+				'export_frontmatter' => static fn( object $post, array $context ): array => array(),
+				'export_body'        => static fn( object $post, array $context ): string => '# ' . ( $post->post_title ?? '' ) . "\n\n" . ( $post->post_content ?? '' ),
+				'import_post_data'   => static function ( array $frontmatter, string $body ): array {
+					$title = '';
+					if ( preg_match( '/^# ([^\n]*)(?:\n(?:\n)?|$)/m', $body, $match, PREG_OFFSET_CAPTURE ) ) {
+						$title = $match[1][0];
+						$body = substr_replace( $body, '', $match[0][1], strlen( $match[0][0] ) );
+					}
+					return array( 'post_title' => $title, 'post_status' => 'publish', 'post_content' => $body );
+				},
+			);
+		}
 		if ( isset( self::$profiles[ self::NATIVE_PROFILE ] ) ) {
 			self::ensure_okf_profile();
 			return;

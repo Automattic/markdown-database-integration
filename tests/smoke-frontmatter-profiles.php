@@ -278,6 +278,36 @@ if ( null === $okf_parent || null === $okf_child ) {
 	}
 }
 
+$plain_storage = new WP_Markdown_Storage( $tmp_root . '/plain' );
+$plain_storage->set_frontmatter_profile( 'markdown-h1-title' );
+$plain_file = $plain_storage->write_post( (object) array( 'ID' => 80, 'post_type' => 'page', 'post_name' => 'plain', 'post_title' => 'Plain title', 'post_content' => 'Plain body' ) );
+if ( ! is_string( $plain_file ) || "# Plain title\n\nPlain body\n" !== file_get_contents( $plain_file ) ) {
+	$failures[] = 'non-layout write emitted frontmatter for a minimal profile';
+}
+if ( is_string( $plain_file ) ) {
+	file_put_contents( $plain_file, "---\n---\n\n# Empty block\n\nBody\n" );
+	$empty_block = $plain_storage->read_file( $plain_file );
+	if ( ! $empty_block || 'Empty block' !== $empty_block->post_title || 'Body' !== $empty_block->post_content ) {
+		$failures[] = 'optional profile did not accept an empty frontmatter block';
+	}
+	$plain_storage->set_frontmatter_profile( 'native' );
+	if ( null !== $plain_storage->read_file( $plain_file ) || 'empty_frontmatter' !== ( $plain_storage->get_skipped_files()[ $plain_file ] ?? '' ) ) {
+		$failures[] = 'required profile did not report empty frontmatter';
+	}
+}
+
+// Horizontal rules (`---`) inside a plain body must not be mistaken for frontmatter.
+$rules_storage = new WP_Markdown_Storage( $tmp_root . '/rules' );
+$rules_storage->set_frontmatter_profile( 'markdown-h1-title' );
+$rules_file = $tmp_root . '/rules/page/rules.md';
+if ( ! is_dir( dirname( $rules_file ) ) ) {
+	mkdir( dirname( $rules_file ), 0755, true );
+}
+file_put_contents( $rules_file, "# Rules\n\nIntro\n\n---\n\nMiddle\n\n---\n\nEnd\n" );
+$rules_post = $rules_storage->read_file( $rules_file );
+if ( ! $rules_post || 'Rules' !== $rules_post->post_title || "Intro\n\n---\n\nMiddle\n\n---\n\nEnd" !== $rules_post->post_content ) {
+	$failures[] = 'horizontal rules in a plain body were parsed as frontmatter';
+}
 if ( ! empty( $failures ) ) {
 	foreach ( $failures as $failure ) {
 		echo 'FAIL: ' . $failure . PHP_EOL;

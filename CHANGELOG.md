@@ -1,5 +1,11 @@
 # Changelog
 
+## [0.14.10] - 2026-11-01
+
+### Fixed
+- create nested profile paths and report failed writes
+- use MDI-owned conversion hook
+
 ## [0.14.9] - 2026-10-26
 
 ### Changed

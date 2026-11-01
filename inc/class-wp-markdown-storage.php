@@ -314,14 +314,7 @@ class WP_Markdown_Storage {
 		// Build frontmatter.
 		$frontmatter = $this->build_frontmatter( $post );
 
-		// Build content.
-		$content = $post->post_content ?? '';
-
-		// Assemble the file.
-		$output = "---\n";
-		$output .= WP_Markdown_Yaml::encode_yaml( $frontmatter );
-		$output .= "---\n\n";
-		$output .= $content . "\n";
+		$output = $this->build_file_output( $post, $frontmatter );
 
 		$this->observe_file_mutation( $file_path );
 		$result = file_put_contents( $file_path, $output, LOCK_EX );
@@ -836,7 +829,7 @@ class WP_Markdown_Storage {
 		if ( null === $this->profile_absolute_path( $relative, true ) ) {
 			return false;
 		}
-		$output = "---\n" . WP_Markdown_Yaml::encode_yaml( $frontmatter ) . "---\n\n" . ( $post->post_content ?? '' ) . "\n";
+		$output = $this->build_file_output( $post, $frontmatter );
 		$id = (int) ( $post->ID ?? 0 );
 		$old_path = $id > 0 ? $this->find_file_by_id( $id ) : null;
 		$tmp_path = $this->stage_profile_write( $file_path, $output );
@@ -1178,7 +1171,19 @@ class WP_Markdown_Storage {
 			$this->rebuild_index();
 		}
 
-		return $this->index[ $post_id ] ?? null;
+		if ( isset( $this->index[ $post_id ] ) ) {
+			return $this->index[ $post_id ];
+		}
+		// Plain Markdown has no embedded ID. Resolve its canonical route from
+		// the imported post's source metadata via the layout profile instead.
+		if ( $this->profile_enumerates_sources() && function_exists( 'get_post' ) ) {
+			$post = get_post( $post_id );
+			if ( is_object( $post ) ) {
+				$relative = $this->profile_path_for_post( $post );
+				return false !== $relative ? $this->profile_absolute_path( $relative ) : null;
+			}
+		}
+		return null;
 	}
 
 	/**
@@ -1375,52 +1380,63 @@ class WP_Markdown_Storage {
 		}
 	}
 
+	/** @var array<string,string> Files excluded by the active frontmatter policy. */
+	private array $skipped_files = array();
+
+	/** @return array<string,string> Absolute paths mapped to skip reasons. */
+	public function get_skipped_files(): array {
+		return $this->skipped_files;
+	}
+
 	private function parse_post_file( string $file_path, bool $metadata_only ): ?object {
-		if ( $metadata_only ) {
-			// Fast path: read only enough of the file to get the frontmatter.
-			// Avoids reading potentially large content bodies during boot.
-			$raw = $this->read_frontmatter_only( $file_path );
-		} else {
-			$raw = file_get_contents( $file_path );
-		}
-
-		if ( false === $raw || '' === $raw ) {
-			return null;
-		}
-
-		// Split frontmatter and content.
-		if ( ! preg_match( '/^---\n(.+?)\n---\n\n?(.*)/s', $raw, $m ) ) {
-			return null;
-		}
-
-		$frontmatter = WP_Markdown_Yaml::decode_yaml( $m[1] );
-		// write_post() terminates every body with one LF; remove only that terminator.
-		$content     = $metadata_only ? '' : ( str_ends_with( $m[2], "\n" ) ? substr( $m[2], 0, -1 ) : $m[2] );
-
-		if ( ! $frontmatter ) {
-			return null;
-		}
-
 		$context = array(
 			'operation' => 'import',
 			'file_path' => $file_path,
 			'profile'   => $this->frontmatter_profile,
 		);
+		$selected = WP_Markdown_Frontmatter_Profiles::resolve_for_import( array(), '', $context );
+		$body_metadata = 'optional' === ( $selected['frontmatter'] ?? 'required' );
+		if ( $metadata_only && ! $body_metadata ) {
+			// Fast path: read only enough of the file to get the frontmatter.
+			// Avoids reading potentially large content bodies during boot.
+			$raw = $this->read_frontmatter_only( $file_path );
+			if ( false === $raw ) {
+				$raw = file_get_contents( $file_path );
+			}
+		} else {
+			$raw = file_get_contents( $file_path );
+		}
+
+		if ( false === $raw ) {
+			return null;
+		}
+
+		// Missing and empty frontmatter are accepted only by an opted-in profile.
+		$has_frontmatter = (bool) preg_match( '/^---\n(.*?)^---\n\n?(.*)/ms', $raw, $m );
+		$frontmatter = $has_frontmatter ? (array) WP_Markdown_Yaml::decode_yaml( $m[1] ) : array();
+		$body = $has_frontmatter ? $m[2] : $raw;
+		// write_post() adds one LF; preserve all other body whitespace.
+		$content = str_ends_with( $body, "\n" ) ? substr( $body, 0, -1 ) : $body;
 		$profile = WP_Markdown_Frontmatter_Profiles::resolve_for_import( $frontmatter, $content, $context );
+		if ( ! $frontmatter && 'optional' !== ( $profile['frontmatter'] ?? 'required' ) ) {
+			$this->skipped_files[ $file_path ] = $has_frontmatter ? 'empty_frontmatter' : 'missing_frontmatter';
+			return null;
+		}
+		unset( $this->skipped_files[ $file_path ] );
 		$data    = array();
 		if ( ! empty( $profile['import_post_data'] ) && is_callable( $profile['import_post_data'] ) ) {
 			$data = (array) call_user_func( $profile['import_post_data'], $frontmatter, $content, array_merge( $context, array( 'profile_id' => $profile['id'] ?? '' ) ) );
 		}
 
 		$post = (object) $data;
-		$post->post_content = (string) ( $post->post_content ?? $content );
+		$post->post_content = $metadata_only ? '' : (string) ( $post->post_content ?? $content );
 		// Derive slug from the filename when the frontmatter has none.
 		// Supports the "just drop a file" workflow — an AI agent or git
 		// pull creating `wiki/my-topic.md` gets `my-topic` as post_name
 		// without needing a slug field. `index.md` files (used when a
 		// post has children) fall back to the parent directory name.
 		// See GitHub issue #42.
-		if ( '' === $post->post_name && '' !== $file_path ) {
+		if ( '' === ( $post->post_name ?? '' ) && '' !== $file_path ) {
 			$stem = basename( $file_path, '.md' );
 			if ( 'index' === $stem ) {
 				$stem = basename( dirname( $file_path ) );
@@ -1542,6 +1558,16 @@ class WP_Markdown_Storage {
 	 * @param object $post A WordPress post row.
 	 * @return array Frontmatter key-value pairs.
 	 */
+	/** Assemble either a YAML document or a plain Markdown body. */
+	private function build_file_output( object $post, array $frontmatter ): string {
+		$context = array( 'operation' => 'export', 'profile' => $this->frontmatter_profile );
+		$profile = WP_Markdown_Frontmatter_Profiles::resolve_for_export( $post, $context );
+		$body = is_callable( $profile['export_body'] ?? null )
+			? (string) call_user_func( $profile['export_body'], $post, array_merge( $context, array( 'profile_id' => $profile['id'] ?? '' ) ) )
+			: (string) ( $post->post_content ?? '' );
+		return ( $frontmatter ? "---\n" . WP_Markdown_Yaml::encode_yaml( $frontmatter ) . "---\n\n" : '' ) . $body . "\n";
+	}
+
 	private function build_frontmatter( object $post ): array {
 		$native_frontmatter = $this->build_native_frontmatter( $post );
 		$context            = array(

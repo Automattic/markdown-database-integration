@@ -429,6 +429,9 @@ class WP_Markdown_CLI {
 		$created      = array();
 		$updated      = array();
 		$skipped      = array();
+		foreach ( $storage->get_skipped_files() as $path => $reason ) {
+			$skipped[] = array( 'path' => self::relative_path( $path, $content_dir ), 'reason' => $reason );
+		}
 		$sample       = array();
 		$create_count = 0;
 		$update_count = 0;

@@ -174,6 +174,31 @@ segments. Protect roots with filesystem permissions: PHP cannot guarantee an
 `openat(2)`-style defense against a concurrent directory replacement immediately
 before rename.
 
+### Frontmatter profiles
+
+Select a built-in or registered frontmatter profile with `--profile=<id>`.
+`native` preserves WordPress fields; `okf` writes portable Open Knowledge Format
+frontmatter. Custom profiles register with
+`markdown_db_register_frontmatter_profile( $id, $profile )` and can provide
+`import_post_data( array $frontmatter, string $body, array $context )`,
+`export_frontmatter( object $post, array $context )`, and
+`export_body( object $post, array $context )` callbacks.
+
+The `frontmatter` key accepts `required` (the default) or `optional`. Optional
+profiles receive an empty array and the Markdown body for files without YAML
+frontmatter (or with an empty block). Required profiles report these files in
+the import result's `skipped` list. Returning an empty array from
+`export_frontmatter` omits the YAML block entirely; export adds one final LF.
+
+The opt-in `markdown-h1-title` profile imports the first `# ` line as the title,
+removes that line and one following blank line, and defaults status to `publish`.
+Export writes `# {title}` followed by a blank line and the body, without YAML.
+Combine it with a layout profile to derive type, slug, parent and stable source
+identity from nested repo paths such as `plugins/foo/docs/user/page.md`. Identity
+is retained in WordPress source metadata, not injected into Markdown. Files in
+this H1/blank-line format with LF endings and a final newline round-trip
+byte-identically; other heading spacing or newline conventions are normalized.
+
 ## MySQL/MariaDB import and export
 
 Use `wp markdown-db import` and `wp markdown-db export` (or their abilities) to

@@ -396,6 +396,42 @@ if ( true !== $dry_export['success'] || 0 !== $dry_export['written_count'] || 0 
 	$failures[] = 'dry-run export was incorrectly reported as a failed write';
 }
 
+// Exercise the actual import result and source-meta update matching for plain docs.
+$GLOBALS['mdi_test_filters']['markdown_db_import_post_content'] = array();
+$GLOBALS['mdi_test_filters']['markdown_db_content_format_convert'] = array();
+$GLOBALS['mdi_test_posts'] = array();
+$GLOBALS['mdi_test_meta'] = array();
+$plain_root = $tmp_root . '/plain';
+mkdir( $plain_root . '/plugins/foo/docs/user', 0777, true );
+$plain_path = $plain_root . '/plugins/foo/docs/user/home.md';
+file_put_contents( $plain_path, "# Plain home\n\nPlain body.\n" );
+markdown_db_register_content_layout_profile( 'plain-import-fixture', array(
+	'enumerate' => static fn(): array => array( 'plugins/foo/docs/user/home.md' ),
+	'map_source' => static fn( string $path ): array => array( 'post_type' => 'page', 'post_name' => 'plain-home', 'source_identity' => $path ),
+	'path_for_post' => static fn(): string => 'plugins/foo/docs/user/home.md',
+) );
+$plain_options = array( 'path' => $plain_root, 'layout_profile' => 'plain-import-fixture', 'profile' => 'markdown-h1-title' );
+$required_import = WP_Markdown_CLI::import( array_merge( $plain_options, array( 'profile' => 'native' ) ) );
+if ( 1 !== $required_import['skipped_count'] || 'missing_frontmatter' !== ( $required_import['skipped'][0]['reason'] ?? '' ) || 'plugins/foo/docs/user/home.md' !== ( $required_import['skipped'][0]['path'] ?? '' ) ) {
+	$failures[] = 'frontmatter-required CLI import silently dropped a plain file';
+}
+$plain_import = WP_Markdown_CLI::import( $plain_options );
+$plain_id = $plain_import['created'][0]['id'] ?? 0;
+$before = $GLOBALS['mdi_test_posts'][ $plain_id ] ?? null;
+$repeat = WP_Markdown_CLI::import( $plain_options );
+if ( 1 !== $plain_import['create_count'] || 1 !== $repeat['update_count'] || 0 !== $repeat['create_count'] || ! $before || 'Plain home' !== $before->post_title || 'plain-home' !== $before->post_name || 'Plain body.' !== $before->post_content || $before != $GLOBALS['mdi_test_posts'][ $plain_id ] ) {
+	$failures[] = 'plain docs import/re-import did not update the same source without content changes';
+}
+$fresh_plain_storage = new WP_Markdown_Storage( $plain_root );
+$fresh_plain_storage->set_content_layout_profile( 'plain-import-fixture' );
+$fresh_plain_storage->set_frontmatter_profile( 'markdown-h1-title' );
+if ( $plain_path !== $fresh_plain_storage->path_for_post( $plain_id ) ) {
+	$failures[] = 'fresh layout storage could not find a frontmatter-free imported post by ID';
+}
+$plain_export = WP_Markdown_CLI::export( array_merge( $plain_options, array( 'post_types' => 'page' ) ) );
+if ( 1 !== $plain_export['written_count'] || "# Plain home\n\nPlain body.\n" !== file_get_contents( $plain_path ) ) {
+	$failures[] = 'plain docs CLI export did not reproduce the source bytes';
+}
 mdi_mysql_import_export_rm_rf( $tmp_root );
 
 if ( ! empty( $failures ) ) {

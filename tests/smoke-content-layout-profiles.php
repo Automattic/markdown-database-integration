@@ -194,6 +194,46 @@ if ( array() !== $unsafe->get_all_posts() || false !== $unsafe->write_post( (obj
 	$failures[] = 'profile paths escaped the content root or claimed state paths';
 }
 
+// Repo-backed docs supply hierarchy and identity entirely through their paths.
+$plain_source = "# Page title\n\nBody with trailing spaces.  \n\n## Details\n\nMore text.\n";
+file_put_contents( $root . '/' . $nested_path, $plain_source );
+markdown_db_register_content_layout_profile( 'plain-docs-fixture', array(
+	'enumerate' => static fn(): array => array( 'plugins/foo/docs/user/page.md' ),
+	'map_source' => static fn( string $path ): array => array( 'post_type' => 'page', 'post_name' => basename( $path, '.md' ), 'post_parent' => 42, 'source_identity' => $path ),
+	'path_for_post' => static fn(): string => 'plugins/foo/docs/user/page.md',
+) );
+$plain = new WP_Markdown_Storage( $root );
+$plain->set_content_layout_profile( 'plain-docs-fixture' );
+$plain->set_frontmatter_profile( 'markdown-h1-title' );
+$plain_posts = iterator_to_array( $plain->get_all_posts_iterator() );
+$page = $plain_posts[0] ?? null;
+if ( ! $page || 'Page title' !== $page->post_title || 'publish' !== $page->post_status || 'page' !== $page->post_name || 42 !== $page->post_parent || 'page' !== $page->post_type || $nested_path !== $page->_source_identity || substr( $plain_source, 14, -1 ) !== $page->post_content ) {
+	$failures[] = 'plain Markdown did not import title, body, hierarchy and path identity';
+} else {
+	$page->ID = 77;
+	$plain->write_post( $page );
+	if ( $plain_source !== file_get_contents( $root . '/' . $nested_path ) || $root . '/' . $nested_path !== $plain->path_for_post( 77 ) ) {
+		$failures[] = 'plain Markdown export was not byte-identical or indexed by its assigned ID';
+	}
+	$again = $plain->read_file( $root . '/' . $nested_path );
+	if ( $page->post_content !== $again->post_content || $page->post_title !== $again->post_title ) {
+		$failures[] = 'plain Markdown re-import changed title or content';
+	}
+	$metadata = $plain->read_file( $root . '/' . $nested_path, true );
+	if ( 'Page title' !== $metadata->post_title || '' !== $metadata->post_content ) {
+		$failures[] = 'plain Markdown metadata read lost its derived title';
+	}
+}
+$required = new WP_Markdown_Storage( $root );
+$required->set_content_layout_profile( 'plain-docs-fixture' );
+$required->set_frontmatter_profile( 'native' );
+if ( array() !== iterator_to_array( $required->get_all_posts_iterator() ) || 'missing_frontmatter' !== ( $required->get_skipped_files()[ $root . '/' . $nested_path ] ?? '' ) ) {
+	$failures[] = 'required-frontmatter exclusion was not reported';
+}
+if ( markdown_db_register_frontmatter_profile( 'invalid-policy', array( 'frontmatter' => 'sometimes' ) ) ) {
+	$failures[] = 'invalid frontmatter policy was accepted';
+}
+
 if ( ! empty( $failures ) ) {
 	foreach ( $failures as $failure ) {
 		echo 'FAIL: ' . $failure . PHP_EOL;

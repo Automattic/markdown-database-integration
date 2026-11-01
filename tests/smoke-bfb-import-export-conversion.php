@@ -36,6 +36,13 @@ function apply_filters( string $hook_name, $value, ...$args ) {
 	return $value;
 }
 
+function blocks_engine_php_transformer_convert_format( string $content, string $from, string $to, array $context ): array {
+	return array(
+		'status' => 'success',
+		'serialized_blocks' => "[blocks-engine:{$from}:{$to}]{$content}",
+	);
+}
+
 function do_action( string $hook_name, ...$args ): void {
 	$GLOBALS['mdi_format_actions'][] = array( $hook_name, $args );
 }
@@ -55,6 +62,20 @@ class WP_Error {
 require dirname( __DIR__ ) . '/inc/class-wp-markdown-cli.php';
 
 $failures = array();
+
+// Storage runtime must not depend on specific consumer plugins.
+$runtime_files = new RecursiveIteratorIterator(
+	new RecursiveDirectoryIterator( dirname( __DIR__ ) . '/inc', FilesystemIterator::SKIP_DOTS )
+);
+foreach ( $runtime_files as $runtime_file ) {
+	if ( ! $runtime_file->isFile() || in_array( 'vendor', explode( DIRECTORY_SEPARATOR, $runtime_file->getPathname() ), true ) ) {
+		continue;
+	}
+	if ( preg_match( '/datamachine|intelligence_wiki/i', file_get_contents( $runtime_file->getPathname() ) ) ) {
+		$failures[] = 'consumer plugin reference in runtime: ' . $runtime_file->getPathname();
+	}
+}
+
 $method   = new ReflectionMethod( WP_Markdown_CLI::class, 'apply_transform_filter' );
 if ( PHP_VERSION_ID < 80100 ) {
 	$method->setAccessible( true );
@@ -65,7 +86,7 @@ $source_post = (object) array(
 );
 
 add_filter(
-	'datamachine_content_format_convert',
+	'markdown_db_content_format_convert',
 	static function ( $converted, string $content, string $from, string $to ) {
 		if ( $GLOBALS['mdi_format_fail'] ) {
 			return new WP_Error( 'transformer_failed', 'Content format conversion failed.' );
@@ -154,6 +175,26 @@ if ( ! is_wp_error( $failed_conversion ) ) {
 
 if ( 'markdown_db_content_format_conversion_failed' !== ( $GLOBALS['mdi_format_actions'][0][0] ?? '' ) ) {
 	$failures[] = 'failed content-format conversion did not emit diagnostic action';
+}
+
+$GLOBALS['mdi_format_filters']['markdown_db_content_format_convert'] = array();
+add_filter( 'markdown_db_content_format_convert', static fn( $converted ) => null );
+add_filter(
+	'datamachine_content_format_convert',
+	static function () {
+		throw new RuntimeException( 'Consumer-owned conversion hook must not be called.' );
+	}
+);
+$fallback = $method->invoke(
+	null,
+	'markdown_db_import_post_content',
+	'# Fallback',
+	array( 'operation' => 'import', 'post_type' => 'page' ),
+	array( 'post_type' => 'page' ),
+	$source_post
+);
+if ( '[blocks-engine:markdown:blocks]# Fallback' !== $fallback ) {
+	$failures[] = 'null converter result did not fall back to Blocks Engine';
 }
 
 if ( ! empty( $failures ) ) {

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.0] - 2026-11-01
+
+### Added
+- support frontmatter-free markdown sources
+
 ## [0.14.10] - 2026-11-01
 
 ### Fixed

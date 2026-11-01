@@ -334,7 +334,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		} elseif ( (int) ( $source->ID ?? 0 ) > 0 ) {
 			$postarr['import_id'] = (int) $source->ID;
 		}
-		$result = wp_insert_post( $postarr, true );
+		$result = wp_insert_post( wp_slash( $postarr ), true );
 		if ( function_exists( 'is_wp_error' ) && is_wp_error( $result ) ) {
 			throw new RuntimeException( 'WordPress post write failed: ' . $result->get_error_message() );
 		}
@@ -399,10 +399,10 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 			throw new RuntimeException( 'A managed canonical path is required.' );
 		}
 		$absolute = $this->absolute_path( $root, $path );
-		update_post_meta( $post_id, self::SOURCE_PATH_META, $path );
+		update_post_meta( $post_id, self::SOURCE_PATH_META, wp_slash( $path ) );
 		$source_identity = is_string( $receipt['source_identity'] ?? null ) && '' !== $receipt['source_identity'] ? $receipt['source_identity'] : $path;
 		unset( $receipt['source_identity'] );
-		update_post_meta( $post_id, self::SOURCE_IDENTITY_META, $source_identity );
+		update_post_meta( $post_id, self::SOURCE_IDENTITY_META, wp_slash( $source_identity ) );
 		update_post_meta( $post_id, self::SOURCE_HASH_META, null !== $absolute && is_file( $absolute ) ? hash_file( 'sha256', $absolute ) : '' );
 		$resource_id ??= sprintf( 'post:%020d', $post_id );
 		$baseline = array(
@@ -413,7 +413,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 			'resource_id'    => $resource_id,
 			'resource_type'  => 'post',
 		);
-		update_post_meta( $post_id, self::BASELINE_META, $baseline );
+		update_post_meta( $post_id, self::BASELINE_META, wp_slash( $baseline ) );
 		$registry = $this->baseline_registry( $root );
 		$registry[ $resource_id ] = $this->public_baseline( $baseline );
 		$this->write_baseline_registry( $root, $registry );
@@ -567,7 +567,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		foreach ( array_unique( array_merge( array_keys( $current ), array_keys( $wanted ) ) ) as $key ) {
 			delete_post_meta( $post_id, $key );
 			foreach ( $wanted[ $key ] ?? array() as $value ) {
-				add_post_meta( $post_id, $key, $value );
+				add_post_meta( $post_id, $key, wp_slash( $value ) );
 			}
 		}
 	}

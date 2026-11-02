@@ -202,6 +202,14 @@ function wp_insert_post( array $postarr, bool $wp_error = false ) {
 		$id = $GLOBALS['mdi_next_post_id']++;
 	}
 
+	$GLOBALS['mdi_last_postarr'] = $postarr;
+	// Model WordPress merging omitted fields on update and filling empty publish dates.
+	$postarr = array_merge( (array) ( $GLOBALS['mdi_test_posts'][ $id ] ?? array() ), $postarr );
+	foreach ( array( 'post_date', 'post_date_gmt' ) as $field ) {
+		if ( empty( $postarr[ $field ] ) || '0000-00-00 00:00:00' === $postarr[ $field ] ) {
+			$postarr[ $field ] = '2026-11-02 01:45:00';
+		}
+	}
 	$postarr['ID']               = $id;
 	$GLOBALS['mdi_test_posts'][ $id ] = (object) $postarr;
 	return $id;
@@ -465,6 +473,57 @@ if ( $plain_path !== $fresh_plain_storage->path_for_post( $plain_id ) ) {
 $plain_export = WP_Markdown_CLI::export( array_merge( $plain_options, array( 'post_types' => 'page' ) ) );
 if ( 1 !== $plain_export['written_count'] || "# Plain home\n\nPlain body.\n" !== file_get_contents( $plain_path ) ) {
 	$failures[] = 'plain docs CLI export did not reproduce the source bytes';
+}
+// Regression #473: dateless updates keep publish dates and delegate modified dates to WordPress.
+if ( '2026-11-02 01:45:00' !== ( $before->post_date ?? '' ) || '2026-11-02 01:45:00' !== ( $before->post_date_gmt ?? '' ) ) {
+	$failures[] = 'a new dateless post did not receive a publish date';
+}
+$stored_date = '2026-07-30 12:34:56';
+$GLOBALS['mdi_test_posts'][ $plain_id ]->post_date = $stored_date;
+$GLOBALS['mdi_test_posts'][ $plain_id ]->post_date_gmt = $stored_date;
+file_put_contents( $plain_path, "# Plain home\n\nUpdated body.\n" );
+WP_Markdown_CLI::import( $plain_options );
+$updated = $GLOBALS['mdi_test_posts'][ $plain_id ];
+if ( $stored_date !== $updated->post_date || $stored_date !== $updated->post_date_gmt || 'Updated body.' !== $updated->post_content ) {
+	$failures[] = 'dateless import reset the existing publish date or did not update content';
+}
+foreach ( array( 'post_date', 'post_date_gmt', 'post_modified', 'post_modified_gmt' ) as $field ) {
+	if ( array_key_exists( $field, $GLOBALS['mdi_last_postarr'] ) ) {
+		$failures[] = 'dateless update explicitly supplied ' . $field;
+	}
+}
+
+// Native frontmatter uses zero dates for absent dates; dated sources must still override dates.
+file_put_contents( $plain_path, "---\ntitle: Plain home\ntype: page\nslug: plain-home\n---\n\nNative updated body.\n" );
+$native_options = array_merge( $plain_options, array( 'profile' => 'native' ) );
+WP_Markdown_CLI::import( $native_options );
+if ( $stored_date !== $GLOBALS['mdi_test_posts'][ $plain_id ]->post_date || 'Native updated body.' !== $GLOBALS['mdi_test_posts'][ $plain_id ]->post_content ) {
+	$failures[] = 'dateless native frontmatter reset the existing date or did not update content';
+}
+$source_date = '2026-08-15 10:20:30';
+file_put_contents( $plain_path, "---\ntitle: Plain home\ntype: page\nslug: plain-home\ndate: '$source_date'\n---\n\nDated body.\n" );
+WP_Markdown_CLI::import( $native_options );
+foreach ( array( 'post_date', 'post_date_gmt', 'post_modified', 'post_modified_gmt' ) as $field ) {
+	if ( $source_date !== ( $GLOBALS['mdi_last_postarr'][ $field ] ?? null ) ) {
+		$failures[] = 'dated source no longer supplies ' . $field;
+	}
+}
+
+// Reconciliation has its own write-array builder; keep the same update/create contract there.
+require_once dirname( __DIR__ ) . '/inc/class-wp-markdown-wordpress-reconciliation-adapter.php';
+$adapter_class = new ReflectionClass( WP_Markdown_WordPress_Reconciliation_Adapter::class );
+$adapter = $adapter_class->newInstanceWithoutConstructor();
+$builder = $adapter_class->getMethod( 'post_array' );
+$builder->setAccessible( true );
+foreach ( array( '', '0000-00-00 00:00:00', $source_date ) as $date ) {
+	foreach ( array( 0, $plain_id ) as $existing_id ) {
+		$source = (object) array( 'post_date' => $date, 'post_date_gmt' => $date, 'post_content' => 'Reconciled body.' );
+		$postarr = $builder->invoke( $adapter, $source, $existing_id );
+		$expect_dates = 0 === $existing_id || $source_date === $date;
+		if ( $expect_dates !== array_key_exists( 'post_date', $postarr ) || $expect_dates !== array_key_exists( 'post_date_gmt', $postarr ) || 'Reconciled body.' !== $postarr['post_content'] ) {
+			$failures[] = 'reconciliation did not preserve the dateless update/create contract';
+		}
+	}
 }
 mdi_mysql_import_export_rm_rf( $tmp_root );
 

@@ -196,6 +196,7 @@ function wp_unslash( $value ) {
 }
 
 function wp_insert_post( array $postarr, bool $wp_error = false ) {
+	$GLOBALS['mdi_insert_calls'] = ( $GLOBALS['mdi_insert_calls'] ?? 0 ) + 1;
 	$postarr = wp_unslash( $postarr );
 	$id = (int) ( $postarr['ID'] ?? $postarr['import_id'] ?? 0 );
 	if ( $id <= 0 ) {
@@ -365,6 +366,29 @@ if ( array( 'docs' ) !== ( $GLOBALS['mdi_test_terms'][17]['category'] ?? array()
 	$failures[] = 'import ability did not preserve frontmatter terms';
 }
 
+$calls_before = $GLOBALS['mdi_insert_calls'];
+foreach ( array( true, false ) as $dry_run ) {
+	$repeat = WP_Markdown_CLI::import( array( 'path' => $content_dir, 'dry_run' => $dry_run ) );
+	if ( 0 !== $repeat['update_count'] || 1 !== $repeat['unchanged_count'] || array( array( 'id' => 17, 'path' => 'page/home.md' ) ) !== $repeat['unchanged'] || $calls_before !== $GLOBALS['mdi_insert_calls'] ) {
+		$failures[] = 'unchanged dated re-import wrote a post or was not reported unchanged';
+	}
+}
+// A final post-data filter must participate in change detection.
+add_filter( 'markdown_db_import_post_data', static function ( array $postarr ): array {
+	$postarr['post_status'] = 'draft';
+	return $postarr;
+} );
+foreach ( array( true, false ) as $dry_run ) {
+	$status_import = WP_Markdown_CLI::import( array( 'path' => $content_dir, 'dry_run' => $dry_run ) );
+	if ( 1 !== $status_import['update_count'] || 0 !== $status_import['unchanged_count'] ) {
+		$failures[] = 'post-data status filter was not counted as a change';
+	}
+}
+if ( $calls_before + 1 !== $GLOBALS['mdi_insert_calls'] || 'draft' !== $GLOBALS['mdi_test_posts'][17]->post_status ) {
+	$failures[] = 'status filter did not write exactly once in apply';
+}
+$GLOBALS['mdi_test_filters']['markdown_db_import_post_data'] = array();
+
 file_put_contents(
 	$content_dir . '/page/home.md',
 	str_replace( array( 'title: "Home"', 'Original body.' ), array( 'title: "Home Updated"', 'Updated body.' ), file_get_contents( $content_dir . '/page/home.md' ) )
@@ -461,7 +485,7 @@ $plain_import = WP_Markdown_CLI::import( $plain_options );
 $plain_id = $plain_import['created'][0]['id'] ?? 0;
 $before = $GLOBALS['mdi_test_posts'][ $plain_id ] ?? null;
 $repeat = WP_Markdown_CLI::import( $plain_options );
-if ( 1 !== $plain_import['create_count'] || 1 !== $repeat['update_count'] || 0 !== $repeat['create_count'] || ! $before || 'Plain home' !== $before->post_title || 'plain-home' !== $before->post_name || 'Plain body.' !== $before->post_content || $before != $GLOBALS['mdi_test_posts'][ $plain_id ] ) {
+if ( 1 !== $plain_import['create_count'] || 0 !== $repeat['update_count'] || 1 !== $repeat['unchanged_count'] || 0 !== $repeat['create_count'] || ! $before || 'Plain home' !== $before->post_title || 'plain-home' !== $before->post_name || 'Plain body.' !== $before->post_content || $before != $GLOBALS['mdi_test_posts'][ $plain_id ] ) {
 	$failures[] = 'plain docs import/re-import did not update the same source without content changes';
 }
 $fresh_plain_storage = new WP_Markdown_Storage( $plain_root );
@@ -482,7 +506,11 @@ $stored_date = '2026-07-30 12:34:56';
 $GLOBALS['mdi_test_posts'][ $plain_id ]->post_date = $stored_date;
 $GLOBALS['mdi_test_posts'][ $plain_id ]->post_date_gmt = $stored_date;
 file_put_contents( $plain_path, "# Plain home\n\nUpdated body.\n" );
-WP_Markdown_CLI::import( $plain_options );
+$calls_before = $GLOBALS['mdi_insert_calls'];
+$changed_import = WP_Markdown_CLI::import( $plain_options );
+if ( 1 !== $changed_import['update_count'] || 0 !== $changed_import['unchanged_count'] || $calls_before + 1 !== $GLOBALS['mdi_insert_calls'] ) {
+	$failures[] = 'one changed file did not produce exactly one write';
+}
 $updated = $GLOBALS['mdi_test_posts'][ $plain_id ];
 if ( $stored_date !== $updated->post_date || $stored_date !== $updated->post_date_gmt || 'Updated body.' !== $updated->post_content ) {
 	$failures[] = 'dateless import reset the existing publish date or did not update content';
@@ -524,6 +552,45 @@ foreach ( array( '', '0000-00-00 00:00:00', $source_date ) as $date ) {
 			$failures[] = 'reconciliation did not preserve the dateless update/create contract';
 		}
 	}
+}
+// Batch regression: changing one of two sources must leave the other untouched.
+$GLOBALS['mdi_test_posts'] = array();
+$GLOBALS['mdi_test_meta'] = array();
+$batch_root = $tmp_root . '/batch';
+mkdir( $batch_root . '/page', 0755, true );
+foreach ( array( 201, 202 ) as $id ) {
+	file_put_contents( $batch_root . '/page/item-' . $id . '.md', "---\nid: $id\ntitle: Item $id\ntype: page\nslug: item-$id\n---\n\nBody $id.\n" );
+}
+$batch_options = array( 'path' => $batch_root, 'no_convert' => true );
+WP_Markdown_CLI::import( $batch_options );
+// WordPress returns numeric columns as strings from the database.
+foreach ( $GLOBALS['mdi_test_posts'] as $stored ) {
+	foreach ( array( 'post_author', 'post_parent', 'menu_order', 'comment_count' ) as $field ) {
+		$stored->$field = (string) $stored->$field;
+	}
+}
+$calls_before = $GLOBALS['mdi_insert_calls'];
+foreach ( array( true, false ) as $dry_run ) {
+	$batch = WP_Markdown_CLI::import( array_merge( $batch_options, array( 'dry_run' => $dry_run ) ) );
+	if ( 0 !== $batch['update_count'] || 2 !== $batch['unchanged_count'] || $calls_before !== $GLOBALS['mdi_insert_calls'] ) {
+		$failures[] = 'unchanged batch did not avoid all writes';
+	}
+}
+file_put_contents( $batch_root . '/page/item-201.md', "---\nid: 201\ntitle: Changed\ntype: page\nslug: item-201\n---\n\nChanged body.\n" );
+foreach ( array( true, false ) as $dry_run ) {
+	$batch = WP_Markdown_CLI::import( array_merge( $batch_options, array( 'dry_run' => $dry_run ) ) );
+	if ( 1 !== $batch['update_count'] || 1 !== $batch['unchanged_count'] ) {
+		$failures[] = 'one changed source did not isolate the batch update';
+	}
+}
+if ( $calls_before + 1 !== $GLOBALS['mdi_insert_calls'] ) {
+	$failures[] = 'one changed source did not write exactly once';
+}
+// Managed metadata drift must still trigger a write even when fields match.
+$GLOBALS['mdi_test_meta'][202]['_markdown_source_hash'] = 'stale';
+$batch = WP_Markdown_CLI::import( $batch_options );
+if ( 1 !== $batch['update_count'] || 1 !== $batch['unchanged_count'] ) {
+	$failures[] = 'managed source metadata drift was ignored';
 }
 mdi_mysql_import_export_rm_rf( $tmp_root );
 

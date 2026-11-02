@@ -936,6 +936,13 @@ class WP_Markdown_CLI {
 		$postarr = wp_unslash( wp_slash( $postarr ) );
 		$integer_fields = array( 'ID', 'post_author', 'post_parent', 'menu_order', 'comment_count' );
 		foreach ( $postarr as $field => $value ) {
+			// meta_input is a core wp_insert_post() argument: compare each key with stored meta.
+			if ( 'meta_input' === $field ) {
+				if ( ! self::meta_input_is_unchanged( $post_id, $value ) ) {
+					return false;
+				}
+				continue;
+			}
 			// Unknown/filter-added write directives cannot safely be treated as a no-op.
 			if ( ! property_exists( $stored, $field ) || ! is_scalar( $value ) ) {
 				return false;
@@ -951,6 +958,30 @@ class WP_Markdown_CLI {
 
 		foreach ( array( self::SOURCE_PATH_META => $source_path, self::SOURCE_IDENTITY_META => $source_path, self::SOURCE_HASH_META => $source_hash ) as $key => $value ) {
 			if ( (string) get_post_meta( $post_id, $key, true ) !== $value ) {
+				return false;
+			}
+		}
+		return true;
+	}
+
+	/**
+	 * Whether every meta_input entry already matches the stored single meta value.
+	 *
+	 * @param int   $post_id    Existing post ID.
+	 * @param mixed $meta_input Unslashed meta_input value from the would-be post array.
+	 */
+	private static function meta_input_is_unchanged( int $post_id, $meta_input ): bool {
+		if ( ! is_array( $meta_input ) ) {
+			return false;
+		}
+		foreach ( $meta_input as $key => $value ) {
+			if ( ! is_string( $key ) || ! is_scalar( $value ) ) {
+				return false;
+			}
+			if ( ! function_exists( 'metadata_exists' ) || ! metadata_exists( 'post', $post_id, $key ) ) {
+				return false;
+			}
+			if ( (string) get_post_meta( $post_id, $key, true ) !== (string) $value ) {
 				return false;
 			}
 		}

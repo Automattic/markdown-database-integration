@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.2] - 2026-11-02
+
+### Fixed
+- preserve existing publish dates on dateless imports
+
 ## [0.15.1] - 2026-11-01
 
 ### Changed

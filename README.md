@@ -157,6 +157,17 @@ is a no-op. Other engines are rejected.
 - UNION branches need equal projection counts and compatible column types.
   Global ORDER BY accepts first-branch output names or positive ordinals.
 
+### Import results
+
+CLI imports and the `markdown-db/import` ability report `create_count`,
+`update_count`, `unchanged_count`, and `skipped_count`, with corresponding
+`created`, `updated`, `unchanged`, and `skipped` lists. Each `unchanged` entry
+contains the stored post `id` and source `path`, in both dry-run and apply.
+Existing posts whose final filtered post fields and managed source metadata
+already match are unchanged: no post write, revision, or modified-date bump
+occurs. Only dates supplied in the final post array are compared; dateless
+sources leave stored dates alone. Dry-run reports changes without writing.
+
 ### Reconciliation
 
 Shared three-way reconciliation compares canonical and WordPress state against

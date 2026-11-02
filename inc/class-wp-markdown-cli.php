@@ -94,7 +94,7 @@ class WP_Markdown_CLI {
 						'description'         => 'Import MDI markdown files into the current WordPress database.',
 						'category'            => 'markdown-db',
 						'input_schema'        => self::import_input_schema(),
-						'output_schema'       => array( 'type' => 'object' ),
+						'output_schema'       => self::import_output_schema(),
 						'execute_callback'    => array( self::class, 'import' ),
 						'permission_callback' => array( self::class, 'can_manage_markdown_db' ),
 					)
@@ -428,6 +428,7 @@ class WP_Markdown_CLI {
 		$id_map       = array();
 		$created      = array();
 		$updated      = array();
+		$unchanged    = array();
 		$skipped      = array();
 		foreach ( $storage->get_skipped_files() as $path => $reason ) {
 			$skipped[] = array( 'path' => self::relative_path( $path, $content_dir ), 'reason' => $reason );
@@ -476,6 +477,15 @@ class WP_Markdown_CLI {
 			$postarr['post_content'] = $converted_content;
 			$postarr                 = self::apply_post_data_filter( $postarr, $context, $post );
 
+			if ( 'update' === $operation && self::import_is_unchanged( $existing_id, $postarr, $source_path, $source_hash ) ) {
+				$operation = 'unchanged';
+				--$update_count;
+				$unchanged[] = array( 'id' => $existing_id, 'path' => $source_path );
+				if ( $old_id > 0 ) {
+					$id_map[ $old_id ] = $existing_id;
+				}
+			}
+
 			if ( count( $sample ) < 10 ) {
 				$sample[] = array(
 					'operation' => $operation,
@@ -485,7 +495,7 @@ class WP_Markdown_CLI {
 				);
 			}
 
-			if ( $dry_run ) {
+			if ( $dry_run || 'unchanged' === $operation ) {
 				continue;
 			}
 
@@ -536,9 +546,11 @@ class WP_Markdown_CLI {
 			'candidate_count' => count( $posts ),
 			'create_count'    => $dry_run ? $create_count : count( $created ),
 			'update_count'    => $dry_run ? $update_count : count( $updated ),
+			'unchanged_count' => count( $unchanged ),
 			'skipped_count'   => count( $skipped ),
 			'created'         => $created,
 			'updated'         => $updated,
+			'unchanged'       => $unchanged,
 			'skipped'         => $skipped,
 			'sample'          => $sample,
 		);
@@ -661,7 +673,7 @@ class WP_Markdown_CLI {
 		WP_CLI::line( sprintf( '%s mode: %s', $label, $result['mode'] ?? '' ) );
 		WP_CLI::line( sprintf( 'Path: %s', $result['path'] ?? '' ) );
 		WP_CLI::line( sprintf( 'Candidates: %d', (int) ( $result['candidate_count'] ?? 0 ) ) );
-		foreach ( array( 'create_count', 'update_count', 'written_count', 'skipped_count' ) as $key ) {
+		foreach ( array( 'create_count', 'update_count', 'unchanged_count', 'written_count', 'skipped_count' ) as $key ) {
 			if ( isset( $result[ $key ] ) ) {
 				WP_CLI::line( sprintf( '%s: %d', ucfirst( str_replace( '_', ' ', $key ) ), (int) $result[ $key ] ) );
 			}
@@ -669,6 +681,28 @@ class WP_Markdown_CLI {
 		if ( ! empty( $result['sample'] ) ) {
 			\WP_CLI\Utils\format_items( 'table', $result['sample'], array_map( 'strval', array_keys( $result['sample'][0] ) ) );
 		}
+	}
+
+	private static function import_output_schema(): array {
+		$row = array(
+			'type' => 'object',
+			'properties' => array( 'id' => array( 'type' => 'integer' ), 'path' => array( 'type' => 'string' ) ),
+			'required' => array( 'id', 'path' ),
+		);
+		$properties = array(
+			'success' => array( 'type' => 'boolean' ),
+			'mode' => array( 'type' => 'string' ),
+			'path' => array( 'type' => 'string' ),
+			'sample' => array( 'type' => 'array', 'items' => array( 'type' => 'object' ) ),
+			'skipped' => array( 'type' => 'array', 'items' => array( 'type' => 'object' ) ),
+		);
+		foreach ( array( 'candidate_count', 'create_count', 'update_count', 'unchanged_count', 'skipped_count' ) as $key ) {
+			$properties[ $key ] = array( 'type' => 'integer', 'minimum' => 0 );
+		}
+		foreach ( array( 'created', 'updated', 'unchanged' ) as $key ) {
+			$properties[ $key ] = array( 'type' => 'array', 'items' => $row );
+		}
+		return array( 'type' => 'object', 'properties' => $properties );
 	}
 
 	private static function import_input_schema(): array {
@@ -889,6 +923,38 @@ class WP_Markdown_CLI {
 		}
 
 		return 0;
+	}
+
+	/** Compare only supplied fields; omitted dates must remain owned by WordPress. */
+	private static function import_is_unchanged( int $post_id, array $postarr, string $source_path, string $source_hash ): bool {
+		$stored = function_exists( 'get_post' ) ? get_post( $post_id ) : null;
+		if ( ! $stored || ! function_exists( 'get_post_meta' ) ) {
+			return false;
+		}
+
+		// wp_insert_post consumes slashed input and stores unslashed values.
+		$postarr = wp_unslash( wp_slash( $postarr ) );
+		$integer_fields = array( 'ID', 'post_author', 'post_parent', 'menu_order', 'comment_count' );
+		foreach ( $postarr as $field => $value ) {
+			// Unknown/filter-added write directives cannot safely be treated as a no-op.
+			if ( ! property_exists( $stored, $field ) || ! is_scalar( $value ) ) {
+				return false;
+			}
+			if ( in_array( $field, $integer_fields, true ) ) {
+				if ( (int) $value !== (int) $stored->$field ) {
+					return false;
+				}
+			} elseif ( (string) $value !== (string) $stored->$field ) {
+				return false;
+			}
+		}
+
+		foreach ( array( self::SOURCE_PATH_META => $source_path, self::SOURCE_IDENTITY_META => $source_path, self::SOURCE_HASH_META => $source_hash ) as $key => $value ) {
+			if ( (string) get_post_meta( $post_id, $key, true ) !== $value ) {
+				return false;
+			}
+		}
+		return true;
 	}
 
 	private static function post_array( object $post, int $existing_id, array $id_map ): array {

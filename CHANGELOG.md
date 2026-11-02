@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.4] - 2026-11-02
+
+### Fixed
+- compare meta_input by value in unchanged-import detection
+
 ## [0.15.3] - 2026-11-02
 
 ### Fixed

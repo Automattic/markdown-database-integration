@@ -212,8 +212,17 @@ function wp_insert_post( array $postarr, bool $wp_error = false ) {
 		}
 	}
 	$postarr['ID']               = $id;
+	// Model core: meta_input is written as post meta, not stored on the post object.
+	foreach ( (array) ( $postarr['meta_input'] ?? array() ) as $meta_key => $meta_value ) {
+		$GLOBALS['mdi_test_meta'][ $id ][ $meta_key ] = $meta_value;
+	}
+	unset( $postarr['meta_input'] );
 	$GLOBALS['mdi_test_posts'][ $id ] = (object) $postarr;
 	return $id;
+}
+
+function metadata_exists( string $meta_type, int $object_id, string $meta_key ): bool {
+	return 'post' === $meta_type && array_key_exists( $meta_key, $GLOBALS['mdi_test_meta'][ $object_id ] ?? array() );
 }
 
 function get_post_meta( int $post_id, string $key = '', bool $single = false ) {
@@ -388,6 +397,24 @@ if ( $calls_before + 1 !== $GLOBALS['mdi_insert_calls'] || 'draft' !== $GLOBALS[
 	$failures[] = 'status filter did not write exactly once in apply';
 }
 $GLOBALS['mdi_test_filters']['markdown_db_import_post_data'] = array();
+
+// meta_input added by a post-data filter participates in change detection by value.
+$meta_value = 'origin-a';
+add_filter( 'markdown_db_import_post_data', static function ( array $postarr ) use ( &$meta_value ): array {
+	$postarr['post_status'] = 'draft';
+	$postarr['meta_input']  = array( '_consumer_origin' => $meta_value );
+	return $postarr;
+} );
+$calls_before = $GLOBALS['mdi_insert_calls'];
+$meta_first   = WP_Markdown_CLI::import( array( 'path' => $content_dir, 'dry_run' => false ) );
+$meta_repeat  = WP_Markdown_CLI::import( array( 'path' => $content_dir, 'dry_run' => false ) );
+$meta_value   = 'origin-b';
+$meta_changed = WP_Markdown_CLI::import( array( 'path' => $content_dir, 'dry_run' => false ) );
+if ( 1 !== $meta_first['update_count'] || 0 !== $meta_repeat['update_count'] || 1 !== $meta_repeat['unchanged_count'] || 1 !== $meta_changed['update_count'] || $calls_before + 2 !== $GLOBALS['mdi_insert_calls'] || 'origin-b' !== get_post_meta( 17, '_consumer_origin', true ) ) {
+	$failures[] = 'meta_input was not compared by value against stored meta';
+}
+$GLOBALS['mdi_test_filters']['markdown_db_import_post_data'] = array();
+WP_Markdown_CLI::import( array( 'path' => $content_dir, 'dry_run' => false ) );
 
 file_put_contents(
 	$content_dir . '/page/home.md',

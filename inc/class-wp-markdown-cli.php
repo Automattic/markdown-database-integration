@@ -918,6 +918,10 @@ class WP_Markdown_CLI {
 
 		if ( $existing_id > 0 ) {
 			$postarr['ID'] = $existing_id;
+			// Empty dates (including the native profile's zero-date sentinel) must not reset stored dates.
+			if ( in_array( $postarr['post_date'], array( '', '0000-00-00 00:00:00' ), true ) && in_array( $postarr['post_date_gmt'], array( '', '0000-00-00 00:00:00' ), true ) ) {
+				unset( $postarr['post_date'], $postarr['post_date_gmt'], $postarr['post_modified'], $postarr['post_modified_gmt'] );
+			}
 		}
 
 		return $postarr;

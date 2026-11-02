@@ -327,7 +327,7 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 			throw new WP_Markdown_Reconciliation_Store_Conflict( 'The canonical source no longer exists.' );
 		}
 		$this->authorize_post_mutation( $post_id > 0 ? 'edit' : 'create', $post_id, (string) ( $source->post_type ?? 'post' ) );
-		$postarr = $this->post_array( $source );
+		$postarr = $this->post_array( $source, $post_id );
 		$postarr['post_parent'] = $this->runtime_parent_id( $source, $storage, $context['root'] );
 		if ( $post_id > 0 ) {
 			$postarr['ID'] = $post_id;
@@ -647,9 +647,13 @@ final class WP_Markdown_WordPress_Reconciliation_Adapter implements WP_Markdown_
 		return $this->relative_path( implode( '/', $parts ) );
 	}
 
-	private function post_array( object $post ): array {
+	private function post_array( object $post, int $existing_id ): array {
 		$receipt = $this->post_receipt( $post, array(), array() );
 		unset( $receipt['meta'], $receipt['terms'] );
+		// Preserve stored publish dates when the canonical source carries no date.
+		if ( $existing_id > 0 && in_array( $receipt['post_date'], array( '', '0000-00-00 00:00:00' ), true ) && in_array( $receipt['post_date_gmt'], array( '', '0000-00-00 00:00:00' ), true ) ) {
+			unset( $receipt['post_date'], $receipt['post_date_gmt'] );
+		}
 		return $receipt;
 	}
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.3] - 2026-11-02
+
+### Fixed
+- avoid rewriting unchanged imports
+
 ## [0.15.2] - 2026-11-02
 
 ### Fixed

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.5] - 2026-11-04
+
+### Changed
+- Guard canonical stores against direct HTTP access
+
 ## [0.15.4] - 2026-11-02
 
 ### Fixed

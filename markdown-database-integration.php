@@ -60,6 +60,13 @@ if ( ! defined( 'MARKDOWN_DB_STATE_DIR' ) ) {
 	define( 'MARKDOWN_DB_STATE_DIR', MARKDOWN_DB_CONTENT_DIR );
 }
 
+if ( ! defined( 'MARKDOWN_DB_DROPIN' ) || ! MARKDOWN_DB_DROPIN ) {
+	require_once MARKDOWN_DB_PLUGIN_DIR . 'inc/markdown-db-store-guards.php';
+	foreach ( array_unique( array( MARKDOWN_DB_CONTENT_DIR, MARKDOWN_DB_STATE_DIR ) ) as $markdown_db_store_root ) {
+		markdown_db_guard_store_root( $markdown_db_store_root );
+	}
+}
+
 /** Post types persisted as table rows rather than Markdown files. */
 if ( ! defined( 'MARKDOWN_DB_EXCLUDED_TYPES' ) ) {
 	define( 'MARKDOWN_DB_EXCLUDED_TYPES', 'revision,auto-draft,nav_menu_item,customize_changeset,oembed_cache,wp_navigation,wp_global_styles,wp_template,wp_template_part' );

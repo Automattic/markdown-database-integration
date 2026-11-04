@@ -46,6 +46,10 @@ require_once $markdown_db_native_plugin_dir . '/inc/native/class-wp-markdown-nat
 
 $markdown_db_native_content_dir = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : markdown_db_default_content_dir();
 $markdown_db_native_state_dir = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : $markdown_db_native_content_dir;
+require_once $markdown_db_native_plugin_dir . '/inc/markdown-db-store-guards.php';
+foreach ( array_unique( array( $markdown_db_native_content_dir, $markdown_db_native_state_dir ) ) as $markdown_db_store_root ) {
+	markdown_db_guard_store_root( $markdown_db_store_root );
+}
 $markdown_db_native_prefix = (string) ( $GLOBALS['table_prefix'] ?? 'wp_' );
 $markdown_db_native_runtime = WP_Markdown_Native_Runtime_Factory::wordpress_runtime( $markdown_db_native_state_dir, $markdown_db_native_prefix, $markdown_db_native_content_dir );
 $GLOBALS['wpdb'] = new WP_Markdown_Native_WPDB(

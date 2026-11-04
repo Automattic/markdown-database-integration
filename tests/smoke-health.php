@@ -28,6 +28,40 @@ $unsupported = WP_Markdown_Health::diagnose( array( 'backend_capabilities' => ne
 mdi_health_assert( 'unsupported_backend_capability' === $unsupported['status'] && ! $unsupported['healthy'], 'required unsupported capability fails closed' );
 mdi_health_assert( 'markdown_db_unsupported_backend_capability' === $unsupported['diagnostic']['code'], 'health retains structured diagnostics' );
 
+// Anonymous HTTP outcomes augment, rather than replace, the runtime diagnosis.
+mkdir( $root . '/store/_tables', 0755, true );
+file_put_contents( $root . '/store/_tables/users.json', '[]' );
+foreach ( array(
+	array( 200, $root, 'store_publicly_readable', false, 'public' ),
+	array( 403, $root, 'healthy', true, 'blocked' ),
+	array( 404, $root, 'healthy', true, 'blocked' ),
+	array( 0, $root, 'healthy', true, 'indeterminate' ),
+	array( 200, $root . '/store/_tables', 'healthy', true, 'skipped' ),
+) as list( $code, $boundary, $status, $is_healthy, $http_status ) ) {
+	$called = false;
+	$report = WP_Markdown_Health::diagnose( array(
+		'native_runtime' => true,
+		'dropin_loaded' => true,
+		'content_root' => $root . '/store',
+		'wp_content_dir' => $boundary,
+		'content_url' => 'https://example.test/wp-content',
+		'http_probe' => static function ( $url, $args ) use ( $code, &$called ): array {
+			$called = true;
+			mdi_health_assert( 'https://example.test/wp-content/store/_tables/users.json' === $url, 'probe maps canonical file to content URL' );
+			mdi_health_assert( array() === $args['cookies'] && 0 === $args['redirection'] && 1 === $args['limit_response_size'] && $args['timeout'] <= 5, 'probe is anonymous, bounded and does not follow redirects' );
+			return array( 'response' => array( 'code' => $code ) );
+		},
+	) );
+	mdi_health_assert( $status === $report['status'] && $is_healthy === $report['healthy'] && $http_status === $report['store_http']['status'], 'HTTP outcome ' . $code . ' yields ' . $http_status );
+	mdi_health_assert( $called === ( 'skipped' !== $http_status ), 'outside-docroot probe is skipped' );
+	if ( 200 === $code && $called ) {
+		mdi_health_assert( str_contains( $report['message'], $report['store_http']['url'] ) && str_contains( $report['message'], 'Securing the store' ), 'public-store message names URL and securing guidance' );
+	}
+}
+unlink( $root . '/store/_tables/users.json' );
+rmdir( $root . '/store/_tables' );
+rmdir( $root . '/store' );
+
 $install = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination ) );
 mdi_health_assert( $install['success'] && $install['changed'] && file_exists( $destination ), 'missing drop-in installs' );
 $repeat = WP_Markdown_Health::repair_dropin( array( 'source' => $source, 'destination' => $destination ) );

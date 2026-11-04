@@ -10,11 +10,25 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 require_once __DIR__ . '/class-wp-markdown-backend-capabilities.php';
+require_once __DIR__ . '/markdown-db-store-guards.php';
 
 class WP_Markdown_Health {
 
 	/** Diagnose the native runtime and drop-in state. */
 	public static function diagnose( array $context = array() ): array {
+		$result = self::diagnose_runtime( $context );
+		if ( 'not_applicable' !== $result['status'] ) {
+			$result['store_http'] = self::check_store_http( $context );
+			if ( 'public' === $result['store_http']['status'] ) {
+				$result['status'] = 'store_publicly_readable';
+				$result['healthy'] = false;
+				$result['message'] = 'Canonical store is publicly readable at ' . $result['store_http']['url'] . '. See README "Securing the store".';
+			}
+		}
+		return $result;
+	}
+
+	private static function diagnose_runtime( array $context ): array {
 		global $wpdb;
 		$backend = $context['backend_capabilities'] ?? WP_Markdown_Backend_Resolver::resolve();
 		if ( ! $backend instanceof WP_Markdown_Backend_Capabilities ) {
@@ -61,6 +75,48 @@ class WP_Markdown_Health {
 			'healthy' => false,
 			'message' => 'The MDI db.php drop-in and native runtime are not active.',
 		), $backend );
+	}
+
+	/** Probe a canonical file anonymously; an inconclusive probe is not proof of protection. */
+	public static function check_store_http( array $context ): array {
+		$root = $context['content_root'] ?? ( defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : '' );
+		$boundary = $context['wp_content_dir'] ?? ( defined( 'WP_CONTENT_DIR' ) ? WP_CONTENT_DIR : '' );
+		if ( ! is_dir( $root ) || ! markdown_db_root_inside( $root, $boundary ) ) {
+			return array( 'status' => 'skipped' );
+		}
+		$file = null;
+		foreach ( array( '_tables/users.json', '_options/*.json', '*/*.md' ) as $pattern ) {
+			foreach ( glob( $root . '/' . $pattern ) ?: array() as $candidate ) {
+				if ( is_file( $candidate ) && markdown_db_root_inside( $candidate, $root ) ) {
+					$file = $candidate;
+					break 2;
+				}
+			}
+		}
+		if ( null === $file ) {
+			return array( 'status' => 'skipped' );
+		}
+		$base_url = $context['content_url'] ?? ( function_exists( 'content_url' ) ? content_url() : '' );
+		if ( '' === $base_url ) {
+			return array( 'status' => 'indeterminate' );
+		}
+		$relative = substr( realpath( $file ), strlen( rtrim( realpath( $boundary ), DIRECTORY_SEPARATOR ) ) + 1 );
+		$url = rtrim( $base_url, '/' ) . '/' . implode( '/', array_map( 'rawurlencode', explode( DIRECTORY_SEPARATOR, $relative ) ) );
+		$probe = $context['http_probe'] ?? 'wp_remote_get';
+		$response = $probe( $url, array( 'cookies' => array(), 'redirection' => 0, 'timeout' => 3, 'limit_response_size' => 1 ) );
+		$code = is_array( $response ) ? (int) ( $response['response']['code'] ?? 0 ) : 0;
+		return array( 'status' => 200 === $code ? 'public' : ( in_array( $code, array( 403, 404 ), true ) ? 'blocked' : 'indeterminate' ), 'url' => $url );
+	}
+
+	/** Recreate missing guard files without changing existing server policy. */
+	public static function repair_store_guards(): array {
+		$content_root = defined( 'MARKDOWN_DB_CONTENT_DIR' ) ? MARKDOWN_DB_CONTENT_DIR : '';
+		$state_root = defined( 'MARKDOWN_DB_STATE_DIR' ) ? MARKDOWN_DB_STATE_DIR : $content_root;
+		$result = array();
+		foreach ( array_unique( array( $content_root, $state_root ) ) as $root ) {
+			$result[ $root ] = markdown_db_guard_store_root( $root );
+		}
+		return $result;
 	}
 
 	private static function with_backend( array $report, WP_Markdown_Backend_Capabilities $backend ): array {

@@ -358,6 +358,7 @@ class WP_Markdown_CLI {
 		$required_capabilities = isset( $assoc_args['require-capability'] ) ? array_filter( array_map( 'trim', explode( ',', (string) $assoc_args['require-capability'] ) ) ) : array();
 		$result = WP_Markdown_Health::diagnose( array( 'required_capabilities' => $required_capabilities ) );
 		if ( array_key_exists( 'repair', $assoc_args ) ) {
+			$result['guard_repair'] = WP_Markdown_Health::repair_store_guards();
 			$result['repair'] = WP_Markdown_Health::repair_dropin(
 				array( 'force' => array_key_exists( 'force', $assoc_args ) )
 			);
@@ -373,6 +374,9 @@ class WP_Markdown_CLI {
 		WP_CLI::line( sprintf( 'Backend: %s', $result['backend']['id'] ) );
 		WP_CLI::line( sprintf( 'Capabilities: %s', implode( ', ', array_keys( array_filter( $result['backend']['capabilities'] ) ) ) ?: 'none' ) );
 		WP_CLI::line( $result['message'] );
+		if ( isset( $result['store_http'] ) ) {
+			WP_CLI::line( 'store_http: ' . $result['store_http']['status'] . ( isset( $result['store_http']['url'] ) ? ' ' . $result['store_http']['url'] : '' ) );
+		}
 		if ( isset( $result['repair'] ) ) {
 			WP_CLI::line( $result['repair']['message'] );
 			if ( empty( $result['repair']['success'] ) ) {

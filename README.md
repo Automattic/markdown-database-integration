@@ -1,5 +1,8 @@
 # Markdown Database Integration
 
+> **Experimental software:** MDI is for local experimentation, testing, and
+> knowledge bases. It is not meant for production sites as a database replacement.
+
 MDI is a native, pure-PHP SQL engine for WordPress backed by canonical files:
 Markdown for content, JSON for WordPress and plugin-table rows, and SQL for
 plugin schemas. Its native `wpdb` implementation serves those files directly.
@@ -71,6 +74,32 @@ unrelated or absent `db.php` is left alone. If `wp-content` is not writable,
 For import/export on an ordinary MySQL/MariaDB WordPress installation, activate
 only the plugin, without installing MDI's drop-in. MySQL/MariaDB is an external
 import/export target and compatibility oracle, not an MDI backend.
+
+## Securing the store
+
+Canonical files can contain password hashes, private posts, and sensitive options.
+Never allow anonymous HTTP access to the content or state root. On bootstrap,
+MDI adds `.htaccess` (`Require all denied`) and `index.php` to existing roots inside
+`ABSPATH`, without overwriting existing files or creating directories.
+`wp markdown-db doctor --repair` recreates missing guards.
+
+Servers that ignore `.htaccess`, including nginx, PHP's built-in server, and
+Playground/Studio, need separate protection. For nginx's default store paths:
+
+```nginx
+location ~ ^/wp-content/(db|markdown)/ { deny all; }
+```
+
+Adapt the rule for custom paths and separate state roots. The index file does
+not block direct file requests. `wp markdown-db doctor` checks an existing
+canonical content file anonymously over HTTP: a 200 response reports
+`store_publicly_readable`; 403/404 are blocked. Unreachable probes are
+indeterminate, and roots outside `WP_CONTENT_DIR` or without files are skipped.
+Neither result proves the store is secure, and separate state roots need checking too.
+
+For servers without reliable deny rules, move both roots outside the document
+root and set `MARKDOWN_DB_CONTENT_DIR` / `MARKDOWN_DB_STATE_DIR` in `wp-config.php`
+to their absolute paths. MDI does not write guard files outside `ABSPATH`.
 
 ## Configuration
 

@@ -1,5 +1,10 @@
 # Changelog
 
+## [0.15.6] - 2026-11-06
+
+### Fixed
+- bump blocks-engine-php-transformer to v0.45.258
+
 ## [0.15.5] - 2026-11-04
 
 ### Changed
